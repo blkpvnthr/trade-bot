@@ -135,7 +135,7 @@ This system was able to produce over $2,000 on its first day of trading.
 <!-- markdownlint-enable MD033 -->
 <!-- Image carousel / gallery (README-friendly) -->
 <p align="center">
-  <a href="images/ui/img2.png"><img src="images/img2.png" width="900" height="500" alt="results" /></a>
+  <a href="images/ui/img4.png"><img src="images/img4.png" width="900" height="500" alt="results" /></a>
 </p>
 <!-- markdownlint-enable MD033 -->
 
