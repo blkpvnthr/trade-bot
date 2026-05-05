@@ -136,7 +136,7 @@ This system was able to produce more than $1,000 on its first day of trading.
 ---
 
 ### Day 2:
-Aonther sucessful day generating over $2,000. (Not a fluke)
+Aonther sucessful day generating well over $2,000. (Not a fluke)
 
 <!-- markdownlint-disable MD033 -->
 <!-- Image carousel / gallery (README-friendly) -->
