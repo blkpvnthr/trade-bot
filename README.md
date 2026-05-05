@@ -125,7 +125,15 @@ Key files:
 
 ### Day 1:
 
-This system was able to produce over $2,000 on its first day of trading.
+This system was able to produce nearly $2,000 on its first day of trading.
+<!-- markdownlint-disable MD033 -->
+<!-- Image carousel / gallery (README-friendly) -->
+<p align="center">
+  <a href="images/ui/img6.png"><img src="images/img6.png" width="900" height="750" alt="results" /></a>
+</p>
+<!-- markdownlint-enable MD033 -->
+
+### Day 2:
 
 <!-- markdownlint-disable MD033 -->
 <!-- Image carousel / gallery (README-friendly) -->
