@@ -102,6 +102,8 @@ All outputs are stored in:
   <a href="images/ui/img3.png"><img src="images/img3.png" width="900" height="500" alt="results" /></a>
 </p>
 <!-- markdownlint-enable MD033 -->
+
+### daily_system_outputs/daily_features.csv
 <!-- Image carousel / gallery (README-friendly) -->
 <p align="center">
   <a href="images/ui/data.png"><img src="images/data.png" width="900" height="500" alt="results" /></a>
