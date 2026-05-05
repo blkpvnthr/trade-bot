@@ -197,12 +197,10 @@ python run.py
 ### Core Components
 
 - **Scanner**
-  - :contentReference[oaicite:0]{index=0}
   - Builds dynamic universe (S&P 500 + NASDAQ)
   - Identifies breakout + momentum candidates
 
 - **Feature Engineering**
-  - :contentReference[oaicite:1]{index=1}
   - Generates indicators:
     - RSI, MACD, Bollinger Bands
     - SMA (5/20/50/200)
@@ -210,7 +208,6 @@ python run.py
     - Regime features (SPY / QQQ / VIXY)
 
 - **Model**
-  - :contentReference[oaicite:2]{index=2}
   - Supervised continuation model
   - Outputs:
     - Trade probabilities
@@ -218,7 +215,6 @@ python run.py
     - Regime-aware actions
 
 - **Walk-Forward Simulation**
-  - :contentReference[oaicite:3]{index=3}
   - Validates strategy using rolling windows
   - Focuses on:
     - Explosive returns
@@ -226,7 +222,6 @@ python run.py
     - Capital preservation
 
 - **Portfolio Optimizer**
-  - :contentReference[oaicite:4]{index=4}
   - Maximizes:
     - Expected return
     - Sharpe ratio
@@ -236,7 +231,6 @@ python run.py
     - Weak confidence
 
 - **Execution Engine**
-  - :contentReference[oaicite:5]{index=5}
   - Production-grade Alpaca executor
   - Features:
     - Sell-first logic
@@ -246,7 +240,6 @@ python run.py
     - Slippage tracking
 
 - **Streaming Executor (Continuous Mode)**
-  - :contentReference[oaicite:6]{index=6}
   - Runs continuously
   - Integrates:
     - Scanner
@@ -254,12 +247,10 @@ python run.py
     - Portfolio updates
 
 - **Orchestrator**
-  - :contentReference[oaicite:7]{index=7}
   - End-to-end pipeline runner:
     - Data → Features → Model → Portfolio → Orders
 
 - **Visualization**
-  - :contentReference[oaicite:8]{index=8}
   - Generates:
     - Feature importance plots
     - Threshold optimization charts
