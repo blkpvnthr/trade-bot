@@ -149,38 +149,38 @@ This system was able to produce over $2,000 on its first day of trading.
 ```bash
 pip install -r file.txt
 ```
-2. Configure Environment
+### 2. Configure Environment
 
 Create a .env file:
 ```bash
 APCA_API_KEY_ID=your_key
 APCA_API_SECRET_KEY=your_secret
 ```
-3. Run the stock scanner first
+### 3. Run the stock scanner first
 ```bash
 python scanner.py
 ```
-4. Feature Engineering to generate `daily_features.csv`.
+### 4. Feature Engineering to generate `daily_features.csv`.
 ```bash
 python features.py
 ```
-5. Run the model file.
+### 5. Run the model file.
 ```bash
 python model.py
 ```
-6. Run the walkforward analysis.
+### 6. Run the walkforward analysis.
 ```bash
 python walkforward.py
 ```
-7. Visualize generated model performance.
+### 7. Visualize generated model performance.
 ```bash
 python visualize_outputs.py
 ```
-8. Run the trading system.
+### 8. Run the trading system.
 ```bash
 python run.py
 ```
-5. For Live Execution just use the API keys associated with the Alpaca live account. (Use Carefully)
+### 9. For Live Execution just use the API keys associated with the Alpaca live account. (Use Carefully)
 
 ---
 
