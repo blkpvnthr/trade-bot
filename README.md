@@ -188,7 +188,7 @@ python visualize_outputs.py
 ```bash
 python run.py
 ```
-> For Live Execution just use the API keys associated with the Alpaca live account. (Use Carefully)
+> For Live Execution use the API keys associated with the Alpaca live account. (Use Carefully)
 
 
 
