@@ -125,7 +125,7 @@ Key files:
 
 ### Day 1:
 
-This system was able to produce over $1,000 on its first day of trading.
+This system was able to produce more than $1,000 on its first day of trading.
 <!-- markdownlint-disable MD033 -->
 <!-- Image carousel / gallery (README-friendly) -->
 <p align="center">
