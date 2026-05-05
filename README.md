@@ -182,6 +182,7 @@ python run.py
 ```
 ### 9. For Live Execution just use the API keys associated with the Alpaca live account. (Use Carefully)
 
+---
 
 ## ⚠️ Risk Management
 
