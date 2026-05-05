@@ -26,19 +26,12 @@ Instead, it:
 
 ## 🏗️ System Architecture
 
-```
-Market Data (Alpaca)
-↓
-Feature Engineering
-↓
-ML Model (Continuation / Explosive Alpha)
-↓
-Ranking & Signal Generation
-↓
-Portfolio Optimization (Sharpe + Return)
-↓
-Execution Engine (Alpaca)
-```
+<!-- markdownlint-disable MD033 -->
+<!-- Image carousel / gallery (README-friendly) -->
+<p align="center">
+  <a href="images/system-arch.png"><img src="images/system-arch.png" width="900" height="500" alt="system-architecture" /></a>
+</p>
+<!-- markdownlint-enable MD033 -->
 
 ---
 
@@ -103,12 +96,11 @@ Production safeguards:
 All outputs are stored in:
 
 ### daily_system_outputs/daily_features.csv
-
 <!-- markdownlint-disable MD033 -->
-<!-- Image carousel / gallery (README-friendly) -->
-<p align="center">
-  <a href="images/ui/index-01.png"><img src="images/data.png" width="900" height="500" alt="QuantumQuant screenshot 1" /></a>
-</p>
+ <p align="center">
+  <a href="images/img3.png"><img src="images/img3.png" width="240" height="140" alt="QuantumQuant screenshot 1" /></a>
+ <a href="images/data.png"><img src="images/data.png" width="240" height="140" alt="QuantumQuant screenshot 2" /></a>
+  </p>
 <!-- markdownlint-enable MD033 -->
 
 Key files:
@@ -121,12 +113,33 @@ Key files:
 
 ---
 
+## 💰 Results
+
+### Day 1 of Paper Trading:
+
+This system was able to produce over $2,000 on its first day of trading.
+
+<!-- markdownlint-disable MD033 -->
+<!-- Image carousel / gallery (README-friendly) -->
+<p align="center">
+  <a href="images/ui/img.png"><img src="images/img.png" width="900" height="500" alt="results" /></a>
+</p>
+<!-- markdownlint-enable MD033 -->
+<!-- Image carousel / gallery (README-friendly) -->
+<p align="center">
+  <a href="images/ui/img2.png"><img src="images/img2.png" width="900" height="500" alt="results" /></a>
+</p>
+<!-- markdownlint-enable MD033 -->
+
+
+---
+
 ## 🚀 Usage
 
 ### 1. Install Dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install -r file.txt
 ```
 2. Configure Environment
 
