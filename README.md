@@ -156,18 +156,32 @@ Create a .env file:
 APCA_API_KEY_ID=your_key
 APCA_API_SECRET_KEY=your_secret
 ```
-3. Run Full Pipeline (Dry Run)
+3. Run the stock scanner first
 ```bash
-python run_daily_system_walkforward_emulated.py
+python scanner.py
 ```
-4. Execute Trades (Paper)
+4. Feature Engineering to generate `daily_features.csv`.
 ```bash
-python run_daily_system_walkforward_emulated.py --execute
+python features.py
 ```
-5. Live Execution (Use Carefully)
+5. Run the model file.
+```bash
+python model.py
+```
+6. Run the walkforward analysis.
+```bash
+python walkforward.py
+```
+7. Visualize generated model performance.
+```bash
+python visualize_outputs.py
+```
+8. Run the trading system.
 ```bash
 python run.py
 ```
+5. For Live Execution just use the API keys associated with the Alpaca live account. (Use Carefully)
+
 ---
 
 ## ⚠️ Risk Management
