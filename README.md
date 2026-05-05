@@ -95,7 +95,7 @@ Production safeguards:
 
 All outputs are stored in:
 
-### daily_system_outputs/daily_features.csv
+### daily_system_outputs/
 <!-- markdownlint-disable MD033 -->
 <!-- Image carousel / gallery (README-friendly) -->
 <p align="center">
