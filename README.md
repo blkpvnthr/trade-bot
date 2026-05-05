@@ -7,7 +7,7 @@ A high-conviction, regime-aware algorithmic trading system designed to identify 
 - High Sharpe optimization
 - Strict risk management
 
-This system integrates **data ingestion, feature engineering, machine learning, portfolio optimization, and execution** into a unified pipeline powered by the Alpaca API. Visit [alpaca.markets/algotrading][https://alpaca.markets/algotrading] for a free account.
+This system integrates **data ingestion, feature engineering, machine learning, portfolio optimization, and execution** into a unified pipeline powered by the Alpaca API. Visit <a href="https://alpaca.markets/algotrading">alpaca.markets/algotrading</a> for a free account.
 
 ---
 
