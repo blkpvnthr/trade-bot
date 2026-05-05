@@ -168,11 +168,11 @@ APCA_API_SECRET_KEY=your_alpaca_secret_key
 ```bash
 python scanner.py
 ```
-### 4. Feature Engineering to generate `daily_features.csv`
+### 4. Feature Engineering.
 ```bash
 python features.py
 ```
-### 5. Run the rl model file.
+### 5. Run the rl model.
 ```bash
 python model.py
 ```
@@ -188,7 +188,9 @@ python visualize_outputs.py
 ```bash
 python run.py
 ```
-### 9. For Live Execution just use the API keys associated with the Alpaca live account. (Use Carefully)
+> For Live Execution just use the API keys associated with the Alpaca live account. (Use Carefully)
+
+
 
 ---
 
