@@ -188,7 +188,7 @@ python run.py
 
 ### The system enforces:
 
-Max daily loss:
+### Max daily loss:
 - % threshold
 - absolute dollar threshold
 - Cash buffer requirements
