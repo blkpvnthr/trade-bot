@@ -160,8 +160,7 @@ APCA_API_SECRET_KEY=your_alpaca_secret_key
 ```bash
 python scanner.py
 ```
-### 4. Feature Engineering to generate 
-> `daily_features.csv`
+### 4. Feature Engineering to generate `daily_features.csv`
 ```bash
 python features.py
 ```
