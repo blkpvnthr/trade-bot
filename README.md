@@ -188,9 +188,8 @@ python run.py
 
 ### The system enforces:
 
-### Max daily loss:
-- % threshold
-- absolute dollar threshold
+- Max daily loss % threshold
+- Absolute dollar threshold
 - Cash buffer requirements
 - Max position limits
 - Exposure caps by regime
