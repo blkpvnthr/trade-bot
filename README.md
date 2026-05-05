@@ -13,9 +13,9 @@ This system integrates **data ingestion, feature engineering, machine learning, 
 
 ## 🧠 Core Philosophy
 
-This system is **not** designed to trade frequently.
+The system  integrates automated trading universe selection, feature engineering, probabilistic regime detection, and portfolio optimization to dynamically allocate capital between bullish and bearish exposures. A hybrid architecture combining statistical modeling and reinforcement learning enforces strict regime-consistent constraints, reducing exposure to adverse market conditions.
 
-Instead, it:
+Which means this system:
 - Trades **only the best opportunities**
 - Focuses on **explosive upside setups**
 - Concentrates capital into **top-ranked symbols**
