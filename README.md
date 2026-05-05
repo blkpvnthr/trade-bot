@@ -199,32 +199,32 @@ python run.py
 
 ### Core Components
 
-- **Scanner**
+- **Scanner** (scanner.py)
   - Builds dynamic universe (S&P 500 + NASDAQ)
   - Identifies breakout + momentum candidates
 
-- **Feature Engineering**
+- **Feature Engineering** (features.py)
   - Generates indicators:
     - RSI, MACD, Bollinger Bands
     - SMA (5/20/50/200)
     - Volatility, ATR, volume metrics
     - Regime features (SPY / QQQ / VIXY)
 
-- **Model**
+- **Model** (model.py)
   - Supervised continuation model
   - Outputs:
     - Trade probabilities
     - Target weights
     - Regime-aware actions
 
-- **Walk-Forward Simulation**
+- **Walk-Forward Simulation** (walkforward.py)
   - Validates strategy using rolling windows
   - Focuses on:
     - Explosive returns
     - Convex risk-reward
     - Capital preservation
 
-- **Portfolio Optimizer**
+- **Portfolio Optimizer** (portfolio_optimizer.py)
   - Maximizes:
     - Expected return
     - Sharpe ratio
@@ -233,7 +233,7 @@ python run.py
     - Reversal risk
     - Weak confidence
 
-- **Execution Engine**
+- **Execution Engine** (alpaca_executor.py / run.py)
   - Production-grade Alpaca executor
   - Features:
     - Sell-first logic
@@ -242,18 +242,18 @@ python run.py
     - Pre-trade sanity checks
     - Slippage tracking
 
-- **Streaming Executor (Continuous Mode)**
+- **Streaming Executor** (Continuous - run.py)
   - Runs continuously
   - Integrates:
     - Scanner
     - Execution
     - Portfolio updates
 
-- **Orchestrator**
+- **Orchestrator** (run.py)
   - End-to-end pipeline runner:
     - Data → Features → Model → Portfolio → Orders
 
-- **Visualization**
+- **Visualization** (visualize_outputs.py)
   - Generates:
     - Feature importance plots
     - Threshold optimization charts
@@ -291,8 +291,5 @@ python run.py
 
 --- 
 
-# 🛑 Disclaimer
-
-This system is for research and educational purposes only.
-
-Trading involves substantial risk. Use paper trading before deploying real capital.
+> Disclaimer
+> This system is for research and educational purposes only. Trading involves substantial risk. Use paper trading before deploying real capital.
