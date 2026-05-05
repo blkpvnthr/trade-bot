@@ -156,15 +156,16 @@ Create a .env file and populate your Alpaca API keys.
 APCA_API_KEY_ID=your_alpaca_key
 APCA_API_SECRET_KEY=your_alpaca_secret_key
 ```
-### 3. Run the stock scanner first
+### 3. Run the stock scanner first.
 ```bash
 python scanner.py
 ```
-### 4. Feature Engineering to generate `daily_features.csv`.
+### 4. Feature Engineering to generate 
+> `daily_features.csv`
 ```bash
 python features.py
 ```
-### 5. Run the model file.
+### 5. Run the rl model file.
 ```bash
 python model.py
 ```
