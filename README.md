@@ -121,7 +121,7 @@ Key files:
 
 ## 💰 Results
 
-### Day 1 of Paper Trading:
+### Day 1:
 
 This system was able to produce over $2,000 on its first day of trading.
 
