@@ -1,0 +1,1 @@
+"AEE", "ADM", "AXSM", "ALL", "ARWR", "BG", "AMD", "BTSG", "CBOE", "CASY", "AEP", "APLD", "APA", "CAT", "ALGM", "AAPL", "AEIS", "AXTI", "ACWI", "ANET", "AVT", "ARM", "BEN", "BIIB", "BKR", "AAOI", "AMDL", "AUR", "AIZ", "APLS"

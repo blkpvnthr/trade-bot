@@ -1,0 +1,5 @@
+TRADING_UNIVERSE = [
+    "QQQ",
+    "SPY",
+    "IWM",
+]
