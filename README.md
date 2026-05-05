@@ -170,7 +170,7 @@ python alpaca_executor.py --live
 ```
 ---
 
-# ⚠️ Risk Management
+## ⚠️ Risk Management
 
 ### The system enforces:
 
