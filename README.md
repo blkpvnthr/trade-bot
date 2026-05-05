@@ -129,7 +129,7 @@ This system was able to produce nearly $2,000 on its first day of trading.
 <!-- markdownlint-disable MD033 -->
 <!-- Image carousel / gallery (README-friendly) -->
 <p align="center">
-  <a href="images/ui/img6.png"><img src="images/img6.png" width="900" height="750" alt="results" /></a>
+  <a href="images/img6.png"><img src="images/img6.png" width="900" height="750" alt="results" /></a>
 </p>
 <!-- markdownlint-enable MD033 -->
 
@@ -138,12 +138,12 @@ This system was able to produce nearly $2,000 on its first day of trading.
 <!-- markdownlint-disable MD033 -->
 <!-- Image carousel / gallery (README-friendly) -->
 <p align="center">
-  <a href="images/ui/img5.png"><img src="images/img5.png" width="900" height="500" alt="results" /></a>
+  <a href="images/img5.png"><img src="images/img5.png" width="900" height="500" alt="results" /></a>
 </p>
 <!-- markdownlint-enable MD033 -->
 <!-- Image carousel / gallery (README-friendly) -->
 <p align="center">
-  <a href="images/ui/img4.png"><img src="images/img4.png" width="900" height="500" alt="results" /></a>
+  <a href="images/img4.png"><img src="images/img4.png" width="900" height="500" alt="results" /></a>
 </p>
 <!-- markdownlint-enable MD033 -->
 
