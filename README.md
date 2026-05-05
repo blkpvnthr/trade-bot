@@ -172,7 +172,7 @@ python alpaca_executor.py --live
 
 # ⚠️ Risk Management
 
-The system enforces:
+### The system enforces:
 
 Max daily loss:
 - % threshold
