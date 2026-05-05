@@ -29,7 +29,7 @@ Instead, it:
 <!-- markdownlint-disable MD033 -->
 <!-- Image carousel / gallery (README-friendly) -->
 <p align="center">
-  <a href="images/system-arch.png"><img src="images/system-arch.png" width="900" height="500" alt="system-architecture" /></a>
+  <a href="images/sys-arch.png"><img src="images/sys-arch.png" width="900" height="500" alt="system-architecture" /></a>
 </p>
 <!-- markdownlint-enable MD033 -->
 
