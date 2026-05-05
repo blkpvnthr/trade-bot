@@ -98,7 +98,7 @@ All outputs are stored in:
 ### daily_system_outputs/daily_features.csv
 <!-- markdownlint-disable MD033 -->
  <p align="center">
-  <a href="images/img3.png"><img src="images/img3.png" width="240" height="140" alt="QuantumQuant screenshot 1" /></a>
+  <a href="images/img3.png"><img src="images/img3.png" width="240" height="140" alt="QuantumQuant screenshot 1" /></a><br>
  <a href="images/data.png"><img src="images/data.png" width="240" height="140" alt="QuantumQuant screenshot 2" /></a>
   </p>
 <!-- markdownlint-enable MD033 -->
