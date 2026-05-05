@@ -190,6 +190,80 @@ python run.py
 ```
 > For Live Execution use the API keys associated with the Alpaca live account. (Use Carefully)
 
+---
+
+## 📦 Project Structure
+
+### Core Components
+
+- **Scanner**
+  - :contentReference[oaicite:0]{index=0}
+  - Builds dynamic universe (S&P 500 + NASDAQ)
+  - Identifies breakout + momentum candidates
+
+- **Feature Engineering**
+  - :contentReference[oaicite:1]{index=1}
+  - Generates indicators:
+    - RSI, MACD, Bollinger Bands
+    - SMA (5/20/50/200)
+    - Volatility, ATR, volume metrics
+    - Regime features (SPY / QQQ / VIXY)
+
+- **Model**
+  - :contentReference[oaicite:2]{index=2}
+  - Supervised continuation model
+  - Outputs:
+    - Trade probabilities
+    - Target weights
+    - Regime-aware actions
+
+- **Walk-Forward Simulation**
+  - :contentReference[oaicite:3]{index=3}
+  - Validates strategy using rolling windows
+  - Focuses on:
+    - Explosive returns
+    - Convex risk-reward
+    - Capital preservation
+
+- **Portfolio Optimizer**
+  - :contentReference[oaicite:4]{index=4}
+  - Maximizes:
+    - Expected return
+    - Sharpe ratio
+  - Penalizes:
+    - Volatility
+    - Reversal risk
+    - Weak confidence
+
+- **Execution Engine**
+  - :contentReference[oaicite:5]{index=5}
+  - Production-grade Alpaca executor
+  - Features:
+    - Sell-first logic
+    - Cash buffer protection
+    - Kill switch
+    - Pre-trade sanity checks
+    - Slippage tracking
+
+- **Streaming Executor (Continuous Mode)**
+  - :contentReference[oaicite:6]{index=6}
+  - Runs continuously
+  - Integrates:
+    - Scanner
+    - Execution
+    - Portfolio updates
+
+- **Orchestrator**
+  - :contentReference[oaicite:7]{index=7}
+  - End-to-end pipeline runner:
+    - Data → Features → Model → Portfolio → Orders
+
+- **Visualization**
+  - :contentReference[oaicite:8]{index=8}
+  - Generates:
+    - Feature importance plots
+    - Threshold optimization charts
+    - Trade distributions
 
 
 ---
