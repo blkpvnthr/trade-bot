@@ -7,7 +7,7 @@ A high-conviction, regime-aware algorithmic trading system designed to identify 
 - High Sharpe optimization
 - Strict risk management
 
-This system integrates **data ingestion, feature engineering, machine learning, portfolio optimization, and execution** into a unified pipeline powered by the Alpaca API.
+This system integrates **data ingestion, feature engineering, machine learning, portfolio optimization, and execution** into a unified pipeline powered by the Alpaca API. Visit [alpaca.markets/algotrading][https://alpaca.markets/algotrading] for a free account.
 
 ---
 
@@ -151,10 +151,10 @@ pip install -r file.txt
 ```
 ### 2. Configure Environment
 
-Create a .env file:
+Create a .env file and populate your Alpaca API keys.
 ```bash
-APCA_API_KEY_ID=your_key
-APCA_API_SECRET_KEY=your_secret
+APCA_API_KEY_ID=your_alpaca_key
+APCA_API_SECRET_KEY=your_alpaca_secret_key
 ```
 ### 3. Run the stock scanner first
 ```bash
