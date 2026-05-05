@@ -291,5 +291,5 @@ python run.py
 
 --- 
 
-> ***DISCLAIMER!*** <br>
+> ***DISCLAIMER*** <br>
 > This system is for research and educational purposes only. Trading involves substantial risk. Use paper trading before deploying real capital and trade at your own risk.
