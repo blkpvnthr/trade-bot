@@ -166,7 +166,7 @@ python run_daily_system_walkforward_emulated.py --execute
 ```
 5. Live Execution (Use Carefully)
 ```bash
-python alpaca_executor.py --live
+python run.py
 ```
 ---
 
