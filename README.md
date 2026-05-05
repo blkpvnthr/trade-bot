@@ -93,9 +93,9 @@ Production safeguards:
 
 ## 📁 Outputs
 
-All outputs are stored in:
+All outputs are stored in `daily_system_outputs/`.
 
-### daily_system_outputs/
+### Terminal Output
 <!-- markdownlint-disable MD033 -->
 <!-- Image carousel / gallery (README-friendly) -->
 <p align="center">
@@ -108,7 +108,6 @@ All outputs are stored in:
 <p align="center">
   <a href="images/ui/data.png"><img src="images/data.png" width="900" height="500" alt="results" /></a>
 </p>
-<!-- markdownlint-enable MD033 -->
 <!-- markdownlint-enable MD033 -->
 
 Key files:
