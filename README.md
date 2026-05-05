@@ -125,7 +125,7 @@ Key files:
 
 ### Day 1:
 
-This system was able to produce nearly $2,000 on its first day of trading.
+This system was able to produce over $1,000 on its first day of trading.
 <!-- markdownlint-disable MD033 -->
 <!-- Image carousel / gallery (README-friendly) -->
 <p align="center">
@@ -133,7 +133,10 @@ This system was able to produce nearly $2,000 on its first day of trading.
 </p>
 <!-- markdownlint-enable MD033 -->
 
+---
+
 ### Day 2:
+Aonther sucessful day generating over $2,000. (Not a fluke)
 
 <!-- markdownlint-disable MD033 -->
 <!-- Image carousel / gallery (README-friendly) -->
@@ -149,6 +152,7 @@ This system was able to produce nearly $2,000 on its first day of trading.
 
 
 ---
+
 
 ## 🚀 Usage
 
