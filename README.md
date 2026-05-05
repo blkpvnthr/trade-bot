@@ -26,7 +26,7 @@ Instead, it:
 
 ## 🏗️ System Architecture
 
-
+```
 Market Data (Alpaca)
 ↓
 Feature Engineering
@@ -38,82 +38,7 @@ Ranking & Signal Generation
 Portfolio Optimization (Sharpe + Return)
 ↓
 Execution Engine (Alpaca)
-
-
----
-
-## 📦 Project Structure
-
-### Core Components
-
-- **Scanner**
-  - :contentReference[oaicite:0]{index=0}
-  - Builds dynamic universe (S&P 500 + NASDAQ)
-  - Identifies breakout + momentum candidates
-
-- **Feature Engineering**
-  - :contentReference[oaicite:1]{index=1}
-  - Generates indicators:
-    - RSI, MACD, Bollinger Bands
-    - SMA (5/20/50/200)
-    - Volatility, ATR, volume metrics
-    - Regime features (SPY / QQQ / VIXY)
-
-- **Model**
-  - :contentReference[oaicite:2]{index=2}
-  - Supervised continuation model
-  - Outputs:
-    - Trade probabilities
-    - Target weights
-    - Regime-aware actions
-
-- **Walk-Forward Simulation**
-  - :contentReference[oaicite:3]{index=3}
-  - Validates strategy using rolling windows
-  - Focuses on:
-    - Explosive returns
-    - Convex risk-reward
-    - Capital preservation
-
-- **Portfolio Optimizer**
-  - :contentReference[oaicite:4]{index=4}
-  - Maximizes:
-    - Expected return
-    - Sharpe ratio
-  - Penalizes:
-    - Volatility
-    - Reversal risk
-    - Weak confidence
-
-- **Execution Engine**
-  - :contentReference[oaicite:5]{index=5}
-  - Production-grade Alpaca executor
-  - Features:
-    - Sell-first logic
-    - Cash buffer protection
-    - Kill switch
-    - Pre-trade sanity checks
-    - Slippage tracking
-
-- **Streaming Executor (Continuous Mode)**
-  - :contentReference[oaicite:6]{index=6}
-  - Runs continuously
-  - Integrates:
-    - Scanner
-    - Execution
-    - Portfolio updates
-
-- **Orchestrator**
-  - :contentReference[oaicite:7]{index=7}
-  - End-to-end pipeline runner:
-    - Data → Features → Model → Portfolio → Orders
-
-- **Visualization**
-  - :contentReference[oaicite:8]{index=8}
-  - Generates:
-    - Feature importance plots
-    - Threshold optimization charts
-    - Trade distributions
+```
 
 ---
 
@@ -177,9 +102,14 @@ Production safeguards:
 
 All outputs are stored in:
 
+### daily_system_outputs/daily_features.csv
 
-daily_system_outputs/
-
+<!-- markdownlint-disable MD033 -->
+<!-- Image carousel / gallery (README-friendly) -->
+<p align="center">
+  <a href="images/ui/index-01.png"><img src="images/data.png" width="900" height="500" alt="QuantumQuant screenshot 1" /></a>
+</p>
+<!-- markdownlint-enable MD033 -->
 
 Key files:
 - `daily_features.csv`
@@ -197,43 +127,59 @@ Key files:
 
 ```bash
 pip install -r requirements.txt
+```
 2. Configure Environment
 
 Create a .env file:
-
+```bash
 APCA_API_KEY_ID=your_key
 APCA_API_SECRET_KEY=your_secret
+```
 3. Run Full Pipeline (Dry Run)
+```bash
 python run_daily_system_walkforward_emulated.py
+```
 4. Execute Trades (Paper)
+```bash
 python run_daily_system_walkforward_emulated.py --execute
+```
 5. Live Execution (Use Carefully)
+```bash
 python alpaca_executor.py --live
-⚠️ Risk Management
+```
+---
+
+# ⚠️ Risk Management
 
 The system enforces:
 
 Max daily loss:
-% threshold
-absolute dollar threshold
-Cash buffer requirements
-Max position limits
-Exposure caps by regime
-Kill switch (auto stop trading)
-📈 Strategy Characteristics
-Property	Behavior
-Trade Frequency	Low
-Win Rate Target	~60%
-Focus	High-conviction trades
-Holding Period	Multi-day
-Edge Source	Momentum + continuation
-Risk Style	Convex / asymmetric
-🧪 Research Notes
-Uses strictly causal features
-Avoids data leakage
-Walk-forward validated
-Designed for real execution constraints
-🛑 Disclaimer
+- % threshold
+- absolute dollar threshold
+- Cash buffer requirements
+- Max position limits
+- Exposure caps by regime
+- Kill switch (auto stop trading)
+
+### 📈 Strategy Characteristics
+- Property Behavior 
+- Trade Frequency
+- Low Win Rate Target ~60% Focus
+- High-conviction trades
+- Holding Period
+- Multi-day Edge
+- Momentum + continuation
+- Risk Style: Convex / asymmetric
+
+### 🧪 Research Notes
+- Uses strictly causal features
+- Avoids data leakage
+- Walk-forward validated
+- Designed for real execution constraints
+
+--- 
+
+# 🛑 Disclaimer
 
 This system is for research and educational purposes only.
 
