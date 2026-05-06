@@ -136,7 +136,7 @@ This system was able to produce more than $1,000 on its first day of trading.
 
 ### Day 2:
 
-I had to rest to a fresh account ($100,000) since I was developing this on an account associated with a different trading system. Despite this I was still was able to make well over $2,000 today. (Not a fluke)
+I had to reset to a fresh account ($100,000) since I was developing this on an account associated with a different trading system. Despite this I was still was able to make well over $2,000 today. (Not a fluke)
 
 <!-- markdownlint-disable MD033 -->
 <!-- Image carousel / gallery (README-friendly) -->
