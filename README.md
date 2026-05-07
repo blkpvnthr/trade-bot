@@ -155,7 +155,7 @@ I had to reset to a fresh account ($100,000) since I was developing this on an a
 
 ### Day 3:
 
-I had to reset to a fresh account ($100,000) since I was developing this on an account associated with a different trading system. Despite this I was still was able to make well over $2,000 today. (Not a fluke)
+The system continued to let good trades develop and scaled into runners. Haven't seen any concerning results as of yet.
 
 <!-- markdownlint-disable MD033 -->
 <!-- Image carousel / gallery (README-friendly) -->
@@ -169,6 +169,7 @@ I had to reset to a fresh account ($100,000) since I was developing this on an a
 </p>
 <!-- markdownlint-enable MD033 -->
 
+>**UPDATE**
 I was able to secure funding for an alpaca account with $13,000 as the initial investment in this system. So I redeveloped the program to trade with 13k instead of 100k. I plan on paper trading with the 13k first to ensure the system still works as expected despite the reduced portfolio equity.
 
 I’m halting trading in this account now and setting up the 13k account for live trading for tomorrow.
