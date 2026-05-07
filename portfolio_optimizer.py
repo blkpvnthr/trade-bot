@@ -22,6 +22,8 @@ import pandas as pd
 
 @dataclass
 class OptimizerConfig:
+    # This is overwritten by optimize_portfolio(equity=...). Keep a sane default
+    # for offline tests, but never rely on it for live sizing.
     starting_equity: float = 100_000.0
     cash_buffer_pct: float = 0.08
     max_gross_exposure: float = 0.92
@@ -29,6 +31,7 @@ class OptimizerConfig:
     min_position_weight: float = 0.02
     max_positions: int = 10
     min_trade_dollars: float = 100.0
+    dynamic_account_scaling: bool = True
 
     confidence_power: float = 1.75
     return_weight: float = 0.30
@@ -40,6 +43,54 @@ class OptimizerConfig:
     volatility_penalty: float = 0.35
     reversal_penalty: float = 0.50
     bear_penalty: float = 0.40
+
+
+def scale_optimizer_config_for_equity(
+    equity: float,
+    config: OptimizerConfig | None = None,
+) -> OptimizerConfig:
+    """
+    Scale optimizer constraints from the actual broker account size.
+
+    This prevents a $13.5K account from inheriting $100K-style position sizes.
+    The caps are deliberately tiered: smaller accounts use fewer names, smaller
+    order floors, and lower gross exposure; larger accounts can diversify more.
+    """
+    cfg = config or OptimizerConfig(starting_equity=equity)
+    equity = max(float(equity or 0.0), 1.0)
+    cfg.starting_equity = equity
+
+    if not cfg.dynamic_account_scaling:
+        return cfg
+
+    # Trade floor: high enough to avoid dust, low enough not to block small accounts.
+    cfg.min_trade_dollars = max(50.0, min(250.0, equity * 0.0075))
+
+    if equity < 15_000:
+        cfg.cash_buffer_pct = max(cfg.cash_buffer_pct, 0.12)
+        cfg.max_gross_exposure = min(cfg.max_gross_exposure, 0.65)
+        cfg.max_position_weight = min(cfg.max_position_weight, 0.15)
+        cfg.min_position_weight = max(cfg.min_position_weight, 0.035)
+        cfg.max_positions = min(cfg.max_positions, 4)
+    elif equity < 25_000:
+        cfg.cash_buffer_pct = max(cfg.cash_buffer_pct, 0.10)
+        cfg.max_gross_exposure = min(cfg.max_gross_exposure, 0.75)
+        cfg.max_position_weight = min(cfg.max_position_weight, 0.18)
+        cfg.min_position_weight = max(cfg.min_position_weight, 0.030)
+        cfg.max_positions = min(cfg.max_positions, 5)
+    elif equity < 50_000:
+        cfg.cash_buffer_pct = max(cfg.cash_buffer_pct, 0.09)
+        cfg.max_gross_exposure = min(cfg.max_gross_exposure, 0.85)
+        cfg.max_position_weight = min(cfg.max_position_weight, 0.20)
+        cfg.min_position_weight = max(cfg.min_position_weight, 0.025)
+        cfg.max_positions = min(cfg.max_positions, 7)
+    else:
+        cfg.cash_buffer_pct = max(cfg.cash_buffer_pct, 0.08)
+        cfg.max_gross_exposure = min(cfg.max_gross_exposure, 0.92)
+        cfg.max_position_weight = min(cfg.max_position_weight, 0.25)
+        cfg.max_positions = min(cfg.max_positions, 10)
+
+    return cfg
 
 
 REQUIRED_COLUMNS = [
@@ -338,8 +389,7 @@ def optimize_portfolio(
     current_positions: pd.DataFrame | None = None,
     config: OptimizerConfig | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, float]]:
-    config = config or OptimizerConfig(starting_equity=equity)
-    config.starting_equity = float(equity)
+    config = scale_optimizer_config_for_equity(equity, config=config)
 
     targets = optimize_weights(candidates, config=config)
 

@@ -32,6 +32,7 @@ Outputs:
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 import numpy as np
 import pandas as pd
@@ -111,7 +112,16 @@ MIN_TRADE_COUNT = 40
 MIN_ENTRY_PROBABILITY = 0.55
 
 # Position sizing / portfolio risk.
-ACCOUNT_EQUITY = 100_000.00
+# Dynamically set this with ACCOUNT_EQUITY or TRADING_ACCOUNT_EQUITY.
+# Example: ACCOUNT_EQUITY=13500 python model.py
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except Exception:
+        return default
+
+
+ACCOUNT_EQUITY = env_float("ACCOUNT_EQUITY", env_float("TRADING_ACCOUNT_EQUITY", 100_000.00))
 MAX_TOTAL_GROSS_EXPOSURE = 0.60
 MAX_SINGLE_POSITION_WEIGHT = 0.08
 MIN_POSITION_WEIGHT = 0.005

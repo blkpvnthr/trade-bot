@@ -64,6 +64,7 @@ from alpaca_executor import (
     get_trading_client,
     run_execution,
     save_execution_results,
+    scale_executor_config_for_account,
 )
 from features import (
     REGIME_SYMBOLS,
@@ -74,6 +75,7 @@ from portfolio_optimizer import (
     OptimizerConfig,
     optimize_portfolio,
     print_portfolio_summary,
+    scale_optimizer_config_for_equity,
 )
 
 
@@ -259,12 +261,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-probability", type=float, default=SOFT_MIN_PROBABILITY)
     parser.add_argument("--min-explosive-score", type=float, default=MIN_EXPLOSIVE_SCORE)
 
-    parser.add_argument("--cash-buffer", type=float, default=0.08)
-    parser.add_argument("--max-gross-exposure", type=float, default=BASE_MAX_GROSS_EXPOSURE)
-    parser.add_argument("--max-position-weight", type=float, default=MAX_WEIGHT_PER_POSITION)
-    parser.add_argument("--min-position-weight", type=float, default=MIN_WEIGHT_PER_POSITION)
-    parser.add_argument("--max-positions", type=int, default=MAX_OPEN_POSITIONS)
-    parser.add_argument("--min-trade-dollars", type=float, default=100.0)
+    parser.add_argument("--cash-buffer", type=float, default=None)
+    parser.add_argument("--max-gross-exposure", type=float, default=None)
+    parser.add_argument("--max-position-weight", type=float, default=None)
+    parser.add_argument("--min-position-weight", type=float, default=None)
+    parser.add_argument("--max-positions", type=int, default=None)
+    parser.add_argument("--min-trade-dollars", type=float, default=None)
+    parser.add_argument("--disable-account-scaling", action="store_true")
 
     parser.add_argument(
         "--execute",
@@ -1431,17 +1434,40 @@ def main() -> None:
 
     paper = not args.live
 
-    trading_config = ExecutorConfig(
-        paper=paper,
-        cash_buffer_pct=args.cash_buffer,
-        min_trade_dollars=args.min_trade_dollars,
-    )
+    trading_config = ExecutorConfig(paper=paper)
 
     trading_client = get_trading_client(trading_config)
     account = get_account_snapshot(trading_client)
+
+    optimizer_config = OptimizerConfig(
+        starting_equity=account.equity,
+        cash_buffer_pct=args.cash_buffer if args.cash_buffer is not None else OptimizerConfig().cash_buffer_pct,
+        max_gross_exposure=args.max_gross_exposure if args.max_gross_exposure is not None else BASE_MAX_GROSS_EXPOSURE,
+        max_position_weight=args.max_position_weight if args.max_position_weight is not None else MAX_WEIGHT_PER_POSITION,
+        min_position_weight=args.min_position_weight if args.min_position_weight is not None else MIN_WEIGHT_PER_POSITION,
+        max_positions=args.max_positions if args.max_positions is not None else MAX_OPEN_POSITIONS,
+        min_trade_dollars=args.min_trade_dollars if args.min_trade_dollars is not None else OptimizerConfig().min_trade_dollars,
+        dynamic_account_scaling=not args.disable_account_scaling,
+    )
+    optimizer_config = scale_optimizer_config_for_equity(account.equity, optimizer_config)
+
+    trading_config.cash_buffer_pct = optimizer_config.cash_buffer_pct
+    trading_config.min_trade_dollars = optimizer_config.min_trade_dollars
+    trading_config.dynamic_account_scaling = not args.disable_account_scaling
+    trading_config = scale_executor_config_for_account(account, trading_config)
+
     current_positions = get_positions_df(trading_client)
 
     print(f"[account] equity=${account.equity:,.2f} cash=${account.cash:,.2f}")
+    print(
+        "[sizing] "
+        f"gross_cap={optimizer_config.max_gross_exposure:.2%} "
+        f"max_position={optimizer_config.max_position_weight:.2%} "
+        f"max_positions={optimizer_config.max_positions} "
+        f"min_trade=${optimizer_config.min_trade_dollars:,.2f} "
+        f"max_order=${trading_config.max_order_dollars:,.2f} "
+        f"cash_buffer={trading_config.cash_buffer_pct:.2%}"
+    )
     print(f"[positions] count={len(current_positions)}")
 
     raw_universe_symbols = get_alpaca_tradeable_symbols(
@@ -1536,9 +1562,9 @@ def main() -> None:
     targets = build_convex_target_weights(
         ranked,
         equity=account.equity,
-        max_gross_exposure=args.max_gross_exposure,
-        max_position_weight=args.max_position_weight,
-        min_position_weight=args.min_position_weight,
+        max_gross_exposure=optimizer_config.max_gross_exposure,
+        max_position_weight=optimizer_config.max_position_weight,
+        min_position_weight=optimizer_config.min_position_weight,
     )
 
     if targets.empty:
@@ -1577,9 +1603,9 @@ def main() -> None:
     optimizer_config = OptimizerConfig(
         starting_equity=account.equity,
         cash_buffer_pct=args.cash_buffer,
-        max_gross_exposure=args.max_gross_exposure,
-        max_position_weight=args.max_position_weight,
-        min_position_weight=args.min_position_weight,
+        max_gross_exposure=optimizer_config.max_gross_exposure,
+        max_position_weight=optimizer_config.max_position_weight,
+        min_position_weight=optimizer_config.min_position_weight,
         max_positions=args.max_positions,
         min_trade_dollars=args.min_trade_dollars,
     )

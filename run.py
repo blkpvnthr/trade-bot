@@ -41,6 +41,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 import requests
+import re
 from dotenv import load_dotenv
 
 from alpaca.common.exceptions import APIError
@@ -51,12 +52,15 @@ from alpaca.trading.requests import MarketOrderRequest
 try:
     from alpaca.data.enums import DataFeed
     from alpaca.data.historical.stock import StockHistoricalDataClient
-    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.historical.option import OptionHistoricalDataClient
+    from alpaca.data.requests import StockBarsRequest, OptionChainRequest
     from alpaca.data.timeframe import TimeFrame
-except Exception:  # scanner can be disabled if alpaca-data is unavailable
+except Exception:  # scanner/options can be disabled if alpaca-data is unavailable
     DataFeed = None
     StockHistoricalDataClient = None
+    OptionHistoricalDataClient = None
     StockBarsRequest = None
+    OptionChainRequest = None
     TimeFrame = None
 
 
@@ -112,6 +116,35 @@ MAX_DAILY_LOSS_DOLLARS = 2_000.0
 
 HEARTBEAT_SECONDS = 60
 
+# Dynamic account scaling.
+# These defaults keep the executor safe on small accounts while still allowing
+# larger accounts to use the existing aggressive settings. Runtime scaling uses
+# actual Alpaca equity unless --disable-account-scaling is supplied.
+ACCOUNT_SCALING_ENABLED = True
+SMALL_ACCOUNT_THRESHOLD = 25_000.0
+MID_ACCOUNT_THRESHOLD = 50_000.0
+LARGE_ACCOUNT_THRESHOLD = 100_000.0
+MIN_DYNAMIC_CASH_BUFFER = 250.0
+DYNAMIC_CASH_BUFFER_PCT = DEFAULT_CASH_BUFFER_PCT
+SMALL_ACCOUNT_MAX_GROSS_EXPOSURE = 0.72
+MID_ACCOUNT_MAX_GROSS_EXPOSURE = 0.82
+LARGE_ACCOUNT_MAX_GROSS_EXPOSURE = MAX_GROSS_EXPOSURE
+SMALL_ACCOUNT_MAX_POSITION_WEIGHT = 0.12
+MID_ACCOUNT_MAX_POSITION_WEIGHT = 0.15
+LARGE_ACCOUNT_MAX_POSITION_WEIGHT = MAX_POSITION_WEIGHT
+SMALL_ACCOUNT_MAX_ORDER_PCT = 0.12
+MID_ACCOUNT_MAX_ORDER_PCT = 0.10
+LARGE_ACCOUNT_MAX_ORDER_PCT = MAX_SINGLE_ORDER_NOTIONAL_PCT
+SMALL_ACCOUNT_DAILY_LOSS_PCT = 0.015
+MID_ACCOUNT_DAILY_LOSS_PCT = 0.018
+LARGE_ACCOUNT_DAILY_LOSS_PCT = MAX_DAILY_LOSS_PCT
+ACCOUNT_KILL_FLOOR_DRAWDOWN_PCT = 0.10
+# If the executor was previously run against a much larger/smaller account,
+# the saved kill-switch start_equity can make the new account look like it
+# suffered a huge daily drawdown. Reset only when the equity gap is clearly an
+# account-switch/funding event rather than normal trading PnL.
+KILL_STATE_ACCOUNT_SWITCH_RESET_PCT = 0.35
+
 
 # =============================================================================
 # Continuous scanner defaults
@@ -120,6 +153,7 @@ HEARTBEAT_SECONDS = 60
 WIKI_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 SCANNER_STATE_PATH = LOG_DIR / "scanner_state.json"
 SCANNER_SCORES_PATH = OUT_DIR / "latest_scanner_scores.csv"
+OPTION_BOOSTER_CANDIDATES_PATH = OUT_DIR / "latest_option_booster_candidates.csv"
 
 DEFAULT_SCAN_UNIVERSE = [
     "QQQ", "TQQQ", "SQQQ", "SPY", "DIA", "IWM", "XLK", "SOXX", "SMH",
@@ -180,9 +214,52 @@ class ScannerConfig:
 
 
 @dataclass
+class OptionsBoosterConfig:
+    # Long-call-only booster. This never shorts options. It only buys calls after
+    # the underlying stock position is already open and profitable.
+    enabled: bool = False
+    feed: str = "indicative"
+
+    min_continuation_confidence: float = 0.68
+    min_underlying_unrealized_plpc: float = 0.003
+    require_momentum_setup: bool = True
+
+    min_dte: int = 14
+    max_dte: int = 45
+    target_delta_min: float = 0.40
+    target_delta_max: float = 0.65
+    ideal_delta: float = 0.52
+
+    max_spread_pct: float = 0.15
+    min_open_interest: int = 50
+    min_volume: int = 5
+    max_contract_mid_price: float = 5.00
+
+    max_risk_per_trade_pct: float = 0.010
+    max_risk_per_trade_dollars: float = 250.0
+    max_contracts_per_underlying: int = 2
+    max_open_option_positions: int = 4
+
+    take_profit_pct: float = 0.60
+    hard_stop_pct: float = -0.35
+    profit_lock_trigger_pct: float = 0.40
+    profit_giveback_pct: float = 0.25
+
+    # Expiration protection. Long calls are closed before expiration so the
+    # account does not carry exercise/assignment-style settlement risk into
+    # expiration. New entries also require enough remaining DTE after this
+    # buffer.
+    close_before_expiration_days: int = 3
+    block_new_entries_within_expiration_days: int = 5
+
+
+@dataclass
 class ExecutorConfig:
     paper: bool = True
     live: bool = False
+
+    enable_account_scaling: bool = ACCOUNT_SCALING_ENABLED
+    account_scale_reference_equity: float = 0.0
 
     poll_once: bool = False
     poll_seconds: int = POLL_SECONDS
@@ -223,6 +300,7 @@ class ExecutorConfig:
     order_tag_prefix: str = "explosive_alpha"
 
     scanner: ScannerConfig = None
+    options_booster: OptionsBoosterConfig = None
 
 
 # =============================================================================
@@ -532,6 +610,74 @@ def _atr(df: pd.DataFrame, window: int = 14) -> pd.Series:
     return tr.ewm(alpha=1 / window, adjust=False).mean()
 
 
+
+OCC_OPTION_SYMBOL_RE = re.compile(r"^([A-Z][A-Z0-9-]*?)(\d{6})([CP])(\d{8})$")
+
+
+def parse_occ_option_symbol(symbol: Any) -> dict[str, Any] | None:
+    """Parse standard OCC/Alpaca option symbols such as AAPL260116C00200000."""
+    raw = safe_symbol(symbol)
+    match = OCC_OPTION_SYMBOL_RE.match(raw)
+    if not match:
+        return None
+
+    underlying, yymmdd, cp, strike_raw = match.groups()
+    try:
+        expiration = datetime.strptime(yymmdd, "%y%m%d").date()
+        strike = int(strike_raw) / 1000.0
+    except Exception:
+        return None
+
+    return {
+        "symbol": raw,
+        "underlying": underlying,
+        "expiration": expiration,
+        "type": "call" if cp == "C" else "put",
+        "strike": strike,
+    }
+
+
+def _obj_get(obj: Any, *names: str, default: Any = None) -> Any:
+    for name in names:
+        if isinstance(obj, dict) and name in obj:
+            return obj[name]
+        if hasattr(obj, name):
+            return getattr(obj, name)
+    return default
+
+
+def _option_quote_metrics(snapshot: Any) -> dict[str, float]:
+    quote = _obj_get(snapshot, "latest_quote", "latestQuote", default=None)
+    greeks = _obj_get(snapshot, "greeks", default=None)
+
+    bid = to_float(_obj_get(quote, "bid_price", "bp", "bid", default=0.0))
+    ask = to_float(_obj_get(quote, "ask_price", "ap", "ask", default=0.0))
+    bid_size = to_float(_obj_get(quote, "bid_size", "bs", default=0.0))
+    ask_size = to_float(_obj_get(quote, "ask_size", "as", default=0.0))
+    mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else 0.0
+    spread_pct = (ask - bid) / mid if mid > 0 else 999.0
+
+    delta = to_float(_obj_get(greeks, "delta", default=np.nan), np.nan)
+    gamma = to_float(_obj_get(greeks, "gamma", default=np.nan), np.nan)
+    iv = to_float(_obj_get(snapshot, "implied_volatility", "iv", default=np.nan), np.nan)
+    volume = to_float(_obj_get(snapshot, "volume", default=0.0))
+    open_interest = to_float(_obj_get(snapshot, "open_interest", "openInterest", default=0.0))
+
+    return {
+        "bid": bid,
+        "ask": ask,
+        "bid_size": bid_size,
+        "ask_size": ask_size,
+        "mid": mid,
+        "spread_pct": spread_pct,
+        "delta": delta,
+        "gamma": gamma,
+        "iv": iv,
+        "volume": volume,
+        "open_interest": open_interest,
+    }
+
+
 class MomentumSetupScanner:
     """Builds fresh rebalance/exit CSVs before the executor submits orders."""
 
@@ -544,6 +690,12 @@ class MomentumSetupScanner:
             raise RuntimeError("alpaca-py data classes are unavailable. Install alpaca-py or disable scanner.")
 
         self.data = StockHistoricalDataClient(broker.api_key, broker.secret_key)
+        self.options_config = executor_config.options_booster or OptionsBoosterConfig(enabled=False)
+        self.option_data = (
+            OptionHistoricalDataClient(broker.api_key, broker.secret_key)
+            if OptionHistoricalDataClient is not None
+            else None
+        )
 
     def _load_state(self) -> dict[str, Any]:
         if not SCANNER_STATE_PATH.exists():
@@ -727,6 +879,264 @@ class MomentumSetupScanner:
         self._save_state(state)
         return pd.DataFrame(rows)
 
+
+    def _existing_option_underlyings(self) -> set[str]:
+        underlyings: set[str] = set()
+        for pos in self.broker.get_all_open_positions():
+            parsed = parse_occ_option_symbol(pos.symbol)
+            if parsed and parsed.get("type") == "call" and pos.qty > 0:
+                underlyings.add(str(parsed["underlying"]))
+        return underlyings
+
+    def _open_option_position_count(self) -> int:
+        count = 0
+        for pos in self.broker.get_all_open_positions():
+            parsed = parse_occ_option_symbol(pos.symbol)
+            if parsed and pos.qty > 0:
+                count += 1
+        return count
+
+    def _get_call_chain_snapshots(self, underlying: str) -> dict[str, Any]:
+        if self.option_data is None or OptionChainRequest is None:
+            return {}
+
+        try:
+            req = OptionChainRequest(underlying_symbol=underlying)
+            chain = self.option_data.get_option_chain(req)
+            if isinstance(chain, dict):
+                return chain
+            if hasattr(chain, "data") and isinstance(chain.data, dict):
+                return chain.data
+            return dict(chain) if chain is not None else {}
+        except Exception as exc:
+            print(f"[options] failed to fetch option chain for {underlying}: {exc}")
+            write_event("option_chain_fetch_error", {"underlying": underlying, "error": str(exc)})
+            return {}
+
+    def _select_best_call_contract(self, underlying: str, underlying_price: float, confidence: float) -> dict[str, Any] | None:
+        cfg = self.options_config
+        chain = self._get_call_chain_snapshots(underlying)
+        if not chain:
+            return None
+
+        today = now_utc().date()
+        rows: list[dict[str, Any]] = []
+        for contract_symbol, snapshot in chain.items():
+            parsed = parse_occ_option_symbol(contract_symbol)
+            if not parsed or parsed.get("type") != "call":
+                continue
+
+            dte = (parsed["expiration"] - today).days
+            min_entry_dte = max(cfg.min_dte, cfg.block_new_entries_within_expiration_days + 1)
+            if dte < min_entry_dte or dte > cfg.max_dte:
+                continue
+
+            metrics = _option_quote_metrics(snapshot)
+            mid = metrics["mid"]
+            if mid <= 0 or mid > cfg.max_contract_mid_price:
+                continue
+            if metrics["spread_pct"] > cfg.max_spread_pct:
+                continue
+            if metrics["volume"] < cfg.min_volume:
+                continue
+            if metrics["open_interest"] < cfg.min_open_interest:
+                continue
+
+            delta = metrics["delta"]
+            if np.isnan(delta):
+                # Fall back to moneyness if greeks are unavailable.
+                moneyness = parsed["strike"] / max(underlying_price, 1e-9)
+                if not (0.95 <= moneyness <= 1.08):
+                    continue
+                delta_fit = 0.55
+            else:
+                if delta < cfg.target_delta_min or delta > cfg.target_delta_max:
+                    continue
+                delta_fit = 1.0 - min(abs(delta - cfg.ideal_delta) / max(cfg.target_delta_max - cfg.target_delta_min, 1e-9), 1.0)
+
+            dte_mid = (cfg.min_dte + cfg.max_dte) / 2.0
+            dte_fit = 1.0 - min(abs(dte - dte_mid) / max((cfg.max_dte - cfg.min_dte) / 2.0, 1e-9), 1.0)
+            spread_score = 1.0 - min(metrics["spread_pct"] / max(cfg.max_spread_pct, 1e-9), 1.0)
+            liquidity_score = min(metrics["volume"] / max(cfg.min_volume * 10, 1), 1.0) * 0.45 + min(metrics["open_interest"] / max(cfg.min_open_interest * 10, 1), 1.0) * 0.55
+            moneyness_score = 1.0 - min(abs(parsed["strike"] / max(underlying_price, 1e-9) - 1.0) / 0.12, 1.0)
+
+            option_score = (
+                0.30 * float(confidence)
+                + 0.20 * liquidity_score
+                + 0.18 * delta_fit
+                + 0.14 * spread_score
+                + 0.10 * dte_fit
+                + 0.08 * moneyness_score
+            )
+
+            rows.append({
+                "option_symbol": safe_symbol(contract_symbol),
+                "underlying": underlying,
+                "underlying_price": underlying_price,
+                "expiration": parsed["expiration"].isoformat(),
+                "dte": dte,
+                "strike": parsed["strike"],
+                "bid": metrics["bid"],
+                "ask": metrics["ask"],
+                "mid": mid,
+                "spread_pct": metrics["spread_pct"],
+                "delta": delta,
+                "gamma": metrics["gamma"],
+                "iv": metrics["iv"],
+                "volume": metrics["volume"],
+                "open_interest": metrics["open_interest"],
+                "option_score": option_score,
+            })
+
+        if not rows:
+            return None
+
+        ranked = pd.DataFrame(rows).sort_values("option_score", ascending=False).reset_index(drop=True)
+        ranked.to_csv(OPTION_BOOSTER_CANDIDATES_PATH, index=False)
+        return ranked.iloc[0].to_dict()
+
+    def _build_option_booster_orders(self, scores: pd.DataFrame, equity: float) -> pd.DataFrame:
+        cfg = self.options_config
+        if not cfg.enabled:
+            return pd.DataFrame()
+        if self.option_data is None:
+            print("[options] booster enabled but OptionHistoricalDataClient is unavailable; skipping")
+            return pd.DataFrame()
+        if scores.empty:
+            return pd.DataFrame()
+
+        positions = {normalize_symbol(p.symbol): p for p in self.broker.get_all_open_positions()}
+        existing_option_underlyings = self._existing_option_underlyings()
+        if self._open_option_position_count() >= cfg.max_open_option_positions:
+            print("[options] max open option positions reached; skipping call booster")
+            return pd.DataFrame()
+
+        latest = scores.copy()
+        latest["symbol"] = latest["symbol"].map(normalize_symbol)
+        latest["continuation_confidence"] = latest[[c for c in ["trade_confidence", "setup_score", "momentum_score"] if c in latest.columns]].max(axis=1)
+
+        candidates = latest[latest["continuation_confidence"] >= cfg.min_continuation_confidence].copy()
+        if cfg.require_momentum_setup and "setup_type" in candidates.columns:
+            candidates = candidates[candidates["setup_type"].astype(str).str.lower() == "momentum"].copy()
+
+        rows: list[dict[str, Any]] = []
+        for _, r in candidates.sort_values("continuation_confidence", ascending=False).iterrows():
+            underlying = normalize_symbol(r["symbol"])
+            if underlying in existing_option_underlyings:
+                continue
+            pos = positions.get(underlying)
+            if pos is None or pos.qty <= 0:
+                continue
+            if pos.unrealized_plpc < cfg.min_underlying_unrealized_plpc:
+                continue
+
+            underlying_price = to_float(r.get("close"), pos.current_price)
+            if underlying_price <= 0:
+                underlying_price = pos.current_price
+            if underlying_price <= 0:
+                continue
+
+            best = self._select_best_call_contract(
+                underlying=underlying,
+                underlying_price=underlying_price,
+                confidence=float(r["continuation_confidence"]),
+            )
+            if not best:
+                continue
+
+            risk_budget = min(equity * cfg.max_risk_per_trade_pct, cfg.max_risk_per_trade_dollars)
+            contract_notional = float(best["mid"]) * 100.0
+            contracts = int(risk_budget // max(contract_notional, 1e-9))
+            contracts = min(contracts, cfg.max_contracts_per_underlying)
+            if contracts <= 0:
+                print(
+                    f"[options] skip {underlying}: selected call {best['option_symbol']} "
+                    f"cost=${contract_notional:.2f} exceeds risk_budget=${risk_budget:.2f}"
+                )
+                continue
+
+            rows.append({
+                "symbol": best["option_symbol"],
+                "side": "buy",
+                "delta_shares": contracts,
+                "delta_dollars": contract_notional * contracts,
+                "price": float(best["mid"]),
+                "reason": "option_booster_long_call_after_positive_underlying_validation",
+                "target_weight": (contract_notional * contracts) / max(equity, 1e-9),
+                "current_weight": 0.0,
+                "delta_weight": (contract_notional * contracts) / max(equity, 1e-9),
+                "trade_confidence": float(r["continuation_confidence"]),
+                "confidence_score": float(r["continuation_confidence"]),
+                "underlying_symbol": underlying,
+                "underlying_unrealized_plpc": float(pos.unrealized_plpc),
+                "option_score": float(best["option_score"]),
+                "option_delta": best.get("delta"),
+                "option_dte": best.get("dte"),
+                "option_strike": best.get("strike"),
+                "option_spread_pct": best.get("spread_pct"),
+            })
+
+        if rows:
+            print(f"[options] generated long-call booster orders={len(rows)}")
+        return pd.DataFrame(rows)
+
+    def _build_option_exit_orders(self, equity: float) -> pd.DataFrame:
+        cfg = self.options_config
+        if not cfg.enabled:
+            return pd.DataFrame()
+
+        state = self._load_state()
+        high_plpc: dict[str, float] = {k: to_float(v) for k, v in state.get("option_high_plpc", {}).items()}
+        rows: list[dict[str, Any]] = []
+
+        for pos in self.broker.get_all_open_positions():
+            parsed = parse_occ_option_symbol(pos.symbol)
+            if not parsed or parsed.get("type") != "call" or pos.qty <= 0:
+                continue
+
+            symbol = safe_symbol(pos.symbol)
+            old_high = high_plpc.get(symbol, pos.unrealized_plpc)
+            new_high = max(old_high, pos.unrealized_plpc)
+            high_plpc[symbol] = new_high
+
+            today = now_utc().date()
+            dte = (parsed["expiration"] - today).days
+
+            reason = ""
+            if dte <= cfg.close_before_expiration_days:
+                reason = "option_booster_expiration_protection_exit"
+            elif pos.unrealized_plpc <= cfg.hard_stop_pct:
+                reason = "option_booster_hard_stop"
+            elif pos.unrealized_plpc >= cfg.take_profit_pct:
+                reason = "option_booster_take_profit"
+            elif new_high >= cfg.profit_lock_trigger_pct and pos.unrealized_plpc <= new_high - cfg.profit_giveback_pct:
+                reason = "option_booster_profit_giveback"
+
+            if reason:
+                rows.append({
+                    "symbol": symbol,
+                    "side": "sell",
+                    "delta_shares": int(pos.qty),
+                    "delta_dollars": float(pos.market_value),
+                    "price": float(pos.current_price),
+                    "reason": reason,
+                    "target_weight": 0.0,
+                    "current_weight": float(pos.market_value) / max(equity, 1e-9),
+                    "delta_weight": -float(pos.market_value) / max(equity, 1e-9),
+                    "trade_confidence": 1.0,
+                    "underlying_symbol": parsed.get("underlying"),
+                    "option_plpc": float(pos.unrealized_plpc),
+                    "option_high_plpc": float(new_high),
+                    "option_expiration": parsed["expiration"].isoformat(),
+                    "option_dte": int(dte),
+                })
+                high_plpc.pop(symbol, None)
+
+        state["option_high_plpc"] = high_plpc
+        state["updated_at"] = now_utc().isoformat()
+        self._save_state(state)
+        return pd.DataFrame(rows)
+
     def build_orders(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         symbols = self._universe()
         print(f"[scanner] scanning universe symbols={len(symbols)}")
@@ -798,7 +1208,14 @@ class MomentumSetupScanner:
             )
 
         rebalance = pd.DataFrame(rows)
+        option_boosters = self._build_option_booster_orders(scores, equity)
+        if not option_boosters.empty:
+            rebalance = pd.concat([rebalance, option_boosters], ignore_index=True)
+
         exits = self._update_high_water_and_exits(scores, equity)
+        option_exits = self._build_option_exit_orders(equity)
+        if not option_exits.empty:
+            exits = pd.concat([exits, option_exits], ignore_index=True)
 
         rebalance.to_csv(DEFAULT_REBALANCE_ORDERS, index=False)
         exits.to_csv(DEFAULT_EXIT_ORDERS, index=False)
@@ -810,11 +1227,150 @@ class MomentumSetupScanner:
 # Executor
 # =============================================================================
 
+
+def _account_size_band(equity: float) -> str:
+    if equity < SMALL_ACCOUNT_THRESHOLD:
+        return "SMALL"
+    if equity < MID_ACCOUNT_THRESHOLD:
+        return "MID"
+    if equity < LARGE_ACCOUNT_THRESHOLD:
+        return "LARGE"
+    return "INSTITUTIONAL"
+
+
+def apply_dynamic_account_scaling(config: ExecutorConfig, equity: float) -> ExecutorConfig:
+    """Clamp execution risk limits to the live Alpaca account size.
+
+    This function is intentionally conservative: it only tightens dangerous
+    limits. User-supplied CLI values still work, but account scaling prevents a
+    small account from inheriting $100K-sized risk limits such as $15K orders or
+    a $95K kill-switch floor.
+    """
+    equity = max(float(equity or 0.0), 1.0)
+
+    if not config.enable_account_scaling:
+        return config
+
+    if config.account_scale_reference_equity <= 0:
+        config.account_scale_reference_equity = equity
+
+    band = _account_size_band(equity)
+
+    if band == "SMALL":
+        max_gross = SMALL_ACCOUNT_MAX_GROSS_EXPOSURE
+        max_pos = SMALL_ACCOUNT_MAX_POSITION_WEIGHT
+        max_order_pct = SMALL_ACCOUNT_MAX_ORDER_PCT
+        max_daily_loss_pct = SMALL_ACCOUNT_DAILY_LOSS_PCT
+        scanner_base_weight = 0.035
+        scanner_max_weight = 0.10
+        scanner_top_n = 5
+        min_notional_pct = 0.0075
+        min_bp_pct = 0.015
+    elif band == "MID":
+        max_gross = MID_ACCOUNT_MAX_GROSS_EXPOSURE
+        max_pos = MID_ACCOUNT_MAX_POSITION_WEIGHT
+        max_order_pct = MID_ACCOUNT_MAX_ORDER_PCT
+        max_daily_loss_pct = MID_ACCOUNT_DAILY_LOSS_PCT
+        scanner_base_weight = 0.04
+        scanner_max_weight = 0.12
+        scanner_top_n = 6
+        min_notional_pct = 0.0060
+        min_bp_pct = 0.0125
+    else:
+        max_gross = LARGE_ACCOUNT_MAX_GROSS_EXPOSURE
+        max_pos = LARGE_ACCOUNT_MAX_POSITION_WEIGHT
+        max_order_pct = LARGE_ACCOUNT_MAX_ORDER_PCT
+        max_daily_loss_pct = LARGE_ACCOUNT_DAILY_LOSS_PCT
+        scanner_base_weight = 0.04
+        scanner_max_weight = 0.14
+        scanner_top_n = config.scanner.top_n if config.scanner else 8
+        min_notional_pct = 0.0040
+        min_bp_pct = 0.0100
+
+    config.cash_buffer_pct = min(config.cash_buffer_pct, DYNAMIC_CASH_BUFFER_PCT)
+    config.min_cash_buffer = min(
+        config.min_cash_buffer,
+        max(MIN_DYNAMIC_CASH_BUFFER, equity * 0.04),
+    )
+    config.min_buying_power = min(
+        config.min_buying_power,
+        max(100.0, equity * min_bp_pct),
+    )
+    config.min_notional_to_trade = min(
+        config.min_notional_to_trade,
+        max(35.0, equity * min_notional_pct),
+    )
+
+    config.max_gross_exposure = min(config.max_gross_exposure, max_gross)
+    config.max_position_weight = min(config.max_position_weight, max_pos)
+    config.max_single_order_notional_pct = min(config.max_single_order_notional_pct, max_order_pct)
+    config.max_order_dollars = min(config.max_order_dollars, max(100.0, equity * max_order_pct))
+
+    config.max_daily_loss_pct = min(config.max_daily_loss_pct, max_daily_loss_pct)
+    config.max_daily_loss_dollars = min(
+        config.max_daily_loss_dollars,
+        max(125.0, equity * config.max_daily_loss_pct),
+    )
+
+    # Reference-equity floor prevents the old hard-coded $95K floor from
+    # instantly blocking smaller accounts, while still creating a hard account
+    # drawdown stop from the first observed equity in this process.
+    config.kill_switch_equity_floor = min(
+        config.kill_switch_equity_floor,
+        config.account_scale_reference_equity * (1.0 - ACCOUNT_KILL_FLOOR_DRAWDOWN_PCT),
+    )
+
+    if config.scanner is not None:
+        config.scanner.top_n = min(config.scanner.top_n, scanner_top_n)
+        config.scanner.base_target_weight = min(config.scanner.base_target_weight, scanner_base_weight)
+        config.scanner.max_target_weight = min(
+            config.scanner.max_target_weight,
+            scanner_max_weight,
+            config.max_position_weight,
+        )
+
+    print(
+        "[account-scaling] "
+        f"band={band} equity=${equity:,.2f} "
+        f"cash_buffer=${max(config.min_cash_buffer, equity * config.cash_buffer_pct):,.2f} "
+        f"max_gross={config.max_gross_exposure:.2%} "
+        f"max_position={config.max_position_weight:.2%} "
+        f"max_order=${config.max_order_dollars:,.2f} "
+        f"daily_loss_limit=${config.max_daily_loss_dollars:,.2f}/{config.max_daily_loss_pct:.2%} "
+        f"kill_floor=${config.kill_switch_equity_floor:,.2f}"
+    )
+    write_event(
+        "account_scaling_applied",
+        {
+            "band": band,
+            "equity": equity,
+            "reference_equity": config.account_scale_reference_equity,
+            "cash_buffer_pct": config.cash_buffer_pct,
+            "min_cash_buffer": config.min_cash_buffer,
+            "min_buying_power": config.min_buying_power,
+            "min_notional_to_trade": config.min_notional_to_trade,
+            "max_gross_exposure": config.max_gross_exposure,
+            "max_position_weight": config.max_position_weight,
+            "max_single_order_notional_pct": config.max_single_order_notional_pct,
+            "max_order_dollars": config.max_order_dollars,
+            "max_daily_loss_pct": config.max_daily_loss_pct,
+            "max_daily_loss_dollars": config.max_daily_loss_dollars,
+            "kill_switch_equity_floor": config.kill_switch_equity_floor,
+        },
+    )
+    return config
+
+
 class ProductionOrderExecutor:
     def __init__(self, config: ExecutorConfig):
         self.config = config
         self.journal = CsvJournal(JOURNAL_PATH)
         self.broker = AlpacaBroker(ENV_PATH, paper=config.paper)
+        try:
+            acct = self.broker.get_account_snapshot()
+            self.config = apply_dynamic_account_scaling(self.config, acct.equity)
+        except Exception as exc:
+            print(f"[account-scaling] unable to fetch account equity during init: {exc}")
         if self.config.scanner is None:
             self.config.scanner = ScannerConfig()
         self.scanner = MomentumSetupScanner(self.broker, self.config.scanner, self.config) if self.config.scanner.enabled else None
@@ -930,22 +1486,54 @@ class ProductionOrderExecutor:
     def _write_kill_state(self, state: dict[str, Any]) -> None:
         KILL_SWITCH_PATH.write_text(json.dumps(state, indent=2, default=json_default) + "\n", encoding="utf-8")
 
+    def _new_kill_state(self, equity: float, reason: str = "") -> dict[str, Any]:
+        return {
+            "date": now_utc().date().isoformat(),
+            "start_equity": float(equity),
+            "reference_equity": float(getattr(self.config, "account_scale_reference_equity", equity) or equity),
+            "kill_triggered": False,
+            "triggered_at": "",
+            "reason": "",
+            "reset_reason": reason,
+            "updated_at": now_utc().isoformat(),
+        }
+
     def _kill_switch_allows_execution(self, equity: float) -> tuple[bool, str, float]:
         if not self.config.enable_kill_switch:
             return True, "kill_switch_disabled", 0.0
 
+        equity = max(float(equity or 0.0), 1.0)
         today = now_utc().date().isoformat()
         state = self._read_kill_state()
 
         if state.get("date") != today:
-            state = {
-                "date": today,
-                "start_equity": equity,
-                "kill_triggered": False,
-                "triggered_at": "",
-                "reason": "",
-            }
+            state = self._new_kill_state(equity, reason="new_trading_day")
             self._write_kill_state(state)
+        else:
+            saved_start_equity = to_float(state.get("start_equity"), equity)
+            if saved_start_equity > 0:
+                equity_gap_pct = abs(equity / saved_start_equity - 1.0)
+            else:
+                equity_gap_pct = 0.0
+
+            # This protects account switches/deposits/withdrawals. Example:
+            # old kill state start_equity=$100,000, new account equity=$13,500.
+            # Without this reset, the new account falsely looks down -86.5%.
+            if equity_gap_pct >= KILL_STATE_ACCOUNT_SWITCH_RESET_PCT:
+                reset_payload = {
+                    "old_start_equity": saved_start_equity,
+                    "new_equity": equity,
+                    "equity_gap_pct": equity_gap_pct,
+                    "old_state": state,
+                }
+                print(
+                    "[kill-switch] resetting stale state after account equity change | "
+                    f"old_start=${saved_start_equity:,.2f} new_equity=${equity:,.2f} "
+                    f"gap={equity_gap_pct:.2%}"
+                )
+                write_event("kill_switch_state_reset_account_change", reset_payload)
+                state = self._new_kill_state(equity, reason="account_equity_changed_substantially")
+                self._write_kill_state(state)
 
         start_equity = to_float(state.get("start_equity"), equity)
         pnl = equity - start_equity
@@ -1149,7 +1737,10 @@ class ProductionOrderExecutor:
         plan["confidence_multiplier"] = plan["confidence_used"].map(self._confidence_multiplier)
 
         buy_mask = plan["side"] == "buy"
-        plan.loc[buy_mask, "abs_delta_dollars"] *= plan.loc[buy_mask, "confidence_multiplier"]
+        option_booster_mask = plan.get("reason", pd.Series("", index=plan.index)).astype(str).str.contains("option_booster", case=False, na=False)
+        # Stock orders get adaptive confidence scaling. Option booster orders are
+        # already sized by explicit premium-at-risk, so do not multiply them again.
+        plan.loc[buy_mask & ~option_booster_mask, "abs_delta_dollars"] *= plan.loc[buy_mask & ~option_booster_mask, "confidence_multiplier"]
 
         plan["order_qty"] = plan["abs_delta_shares"].fillna(0).astype(int)
 
@@ -1512,6 +2103,7 @@ class ProductionOrderExecutor:
 
         acct_start = self._record_account_snapshot("cycle_start", cycle_id)
         equity = float(acct_start["equity"])
+        self.config = apply_dynamic_account_scaling(self.config, equity)
         cash = float(acct_start["cash"])
         gross = self._gross_exposure(equity)
         acct_start["gross_exposure"] = gross
@@ -1535,7 +2127,25 @@ class ProductionOrderExecutor:
 
         allowed, kill_reason, daily_return = self._kill_switch_allows_execution(equity)
         if not allowed:
-            print(f"[kill-switch] execution blocked: {kill_reason}")
+            print(f"[kill-switch] execution blocked for new buys: {kill_reason}")
+
+            # Even when the kill switch blocks new risk, allow SELL orders so the
+            # system can reduce exposure, honor exits, and clean up positions.
+            kill_plan = self._build_order_plan(
+                rebalance_orders,
+                exit_orders if exit_orders is not None else pd.DataFrame(),
+                equity,
+            )
+            sell_plan = kill_plan[kill_plan["side"] == "sell"].copy() if not kill_plan.empty else pd.DataFrame()
+
+            if not sell_plan.empty:
+                print(f"[kill-switch] executing sell-only risk reduction orders={len(sell_plan)}")
+                save_df(sell_plan, LOG_DIR / f"order_plan_{cycle_id}.csv")
+                results = self._execute_order_plan(sell_plan, cycle_id)
+                save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
+                self._write_account_equity_curve()
+                return sell_plan, results, self.broker.get_account_snapshot(), positions_before
+
             results = pd.DataFrame(
                 [
                     {
@@ -1661,6 +2271,8 @@ class ProductionOrderExecutor:
         print(f"[executor] journal={JOURNAL_PATH}")
         print(f"[executor] equity_curve={EQUITY_CURVE_PATH}")
         print(f"[executor] paper={self.config.paper}")
+        print(f"[executor] account_scaling={self.config.enable_account_scaling}")
+        print(f"[executor] options_booster={bool(self.config.options_booster and self.config.options_booster.enabled)}")
         print("[executor] mode=EXECUTION")
         print("[executor] run_policy=FOREVER_UNTIL_INTERRUPTED")
 
@@ -1781,6 +2393,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--exit-orders", default=str(DEFAULT_EXIT_ORDERS))
 
     parser.add_argument("--live", action="store_true")
+    parser.add_argument("--disable-account-scaling", action="store_true", help="Do not clamp risk limits to live account equity.")
 
     parser.add_argument("--poll-seconds", type=int, default=POLL_SECONDS)
     parser.add_argument("--cash-buffer", type=float, default=DEFAULT_CASH_BUFFER_PCT)
@@ -1815,6 +2428,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profit-lock-trigger", type=float, default=0.06)
     parser.add_argument("--profit-giveback", type=float, default=0.025)
 
+    parser.add_argument("--enable-options-booster", action="store_true", help="Enable long-call-only booster after positive underlying validation.")
+    parser.add_argument("--option-min-confidence", type=float, default=0.68)
+    parser.add_argument("--option-min-underlying-plpc", type=float, default=0.003)
+    parser.add_argument("--option-min-dte", type=int, default=14)
+    parser.add_argument("--option-max-dte", type=int, default=45)
+    parser.add_argument("--option-max-risk-pct", type=float, default=0.010)
+    parser.add_argument("--option-max-risk-dollars", type=float, default=250.0)
+    parser.add_argument("--option-max-contracts", type=int, default=2)
+    parser.add_argument("--option-max-open-positions", type=int, default=4)
+    parser.add_argument("--option-max-spread-pct", type=float, default=0.15)
+    parser.add_argument(
+        "--option-close-before-expiration-days",
+        type=int,
+        default=3,
+        help="Force-close long call positions when DTE is at or below this value.",
+    )
+    parser.add_argument(
+        "--option-block-new-entries-within-expiration-days",
+        type=int,
+        default=5,
+        help="Do not open new calls this close to expiration.",
+    )
+
     return parser.parse_args()
 
 
@@ -1834,9 +2470,25 @@ def build_config(args: argparse.Namespace) -> ExecutorConfig:
         profit_lock_trigger_pct=args.profit_lock_trigger,
         profit_giveback_pct=args.profit_giveback,
     )
+    options_config = OptionsBoosterConfig(
+        enabled=args.enable_options_booster,
+        min_continuation_confidence=args.option_min_confidence,
+        min_underlying_unrealized_plpc=args.option_min_underlying_plpc,
+        min_dte=args.option_min_dte,
+        max_dte=args.option_max_dte,
+        max_risk_per_trade_pct=args.option_max_risk_pct,
+        max_risk_per_trade_dollars=args.option_max_risk_dollars,
+        max_contracts_per_underlying=args.option_max_contracts,
+        max_open_option_positions=args.option_max_open_positions,
+        max_spread_pct=args.option_max_spread_pct,
+        close_before_expiration_days=args.option_close_before_expiration_days,
+        block_new_entries_within_expiration_days=args.option_block_new_entries_within_expiration_days,
+    )
+
     return ExecutorConfig(
         paper=not args.live,
         live=args.live,
+        enable_account_scaling=not args.disable_account_scaling,
         poll_once=args.once,
         poll_seconds=args.poll_seconds,
         rebalance_orders_path=Path(args.rebalance_orders),
@@ -1857,6 +2509,7 @@ def build_config(args: argparse.Namespace) -> ExecutorConfig:
         max_daily_loss_dollars=args.max_daily_loss_dollars,
         kill_switch_equity_floor=args.kill_switch_equity_floor,
         scanner=scanner_config,
+        options_booster=options_config,
     )
 
 

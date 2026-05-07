@@ -1,7 +1,10 @@
 {
-  "date": "2026-05-05",
-  "start_equity": 100000.0,
+  "date": "2026-05-06",
+  "start_equity": 13500.0,
+  "reference_equity": 13500.0,
   "kill_triggered": false,
   "triggered_at": "",
-  "reason": ""
+  "reason": "",
+  "reset_reason": "account_equity_changed_substantially",
+  "updated_at": "2026-05-06T19:32:38.330215+00:00"
 }

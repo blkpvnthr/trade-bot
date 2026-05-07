@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import os
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -77,7 +78,15 @@ OUT_MODEL_DIAGNOSTICS = OUT_DIR / "wf_probabilistic_risk_model_diagnostics.csv"
 # =============================================================================
 
 RANDOM_STATE = 42
-STARTING_EQUITY = 100_000.00
+
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except Exception:
+        return default
+
+
+STARTING_EQUITY = env_float("STARTING_EQUITY", env_float("TRADING_ACCOUNT_EQUITY", 100_000.00))
 
 # Sequence model configuration.
 # The Transformer sees rolling per-symbol windows instead of one isolated row.
