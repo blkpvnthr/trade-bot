@@ -160,7 +160,7 @@ The system continued to let good trades develop and scaled into runners. Haven't
 <!-- markdownlint-disable MD033 -->
 <!-- Image carousel / gallery (README-friendly) -->
 <p align="center">
-  <a href="images/may-06.png"><img src="images/img5.png" width="900" height="500" alt="results" /></a>
+  <a href="images/may-06.png"><img src="images/may-06.png" width="900" height="500" alt="results" /></a>
 </p>
 <!-- markdownlint-enable MD033 -->
 <!-- Image carousel / gallery (README-friendly) -->
