@@ -184,7 +184,7 @@ I’ve set up the 13k account for live trading.
   <a href="images/13k-2.png"><img src="images/13k-2.png" width="900" height="500" alt="results" /></a>
 </p>
 
-Despite this run being considerably less impressive than the rest due to the drastically reduced portfolio equity, results still prove to be favorable with the model still accurately predicting positive momentum in stock price. I should also mention this update only traded for about 30 minutes before markets closed today.
+Despite this run being considerably less impressive than the rest due to the drastically reduced portfolio equity, results still prove to be favorable with the model still accurately predicting positive momentum in stock price. I should also mention **this update only traded for about 30 minutes** before markets closed today.
 
 <!-- markdownlint-enable MD033 -->
 
