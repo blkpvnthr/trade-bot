@@ -186,10 +186,6 @@ I’ve set up the 13k account for live trading.
 
 Despite this run being considerably less impressive than the rest due to the drastically reduced portfolio equity, results still prove to be favorable with the model still accurately predicting positive momentum in stock price. I should also mention **this iteration only traded for about 30 minutes** before markets closed today.
 
-<!-- markdownlint-enable MD033 -->
-
-
-
 
 ---
 
@@ -332,4 +328,4 @@ python run.py
 --- 
 
 > ***DISCLAIMER*** <br>
-> This system is for research and educational purposes only. Trading involves substantial risk. Use paper trading before deploying real capital and trade at your own risk.
+This system is for research and educational purposes only. Trading involves substantial risk. Use paper trading before deploying real capital and trade at your own risk.
