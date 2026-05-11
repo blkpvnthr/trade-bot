@@ -1,0 +1,20 @@
+{
+  "regime": "BULL",
+  "confidence": 0.7513638312136989,
+  "bull_score": 0.23246624551426362,
+  "bear_score": 0.07692613552088759,
+  "divergence": "NONE",
+  "top_leaders": [
+    "ETSY",
+    "U",
+    "AAL",
+    "LYFT",
+    "KHC",
+    "NOK",
+    "VZ",
+    "ASTS",
+    "F",
+    "M"
+  ],
+  "reason": "rolling_lagged_correlation"
+}

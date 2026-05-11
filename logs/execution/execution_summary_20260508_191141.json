@@ -1,0 +1,14 @@
+{
+  "cycle_id": "20260508_191141",
+  "timestamp_utc": "2026-05-08T19:11:54.618863+00:00",
+  "paper": true,
+  "mode": "EXECUTION",
+  "equity_before": 100058.59,
+  "cash_before": 38732.99,
+  "gross_exposure_before": 0.6128968617287132,
+  "equity_after": 100053.2,
+  "cash_after": 36200.67,
+  "gross_exposure_after": 0.6381857651729281,
+  "orders_planned": 1,
+  "results_rows": 1
+}

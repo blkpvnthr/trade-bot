@@ -55,6 +55,17 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, OrderType, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
 
+try:
+    from portfolio_sentiment_monitor import (
+        SentimentMonitorConfig,
+        run_portfolio_sentiment_monitor,
+        apply_sentiment_risk_overlay,
+    )
+except Exception:  # sentiment monitor is optional; executor can run without it
+    SentimentMonitorConfig = None
+    run_portfolio_sentiment_monitor = None
+    apply_sentiment_risk_overlay = None
+
 
 # =============================================================================
 # Paths / environment
@@ -72,6 +83,9 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_REBALANCE_ORDERS = OUT_DIR / "daily_walkforward_emulated_rebalance_orders.csv"
 DEFAULT_EXIT_ORDERS = OUT_DIR / "daily_walkforward_emulated_exit_orders.csv"
+LATEST_POSITION_SENTIMENT = OUT_DIR / "latest_position_sentiment.csv"
+SENTIMENT_ADJUSTED_REBALANCE_ORDERS = OUT_DIR / "sentiment_adjusted_rebalance_orders.csv"
+SENTIMENT_ADJUSTED_EXIT_ORDERS = OUT_DIR / "sentiment_adjusted_exit_orders.csv"
 
 
 # =============================================================================
@@ -146,6 +160,20 @@ class ExecutorConfig:
     track_fills: bool = True
     fill_poll_attempts: int = 6
     fill_poll_sleep_sec: float = 2.0
+
+    # OpenAI / LLM portfolio constituent monitoring.
+    # This monitors current holdings only. It never creates new long entries and
+    # never adds symbols to the trading universe. It can block/reduce adds to
+    # weakly scored holdings and can create conservative sell pressure for
+    # currently held positions when sentiment is materially negative.
+    enable_portfolio_sentiment: bool = True
+    sentiment_use_openai: bool = True
+    sentiment_model: str = os.getenv("OPENAI_SENTIMENT_MODEL", "gpt-5.4-mini")
+    sentiment_max_headlines: int = 8
+    sentiment_reduce_fraction: float = 0.50
+    sentiment_exit_fraction: float = 1.00
+    sentiment_block_negative_buys: bool = True
+    sentiment_allow_bullish_add_boost: bool = False
 
 
 @dataclass
@@ -624,6 +652,273 @@ def row_confidence(row: pd.Series, config: ExecutorConfig) -> float:
 def confidence_multiplier(confidence: float, config: ExecutorConfig) -> float:
     raw = 0.50 + confidence
     return float(max(config.min_confidence_scale, min(config.max_confidence_scale, raw)))
+
+
+def _sentiment_monitor_available() -> bool:
+    return (
+        SentimentMonitorConfig is not None
+        and run_portfolio_sentiment_monitor is not None
+    )
+
+
+def _build_sentiment_config(config: ExecutorConfig):
+    if SentimentMonitorConfig is None:
+        return None
+    return SentimentMonitorConfig(
+        model=config.sentiment_model,
+        max_headlines_per_symbol=int(config.sentiment_max_headlines),
+    )
+
+
+def _latest_position_sentiment(
+    positions_before: pd.DataFrame,
+    config: ExecutorConfig,
+) -> pd.DataFrame:
+    """Run the OpenAI portfolio sentiment monitor for existing holdings only.
+
+    Failure is intentionally non-fatal. The executor should not stop trading
+    because OpenAI, RSS, or parsing failed. In those cases it proceeds without
+    the sentiment overlay and logs the error.
+    """
+    if not config.enable_portfolio_sentiment:
+        write_event("portfolio_sentiment_disabled", {})
+        return pd.DataFrame()
+
+    if positions_before is None or positions_before.empty:
+        write_event("portfolio_sentiment_skipped_no_positions", {})
+        return pd.DataFrame()
+
+    if not _sentiment_monitor_available():
+        msg = "portfolio_sentiment_monitor.py not importable; skipping LLM sentiment overlay"
+        print(f"[sentiment] {msg}")
+        write_event("portfolio_sentiment_unavailable", {"message": msg})
+        return pd.DataFrame()
+
+    sent_cfg = _build_sentiment_config(config)
+
+    try:
+        print("[sentiment] monitoring current portfolio constituents with OpenAI...")
+        sentiment_df = run_portfolio_sentiment_monitor(
+            positions_df=positions_before,
+            paper=config.paper,
+            config=sent_cfg,
+            use_openai=bool(config.sentiment_use_openai),
+        )
+    except Exception as exc:
+        print(f"[sentiment] monitor failed; continuing without overlay: {exc}")
+        write_event("portfolio_sentiment_error", {"error": str(exc)})
+        return pd.DataFrame()
+
+    if sentiment_df is None or sentiment_df.empty:
+        write_event("portfolio_sentiment_empty", {})
+        return pd.DataFrame()
+
+    save_df(sentiment_df, LATEST_POSITION_SENTIMENT)
+    write_event("portfolio_sentiment_loaded", {"rows": len(sentiment_df)})
+    return sentiment_df
+
+
+def _sentiment_exit_orders(
+    positions_before: pd.DataFrame,
+    sentiment_df: pd.DataFrame,
+    config: ExecutorConfig,
+) -> pd.DataFrame:
+    """Create sell-only risk orders for held positions under negative sentiment.
+
+    This never creates entries. It only creates sell pressure for symbols that
+    are already in the portfolio and received reduce/exit pressure.
+    """
+    cols = ["symbol", "side", "delta_shares", "delta_dollars", "price", "reason"]
+    if positions_before is None or positions_before.empty or sentiment_df is None or sentiment_df.empty:
+        return pd.DataFrame(columns=cols)
+
+    pos = positions_before.copy()
+    pos["symbol"] = pos["symbol"].map(safe_symbol)
+    pos["qty"] = pd.to_numeric(pos.get("qty", 0), errors="coerce").fillna(0.0)
+    pos["market_value"] = pd.to_numeric(pos.get("market_value", 0), errors="coerce").fillna(0.0)
+    pos["current_price"] = pd.to_numeric(pos.get("current_price", 0), errors="coerce").fillna(0.0)
+    pos = pos[(pos["symbol"] != "") & (pos["qty"] > 0)].copy()
+
+    sent = sentiment_df.copy()
+    sent["symbol"] = sent["symbol"].map(safe_symbol)
+    sent["exit_pressure"] = sent.get("exit_pressure", "hold").astype(str).str.lower()
+    sent["sentiment_score"] = pd.to_numeric(sent.get("sentiment_score", 0.0), errors="coerce").fillna(0.0)
+    sent["sentiment_confidence"] = pd.to_numeric(sent.get("sentiment_confidence", 0.0), errors="coerce").fillna(0.0)
+    sent = sent.drop_duplicates("symbol", keep="last")
+
+    merged = pos.merge(sent, on="symbol", how="inner", suffixes=("", "_sent"))
+    rows: list[dict[str, Any]] = []
+
+    for _, row in merged.iterrows():
+        pressure = str(row.get("exit_pressure", "hold")).lower()
+        if pressure not in {"reduce", "exit"}:
+            continue
+
+        qty = to_float(row.get("qty", 0.0))
+        if qty <= 0:
+            continue
+
+        fraction = config.sentiment_exit_fraction if pressure == "exit" else config.sentiment_reduce_fraction
+        sell_qty = int(max(0, min(qty, qty * fraction)))
+        if sell_qty <= 0:
+            continue
+
+        price = to_float(row.get("current_price", 0.0)) or (to_float(row.get("market_value", 0.0)) / max(qty, 1e-9))
+        notional = sell_qty * max(price, 0.0)
+        if notional < config.min_trade_dollars and pressure != "exit":
+            continue
+
+        rows.append({
+            "symbol": safe_symbol(row.get("symbol")),
+            "side": "sell",
+            "delta_shares": -sell_qty,
+            "delta_dollars": -notional,
+            "price": price,
+            "reason": (
+                f"llm_sentiment_{pressure}: "
+                f"score={to_float(row.get('sentiment_score')):+.2f} "
+                f"conf={to_float(row.get('sentiment_confidence')):.2f} "
+                f"summary={str(row.get('summary', ''))[:160]}"
+            ),
+            "sentiment_score": to_float(row.get("sentiment_score")),
+            "sentiment_confidence": to_float(row.get("sentiment_confidence")),
+            "exit_pressure": pressure,
+        })
+
+    return pd.DataFrame(rows, columns=list(dict.fromkeys(cols + [
+        "sentiment_score", "sentiment_confidence", "exit_pressure"
+    ])))
+
+
+def _apply_sentiment_to_rebalance_orders(
+    rebalance_orders: pd.DataFrame | None,
+    sentiment_df: pd.DataFrame,
+    config: ExecutorConfig,
+) -> pd.DataFrame:
+    if rebalance_orders is None:
+        return pd.DataFrame()
+    if rebalance_orders.empty or sentiment_df is None or sentiment_df.empty:
+        return rebalance_orders.copy()
+
+    orders = rebalance_orders.copy()
+    if "symbol" not in orders.columns:
+        return orders
+
+    # First use the standalone monitor's target-weight overlay when available.
+    if apply_sentiment_risk_overlay is not None:
+        try:
+            orders = apply_sentiment_risk_overlay(
+                rebalance_orders=orders,
+                sentiment_df=sentiment_df,
+                config=_build_sentiment_config(config),
+            )
+        except Exception as exc:
+            print(f"[sentiment] target overlay failed; using executor overlay only: {exc}")
+            write_event("portfolio_sentiment_overlay_error", {"error": str(exc)})
+
+    sent = sentiment_df.copy()
+    sent["symbol"] = sent["symbol"].map(safe_symbol)
+    sent["exit_pressure"] = sent.get("exit_pressure", "hold").astype(str).str.lower()
+    sent["sentiment_score"] = pd.to_numeric(sent.get("sentiment_score", 0.0), errors="coerce").fillna(0.0)
+    sent["sentiment_confidence"] = pd.to_numeric(sent.get("sentiment_confidence", 0.0), errors="coerce").fillna(0.0)
+    sent = sent.drop_duplicates("symbol", keep="last")
+
+    merge_cols = [c for c in [
+        "symbol", "sentiment_score", "sentiment_confidence", "source_quality",
+        "exit_pressure", "options_boost_allowed", "summary"
+    ] if c in sent.columns]
+
+    orders["symbol"] = orders["symbol"].map(safe_symbol)
+    already_present = [c for c in merge_cols if c != "symbol" and c in orders.columns]
+    if already_present:
+        orders = orders.drop(columns=already_present)
+    orders = orders.merge(sent[merge_cols], on="symbol", how="left")
+
+    if "side" in orders.columns:
+        side = orders["side"].astype(str).str.lower()
+    else:
+        side = pd.Series("", index=orders.index)
+
+    pressure = orders.get("exit_pressure", "").astype(str).str.lower()
+
+    # Do not add to an existing holding if the LLM marks it reduce/exit.
+    if config.sentiment_block_negative_buys and "delta_dollars" in orders.columns:
+        buy_mask = side.eq("buy") & pressure.isin(["reduce", "exit"])
+        if buy_mask.any():
+            for col in ["delta_shares", "delta_dollars", "target_shares", "target_dollars", "target_weight", "recommended_shares"]:
+                if col in orders.columns:
+                    orders.loc[buy_mask, col] = 0
+            if "reason" in orders.columns:
+                orders.loc[buy_mask, "reason"] = (
+                    orders.loc[buy_mask, "reason"].fillna("").astype(str)
+                    + " | blocked_by_llm_portfolio_sentiment"
+                )
+
+    # Watch pressure trims add-on buys; bullish boost is off by default.
+    if "delta_dollars" in orders.columns:
+        watch_buy = side.eq("buy") & pressure.eq("watch")
+        if watch_buy.any():
+            for col in ["delta_shares", "delta_dollars", "target_shares", "target_dollars", "target_weight", "recommended_shares"]:
+                if col in orders.columns:
+                    orders.loc[watch_buy, col] = pd.to_numeric(orders.loc[watch_buy, col], errors="coerce").fillna(0) * 0.85
+            if "reason" in orders.columns:
+                orders.loc[watch_buy, "reason"] = orders.loc[watch_buy, "reason"].fillna("").astype(str) + " | scaled_by_llm_watch_sentiment"
+
+        if config.sentiment_allow_bullish_add_boost:
+            bullish_buy = side.eq("buy") & pressure.eq("hold") & (pd.to_numeric(orders.get("sentiment_score", 0.0), errors="coerce").fillna(0.0) >= 0.50)
+            if bullish_buy.any():
+                for col in ["delta_shares", "delta_dollars", "target_shares", "target_dollars", "target_weight", "recommended_shares"]:
+                    if col in orders.columns:
+                        orders.loc[bullish_buy, col] = pd.to_numeric(orders.loc[bullish_buy, col], errors="coerce").fillna(0) * 1.05
+                if "reason" in orders.columns:
+                    orders.loc[bullish_buy, "reason"] = orders.loc[bullish_buy, "reason"].fillna("").astype(str) + " | boosted_by_llm_bullish_sentiment"
+
+    return orders
+
+
+def apply_portfolio_sentiment_overlay(
+    rebalance_orders: pd.DataFrame | None,
+    exit_orders: pd.DataFrame | None,
+    positions_before: pd.DataFrame,
+    config: ExecutorConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    sentiment_df = _latest_position_sentiment(positions_before=positions_before, config=config)
+    if sentiment_df.empty:
+        return (
+            rebalance_orders.copy() if rebalance_orders is not None else pd.DataFrame(),
+            exit_orders.copy() if exit_orders is not None else pd.DataFrame(),
+            sentiment_df,
+        )
+
+    adjusted_rebalance = _apply_sentiment_to_rebalance_orders(
+        rebalance_orders=rebalance_orders,
+        sentiment_df=sentiment_df,
+        config=config,
+    )
+
+    sentiment_exits = _sentiment_exit_orders(
+        positions_before=positions_before,
+        sentiment_df=sentiment_df,
+        config=config,
+    )
+
+    base_exits = exit_orders.copy() if exit_orders is not None else pd.DataFrame()
+    adjusted_exits = pd.concat([base_exits, sentiment_exits], ignore_index=True)
+
+    # If an LLM exit/reduce sell exists, remove blocked buy rows for the same symbol.
+    if not sentiment_exits.empty and not adjusted_rebalance.empty and "symbol" in adjusted_rebalance.columns:
+        sentiment_sell_symbols = set(sentiment_exits["symbol"].map(safe_symbol).tolist())
+        side = adjusted_rebalance.get("side", "").astype(str).str.lower()
+        sym = adjusted_rebalance["symbol"].map(safe_symbol)
+        keep = ~(side.eq("buy") & sym.isin(sentiment_sell_symbols))
+        removed = int((~keep).sum())
+        if removed:
+            write_event("portfolio_sentiment_removed_conflicting_buys", {"count": removed})
+        adjusted_rebalance = adjusted_rebalance[keep].copy()
+
+    save_df(adjusted_rebalance, SENTIMENT_ADJUSTED_REBALANCE_ORDERS)
+    save_df(adjusted_exits, SENTIMENT_ADJUSTED_EXIT_ORDERS)
+    return adjusted_rebalance, adjusted_exits, sentiment_df
 
 
 def build_order_plan(
@@ -1341,6 +1636,21 @@ def run_execution(
         client.cancel_orders()
         print("[orders] open orders canceled.")
 
+    rebalance_orders, exit_orders, sentiment_df = apply_portfolio_sentiment_overlay(
+        rebalance_orders=rebalance_orders,
+        exit_orders=exit_orders,
+        positions_before=positions_before,
+        config=config,
+    )
+
+    if sentiment_df is not None and not sentiment_df.empty:
+        display_sent_cols = [
+            "symbol", "sentiment_score", "sentiment_confidence",
+            "exit_pressure", "options_boost_allowed", "summary",
+        ]
+        print("\n===== LLM PORTFOLIO SENTIMENT =====")
+        print(sentiment_df[[c for c in display_sent_cols if c in sentiment_df.columns]].to_string(index=False))
+
     order_plan = build_order_plan(
         rebalance_orders=rebalance_orders,
         exit_orders=exit_orders,
@@ -1453,6 +1763,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fill-poll-attempts", type=int, default=6)
     parser.add_argument("--fill-poll-sleep-sec", type=float, default=2.0)
 
+    parser.add_argument("--disable-portfolio-sentiment", action="store_true")
+    parser.add_argument("--sentiment-no-openai", action="store_true", help="Write neutral/fallback sentiment without calling OpenAI.")
+    parser.add_argument("--sentiment-model", default=os.getenv("OPENAI_SENTIMENT_MODEL", "gpt-5.4-mini"))
+    parser.add_argument("--sentiment-max-headlines", type=int, default=8)
+    parser.add_argument("--sentiment-reduce-fraction", type=float, default=0.50)
+    parser.add_argument("--sentiment-exit-fraction", type=float, default=1.00)
+    parser.add_argument("--allow-sentiment-bullish-boost", action="store_true")
+
     return parser.parse_args()
 
 
@@ -1507,6 +1825,13 @@ def main() -> None:
         track_fills=not args.disable_fill_tracking,
         fill_poll_attempts=args.fill_poll_attempts,
         fill_poll_sleep_sec=args.fill_poll_sleep_sec,
+        enable_portfolio_sentiment=not args.disable_portfolio_sentiment,
+        sentiment_use_openai=not args.sentiment_no_openai,
+        sentiment_model=args.sentiment_model,
+        sentiment_max_headlines=args.sentiment_max_headlines,
+        sentiment_reduce_fraction=args.sentiment_reduce_fraction,
+        sentiment_exit_fraction=args.sentiment_exit_fraction,
+        sentiment_allow_bullish_add_boost=args.allow_sentiment_bullish_boost,
     )
 
     run_execution(
