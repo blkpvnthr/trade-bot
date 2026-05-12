@@ -1,0 +1,46 @@
+===== ALPACA EXECUTION SUMMARY =====
+run_id                  : 20260512_162029
+timestamp_utc           : 2026-05-12T16:21:07.968953+00:00
+paper                   : True
+mode                    : EXECUTION
+
+account_before_equity   : $12,982.46
+account_before_cash     : $8,345.28
+account_before_bp       : $21,327.74
+account_after_equity    : $12,982.97
+account_after_cash      : $10,132.97
+account_after_bp        : $23,115.94
+
+orders_planned          : 12
+orders_result_rows      : 12
+submitted_count         : 0
+skipped_count           : 0
+sanity_skipped_count    : 0
+error_count             : 9
+
+positions_before        : 15
+positions_after         : 12
+
+cash_buffer_pct         : 12.00%
+min_cash_dollars        : $324.56
+min_trade_dollars       : $97.37
+max_order_dollars       : $1,947.37
+
+kill_switch_enabled     : True
+max_daily_loss_pct      : 2.00%
+max_daily_loss_dollars  : $259.65
+
+adaptive_sizing_enabled : True
+intraday_timing_enabled : True
+
+pretrade_sanity_enabled : True
+max_spread_pct          : 1.50%
+min_bid_ask_size        : 1
+min_est_dollar_volume   : $500,000.00
+max_quote_age_seconds   : 600
+max_volatility20        : 20.00%
+max_atr_pct             : 18.00%
+
+fill_tracking_enabled   : True
+total_slippage_dollars  : $0.00
+avg_slippage_pct        : 0.0000%

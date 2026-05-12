@@ -24,6 +24,8 @@ JSON_PATH = OUT_DIR / "latest_llm_sentiment_universe.json"
 DISCOVERY_PATH = OUT_DIR / "latest_llm_candidate_discovery.json"
 LOCKED_UNIVERSE_PATH = PROJECT_ROOT / "locked_trading_universe.txt"
 
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+
 MODEL = os.getenv("OPENAI_SENTIMENT_UNIVERSE_MODEL", "gpt-4.1-mini")
 TARGET_COUNT = int(os.getenv("TARGET_UNIVERSE_COUNT", "30"))
 YAHOO_GAINERS_COUNT = int(os.getenv("YAHOO_GAINERS_COUNT", "40"))
@@ -503,13 +505,11 @@ def call_llm(discovery: dict[str, Any]) -> dict[str, Any]:
     )
 
     response = client.chat.completions.create(
-        model=MODEL,
-        temperature=0.05,
-        max_tokens=OPENAI_MAX_TOKENS,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_prompt(discovery)},
-        ],
+        model=OPENAI_MODEL,
+        messages=messages,
+        temperature=0.4,
+        max_tokens=2500,
+        timeout=45,
     )
 
     return json.loads(response.choices[0].message.content.strip())

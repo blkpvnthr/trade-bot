@@ -1,0 +1,15 @@
+{
+  "date": "2026-05-12",
+  "symbols": {
+    "QUBT": {
+      "symbol": "QUBT",
+      "marked_at": "2026-05-12T17:54:06.432275+00:00",
+      "reason": "scanner_stale_position"
+    },
+    "IONQ": {
+      "symbol": "IONQ",
+      "marked_at": "2026-05-12T17:54:19.098295+00:00",
+      "reason": "scanner_stale_position"
+    }
+  }
+}

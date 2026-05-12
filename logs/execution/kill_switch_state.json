@@ -6,5 +6,10 @@
   "triggered_at": "",
   "reason": "",
   "reset_reason": "new_trading_day",
-  "updated_at": "2026-05-12T14:46:18.359315+00:00"
+  "updated_at": "2026-05-12T14:46:18.359315+00:00",
+  "current_equity": 13000.0,
+  "daily_pnl": 0.0,
+  "daily_return": 0.0,
+  "cleared_at": "2026-05-12T16:36:16.013900+00:00",
+  "clear_reason": "equity_above_dynamic_floor"
 }
