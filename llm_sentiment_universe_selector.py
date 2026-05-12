@@ -4,13 +4,12 @@ from __future__ import annotations
 import json
 import os
 import re
-import time
-from collections import Counter, defaultdict
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import requests
+import pandas as pd
+import yfinance as yf
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -27,30 +26,18 @@ LOCKED_UNIVERSE_PATH = PROJECT_ROOT / "locked_trading_universe.txt"
 
 MODEL = os.getenv("OPENAI_SENTIMENT_UNIVERSE_MODEL", "gpt-4.1-mini")
 TARGET_COUNT = 30
+YAHOO_GAINERS_COUNT = int(os.getenv("YAHOO_GAINERS_COUNT", "100"))
 
-NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "")
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
-
-MAX_DISCOVERY_CANDIDATES = 100
-NEWS_LOOKBACK_HOURS = int(os.getenv("NEWS_LOOKBACK_HOURS", "36"))
-
-MIN_LLM_CONFIDENCE = float(os.getenv("MIN_LLM_CATALYST_CONFIDENCE", "0.55"))
-MIN_DISCOVERY_CATALYST_SCORE = int(os.getenv("MIN_DISCOVERY_CATALYST_SCORE", "4"))
+MIN_PRICE = float(os.getenv("YAHOO_MIN_PRICE", "2"))
+MAX_PRICE = float(os.getenv("YAHOO_MAX_PRICE", "500"))
+MIN_VOLUME = int(os.getenv("YAHOO_MIN_VOLUME", "500000"))
+MIN_MARKET_CAP = int(os.getenv("YAHOO_MIN_MARKET_CAP", "100000000"))
 
 FALLBACK = [
     "NVDA", "AMD", "SMCI", "AVGO", "ARM", "PLTR", "TSLA", "META", "MSFT", "GOOGL",
     "AMZN", "AAPL", "COIN", "MARA", "RIOT", "CLSK", "IREN", "IONQ", "RGTI", "QBTS",
     "QUBT", "SOUN", "AI", "BBAI", "OKLO", "SMR", "CEG", "VST", "SOXX", "QQQ",
 ]
-
-STOPWORDS = {
-    "A", "AN", "AND", "ARE", "AS", "AT", "BE", "BY", "CEO", "CFO", "CPI",
-    "DATA", "DO", "ETF", "EPS", "EVERY", "FED", "FOR", "FROM", "GDP",
-    "HAS", "HIGH", "IN", "IS", "IT", "ITS", "NEW", "OF", "ON", "OR",
-    "PLUS", "SAYS", "SEC", "SHOWS", "STOCK", "TALKS", "TECH", "THE",
-    "THIS", "TO", "UP", "USA", "US", "WAR", "WITH", "OLD", "TOP", "BUY",
-    "TRUMP", "IRAN", "CHINA", "OIL", "CLUB", "MARKET", "MARKETS", "SHARES",
-}
 
 STRONG_CATALYST_TYPES = {
     "earnings_beat",
@@ -68,164 +55,38 @@ STRONG_CATALYST_TYPES = {
     "sector_catalyst",
     "premarket_news_move",
     "macro_catalyst",
+    "financial_strength",
+    "technical_gainer",
 }
-
-WEAK_REASON_PHRASES = [
-    "general momentum",
-    "positive sentiment",
-    "strong interest",
-    "retail buzz",
-    "hype",
-    "mentioned often",
-    "ai momentum",
-    "sector strength",
-    "market strength",
-    "popular ticker",
-    "trending stock",
-    "search interest",
-    "news frequency",
-]
-
-CATALYST_KEYWORDS = {
-    "earnings beat": 14,
-    "beats estimates": 14,
-    "beat estimates": 14,
-    "beats expectations": 14,
-    "beat expectations": 14,
-    "better-than-expected": 12,
-    "strong earnings": 10,
-    "earnings surprise": 10,
-
-    "raises guidance": 14,
-    "raised guidance": 14,
-    "guidance raised": 14,
-    "raises outlook": 12,
-    "raised outlook": 12,
-    "strong guidance": 12,
-    "boosts forecast": 10,
-    "raises forecast": 10,
-
-    "buyback": 12,
-    "stock buyback": 14,
-    "share buyback": 14,
-    "share repurchase": 14,
-    "repurchase authorization": 14,
-
-    "new contract": 12,
-    "wins contract": 12,
-    "major contract": 14,
-    "government contract": 12,
-    "defense contract": 12,
-    "supply agreement": 10,
-
-    "strategic partnership": 12,
-    "partnership": 8,
-    "collaboration": 7,
-
-    "analyst upgrade": 12,
-    "upgraded": 10,
-    "upgrades": 10,
-    "initiated at buy": 10,
-    "initiates at buy": 10,
-    "overweight rating": 8,
-
-    "price target raised": 12,
-    "raises price target": 12,
-    "price target hike": 10,
-    "price target": 6,
-
-    "ipo": 10,
-    "initial public offering": 10,
-    "recent ipo": 10,
-    "debut": 8,
-
-    "fda approval": 14,
-    "regulatory approval": 12,
-    "approved": 8,
-    "clearance": 8,
-
-    "acquisition": 12,
-    "merger": 12,
-    "takeover": 12,
-    "deal to buy": 10,
-
-    "product launch": 10,
-    "launches": 8,
-    "unveils": 8,
-    "new product": 8,
-
-    "premarket gain": 10,
-    "premarket surge": 12,
-    "surges premarket": 12,
-    "jumps premarket": 12,
-    "rises premarket": 8,
-    "before the bell": 8,
-
-    "positive earnings": 8,
-    "earnings expected": 8,
-    "reports earnings": 7,
-    "scheduled to report": 6,
-
-    "ai": 3,
-    "semiconductor": 4,
-    "crypto": 3,
-    "bitcoin": 3,
-    "quantum": 3,
-    "nuclear": 3,
-    "energy": 2,
-}
-
-DISCOVERY_QUERIES = [
-    "stocks moving premarket earnings beat raised guidance",
-    "stocks with earnings beat today premarket",
-    "stocks raising guidance today",
-    "stocks analyst upgrades price target raised today",
-    "stocks buyback authorization today",
-    "stocks major contract award today",
-    "stocks strategic partnership product launch today",
-    "recent IPO stock premarket surge catalyst",
-    "positive expected earnings stocks today",
-    "AI stocks earnings beat guidance contract today",
-    "semiconductor stocks earnings guidance analyst upgrade today",
-    "crypto stocks bitcoin rally premarket news catalyst",
-    "quantum computing stocks contract partnership news catalyst",
-    "nuclear energy stocks contract approval news catalyst",
-]
-
 
 SYSTEM_PROMPT = """
-You are a premarket institutional catalyst-selection engine.
+You are a premarket institutional universe-selection engine.
 
-You receive discovered ticker candidates from news/search-style queries.
-Select EXACTLY 30 liquid US stocks or ETFs with the strongest hard catalysts
-for today's trading session.
+You receive Yahoo Finance day-gainer data plus company financial details.
+Select EXACTLY 30 liquid US stocks or ETFs for today's monitoring universe.
 
-Hard catalyst examples:
-- earnings beat
-- raised guidance
-- positive upcoming earnings expectations
-- major new contract
-- acquisition or merger
-- big IPO or recent IPO momentum
-- stock buyback authorization
-- analyst upgrade
-- price target raise
-- FDA approval
-- regulatory approval
-- major product launch
-- strategic partnership
-- unusually strong premarket move tied to news
-- sector-wide catalyst with direct exposure
-- major macro catalyst directly benefiting the symbol
+Prioritize:
+- largest positive percent gainers
+- high volume and strong liquidity
+- meaningful market cap
+- strong revenue growth or earnings growth
+- analyst upside or favorable recommendation
+- strong sector/industry catalyst
+- reasonable valuation where applicable
+- avoid illiquid low-quality pumps when possible
 
-Weak reasons are NOT enough:
-- general hype
-- vague AI interest
-- vague momentum
-- mentioned in news
-- popular ticker
-- retail buzz without a specific catalyst
-- broad market strength alone
+Each reason must cite at least one concrete data point from the provided data:
+- percent gain
+- volume
+- market cap
+- sector/industry
+- revenue growth
+- earnings growth
+- P/E
+- analyst target
+- recommendation
+- business description
+- financial strength
 
 Return ONLY valid JSON.
 
@@ -236,8 +97,8 @@ Schema:
   "selections": [
     {
       "symbol": "NVDA",
-      "catalyst_type": "earnings_beat | raised_guidance | upcoming_earnings | major_contract | buyback | analyst_upgrade | price_target_raise | ipo_momentum | acquisition | regulatory_approval | product_launch | strategic_partnership | sector_catalyst | premarket_news_move | macro_catalyst",
-      "reason": "Specific one-sentence explanation of the catalyst and why it matters today.",
+      "catalyst_type": "technical_gainer | financial_strength | analyst_upgrade | price_target_raise | upcoming_earnings | earnings_beat | raised_guidance | major_contract | buyback | ipo_momentum | acquisition | regulatory_approval | product_launch | strategic_partnership | sector_catalyst | premarket_news_move | macro_catalyst",
+      "reason": "Specific one-sentence explanation using concrete data from the supplied Yahoo/financial details.",
       "confidence": 0.0
     }
   ]
@@ -249,14 +110,8 @@ Rules:
 - Symbols must be uppercase.
 - No duplicate symbols.
 - Every selection must have catalyst_type.
-- Every reason must identify a specific catalyst.
-- Do not select a symbol just because it is hyped.
-- Do not select a symbol just because it is mentioned often.
-- Do not use vague reasons like AI momentum unless tied to a specific event.
 - Confidence must be between 0 and 1.
-- Prefer individual stocks with hard catalysts over ETFs.
-- ETFs are allowed only as sector_catalyst or macro_catalyst.
-- If fewer than 30 hard-catalyst names exist, fill with best liquid sector proxies and label catalyst_type as sector_catalyst.
+- Do not invent facts not present in the supplied data.
 - No markdown.
 - No extra commentary.
 """.strip()
@@ -267,328 +122,334 @@ def now_utc() -> str:
 
 
 def normalize_symbol(value: Any) -> str:
-    return str(value).upper().strip().replace(".", "-")
+    return str(value or "").upper().strip().replace(".", "-")
 
 
 def is_valid_symbol(symbol: str) -> bool:
     symbol = normalize_symbol(symbol)
-
-    if symbol in STOPWORDS:
-        return False
-
-    if len(symbol) < 2 or len(symbol) > 6:
-        return False
-
-    return bool(re.fullmatch(r"[A-Z][A-Z0-9-]{1,5}", symbol))
+    return bool(re.fullmatch(r"[A-Z][A-Z0-9-]{1,9}", symbol))
 
 
 def to_float(value: Any, default: float = 0.0) -> float:
     try:
+        if value is None:
+            return default
         return float(value)
     except Exception:
         return default
 
 
+def to_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def pct(value: Any) -> float:
+    return to_float(value, 0.0)
+
+
 def clean_reason(reason: Any) -> str:
     text = str(reason or "").replace("\n", " ").strip()
     text = re.sub(r"\s+", " ", text)
-    return text[:350] or "Selected by the premarket LLM catalyst engine."
+    return text[:400] or "Selected from Yahoo gainers and company financial data."
 
 
 def normalize_catalyst_type(value: Any) -> str:
     raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
-    if raw in STRONG_CATALYST_TYPES:
-        return raw
-    return ""
+    return raw if raw in STRONG_CATALYST_TYPES else "technical_gainer"
 
 
-def reason_is_too_weak(reason: str) -> bool:
-    lower = reason.lower()
-    return any(phrase in lower for phrase in WEAK_REASON_PHRASES)
-
-
-def extract_symbols(text: str) -> list[str]:
-    if not text:
-        return []
-
-    upper = text.upper()
-
-    patterns = [
-        r"\$([A-Z][A-Z0-9.-]{0,9})\b",
-        r"\b(?:NASDAQ|NYSE|AMEX):\s*([A-Z][A-Z0-9.-]{0,9})\b",
-        r"\(([A-Z][A-Z0-9.-]{1,9})\)",
-    ]
-
-    found: list[str] = []
-
-    for pattern in patterns:
-        found.extend(re.findall(pattern, upper))
-
-    clean: list[str] = []
-    seen: set[str] = set()
-
-    for raw in found:
-        sym = normalize_symbol(raw)
-
-        if is_valid_symbol(sym) and sym not in seen:
-            seen.add(sym)
-            clean.append(sym)
-
-    return clean
-
-
-def catalyst_score(text: str) -> int:
-    lower = text.lower()
-    score = 0
-
-    for keyword, weight in CATALYST_KEYWORDS.items():
-        if keyword in lower:
-            score += weight
-
-    return score
-
-
-def infer_catalyst_type_from_text(text: str) -> str:
-    lower = text.lower()
-
-    rules = [
-        ("earnings_beat", ["earnings beat", "beats estimates", "beat estimates", "beats expectations", "beat expectations", "better-than-expected"]),
-        ("raised_guidance", ["raises guidance", "raised guidance", "guidance raised", "raises outlook", "raised outlook", "raises forecast"]),
-        ("buyback", ["buyback", "stock buyback", "share buyback", "share repurchase", "repurchase authorization"]),
-        ("major_contract", ["new contract", "wins contract", "major contract", "government contract", "defense contract", "supply agreement"]),
-        ("strategic_partnership", ["strategic partnership", "partnership", "collaboration"]),
-        ("analyst_upgrade", ["analyst upgrade", "upgraded", "upgrades", "initiated at buy", "initiates at buy"]),
-        ("price_target_raise", ["price target raised", "raises price target", "price target hike"]),
-        ("ipo_momentum", ["ipo", "initial public offering", "recent ipo", "debut"]),
-        ("regulatory_approval", ["fda approval", "regulatory approval", "approved", "clearance"]),
-        ("acquisition", ["acquisition", "merger", "takeover", "deal to buy"]),
-        ("product_launch", ["product launch", "launches", "unveils", "new product"]),
-        ("premarket_news_move", ["premarket surge", "surges premarket", "jumps premarket", "rises premarket", "premarket gain"]),
-        ("upcoming_earnings", ["positive earnings", "earnings expected", "reports earnings", "scheduled to report"]),
-    ]
-
-    for catalyst_type, phrases in rules:
-        if any(p in lower for p in phrases):
-            return catalyst_type
-
-    if any(p in lower for p in ["semiconductor", "bitcoin", "crypto", "ai", "quantum", "nuclear", "energy"]):
-        return "sector_catalyst"
-
-    return ""
-
-
-def fetch_newsapi_articles() -> list[dict[str, Any]]:
-    if not NEWSAPI_KEY:
-        return []
-
-    from_time = (datetime.now(timezone.utc) - timedelta(hours=NEWS_LOOKBACK_HOURS)).isoformat()
-    articles: list[dict[str, Any]] = []
-
-    for query in DISCOVERY_QUERIES:
-        try:
-            resp = requests.get(
-                "https://newsapi.org/v2/everything",
-                params={
-                    "q": query,
-                    "from": from_time,
-                    "sortBy": "publishedAt",
-                    "language": "en",
-                    "pageSize": 20,
-                    "apiKey": NEWSAPI_KEY,
-                },
-                timeout=20,
-            )
-            data = resp.json()
-
-            for article in data.get("articles", []):
-                article["discovery_query"] = query
-                article["source_api"] = "newsapi"
-                articles.append(article)
-
-            time.sleep(0.25)
-
-        except Exception as exc:
-            print(f"[discovery] NewsAPI query failed: {query}: {exc}")
-
-    return articles
-
-
-def fetch_finnhub_market_news() -> list[dict[str, Any]]:
-    if not FINNHUB_API_KEY:
-        return []
-
+def fetch_yahoo_gainers(limit: int = YAHOO_GAINERS_COUNT) -> pd.DataFrame:
     try:
-        resp = requests.get(
-            "https://finnhub.io/api/v1/news",
-            params={
-                "category": "general",
-                "token": FINNHUB_API_KEY,
-            },
-            timeout=20,
-        )
-        data = resp.json()
+        result = yf.screen("day_gainers", count=limit)
+        quotes = result.get("quotes", []) if isinstance(result, dict) else []
 
-        articles: list[dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
 
-        for row in data[:100]:
-            articles.append(
+        for q in quotes:
+            symbol = normalize_symbol(q.get("symbol"))
+
+            if not is_valid_symbol(symbol):
+                continue
+
+            rows.append(
                 {
-                    "title": row.get("headline", ""),
-                    "description": row.get("summary", ""),
-                    "url": row.get("url", ""),
-                    "publishedAt": row.get("datetime", ""),
-                    "source": {"name": row.get("source", "Finnhub")},
-                    "discovery_query": "finnhub_general_market_news",
-                    "source_api": "finnhub",
+                    "symbol": symbol,
+                    "name": q.get("shortName") or q.get("longName") or "",
+                    "price": q.get("regularMarketPrice"),
+                    "change": q.get("regularMarketChange"),
+                    "change_pct": q.get("regularMarketChangePercent"),
+                    "volume": q.get("regularMarketVolume"),
+                    "avg_volume": q.get("averageDailyVolume3Month") or q.get("averageDailyVolume10Day"),
+                    "market_cap": q.get("marketCap"),
+                    "pe_ratio": q.get("trailingPE"),
+                    "exchange": q.get("exchange"),
+                    "quote_type": q.get("quoteType"),
                 }
             )
 
-        return articles
+        return pd.DataFrame(rows)
 
     except Exception as exc:
-        print(f"[discovery] Finnhub market news failed: {exc}")
-        return []
+        print(f"[yahoo] failed to fetch day_gainers screen: {exc}")
+        return pd.DataFrame()
+
+
+def passes_basic_filters(row: dict[str, Any]) -> bool:
+    symbol = normalize_symbol(row.get("symbol"))
+    price = to_float(row.get("price"))
+    volume = to_int(row.get("volume"))
+    market_cap = to_int(row.get("market_cap"))
+
+    if not is_valid_symbol(symbol):
+        return False
+
+    if price < MIN_PRICE or price > MAX_PRICE:
+        return False
+
+    if volume < MIN_VOLUME:
+        return False
+
+    if market_cap and market_cap < MIN_MARKET_CAP:
+        return False
+
+    return True
+
+
+def enrich_company_details(symbols: list[str]) -> dict[str, dict[str, Any]]:
+    enriched: dict[str, dict[str, Any]] = {}
+
+    for symbol in symbols:
+        try:
+            ticker = yf.Ticker(symbol)
+            info = ticker.get_info() or {}
+
+            enriched[symbol] = {
+                "company_name": info.get("shortName") or info.get("longName"),
+                "sector": info.get("sector"),
+                "industry": info.get("industry"),
+                "market_cap": info.get("marketCap"),
+                "enterprise_value": info.get("enterpriseValue"),
+                "trailing_pe": info.get("trailingPE"),
+                "forward_pe": info.get("forwardPE"),
+                "peg_ratio": info.get("pegRatio"),
+                "price_to_sales": info.get("priceToSalesTrailing12Months"),
+                "revenue_growth": info.get("revenueGrowth"),
+                "earnings_growth": info.get("earningsGrowth"),
+                "profit_margins": info.get("profitMargins"),
+                "gross_margins": info.get("grossMargins"),
+                "operating_margins": info.get("operatingMargins"),
+                "beta": info.get("beta"),
+                "float_shares": info.get("floatShares"),
+                "shares_outstanding": info.get("sharesOutstanding"),
+                "short_ratio": info.get("shortRatio"),
+                "short_percent_of_float": info.get("shortPercentOfFloat"),
+                "average_volume": info.get("averageVolume"),
+                "current_price": info.get("currentPrice"),
+                "target_mean_price": info.get("targetMeanPrice"),
+                "target_high_price": info.get("targetHighPrice"),
+                "recommendation": info.get("recommendationKey"),
+                "number_of_analyst_opinions": info.get("numberOfAnalystOpinions"),
+                "business_summary": str(info.get("longBusinessSummary") or "")[:700],
+            }
+
+        except Exception as exc:
+            print(f"[yahoo] enrichment failed for {symbol}: {exc}")
+            enriched[symbol] = {}
+
+    return enriched
+
+
+def calc_discovery_score(row: dict[str, Any]) -> float:
+    change_pct = pct(row.get("change_pct"))
+    volume = max(to_float(row.get("volume")), 1.0)
+    avg_volume = max(to_float(row.get("avg_volume")), 1.0)
+    market_cap = max(to_float(row.get("market_cap")), 1.0)
+
+    rel_volume = volume / avg_volume if avg_volume > 0 else 1.0
+
+    score = 0.0
+    score += min(max(change_pct, 0.0), 50.0) * 2.0
+    score += min(rel_volume, 10.0) * 8.0
+
+    if market_cap >= 10_000_000_000:
+        score += 15
+    elif market_cap >= 1_000_000_000:
+        score += 10
+    elif market_cap >= 100_000_000:
+        score += 4
+
+    return round(score, 4)
 
 
 def discover_candidates() -> dict[str, Any]:
-    articles = []
-    articles.extend(fetch_newsapi_articles())
-    articles.extend(fetch_finnhub_market_news())
+    gainers = fetch_yahoo_gainers(YAHOO_GAINERS_COUNT)
 
-    mention_counts: Counter[str] = Counter()
-    catalyst_counts: Counter[str] = Counter()
-    query_counts: dict[str, set[str]] = defaultdict(set)
-    headlines_by_symbol: dict[str, list[str]] = defaultdict(list)
-    urls_by_symbol: dict[str, list[str]] = defaultdict(list)
-    catalyst_types_by_symbol: dict[str, Counter[str]] = defaultdict(Counter)
-
-    for article in articles:
-        title = str(article.get("title") or "")
-        desc = str(article.get("description") or "")
-        query = str(article.get("discovery_query") or "")
-        url = str(article.get("url") or "")
-
-        text = f"{title}. {desc}"
-        symbols = extract_symbols(text)
-        score = catalyst_score(text)
-        inferred_type = infer_catalyst_type_from_text(text)
-
-        for symbol in symbols:
-            mention_counts[symbol] += 1
-            catalyst_counts[symbol] += score
-            query_counts[symbol].add(query)
-
-            if inferred_type:
-                catalyst_types_by_symbol[symbol][inferred_type] += 1
-
-            if title and title not in headlines_by_symbol[symbol]:
-                headlines_by_symbol[symbol].append(title[:240])
-
-            if url and url not in urls_by_symbol[symbol]:
-                urls_by_symbol[symbol].append(url)
-
-    rows = []
-
-    for symbol, mentions in mention_counts.items():
-        catalyst = catalyst_counts[symbol]
-        query_diversity = len(query_counts[symbol])
-        best_catalyst_type = ""
-
-        if catalyst_types_by_symbol[symbol]:
-            best_catalyst_type = catalyst_types_by_symbol[symbol].most_common(1)[0][0]
-
-        hard_catalyst_bonus = 12 if best_catalyst_type and best_catalyst_type != "sector_catalyst" else 0
-        hype_score = mentions * 2 + catalyst + query_diversity * 2 + hard_catalyst_bonus
-
-        rows.append(
+    if gainers.empty:
+        rows = [
             {
-                "symbol": symbol,
-                "mention_count": int(mentions),
-                "catalyst_score": int(catalyst),
-                "query_diversity": int(query_diversity),
-                "hype_score": int(hype_score),
-                "inferred_catalyst_type": best_catalyst_type,
-                "headlines": headlines_by_symbol[symbol][:5],
-                "urls": urls_by_symbol[symbol][:3],
+                "symbol": s,
+                "name": s,
+                "price": None,
+                "change_pct": None,
+                "volume": None,
+                "avg_volume": None,
+                "market_cap": None,
+                "discovery_score": 0.0,
+                "source": "fallback",
             }
-        )
+            for s in FALLBACK
+        ]
+    else:
+        raw_rows = gainers.to_dict("records")
+        filtered = [r for r in raw_rows if passes_basic_filters(r)]
 
-    rows = [
-        r for r in rows
-        if r["catalyst_score"] >= MIN_DISCOVERY_CATALYST_SCORE or r["inferred_catalyst_type"]
-    ]
+        if len(filtered) < TARGET_COUNT:
+            filtered = raw_rows
 
-    rows = sorted(
-        rows,
-        key=lambda r: (
-            r["inferred_catalyst_type"] not in ("", "sector_catalyst"),
-            r["catalyst_score"],
-            r["hype_score"],
-            r["mention_count"],
-        ),
-        reverse=True,
-    )
+        rows = []
 
-    if len(rows) < TARGET_COUNT:
-        existing = {r["symbol"] for r in rows}
+        for r in filtered:
+            symbol = normalize_symbol(r.get("symbol"))
+
+            if not is_valid_symbol(symbol):
+                continue
+
+            volume = to_float(r.get("volume"))
+            avg_volume = to_float(r.get("avg_volume"))
+            rel_volume = volume / avg_volume if avg_volume > 0 else None
+
+            row = {
+                "symbol": symbol,
+                "name": r.get("name"),
+                "price": r.get("price"),
+                "change": r.get("change"),
+                "change_pct": r.get("change_pct"),
+                "volume": r.get("volume"),
+                "avg_volume": r.get("avg_volume"),
+                "relative_volume": rel_volume,
+                "market_cap": r.get("market_cap"),
+                "pe_ratio": r.get("pe_ratio"),
+                "exchange": r.get("exchange"),
+                "quote_type": r.get("quote_type"),
+                "discovery_score": calc_discovery_score(r),
+                "source": "yahoo_day_gainers",
+            }
+            rows.append(row)
+
+    rows = sorted(rows, key=lambda x: to_float(x.get("discovery_score")), reverse=True)
+    rows = rows[:max(YAHOO_GAINERS_COUNT, TARGET_COUNT)]
+
+    symbols = [r["symbol"] for r in rows if is_valid_symbol(r.get("symbol"))]
+    enriched = enrich_company_details(symbols[:80])
+
+    candidates: list[dict[str, Any]] = []
+
+    for row in rows:
+        symbol = row["symbol"]
+        details = enriched.get(symbol, {})
+
+        merged = {
+            **row,
+            **details,
+        }
+
+        candidates.append(merged)
+
+    if len(candidates) < TARGET_COUNT:
+        existing = {c["symbol"] for c in candidates}
 
         for symbol in FALLBACK:
             if symbol not in existing:
-                rows.append(
+                candidates.append(
                     {
                         "symbol": symbol,
-                        "mention_count": 0,
-                        "catalyst_score": 0,
-                        "query_diversity": 0,
-                        "hype_score": 0,
-                        "inferred_catalyst_type": "sector_catalyst",
-                        "headlines": [],
-                        "urls": [],
+                        "name": symbol,
+                        "source": "fallback",
+                        "discovery_score": 0.0,
                     }
                 )
 
     discovery = {
         "created_at_utc": now_utc(),
-        "article_count": len(articles),
-        "candidate_count": len(rows),
-        "candidates": rows[:MAX_DISCOVERY_CANDIDATES],
+        "source": "yahoo_day_gainers",
+        "candidate_count": len(candidates),
+        "filters": {
+            "min_price": MIN_PRICE,
+            "max_price": MAX_PRICE,
+            "min_volume": MIN_VOLUME,
+            "min_market_cap": MIN_MARKET_CAP,
+        },
+        "candidates": candidates[:100],
     }
 
     DISCOVERY_PATH.write_text(json.dumps(discovery, indent=2) + "\n", encoding="utf-8")
     print(f"[saved] {DISCOVERY_PATH}")
-    print(f"[discovery] articles={len(articles)} candidates={len(rows)}")
+    print(f"[discovery] yahoo_gainers candidates={len(candidates)}")
 
     return discovery
 
 
+def compact_candidates_for_llm(discovery: dict[str, Any]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+
+    for row in discovery.get("candidates", [])[:100]:
+        compact.append(
+            {
+                "symbol": row.get("symbol"),
+                "name": row.get("name") or row.get("company_name"),
+                "price": row.get("price") or row.get("current_price"),
+                "change_pct": row.get("change_pct"),
+                "volume": row.get("volume"),
+                "avg_volume": row.get("avg_volume") or row.get("average_volume"),
+                "relative_volume": row.get("relative_volume"),
+                "market_cap": row.get("market_cap"),
+                "sector": row.get("sector"),
+                "industry": row.get("industry"),
+                "trailing_pe": row.get("trailing_pe") or row.get("pe_ratio"),
+                "forward_pe": row.get("forward_pe"),
+                "revenue_growth": row.get("revenue_growth"),
+                "earnings_growth": row.get("earnings_growth"),
+                "profit_margins": row.get("profit_margins"),
+                "beta": row.get("beta"),
+                "short_ratio": row.get("short_ratio"),
+                "target_mean_price": row.get("target_mean_price"),
+                "recommendation": row.get("recommendation"),
+                "analyst_count": row.get("number_of_analyst_opinions"),
+                "discovery_score": row.get("discovery_score"),
+                "business_summary": row.get("business_summary"),
+            }
+        )
+
+    return compact
+
+
 def build_prompt(discovery: dict[str, Any]) -> str:
-    candidates = discovery.get("candidates", [])[:MAX_DISCOVERY_CANDIDATES]
+    candidates = compact_candidates_for_llm(discovery)
 
     return f"""
 Today is {datetime.now().strftime("%Y-%m-%d")}.
 
-Use the discovered candidate data below.
-The discovery engine ranks symbols by hard catalyst keywords, inferred catalyst type,
-mention frequency, query diversity, and hype/search-style relevance.
+Use the Yahoo Finance day-gainers and company financial data below.
+Select the 30 best symbols for today's monitoring universe.
 
-Select the 30 best symbols for today's premarket monitoring universe.
+You must justify each selection using concrete data such as:
+- percent gain
+- volume or relative volume
+- market cap
+- revenue growth
+- earnings growth
+- profit margins
+- P/E or forward P/E
+- sector/industry
+- analyst target or recommendation
+- business summary
 
-You must prefer candidates with:
-- earnings beats
-- raised guidance
-- positive upcoming earnings expectations
-- major contracts
-- stock buybacks
-- analyst upgrades
-- price target raises
-- IPO momentum
-- acquisitions
-- regulatory approvals
-- product launches
-- strategic partnerships
-- specific premarket news moves
-
-Discovered candidates:
+Yahoo gainers and financial details:
 {json.dumps(candidates, indent=2)}
 
 Return the required JSON only.
@@ -607,8 +468,7 @@ def call_llm(discovery: dict[str, Any]) -> dict[str, Any]:
         ],
     )
 
-    content = response.choices[0].message.content.strip()
-    return json.loads(content)
+    return json.loads(response.choices[0].message.content.strip())
 
 
 def normalize_payload(payload: dict[str, Any], discovery: dict[str, Any]) -> dict[str, Any]:
@@ -622,24 +482,14 @@ def normalize_payload(payload: dict[str, Any], discovery: dict[str, Any]) -> dic
     seen: set[str] = set()
 
     for row in raw_selections:
-        symbol = normalize_symbol(row.get("symbol") or row.get("ticker") or "")
+        symbol = normalize_symbol(row.get("symbol"))
 
         if not is_valid_symbol(symbol) or symbol in seen:
             continue
 
         d = discovery_by_symbol.get(symbol, {})
-        reason = clean_reason(row.get("reason"))
-        catalyst_type = normalize_catalyst_type(row.get("catalyst_type")) or d.get("inferred_catalyst_type", "")
+        catalyst_type = normalize_catalyst_type(row.get("catalyst_type"))
         confidence = max(0.0, min(1.0, to_float(row.get("confidence"), 0.0)))
-
-        if catalyst_type not in STRONG_CATALYST_TYPES:
-            continue
-
-        if confidence < MIN_LLM_CONFIDENCE:
-            continue
-
-        if reason_is_too_weak(reason):
-            continue
 
         seen.add(symbol)
 
@@ -647,14 +497,25 @@ def normalize_payload(payload: dict[str, Any], discovery: dict[str, Any]) -> dic
             {
                 "symbol": symbol,
                 "catalyst_type": catalyst_type,
-                "reason": reason,
+                "reason": clean_reason(row.get("reason")),
                 "confidence": confidence,
-                "mention_count": d.get("mention_count", 0),
-                "catalyst_score": d.get("catalyst_score", 0),
-                "query_diversity": d.get("query_diversity", 0),
-                "hype_score": d.get("hype_score", 0),
-                "inferred_catalyst_type": d.get("inferred_catalyst_type", ""),
-                "headlines": d.get("headlines", [])[:3],
+                "price": d.get("price") or d.get("current_price"),
+                "change_pct": d.get("change_pct"),
+                "volume": d.get("volume"),
+                "avg_volume": d.get("avg_volume") or d.get("average_volume"),
+                "relative_volume": d.get("relative_volume"),
+                "market_cap": d.get("market_cap"),
+                "sector": d.get("sector"),
+                "industry": d.get("industry"),
+                "trailing_pe": d.get("trailing_pe") or d.get("pe_ratio"),
+                "forward_pe": d.get("forward_pe"),
+                "revenue_growth": d.get("revenue_growth"),
+                "earnings_growth": d.get("earnings_growth"),
+                "profit_margins": d.get("profit_margins"),
+                "target_mean_price": d.get("target_mean_price"),
+                "recommendation": d.get("recommendation"),
+                "discovery_score": d.get("discovery_score"),
+                "source": d.get("source"),
             }
         )
 
@@ -665,63 +526,41 @@ def normalize_payload(payload: dict[str, Any], discovery: dict[str, Any]) -> dic
         if len(selections) >= TARGET_COUNT:
             break
 
-        symbol = normalize_symbol(row.get("symbol", ""))
+        symbol = normalize_symbol(row.get("symbol"))
 
         if not is_valid_symbol(symbol) or symbol in seen:
             continue
 
-        catalyst_type = row.get("inferred_catalyst_type") or "sector_catalyst"
-
-        if catalyst_type not in STRONG_CATALYST_TYPES:
-            catalyst_type = "sector_catalyst"
-
         seen.add(symbol)
-
-        headlines = row.get("headlines", [])[:3]
-        reason = (
-            f"Added from discovery ranking because recent headlines show a {catalyst_type.replace('_', ' ')} catalyst: "
-            f"{headlines[0]}"
-            if headlines
-            else "Added from discovery ranking as a liquid sector proxy because fewer than 30 hard-catalyst names were available."
-        )
 
         selections.append(
             {
                 "symbol": symbol,
-                "catalyst_type": catalyst_type,
-                "reason": clean_reason(reason),
-                "confidence": 0.55,
-                "mention_count": row.get("mention_count", 0),
-                "catalyst_score": row.get("catalyst_score", 0),
-                "query_diversity": row.get("query_diversity", 0),
-                "hype_score": row.get("hype_score", 0),
-                "inferred_catalyst_type": row.get("inferred_catalyst_type", ""),
-                "headlines": headlines,
+                "catalyst_type": "technical_gainer",
+                "reason": (
+                    f"Added from Yahoo gainers because it showed a positive move of "
+                    f"{row.get('change_pct')}% with volume of {row.get('volume')}."
+                ),
+                "confidence": 0.50,
+                "price": row.get("price") or row.get("current_price"),
+                "change_pct": row.get("change_pct"),
+                "volume": row.get("volume"),
+                "avg_volume": row.get("avg_volume") or row.get("average_volume"),
+                "relative_volume": row.get("relative_volume"),
+                "market_cap": row.get("market_cap"),
+                "sector": row.get("sector"),
+                "industry": row.get("industry"),
+                "trailing_pe": row.get("trailing_pe") or row.get("pe_ratio"),
+                "forward_pe": row.get("forward_pe"),
+                "revenue_growth": row.get("revenue_growth"),
+                "earnings_growth": row.get("earnings_growth"),
+                "profit_margins": row.get("profit_margins"),
+                "target_mean_price": row.get("target_mean_price"),
+                "recommendation": row.get("recommendation"),
+                "discovery_score": row.get("discovery_score"),
+                "source": row.get("source"),
             }
         )
-
-    for symbol in FALLBACK:
-        if len(selections) >= TARGET_COUNT:
-            break
-
-        symbol = normalize_symbol(symbol)
-
-        if symbol not in seen and is_valid_symbol(symbol):
-            seen.add(symbol)
-            selections.append(
-                {
-                    "symbol": symbol,
-                    "catalyst_type": "sector_catalyst",
-                    "reason": "Fallback liquid sector or leadership proxy added because fewer than 30 verified hard-catalyst symbols were available.",
-                    "confidence": 0.40,
-                    "mention_count": 0,
-                    "catalyst_score": 0,
-                    "query_diversity": 0,
-                    "hype_score": 0,
-                    "inferred_catalyst_type": "sector_catalyst",
-                    "headlines": [],
-                }
-            )
 
     return {
         "created_at_utc": now_utc(),
@@ -733,7 +572,7 @@ def normalize_payload(payload: dict[str, Any], discovery: dict[str, Any]) -> dic
         "quoted_csv": ",".join(f'"{row["symbol"]}"' for row in selections),
         "selections": selections,
         "discovery": {
-            "article_count": discovery.get("article_count", 0),
+            "source": discovery.get("source"),
             "candidate_count": discovery.get("candidate_count", 0),
             "source_file": str(DISCOVERY_PATH),
         },
@@ -759,19 +598,19 @@ def build_sentiment_universe() -> dict[str, Any]:
     try:
         raw = call_llm(discovery)
     except Exception as exc:
-        print(f"[llm-universe] LLM failed, using discovery/fallback ranking: {exc}")
+        print(f"[llm-universe] LLM failed, using Yahoo gainer ranking: {exc}")
         raw = {
             "market_tone": "mixed",
-            "summary": "LLM unavailable; using discovery-ranked and fallback high-liquidity catalyst universe.",
+            "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.",
             "selections": [
                 {
                     "symbol": row["symbol"],
-                    "catalyst_type": row.get("inferred_catalyst_type") or "sector_catalyst",
+                    "catalyst_type": "technical_gainer",
                     "reason": (
-                        f"Selected from discovery ranking because recent headlines indicate a "
-                        f"{(row.get('inferred_catalyst_type') or 'sector_catalyst').replace('_', ' ')} catalyst."
+                        f"Selected from Yahoo gainers with a {row.get('change_pct')}% move, "
+                        f"volume of {row.get('volume')}, and market cap of {row.get('market_cap')}."
                     ),
-                    "confidence": 0.55,
+                    "confidence": 0.50,
                 }
                 for row in discovery.get("candidates", [])[:TARGET_COUNT]
             ],
