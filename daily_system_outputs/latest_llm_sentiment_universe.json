@@ -1,0 +1,307 @@
+{
+  "created_at_utc": "2026-05-12T03:05:25.930801+00:00",
+  "model": "gpt-4.1-mini",
+  "target_count": 30,
+  "market_tone": "mixed",
+  "summary": "A balanced trading day with focus on large tech and semiconductor names despite lack of fresh catalysts.",
+  "symbols": [
+    "AAPL",
+    "MSFT",
+    "GOOGL",
+    "AMZN",
+    "META",
+    "NVDA",
+    "AMD",
+    "AVGO",
+    "SOXX",
+    "QQQ",
+    "TSLA",
+    "PLTR",
+    "SMCI",
+    "COIN",
+    "MARA",
+    "RIOT",
+    "ARM",
+    "IONQ",
+    "RGTI",
+    "QBTS",
+    "QUBT",
+    "SOUN",
+    "BBAI",
+    "OKLO",
+    "SMR",
+    "CEG",
+    "VST",
+    "CLSK",
+    "IREN"
+  ],
+  "quoted_csv": "\"AAPL\",\"MSFT\",\"GOOGL\",\"AMZN\",\"META\",\"NVDA\",\"AMD\",\"AVGO\",\"SOXX\",\"QQQ\",\"TSLA\",\"PLTR\",\"SMCI\",\"COIN\",\"MARA\",\"RIOT\",\"ARM\",\"IONQ\",\"RGTI\",\"QBTS\",\"QUBT\",\"SOUN\",\"BBAI\",\"OKLO\",\"SMR\",\"CEG\",\"VST\",\"CLSK\",\"IREN\"",
+  "selections": [
+    {
+      "symbol": "AAPL",
+      "reason": "Highly liquid mega-cap tech stock essential for market breadth monitoring.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "MSFT",
+      "reason": "Key tech giant with strong liquidity and consistent market interest.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "GOOGL",
+      "reason": "Major tech stock with high tradability and market relevance.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "AMZN",
+      "reason": "E-commerce and cloud leader with significant retail and institutional interest.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "META",
+      "reason": "Social media and metaverse leader with strong market presence.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "NVDA",
+      "reason": "Leading semiconductor stock critical for tech sector tracking.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "AMD",
+      "reason": "Important semiconductor player with high liquidity and market relevance.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "AVGO",
+      "reason": "Broadcom is a key semiconductor and infrastructure stock.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "SOXX",
+      "reason": "Semiconductor ETF providing sector-wide exposure and liquidity.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "QQQ",
+      "reason": "Popular NASDAQ ETF representing tech-heavy market exposure.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "TSLA",
+      "reason": "Highly traded EV leader with strong retail and institutional interest.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "PLTR",
+      "reason": "AI and data analytics stock with retail hype potential.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "SMCI",
+      "reason": "Emerging tech hardware player with growing market interest.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "COIN",
+      "reason": "Cryptocurrency exchange stock with retail and crypto market relevance.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "MARA",
+      "reason": "Bitcoin mining stock with speculative retail interest.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "RIOT",
+      "reason": "Another key bitcoin miner with retail and crypto market focus.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "ARM",
+      "reason": "Semiconductor IP leader with strategic industry importance.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "IONQ",
+      "reason": "Quantum computing stock with innovation hype potential.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "RGTI",
+      "reason": "Biotech with potential catalyst-driven interest.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "QBTS",
+      "reason": "Quantum tech stock with speculative retail interest.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "QUBT",
+      "reason": "Quantum computing focused stock with emerging hype.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "SOUN",
+      "reason": "Audio tech stock with niche retail interest.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "BBAI",
+      "reason": "AI and robotics stock with retail speculative interest.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "OKLO",
+      "reason": "Clean energy and nuclear innovation stock with thematic relevance.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "SMR",
+      "reason": "Small modular reactor stock with energy sector interest.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "CEG",
+      "reason": "Energy infrastructure stock with steady market interest.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "VST",
+      "reason": "Real estate investment trust with stable liquidity.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "CLSK",
+      "reason": "Clean energy stock with thematic appeal.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    },
+    {
+      "symbol": "IREN",
+      "reason": "Renewable energy stock with niche market interest.",
+      "mention_count": 0,
+      "catalyst_score": 0,
+      "query_diversity": 0,
+      "hype_score": 0,
+      "headlines": []
+    }
+  ],
+  "discovery": {
+    "article_count": 100,
+    "candidate_count": 30,
+    "source_file": "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/latest_llm_candidate_discovery.json"
+  }
+}
