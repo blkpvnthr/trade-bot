@@ -40,65 +40,50 @@ FALLBACK = [
 ]
 
 STRONG_CATALYST_TYPES = {
-    "earnings_beat",
-    "raised_guidance",
-    "upcoming_earnings",
-    "major_contract",
-    "buyback",
-    "analyst_upgrade",
-    "price_target_raise",
-    "ipo_momentum",
-    "acquisition",
-    "regulatory_approval",
-    "product_launch",
-    "strategic_partnership",
+    "technical_gainer",
+    "financial_strength",
+    "analyst_upside",
     "sector_catalyst",
+    "short_squeeze",
+    "liquidity_momentum",
+    "earnings_growth",
+    "revenue_growth",
     "premarket_news_move",
     "macro_catalyst",
-    "financial_strength",
-    "technical_gainer",
 }
 
 SYSTEM_PROMPT = """
-You are a premarket institutional universe-selection engine.
+You are an institutional premarket stock selection engine.
 
-You receive Yahoo Finance day-gainer data plus company financial details.
-Select EXACTLY 30 liquid US stocks or ETFs for today's monitoring universe.
+You receive Yahoo Finance day-gainers plus company financial details.
+Your job is to select the TOP 30 candidates for today's monitoring universe.
 
-Prioritize:
-- largest positive percent gainers
-- high volume and strong liquidity
-- meaningful market cap
-- strong revenue growth or earnings growth
-- analyst upside or favorable recommendation
-- strong sector/industry catalyst
-- reasonable valuation where applicable
-- avoid illiquid low-quality pumps when possible
-
-Each reason must cite at least one concrete data point from the provided data:
-- percent gain
-- volume
-- market cap
-- sector/industry
+The goal is not to explain every gainer. The goal is to identify the 30 most compelling trade-monitoring candidates based on:
+- strongest percent gain
+- unusual volume / relative volume
+- liquidity
+- market cap quality
+- sector or industry tailwind
 - revenue growth
 - earnings growth
-- P/E
-- analyst target
-- recommendation
-- business description
-- financial strength
+- profitability
+- analyst upside
+- favorable recommendation
+- short squeeze potential
+- business relevance to current market themes
 
 Return ONLY valid JSON.
 
 Schema:
 {
   "market_tone": "bullish | bearish | mixed | risk_off | risk_on",
-  "summary": "One concise sentence describing what kind of trading day this may be.",
+  "summary": "One concise sentence describing the overall opportunity set.",
   "selections": [
     {
+      "rank": 1,
       "symbol": "NVDA",
-      "catalyst_type": "technical_gainer | financial_strength | analyst_upgrade | price_target_raise | upcoming_earnings | earnings_beat | raised_guidance | major_contract | buyback | ipo_momentum | acquisition | regulatory_approval | product_launch | strategic_partnership | sector_catalyst | premarket_news_move | macro_catalyst",
-      "reason": "Specific one-sentence explanation using concrete data from the supplied Yahoo/financial details.",
+      "catalyst_type": "technical_gainer | financial_strength | analyst_upside | sector_catalyst | short_squeeze | liquidity_momentum | earnings_growth | revenue_growth | premarket_news_move | macro_catalyst",
+      "reason": "Compelling 1-2 sentence explanation using concrete data from the supplied Yahoo/financial details.",
       "confidence": 0.0
     }
   ]
@@ -106,12 +91,15 @@ Schema:
 
 Rules:
 - EXACTLY 30 selections.
+- Rank from 1 to 30.
 - Use "symbol", not "ticker".
 - Symbols must be uppercase.
 - No duplicate symbols.
-- Every selection must have catalyst_type.
-- Confidence must be between 0 and 1.
+- Every reason must be compelling, specific, and data-backed.
+- Every reason must include at least TWO concrete details when available, such as percent gain, volume, relative volume, market cap, sector, revenue growth, earnings growth, P/E, analyst target, recommendation, short ratio, or business description.
+- Do not use vague reasoning like positive momentum unless paired with concrete data.
 - Do not invent facts not present in the supplied data.
+- Confidence must be between 0 and 1.
 - No markdown.
 - No extra commentary.
 """.strip()
@@ -148,19 +136,33 @@ def to_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def pct(value: Any) -> float:
-    return to_float(value, 0.0)
-
-
 def clean_reason(reason: Any) -> str:
     text = str(reason or "").replace("\n", " ").strip()
     text = re.sub(r"\s+", " ", text)
-    return text[:400] or "Selected from Yahoo gainers and company financial data."
+    return text[:700] or "Selected from Yahoo gainers and company financial data."
 
 
 def normalize_catalyst_type(value: Any) -> str:
     raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     return raw if raw in STRONG_CATALYST_TYPES else "technical_gainer"
+
+
+def fmt_pct(value: Any) -> str:
+    v = to_float(value, 0.0)
+    return f"{v:.2f}%"
+
+
+def fmt_money(value: Any) -> str:
+    v = to_float(value, 0.0)
+    if v >= 1_000_000_000_000:
+        return f"${v / 1_000_000_000_000:.2f}T"
+    if v >= 1_000_000_000:
+        return f"${v / 1_000_000_000:.2f}B"
+    if v >= 1_000_000:
+        return f"${v / 1_000_000:.2f}M"
+    if v > 0:
+        return f"${v:,.0f}"
+    return "N/A"
 
 
 def fetch_yahoo_gainers(limit: int = YAHOO_GAINERS_COUNT) -> pd.DataFrame:
@@ -207,13 +209,10 @@ def passes_basic_filters(row: dict[str, Any]) -> bool:
 
     if not is_valid_symbol(symbol):
         return False
-
     if price < MIN_PRICE or price > MAX_PRICE:
         return False
-
     if volume < MIN_VOLUME:
         return False
-
     if market_cap and market_cap < MIN_MARKET_CAP:
         return False
 
@@ -265,7 +264,7 @@ def enrich_company_details(symbols: list[str]) -> dict[str, dict[str, Any]]:
 
 
 def calc_discovery_score(row: dict[str, Any]) -> float:
-    change_pct = pct(row.get("change_pct"))
+    change_pct = to_float(row.get("change_pct"))
     volume = max(to_float(row.get("volume")), 1.0)
     avg_volume = max(to_float(row.get("avg_volume")), 1.0)
     market_cap = max(to_float(row.get("market_cap")), 1.0)
@@ -273,17 +272,45 @@ def calc_discovery_score(row: dict[str, Any]) -> float:
     rel_volume = volume / avg_volume if avg_volume > 0 else 1.0
 
     score = 0.0
-    score += min(max(change_pct, 0.0), 50.0) * 2.0
-    score += min(rel_volume, 10.0) * 8.0
+    score += min(max(change_pct, 0.0), 80.0) * 2.2
+    score += min(rel_volume, 15.0) * 9.0
 
-    if market_cap >= 10_000_000_000:
-        score += 15
+    if market_cap >= 50_000_000_000:
+        score += 22
+    elif market_cap >= 10_000_000_000:
+        score += 18
     elif market_cap >= 1_000_000_000:
-        score += 10
+        score += 12
     elif market_cap >= 100_000_000:
-        score += 4
+        score += 5
 
     return round(score, 4)
+
+
+def determine_data_catalyst_type(row: dict[str, Any]) -> str:
+    revenue_growth = to_float(row.get("revenue_growth"))
+    earnings_growth = to_float(row.get("earnings_growth"))
+    short_ratio = to_float(row.get("short_ratio"))
+    target = to_float(row.get("target_mean_price"))
+    price = to_float(row.get("price") or row.get("current_price"))
+    rel_volume = to_float(row.get("relative_volume"))
+    change_pct = to_float(row.get("change_pct"))
+    sector = str(row.get("sector") or "").lower()
+
+    if earnings_growth > 0.15:
+        return "earnings_growth"
+    if revenue_growth > 0.15:
+        return "revenue_growth"
+    if target > 0 and price > 0 and target / price - 1.0 > 0.15:
+        return "analyst_upside"
+    if short_ratio >= 5:
+        return "short_squeeze"
+    if rel_volume >= 2 or change_pct >= 8:
+        return "liquidity_momentum"
+    if sector:
+        return "sector_catalyst"
+
+    return "technical_gainer"
 
 
 def discover_candidates() -> dict[str, Any]:
@@ -299,6 +326,7 @@ def discover_candidates() -> dict[str, Any]:
                 "volume": None,
                 "avg_volume": None,
                 "market_cap": None,
+                "relative_volume": None,
                 "discovery_score": 0.0,
                 "source": "fallback",
             }
@@ -352,12 +380,15 @@ def discover_candidates() -> dict[str, Any]:
     for row in rows:
         symbol = row["symbol"]
         details = enriched.get(symbol, {})
+        merged = {**row, **details}
 
-        merged = {
-            **row,
-            **details,
-        }
+        if not merged.get("market_cap"):
+            merged["market_cap"] = row.get("market_cap")
 
+        if not merged.get("price"):
+            merged["price"] = merged.get("current_price")
+
+        merged["data_catalyst_type"] = determine_data_catalyst_type(merged)
         candidates.append(merged)
 
     if len(candidates) < TARGET_COUNT:
@@ -371,6 +402,7 @@ def discover_candidates() -> dict[str, Any]:
                         "name": symbol,
                         "source": "fallback",
                         "discovery_score": 0.0,
+                        "data_catalyst_type": "sector_catalyst",
                     }
                 )
 
@@ -417,10 +449,12 @@ def compact_candidates_for_llm(discovery: dict[str, Any]) -> list[dict[str, Any]
                 "profit_margins": row.get("profit_margins"),
                 "beta": row.get("beta"),
                 "short_ratio": row.get("short_ratio"),
+                "short_percent_of_float": row.get("short_percent_of_float"),
                 "target_mean_price": row.get("target_mean_price"),
                 "recommendation": row.get("recommendation"),
                 "analyst_count": row.get("number_of_analyst_opinions"),
                 "discovery_score": row.get("discovery_score"),
+                "data_catalyst_type": row.get("data_catalyst_type"),
                 "business_summary": row.get("business_summary"),
             }
         )
@@ -435,18 +469,24 @@ def build_prompt(discovery: dict[str, Any]) -> str:
 Today is {datetime.now().strftime("%Y-%m-%d")}.
 
 Use the Yahoo Finance day-gainers and company financial data below.
-Select the 30 best symbols for today's monitoring universe.
+Select the TOP 30 candidates for today's monitoring universe.
 
-You must justify each selection using concrete data such as:
+Your reasoning must be compelling and data-backed.
+For each selection, explain why it deserves monitoring today using at least TWO concrete fields when available.
+
+Concrete fields include:
 - percent gain
-- volume or relative volume
+- volume
+- relative volume
 - market cap
+- sector/industry
 - revenue growth
 - earnings growth
 - profit margins
 - P/E or forward P/E
-- sector/industry
-- analyst target or recommendation
+- analyst target
+- recommendation
+- short ratio
 - business summary
 
 Yahoo gainers and financial details:
@@ -471,6 +511,38 @@ def call_llm(discovery: dict[str, Any]) -> dict[str, Any]:
     return json.loads(response.choices[0].message.content.strip())
 
 
+def fallback_reason(row: dict[str, Any]) -> str:
+    symbol = row.get("symbol")
+    change_pct = row.get("change_pct")
+    volume = row.get("volume")
+    rel_volume = row.get("relative_volume")
+    market_cap = row.get("market_cap")
+    sector = row.get("sector")
+    revenue_growth = row.get("revenue_growth")
+    earnings_growth = row.get("earnings_growth")
+    recommendation = row.get("recommendation")
+
+    parts = [
+        f"{symbol} was added from Yahoo's gainers list with a {fmt_pct(change_pct)} move",
+        f"volume of {volume:,}" if isinstance(volume, (int, float)) else f"volume of {volume}",
+    ]
+
+    if rel_volume:
+        parts.append(f"relative volume of {to_float(rel_volume):.2f}x")
+    if market_cap:
+        parts.append(f"market cap of {fmt_money(market_cap)}")
+    if sector:
+        parts.append(f"{sector} sector exposure")
+    if revenue_growth:
+        parts.append(f"revenue growth of {fmt_pct(to_float(revenue_growth) * 100)}")
+    if earnings_growth:
+        parts.append(f"earnings growth of {fmt_pct(to_float(earnings_growth) * 100)}")
+    if recommendation:
+        parts.append(f"analyst recommendation of {recommendation}")
+
+    return clean_reason(", ".join(parts) + ".")
+
+
 def normalize_payload(payload: dict[str, Any], discovery: dict[str, Any]) -> dict[str, Any]:
     raw_selections = payload.get("selections", [])
 
@@ -488,13 +560,14 @@ def normalize_payload(payload: dict[str, Any], discovery: dict[str, Any]) -> dic
             continue
 
         d = discovery_by_symbol.get(symbol, {})
-        catalyst_type = normalize_catalyst_type(row.get("catalyst_type"))
+        catalyst_type = normalize_catalyst_type(row.get("catalyst_type") or d.get("data_catalyst_type"))
         confidence = max(0.0, min(1.0, to_float(row.get("confidence"), 0.0)))
 
         seen.add(symbol)
 
         selections.append(
             {
+                "rank": len(selections) + 1,
                 "symbol": symbol,
                 "catalyst_type": catalyst_type,
                 "reason": clean_reason(row.get("reason")),
@@ -512,6 +585,8 @@ def normalize_payload(payload: dict[str, Any], discovery: dict[str, Any]) -> dic
                 "revenue_growth": d.get("revenue_growth"),
                 "earnings_growth": d.get("earnings_growth"),
                 "profit_margins": d.get("profit_margins"),
+                "short_ratio": d.get("short_ratio"),
+                "short_percent_of_float": d.get("short_percent_of_float"),
                 "target_mean_price": d.get("target_mean_price"),
                 "recommendation": d.get("recommendation"),
                 "discovery_score": d.get("discovery_score"),
@@ -535,12 +610,10 @@ def normalize_payload(payload: dict[str, Any], discovery: dict[str, Any]) -> dic
 
         selections.append(
             {
+                "rank": len(selections) + 1,
                 "symbol": symbol,
-                "catalyst_type": "technical_gainer",
-                "reason": (
-                    f"Added from Yahoo gainers because it showed a positive move of "
-                    f"{row.get('change_pct')}% with volume of {row.get('volume')}."
-                ),
+                "catalyst_type": row.get("data_catalyst_type") or "technical_gainer",
+                "reason": fallback_reason(row),
                 "confidence": 0.50,
                 "price": row.get("price") or row.get("current_price"),
                 "change_pct": row.get("change_pct"),
@@ -555,6 +628,8 @@ def normalize_payload(payload: dict[str, Any], discovery: dict[str, Any]) -> dic
                 "revenue_growth": row.get("revenue_growth"),
                 "earnings_growth": row.get("earnings_growth"),
                 "profit_margins": row.get("profit_margins"),
+                "short_ratio": row.get("short_ratio"),
+                "short_percent_of_float": row.get("short_percent_of_float"),
                 "target_mean_price": row.get("target_mean_price"),
                 "recommendation": row.get("recommendation"),
                 "discovery_score": row.get("discovery_score"),
@@ -604,15 +679,13 @@ def build_sentiment_universe() -> dict[str, Any]:
             "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.",
             "selections": [
                 {
+                    "rank": i + 1,
                     "symbol": row["symbol"],
-                    "catalyst_type": "technical_gainer",
-                    "reason": (
-                        f"Selected from Yahoo gainers with a {row.get('change_pct')}% move, "
-                        f"volume of {row.get('volume')}, and market cap of {row.get('market_cap')}."
-                    ),
+                    "catalyst_type": row.get("data_catalyst_type") or "technical_gainer",
+                    "reason": fallback_reason(row),
                     "confidence": 0.50,
                 }
-                for row in discovery.get("candidates", [])[:TARGET_COUNT]
+                for i, row in enumerate(discovery.get("candidates", [])[:TARGET_COUNT])
             ],
         }
 
