@@ -15,3 +15,7 @@ live/__pycache__/
 live/__pycache__/*
 live/__pycache__/**
 .venv/
+# Runtime generated universe files
+daily_system_outputs/latest_llm_candidate_discovery.json
+daily_system_outputs/latest_llm_sentiment_universe.json
+locked_trading_universe.txt
