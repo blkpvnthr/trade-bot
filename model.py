@@ -196,6 +196,24 @@ ID_COLUMNS = {
 # Data helpers
 # =============================================================================
 
+def run_regime_model_if_available() -> bool:
+    if not REGIME_MODEL_SCRIPT_PATH.exists():
+        print(f"[model] {REGIME_MODEL_SCRIPT_PATH} not found; skipping")
+        return False
+
+    try:
+        print("[model] running regime-aware continuation model")
+        code = os.system(f"{os.sys.executable} {REGIME_MODEL_SCRIPT_PATH}")
+        if code != 0:
+            print(f"[model] model.py exited with code={code}")
+            return False
+
+        return REGIME_POSITION_PLAN_PATH.exists()
+
+    except Exception as exc:
+        print(f"[model] failed to run model.py: {exc}")
+        return False
+
 def load_data(path: Path) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(
@@ -1224,6 +1242,9 @@ def save_outputs(
 # =============================================================================
 # Main
 # =============================================================================
+# =============================================================================
+# Main
+# =============================================================================
 
 def main() -> None:
     print("===== REGIME-AWARE PRODUCTION CONTINUATION MODEL =====")
@@ -1374,6 +1395,7 @@ def main() -> None:
     print(f"entry_threshold={entry_threshold:.2f}")
     print(f"latest_date={predictions['timestamp'].max()}")
     print(f"universe_size={len(universe)}")
+
     if not universe.empty and "market_regime" in universe.columns:
         print(f"latest_regime={universe['market_regime'].iloc[0]}")
         print(f"latest_route={universe['route'].iloc[0]}")

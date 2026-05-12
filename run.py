@@ -107,6 +107,9 @@ EVENTS_JSONL = LOG_DIR / "execution_events.jsonl"
 KILL_SWITCH_PATH = LOG_DIR / "kill_switch_state.json"
 PDT_STATE_PATH = LOG_DIR / "pdt_state.json"
 
+REGIME_POSITION_PLAN_PATH = OUT_DIR / "regime_position_plan.csv"
+REGIME_MODEL_SCRIPT_PATH = PROJECT_ROOT / "model.py"
+
 # =============================================================================
 # Constants
 # =============================================================================
@@ -3640,6 +3643,258 @@ def run_execution(
     executor = ProductionOrderExecutor(config)
     return executor.run_once_from_frames(rebalance_orders, exit_orders if exit_orders is not None else pd.DataFrame())
 
+def run_regime_model_if_available() -> bool:
+    if not REGIME_MODEL_SCRIPT_PATH.exists():
+        print(f"[model] missing {REGIME_MODEL_SCRIPT_PATH}; skipping")
+        return False
+
+    if not (OUT_DIR / "daily_features.csv").exists():
+        print("[model] missing daily_system_outputs/daily_features.csv; skipping model.py")
+        return False
+
+    print("[model] running model.py to generate regime_position_plan.csv")
+    code = os.system(f"{os.sys.executable} {REGIME_MODEL_SCRIPT_PATH}")
+
+    if code != 0:
+        print(f"[model] model.py failed with exit code={code}")
+        return False
+
+    return REGIME_POSITION_PLAN_PATH.exists()
+
+
+def build_orders_from_regime_position_plan(
+    plan_path: Path = REGIME_POSITION_PLAN_PATH,
+    broker: AlpacaBroker | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not plan_path.exists():
+        print(f"[model-plan] missing {plan_path}")
+        return pd.DataFrame(), pd.DataFrame()
+
+    plan = pd.read_csv(plan_path)
+
+    if plan.empty or "symbol" not in plan.columns:
+        print("[model-plan] empty or invalid position plan")
+        return pd.DataFrame(), pd.DataFrame()
+
+    plan["symbol"] = plan["symbol"].map(normalize_symbol)
+
+    positions: dict[str, BrokerPosition] = {}
+    equity = 100_000.0
+
+    if broker is not None:
+        account = broker.get_account_snapshot()
+        equity = max(float(account.equity), 1.0)
+        positions = {
+            normalize_symbol(p.symbol): p
+            for p in broker.get_all_open_positions()
+        }
+
+    rebalance_rows: list[dict[str, Any]] = []
+    exit_rows: list[dict[str, Any]] = []
+
+    for _, row in plan.iterrows():
+        symbol = normalize_symbol(row.get("symbol"))
+        action = str(row.get("trade_action", "NO_TRADE")).upper().strip()
+
+        if not symbol:
+            continue
+
+        target_weight = to_float(row.get("target_weight"), 0.0)
+        price = to_float(row.get("close"), to_float(row.get("price"), 0.0))
+        confidence = to_float(
+            row.get("explosive_continuation_probability"),
+            to_float(row.get("trade_confidence"), 0.50),
+        )
+
+        pos = positions.get(symbol, BrokerPosition(symbol=symbol))
+        current_weight = float(pos.market_value) / max(equity, 1e-9)
+        delta_weight = target_weight - current_weight
+        delta_dollars = delta_weight * equity
+
+        if action == "LIQUIDATE" or target_weight <= 0:
+            if pos.qty > 0:
+                exit_rows.append(
+                    {
+                        "symbol": symbol,
+                        "side": "sell",
+                        "delta_shares": int(pos.qty),
+                        "delta_dollars": float(pos.market_value),
+                        "price": float(pos.current_price or price),
+                        "reason": f"model_{action.lower()}",
+                        "target_weight": 0.0,
+                        "current_weight": current_weight,
+                        "delta_weight": -current_weight,
+                        "trade_confidence": 1.0,
+                    }
+                )
+            continue
+
+        if action not in {"OPEN_LONG", "HOLD_LONG", "CONTINUE_HOLD_WAIT_CONFIRMATION"}:
+            continue
+
+        if abs(delta_weight) < MIN_WEIGHT_DELTA:
+            continue
+
+        if delta_weight > 0:
+            rebalance_rows.append(
+                {
+                    "symbol": symbol,
+                    "side": "buy",
+                    "target_weight": target_weight,
+                    "current_weight": current_weight,
+                    "delta_weight": delta_weight,
+                    "delta_dollars": max(delta_dollars, 0.0),
+                    "target_dollars": target_weight * equity,
+                    "price": price,
+                    "trade_confidence": confidence,
+                    "reason": f"model_{action.lower()}",
+                }
+            )
+        elif pos.qty > 0:
+            sell_fraction = min(abs(delta_weight) / max(current_weight, 1e-9), 1.0)
+            sell_qty = int(max(1, np.floor(pos.qty * sell_fraction)))
+
+            exit_rows.append(
+                {
+                    "symbol": symbol,
+                    "side": "sell",
+                    "delta_shares": sell_qty,
+                    "delta_dollars": abs(delta_dollars),
+                    "price": float(pos.current_price or price),
+                    "reason": f"model_reduce_to_target_{action.lower()}",
+                    "target_weight": target_weight,
+                    "current_weight": current_weight,
+                    "delta_weight": delta_weight,
+                    "trade_confidence": confidence,
+                }
+            )
+
+    rebalance = pd.DataFrame(rebalance_rows)
+    exits = pd.DataFrame(exit_rows)
+
+    save_df(rebalance, DEFAULT_REBALANCE_ORDERS)
+    save_df(exits, DEFAULT_EXIT_ORDERS)
+
+    print(
+        f"[model-plan] converted {plan_path} "
+        f"rebalance_rows={len(rebalance)} exit_rows={len(exits)}"
+    )
+
+    return rebalance, exits
+
+def build_orders_from_regime_position_plan(
+    plan_path: Path = REGIME_POSITION_PLAN_PATH,
+    broker: AlpacaBroker | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not plan_path.exists():
+        print(f"[model-plan] missing {plan_path}")
+        return pd.DataFrame(), pd.DataFrame()
+
+    plan = pd.read_csv(plan_path)
+
+    if plan.empty or "symbol" not in plan.columns:
+        return pd.DataFrame(), pd.DataFrame()
+
+    plan["symbol"] = plan["symbol"].map(normalize_symbol)
+
+    positions: dict[str, BrokerPosition] = {}
+    equity = ACCOUNT_EQUITY
+
+    if broker is not None:
+        acct = broker.get_account_snapshot()
+        equity = max(float(acct.equity), 1.0)
+        positions = {
+            normalize_symbol(p.symbol): p
+            for p in broker.get_all_open_positions()
+        }
+
+    rebalance_rows: list[dict[str, Any]] = []
+    exit_rows: list[dict[str, Any]] = []
+
+    for _, row in plan.iterrows():
+        symbol = normalize_symbol(row.get("symbol"))
+        action = str(row.get("trade_action", "")).upper().strip()
+        target_weight = to_float(row.get("target_weight"), 0.0)
+        close = to_float(row.get("close"), to_float(row.get("price"), 0.0))
+        confidence = to_float(
+            row.get("explosive_continuation_probability"),
+            to_float(row.get("trade_confidence"), 0.50),
+        )
+
+        pos = positions.get(symbol, BrokerPosition(symbol=symbol))
+        current_weight = float(pos.market_value) / max(equity, 1e-9)
+        delta_weight = target_weight - current_weight
+        target_dollars = target_weight * equity
+        delta_dollars = delta_weight * equity
+
+        if action in {"LIQUIDATE"} or target_weight <= 0:
+            if pos.qty > 0:
+                exit_rows.append(
+                    {
+                        "symbol": symbol,
+                        "side": "sell",
+                        "delta_shares": int(pos.qty),
+                        "delta_dollars": float(pos.market_value),
+                        "price": float(pos.current_price or close),
+                        "reason": f"model_{action.lower()}",
+                        "target_weight": 0.0,
+                        "current_weight": current_weight,
+                        "delta_weight": -current_weight,
+                        "trade_confidence": 1.0,
+                    }
+                )
+            continue
+
+        if action in {"OPEN_LONG", "HOLD_LONG", "CONTINUE_HOLD_WAIT_CONFIRMATION"}:
+            if abs(delta_weight) < MIN_WEIGHT_DELTA:
+                continue
+
+            if delta_weight > 0:
+                rebalance_rows.append(
+                    {
+                        "symbol": symbol,
+                        "side": "buy",
+                        "target_weight": target_weight,
+                        "current_weight": current_weight,
+                        "delta_weight": delta_weight,
+                        "delta_dollars": max(delta_dollars, 0.0),
+                        "target_dollars": target_dollars,
+                        "price": close,
+                        "trade_confidence": confidence,
+                        "reason": f"model_{action.lower()}",
+                    }
+                )
+            elif pos.qty > 0:
+                sell_fraction = min(abs(delta_weight) / max(current_weight, 1e-9), 1.0)
+                sell_qty = int(max(1, np.floor(pos.qty * sell_fraction)))
+
+                exit_rows.append(
+                    {
+                        "symbol": symbol,
+                        "side": "sell",
+                        "delta_shares": sell_qty,
+                        "delta_dollars": abs(delta_dollars),
+                        "price": float(pos.current_price or close),
+                        "reason": f"model_reduce_to_target_{action.lower()}",
+                        "target_weight": target_weight,
+                        "current_weight": current_weight,
+                        "delta_weight": delta_weight,
+                        "trade_confidence": confidence,
+                    }
+                )
+
+    rebalance = pd.DataFrame(rebalance_rows)
+    exits = pd.DataFrame(exit_rows)
+
+    save_df(rebalance, DEFAULT_REBALANCE_ORDERS)
+    save_df(exits, DEFAULT_EXIT_ORDERS)
+
+    print(
+        f"[model-plan] converted {plan_path} -> "
+        f"rebalance_rows={len(rebalance)} exit_rows={len(exits)}"
+    )
+
+    return rebalance, exits
 
 def save_execution_results(
     order_plan: pd.DataFrame,
@@ -3888,10 +4143,6 @@ def build_config(args: argparse.Namespace) -> ExecutorConfig:
 def main() -> None:
     args = parse_args()
 
-    # =========================================================================
-    # Build premarket LLM sentiment universe
-    # =========================================================================
-
     if build_sentiment_universe is not None:
         try:
             print("\n" + "=" * 80)
@@ -3900,81 +4151,53 @@ def main() -> None:
 
             llm_payload = build_sentiment_universe()
 
-            market_tone = llm_payload.get("market_tone", "unknown")
-            summary = llm_payload.get("summary", "")
-            symbols = llm_payload.get("symbols", [])
-
-            print(f"[llm-universe] market_tone={market_tone}")
-            print(f"[llm-universe] summary={summary}")
-            print(f"[llm-universe] selected_symbols={len(symbols)}")
-
-            if symbols:
-                print(
-                    "[llm-universe] universe="
-                    + ",".join(symbols)
-                )
-
-            selections = llm_payload.get("selections", [])
-
-            if selections:
-                print("\n[llm-universe] reasoning:")
-
-                for i, row in enumerate(selections[:10], start=1):
-                    symbol = row.get("symbol", "")
-                    reason = row.get("reason", "")
-                    print(f"  {i:02d}. {symbol:<8} {reason}")
+            print(f"[llm-universe] market_tone={llm_payload.get('market_tone', 'unknown')}")
+            print(f"[llm-universe] summary={llm_payload.get('summary', '')}")
+            print(f"[llm-universe] selected_symbols={len(llm_payload.get('symbols', []))}")
 
             print("=" * 80 + "\n")
 
             write_event(
                 "premarket_llm_universe_generated",
                 {
-                    "market_tone": market_tone,
-                    "summary": summary,
-                    "symbols": symbols,
-                    "symbol_count": len(symbols),
+                    "market_tone": llm_payload.get("market_tone", "unknown"),
+                    "summary": llm_payload.get("summary", ""),
+                    "symbols": llm_payload.get("symbols", []),
+                    "symbol_count": len(llm_payload.get("symbols", [])),
                 },
             )
 
         except Exception as exc:
             print(f"[llm-universe] generation failed: {exc}")
-
-            write_event(
-                "premarket_llm_universe_failed",
-                {
-                    "error": str(exc),
-                },
-            )
-
+            write_event("premarket_llm_universe_failed", {"error": str(exc)})
     else:
         print("[llm-universe] selector module unavailable; using existing universe")
 
-    # =========================================================================
-    # Build executor config
-    # =========================================================================
-
     config = build_config(args)
 
-    # Force scanner to use the LLM-created universe JSON.
+    model_ok = run_regime_model_if_available()
+    broker = AlpacaBroker(ENV_PATH, paper=config.paper)
+
+    if model_ok and REGIME_POSITION_PLAN_PATH.exists():
+        print("[executor] using model.py regime_position_plan.csv as primary order source")
+
+        rebalance_orders, exit_orders = build_orders_from_regime_position_plan(
+            plan_path=REGIME_POSITION_PLAN_PATH,
+            broker=broker,
+        )
+
+        trader = ProductionOrderExecutor(config)
+        trader.run_once_from_frames(rebalance_orders, exit_orders)
+        return
+
+    print("[executor] model plan unavailable; falling back to internal scanner")
+
     if config.scanner is not None:
         config.scanner.universe = load_llm_sentiment_universe(
             json_path=LLM_SENTIMENT_UNIVERSE_JSON_PATH,
             locked_path=LOCKED_UNIVERSE_PATH,
             max_symbols=config.scanner.max_universe_symbols,
         )
-
-        print(
-            "[executor] loaded active LLM monitoring universe "
-            f"symbols={len(config.scanner.universe)}"
-        )
-
-    # =========================================================================
-    # Launch executor
-    # =========================================================================
-
-    print("\n" + "=" * 80)
-    print("STARTING PRODUCTION ORDER EXECUTOR")
-    print("=" * 80)
 
     trader = ProductionOrderExecutor(config)
     trader.run()
