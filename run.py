@@ -209,6 +209,12 @@ INVERSE_ETF_UNIVERSE = [
 INVERSE_ETF_SET = set(INVERSE_ETF_UNIVERSE)
 REGIME_REQUIRED_SYMBOLS = ["SPY", "QQQ", "VIXY"]
 
+# Buy orders are only allowed for true bullish setups. Plain reversal
+# candidates are diagnostic only and cannot become stock buy orders unless
+# they have confirmed reversal-breakout behavior.
+ALLOWED_BUY_SETUP_TYPES = {"momentum", "confirmed_reversal_breakout"}
+
+
 DEFAULT_SCAN_UNIVERSE = [
     # Core indexes / ETFs / inverse ETFs
     "SPY", "QQQ", "DIA", "IWM", "XLK", "SOXX", "SMH", "ARKK", "TQQQ", "SQQQ",
@@ -1514,9 +1520,59 @@ class MomentumSetupScanner:
 
         latest["momentum_score"] = momentum.clip(0, 1)
         latest["reversal_score"] = reversal.clip(0, 1)
-        latest["setup_type"] = np.where(latest["momentum_score"] >= latest["reversal_score"], "momentum", "reversal")
-        latest["setup_score"] = latest[["momentum_score", "reversal_score"]].max(axis=1)
+
+        # Strict buy-eligibility layer:
+        #   1. bullish_momentum_confirmed: continuation-style upside momentum.
+        #   2. confirmed_reversal_breakout: reversal only after price confirms
+        #      back above important short-term levels with participation.
+        # Plain reversal setups are retained as diagnostics only and are rejected
+        # before order generation.
+        latest["bullish_momentum_confirmed"] = (
+            (latest["ret_5d"].fillna(0) > 0)
+            & (latest["ret_10d"].fillna(0) > 0)
+            & (latest["close"] > latest["sma20"])
+            & (latest["sma5"] > latest["sma20"])
+            & (latest["rel_volume"].fillna(0) >= 1.0)
+            & (latest["momentum_score"].fillna(0) >= latest["reversal_score"].fillna(0) * 0.85)
+        )
+
+        latest["confirmed_reversal_breakout"] = (
+            (latest["lower_band_reclaim"].fillna(0) > 0)
+            & (latest["ret_1d"].fillna(0) > 0)
+            & (latest["close"] > latest["sma20"])
+            & ((latest["above_prev_high"].fillna(0) > 0) | (latest["bb_pos"].fillna(0) >= 0.50))
+            & (latest["rel_volume"].fillna(0) >= 1.2)
+            & (latest["rsi14"].fillna(0).between(35, 70))
+        )
+
+        latest["setup_type"] = np.select(
+            [
+                latest["bullish_momentum_confirmed"],
+                latest["confirmed_reversal_breakout"],
+            ],
+            [
+                "momentum",
+                "confirmed_reversal_breakout",
+            ],
+            default="reject",
+        )
+
+        latest["setup_score"] = np.select(
+            [
+                latest["setup_type"] == "momentum",
+                latest["setup_type"] == "confirmed_reversal_breakout",
+            ],
+            [
+                latest["momentum_score"],
+                latest["reversal_score"],
+            ],
+            default=0.0,
+        )
         latest["trade_confidence"] = latest["setup_score"].clip(0, 1)
+
+        # Only bullish momentum and confirmed reversal-breakout setups can
+        # continue into leadership/regime ranking and eventual order creation.
+        latest = latest[latest["setup_type"].isin(ALLOWED_BUY_SETUP_TYPES)].copy()
         latest = latest.sort_values(["setup_score", "dollar_volume20"], ascending=[False, False])
         return latest.reset_index(drop=True)
 
@@ -1879,7 +1935,8 @@ class MomentumSetupScanner:
         positions = {normalize_symbol(p.symbol): p for p in self.broker.get_all_open_positions()}
 
         candidates = scores[
-            (scores["setup_score"] >= self.config.min_setup_score)
+            (scores["setup_type"].isin(ALLOWED_BUY_SETUP_TYPES))
+            & (scores["setup_score"] >= self.config.min_setup_score)
             & (scores["trade_confidence"] >= self.config.min_buy_confidence)
         ].head(self.config.top_n).copy()
 
@@ -1895,7 +1952,7 @@ class MomentumSetupScanner:
 
             current_mv = positions.get(symbol).market_value if symbol in positions else 0.0
             current_weight = float(current_mv) / equity
-            type_mult = self.config.reversal_target_weight_mult if r["setup_type"] == "reversal" else 1.0
+            type_mult = self.config.reversal_target_weight_mult if r["setup_type"] == "confirmed_reversal_breakout" else 1.0
             target_weight = min(
                 self.config.max_target_weight,
                 self.config.base_target_weight * (0.50 + 1.50 * float(r["setup_score"])) * type_mult,
@@ -1925,6 +1982,9 @@ class MomentumSetupScanner:
                     "regime_max_gross_exposure": regime.max_gross_exposure,
                     "regime_max_position_weight": regime.max_position_weight,
                     "is_inverse_etf": bool(is_inverse),
+                    "setup_type": str(r.get("setup_type", "")),
+                    "bullish_momentum_confirmed": bool(r.get("bullish_momentum_confirmed", False)),
+                    "confirmed_reversal_breakout": bool(r.get("confirmed_reversal_breakout", False)),
                     "momentum_score": float(r["momentum_score"]),
                     "reversal_score": float(r["reversal_score"]),
                     "rsi14": to_float(r.get("rsi14")),
@@ -2376,6 +2436,9 @@ class ProductionOrderExecutor:
             "delta_dollars",
             "price",
             "reason",
+            "setup_type",
+            "bullish_momentum_confirmed",
+            "confirmed_reversal_breakout",
             "target_weight",
             "current_weight",
             "delta_weight",
@@ -2399,6 +2462,9 @@ class ProductionOrderExecutor:
             "delta_dollars": 0.0,
             "price": 0.0,
             "reason": default_reason,
+            "setup_type": "",
+            "bullish_momentum_confirmed": False,
+            "confirmed_reversal_breakout": False,
             "target_weight": np.nan,
             "current_weight": np.nan,
             "delta_weight": np.nan,
@@ -2439,6 +2505,11 @@ class ProductionOrderExecutor:
             out[col] = pd.to_numeric(out[col], errors="coerce")
 
         out["reason"] = out["reason"].fillna(default_reason).astype(str)
+        out["setup_type"] = out.get("setup_type", "").fillna("").astype(str).str.lower().str.strip()
+        if "bullish_momentum_confirmed" in out.columns:
+            out["bullish_momentum_confirmed"] = out["bullish_momentum_confirmed"].fillna(False).astype(bool)
+        if "confirmed_reversal_breakout" in out.columns:
+            out["confirmed_reversal_breakout"] = out["confirmed_reversal_breakout"].fillna(False).astype(bool)
         out = out[(out["symbol"] != "") & out["side"].isin(["buy", "sell"])].copy()
 
         return out.reset_index(drop=True)
@@ -2468,6 +2539,28 @@ class ProductionOrderExecutor:
         ex = self._normalize_order_frame(exits, default_reason="removed_from_high_conviction_universe")
 
         plan = pd.concat([ex, rb], ignore_index=True)
+
+        if plan.empty:
+            return pd.DataFrame()
+
+        # Final stale-CSV safety guard. Stock buy orders must come from either
+        # bullish momentum or confirmed reversal-breakout setups. Sells are
+        # always allowed, and option-booster orders keep their own separate
+        # momentum/underlying-profit gates.
+        buy_mask = plan["side"] == "buy"
+        reason_text = plan.get("reason", pd.Series("", index=plan.index)).astype(str).str.lower()
+        setup_text = plan.get("setup_type", pd.Series("", index=plan.index)).astype(str).str.lower()
+        option_booster_mask = reason_text.str.contains("option_booster", case=False, na=False)
+        allowed_stock_buy = (
+            setup_text.isin(ALLOWED_BUY_SETUP_TYPES)
+            | reason_text.str.contains("scanner_momentum", case=False, na=False)
+            | reason_text.str.contains("confirmed_reversal_breakout", case=False, na=False)
+        )
+        blocked_buy_count = int((buy_mask & ~option_booster_mask & ~allowed_stock_buy).sum())
+        if blocked_buy_count:
+            print(f"[order-plan] blocked non-bullish buy orders={blocked_buy_count}")
+            write_event("non_bullish_buy_orders_blocked", {"count": blocked_buy_count})
+        plan = plan[(~buy_mask) | option_booster_mask | allowed_stock_buy].copy()
 
         if plan.empty:
             return pd.DataFrame()
@@ -3678,37 +3771,44 @@ def build_orders_from_regime_position_plan(
 
     plan["symbol"] = plan["symbol"].map(normalize_symbol)
 
-    positions: dict[str, BrokerPosition] = {}
-    equity = 100_000.0
+    if broker is None:
+        broker = AlpacaBroker(ENV_PATH, paper=True)
 
-    if broker is not None:
-        account = broker.get_account_snapshot()
-        equity = max(float(account.equity), 1.0)
-        positions = {
-            normalize_symbol(p.symbol): p
-            for p in broker.get_all_open_positions()
-        }
+    account = broker.get_account_snapshot()
+    equity = max(float(account.equity), 1.0)
+
+    positions = {
+        normalize_symbol(p.symbol): p
+        for p in broker.get_all_open_positions()
+    }
+
+    print(
+        f"[model-plan] using Alpaca equity=${equity:,.2f} "
+        f"cash=${account.cash:,.2f} positions={len(positions)}"
+    )
 
     rebalance_rows: list[dict[str, Any]] = []
     exit_rows: list[dict[str, Any]] = []
 
     for _, row in plan.iterrows():
         symbol = normalize_symbol(row.get("symbol"))
-        action = str(row.get("trade_action", "NO_TRADE")).upper().strip()
+        action = str(row.get("trade_action", "")).upper().strip()
 
         if not symbol:
             continue
 
         target_weight = to_float(row.get("target_weight"), 0.0)
-        price = to_float(row.get("close"), to_float(row.get("price"), 0.0))
+        close = to_float(row.get("close"), to_float(row.get("price"), 0.0))
         confidence = to_float(
             row.get("explosive_continuation_probability"),
             to_float(row.get("trade_confidence"), 0.50),
         )
 
         pos = positions.get(symbol, BrokerPosition(symbol=symbol))
+
         current_weight = float(pos.market_value) / max(equity, 1e-9)
         delta_weight = target_weight - current_weight
+        target_dollars = target_weight * equity
         delta_dollars = delta_weight * equity
 
         if action == "LIQUIDATE" or target_weight <= 0:
@@ -3719,7 +3819,7 @@ def build_orders_from_regime_position_plan(
                         "side": "sell",
                         "delta_shares": int(pos.qty),
                         "delta_dollars": float(pos.market_value),
-                        "price": float(pos.current_price or price),
+                        "price": float(pos.current_price or close),
                         "reason": f"model_{action.lower()}",
                         "target_weight": 0.0,
                         "current_weight": current_weight,
@@ -3744,12 +3844,13 @@ def build_orders_from_regime_position_plan(
                     "current_weight": current_weight,
                     "delta_weight": delta_weight,
                     "delta_dollars": max(delta_dollars, 0.0),
-                    "target_dollars": target_weight * equity,
-                    "price": price,
+                    "target_dollars": target_dollars,
+                    "price": close,
                     "trade_confidence": confidence,
                     "reason": f"model_{action.lower()}",
                 }
             )
+
         elif pos.qty > 0:
             sell_fraction = min(abs(delta_weight) / max(current_weight, 1e-9), 1.0)
             sell_qty = int(max(1, np.floor(pos.qty * sell_fraction)))
@@ -3760,7 +3861,7 @@ def build_orders_from_regime_position_plan(
                     "side": "sell",
                     "delta_shares": sell_qty,
                     "delta_dollars": abs(delta_dollars),
-                    "price": float(pos.current_price or price),
+                    "price": float(pos.current_price or close),
                     "reason": f"model_reduce_to_target_{action.lower()}",
                     "target_weight": target_weight,
                     "current_weight": current_weight,
@@ -3776,7 +3877,7 @@ def build_orders_from_regime_position_plan(
     save_df(exits, DEFAULT_EXIT_ORDERS)
 
     print(
-        f"[model-plan] converted {plan_path} "
+        f"[model-plan] converted {plan_path} -> "
         f"rebalance_rows={len(rebalance)} exit_rows={len(exits)}"
     )
 
@@ -3793,20 +3894,26 @@ def build_orders_from_regime_position_plan(
     plan = pd.read_csv(plan_path)
 
     if plan.empty or "symbol" not in plan.columns:
+        print("[model-plan] empty or invalid position plan")
         return pd.DataFrame(), pd.DataFrame()
 
     plan["symbol"] = plan["symbol"].map(normalize_symbol)
 
-    positions: dict[str, BrokerPosition] = {}
-    equity = ACCOUNT_EQUITY
+    if broker is None:
+        broker = AlpacaBroker(ENV_PATH, paper=True)
 
-    if broker is not None:
-        acct = broker.get_account_snapshot()
-        equity = max(float(acct.equity), 1.0)
-        positions = {
-            normalize_symbol(p.symbol): p
-            for p in broker.get_all_open_positions()
-        }
+    account = broker.get_account_snapshot()
+    equity = max(float(account.equity), 1.0)
+
+    positions = {
+        normalize_symbol(p.symbol): p
+        for p in broker.get_all_open_positions()
+    }
+
+    print(
+        f"[model-plan] using Alpaca equity=${equity:,.2f} "
+        f"cash=${account.cash:,.2f} positions={len(positions)}"
+    )
 
     rebalance_rows: list[dict[str, Any]] = []
     exit_rows: list[dict[str, Any]] = []
@@ -3814,6 +3921,10 @@ def build_orders_from_regime_position_plan(
     for _, row in plan.iterrows():
         symbol = normalize_symbol(row.get("symbol"))
         action = str(row.get("trade_action", "")).upper().strip()
+
+        if not symbol:
+            continue
+
         target_weight = to_float(row.get("target_weight"), 0.0)
         close = to_float(row.get("close"), to_float(row.get("price"), 0.0))
         confidence = to_float(
@@ -3822,12 +3933,13 @@ def build_orders_from_regime_position_plan(
         )
 
         pos = positions.get(symbol, BrokerPosition(symbol=symbol))
+
         current_weight = float(pos.market_value) / max(equity, 1e-9)
         delta_weight = target_weight - current_weight
         target_dollars = target_weight * equity
         delta_dollars = delta_weight * equity
 
-        if action in {"LIQUIDATE"} or target_weight <= 0:
+        if action == "LIQUIDATE" or target_weight <= 0:
             if pos.qty > 0:
                 exit_rows.append(
                     {
@@ -3845,43 +3957,46 @@ def build_orders_from_regime_position_plan(
                 )
             continue
 
-        if action in {"OPEN_LONG", "HOLD_LONG", "CONTINUE_HOLD_WAIT_CONFIRMATION"}:
-            if abs(delta_weight) < MIN_WEIGHT_DELTA:
-                continue
+        if action not in {"OPEN_LONG", "HOLD_LONG", "CONTINUE_HOLD_WAIT_CONFIRMATION"}:
+            continue
 
-            if delta_weight > 0:
-                rebalance_rows.append(
-                    {
-                        "symbol": symbol,
-                        "side": "buy",
-                        "target_weight": target_weight,
-                        "current_weight": current_weight,
-                        "delta_weight": delta_weight,
-                        "delta_dollars": max(delta_dollars, 0.0),
-                        "target_dollars": target_dollars,
-                        "price": close,
-                        "trade_confidence": confidence,
-                        "reason": f"model_{action.lower()}",
-                    }
-                )
-            elif pos.qty > 0:
-                sell_fraction = min(abs(delta_weight) / max(current_weight, 1e-9), 1.0)
-                sell_qty = int(max(1, np.floor(pos.qty * sell_fraction)))
+        if abs(delta_weight) < MIN_WEIGHT_DELTA:
+            continue
 
-                exit_rows.append(
-                    {
-                        "symbol": symbol,
-                        "side": "sell",
-                        "delta_shares": sell_qty,
-                        "delta_dollars": abs(delta_dollars),
-                        "price": float(pos.current_price or close),
-                        "reason": f"model_reduce_to_target_{action.lower()}",
-                        "target_weight": target_weight,
-                        "current_weight": current_weight,
-                        "delta_weight": delta_weight,
-                        "trade_confidence": confidence,
-                    }
-                )
+        if delta_weight > 0:
+            rebalance_rows.append(
+                {
+                    "symbol": symbol,
+                    "side": "buy",
+                    "target_weight": target_weight,
+                    "current_weight": current_weight,
+                    "delta_weight": delta_weight,
+                    "delta_dollars": max(delta_dollars, 0.0),
+                    "target_dollars": target_dollars,
+                    "price": close,
+                    "trade_confidence": confidence,
+                    "reason": f"model_{action.lower()}",
+                }
+            )
+
+        elif pos.qty > 0:
+            sell_fraction = min(abs(delta_weight) / max(current_weight, 1e-9), 1.0)
+            sell_qty = int(max(1, np.floor(pos.qty * sell_fraction)))
+
+            exit_rows.append(
+                {
+                    "symbol": symbol,
+                    "side": "sell",
+                    "delta_shares": sell_qty,
+                    "delta_dollars": abs(delta_dollars),
+                    "price": float(pos.current_price or close),
+                    "reason": f"model_reduce_to_target_{action.lower()}",
+                    "target_weight": target_weight,
+                    "current_weight": current_weight,
+                    "delta_weight": delta_weight,
+                    "trade_confidence": confidence,
+                }
+            )
 
     rebalance = pd.DataFrame(rebalance_rows)
     exits = pd.DataFrame(exit_rows)

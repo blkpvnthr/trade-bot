@@ -1,0 +1,142 @@
+{
+  "day_trades": [],
+  "same_day_buys": {
+    "DDOG": [
+      {
+        "date": "2026-05-12",
+        "qty": 4.0,
+        "remaining_qty": 4.0,
+        "order_id": "5220251c-33d4-45f1-b028-d457caca69af",
+        "timestamp_utc": "2026-05-12T14:46:30.690654+00:00"
+      }
+    ],
+    "AUR": [
+      {
+        "date": "2026-05-12",
+        "qty": 97.0,
+        "remaining_qty": 97.0,
+        "order_id": "ec92d2d1-b73a-43e8-8cec-8db16c5c4b41",
+        "timestamp_utc": "2026-05-12T14:46:43.375823+00:00"
+      }
+    ],
+    "CRGY": [
+      {
+        "date": "2026-05-12",
+        "qty": 40.0,
+        "remaining_qty": 40.0,
+        "order_id": "79a7e5de-60c2-47ef-9ebf-d73bc5dc8f42",
+        "timestamp_utc": "2026-05-12T14:46:56.027683+00:00"
+      }
+    ],
+    "CVE": [
+      {
+        "date": "2026-05-12",
+        "qty": 17.0,
+        "remaining_qty": 17.0,
+        "order_id": "2397d345-0cce-416f-b004-1079825a1379",
+        "timestamp_utc": "2026-05-12T14:47:08.660200+00:00"
+      }
+    ],
+    "ADM": [
+      {
+        "date": "2026-05-12",
+        "qty": 6.0,
+        "remaining_qty": 6.0,
+        "order_id": "699f9b97-62e2-4c39-afa4-aa55db607931",
+        "timestamp_utc": "2026-05-12T14:47:21.363734+00:00"
+      }
+    ],
+    "CRWV": [
+      {
+        "date": "2026-05-12",
+        "qty": 3.0,
+        "remaining_qty": 3.0,
+        "order_id": "8b51fcc5-b992-4fbc-9af5-3f2c48ab6185",
+        "timestamp_utc": "2026-05-12T14:47:34.051322+00:00"
+      }
+    ],
+    "BITO": [
+      {
+        "date": "2026-05-12",
+        "qty": 27.0,
+        "remaining_qty": 27.0,
+        "order_id": "4034b3f6-8092-443b-8c0b-58b0bf9ad5a6",
+        "timestamp_utc": "2026-05-12T14:47:46.680321+00:00"
+      }
+    ],
+    "APLD": [
+      {
+        "date": "2026-05-12",
+        "qty": 6.0,
+        "remaining_qty": 6.0,
+        "order_id": "eaa00a29-cabe-40cc-bb70-bfbe1b434bdb",
+        "timestamp_utc": "2026-05-12T14:47:59.346019+00:00"
+      }
+    ],
+    "APA": [
+      {
+        "date": "2026-05-12",
+        "qty": 4.0,
+        "remaining_qty": 4.0,
+        "order_id": "ece4de1a-73b3-4928-8652-3ef643f14e8f",
+        "timestamp_utc": "2026-05-12T14:48:12.022953+00:00"
+      }
+    ],
+    "CLSK": [
+      {
+        "date": "2026-05-12",
+        "qty": 13.0,
+        "remaining_qty": 13.0,
+        "order_id": "eefc0d16-ac7b-4e36-845d-f7142078122c",
+        "timestamp_utc": "2026-05-12T14:48:24.687996+00:00"
+      }
+    ],
+    "CSCO": [
+      {
+        "date": "2026-05-12",
+        "qty": 1.0,
+        "remaining_qty": 1.0,
+        "order_id": "9d717396-7a44-44d2-b4b5-34f6b311408b",
+        "timestamp_utc": "2026-05-12T14:48:37.408608+00:00"
+      }
+    ],
+    "AR": [
+      {
+        "date": "2026-05-12",
+        "qty": 3.0,
+        "remaining_qty": 3.0,
+        "order_id": "9c2df324-d269-4bc2-a926-ad0567a1100d",
+        "timestamp_utc": "2026-05-12T14:48:50.176138+00:00"
+      }
+    ],
+    "CGGR": [
+      {
+        "date": "2026-05-12",
+        "qty": 3.0,
+        "remaining_qty": 3.0,
+        "order_id": "bbef515e-5c8f-4848-8737-d2568de08d4c",
+        "timestamp_utc": "2026-05-12T14:49:02.836320+00:00"
+      }
+    ],
+    "ARKK": [
+      {
+        "date": "2026-05-12",
+        "qty": 1.0,
+        "remaining_qty": 1.0,
+        "order_id": "4968f44d-4922-4fd5-9fec-9fc38477d8ed",
+        "timestamp_utc": "2026-05-12T14:49:15.527236+00:00"
+      }
+    ],
+    "CPRT": [
+      {
+        "date": "2026-05-12",
+        "qty": 2.0,
+        "remaining_qty": 2.0,
+        "order_id": "52ba758f-d3e4-4bfa-b8e9-f7cf0f1ec259",
+        "timestamp_utc": "2026-05-12T14:49:28.168106+00:00"
+      }
+    ]
+  },
+  "same_day_sells": {},
+  "updated_at": "2026-05-12T14:49:28.168161+00:00"
+}
