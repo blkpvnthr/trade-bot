@@ -53,7 +53,10 @@ from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, OrderStatus, OrderType, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
-
+try:
+    from llm_sentiment_universe_selector import build_sentiment_universe
+except Exception:
+    build_sentiment_universe = None
 try:
     from alpaca.data.enums import DataFeed
     from alpaca.data.historical.stock import StockHistoricalDataClient
@@ -961,35 +964,125 @@ def normalize_symbol(symbol: Any) -> str:
     return safe_symbol(symbol)
 
 
-def load_locked_universe(path: Path = LOCKED_UNIVERSE_PATH, max_symbols: int = 30) -> list[str]:
-    """Load the preferred locked universe when available.
-
-    Supports one symbol per line or comma-separated symbols. Symbols with
-    special characters other than '-' are ignored so bad tickers such as BF.B
-    or accidental text do not break Alpaca requests.
+def load_llm_sentiment_universe(
+    json_path: Path = LLM_SENTIMENT_UNIVERSE_JSON_PATH,
+    locked_path: Path = LOCKED_UNIVERSE_PATH,
+    max_symbols: int = 30,
+    max_age_hours: float = 16.0,
+) -> list[str]:
     """
-    if not path.exists():
-        return list(DEFAULT_SCAN_UNIVERSE)[:max_symbols]
+    Preferred universe loader.
 
-    raw = path.read_text(encoding="utf-8", errors="ignore")
-    tokens = re.split(r"[\s,]+", raw)
-    symbols: list[str] = []
+    Priority:
+        1. daily_system_outputs/latest_llm_sentiment_universe.json
+        2. locked_trading_universe.txt
+        3. DEFAULT_SCAN_UNIVERSE
 
-    for token in tokens:
-        sym = normalize_symbol(token)
-        if not sym:
-            continue
-        if not re.fullmatch(r"[A-Z][A-Z0-9-]*", sym):
-            continue
-        if sym not in symbols:
-            symbols.append(sym)
+    Expected JSON shape:
+        {
+          "symbols": ["NVDA", "PLTR", ...],
+          "selections": [
+            {"symbol": "NVDA", "reason": "..."}
+          ]
+        }
+    """
+    def valid(sym: Any) -> str:
+        s = normalize_symbol(sym)
+        if not s:
+            return ""
+        if not re.fullmatch(r"[A-Z][A-Z0-9-]{0,9}", s):
+            return ""
+        return s
 
-    if not symbols:
-        print(f"[universe] {path} contained no valid symbols; using default universe")
-        return list(DEFAULT_SCAN_UNIVERSE)[:max_symbols]
+    def dedupe(symbols: list[Any]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
 
-    print(f"[universe] loaded {len(symbols[:max_symbols])} symbols from {path}")
-    return symbols[:max_symbols]
+        for raw in symbols:
+            sym = valid(raw)
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            out.append(sym)
+
+            if len(out) >= max_symbols:
+                break
+
+        return out
+
+    if json_path.exists():
+        try:
+            age_hours = (time.time() - json_path.stat().st_mtime) / 3600.0
+
+            if age_hours <= max_age_hours:
+                data = json.loads(json_path.read_text(encoding="utf-8"))
+
+                raw_symbols: list[Any] = []
+
+                if isinstance(data.get("symbols"), list):
+                    raw_symbols.extend(data["symbols"])
+
+                if isinstance(data.get("selections"), list):
+                    for row in data["selections"]:
+                        if isinstance(row, dict):
+                            raw_symbols.append(row.get("symbol") or row.get("ticker"))
+
+                symbols = dedupe(raw_symbols)
+
+                if symbols:
+                    print(
+                        "[universe] loaded LLM sentiment universe "
+                        f"symbols={len(symbols)} path={json_path} age_hours={age_hours:.2f}"
+                    )
+
+                    write_event(
+                        "llm_sentiment_universe_loaded",
+                        {
+                            "path": str(json_path),
+                            "age_hours": age_hours,
+                            "symbols": symbols,
+                            "market_tone": data.get("market_tone", ""),
+                            "summary": data.get("summary", ""),
+                        },
+                    )
+
+                    return symbols
+
+                print(f"[universe] LLM JSON existed but had no valid symbols: {json_path}")
+
+            else:
+                print(
+                    "[universe] LLM sentiment universe is stale; "
+                    f"path={json_path} age_hours={age_hours:.2f} max_age_hours={max_age_hours:.2f}"
+                )
+
+        except Exception as exc:
+            print(f"[universe] failed to load LLM sentiment universe: {exc}")
+
+    # Backward-compatible fallback.
+    if locked_path.exists():
+        raw = locked_path.read_text(encoding="utf-8", errors="ignore")
+        tokens = re.split(r"[\s,]+", raw)
+        symbols = dedupe(tokens)
+
+        if symbols:
+            print(f"[universe] loaded locked universe symbols={len(symbols)} path={locked_path}")
+            return symbols
+
+    print("[universe] using DEFAULT_SCAN_UNIVERSE fallback")
+    return list(DEFAULT_SCAN_UNIVERSE)[:max_symbols]
+
+
+def load_locked_universe(path: Path = LOCKED_UNIVERSE_PATH, max_symbols: int = 30) -> list[str]:
+    """
+    Backward-compatible wrapper.
+    Existing run.py code can keep calling load_locked_universe().
+    """
+    return load_llm_sentiment_universe(
+        json_path=LLM_SENTIMENT_UNIVERSE_JSON_PATH,
+        locked_path=path,
+        max_symbols=max_symbols,
+    )
 
 
 def get_sp500_fallback_symbols() -> list[str]:
@@ -1135,13 +1228,27 @@ class MomentumSetupScanner:
         elif self.config.use_sp500_fallback:
             symbols = get_sp500_fallback_symbols()
         else:
-            symbols = list(DEFAULT_SCAN_UNIVERSE)
+            symbols = load_llm_sentiment_universe(
+                json_path=LLM_SENTIMENT_UNIVERSE_JSON_PATH,
+                locked_path=LOCKED_UNIVERSE_PATH,
+                max_symbols=self.config.max_universe_symbols,
+            )
 
         out: list[str] = []
+
         for sym in symbols:
             sym = normalize_symbol(sym)
-            if sym and sym not in out:
+            if not sym:
+                continue
+            if not re.fullmatch(r"[A-Z][A-Z0-9-]{0,9}", sym):
+                continue
+            if sym not in out:
                 out.append(sym)
+
+        if not out:
+            out = list(DEFAULT_SCAN_UNIVERSE)[: self.config.max_universe_symbols]
+
+        print(f"[universe] active monitor universe symbols={len(out)} source=llm_sentiment_json")
         return out[: self.config.max_universe_symbols]
 
     def _regime_required_symbols(self) -> list[str]:
@@ -3779,7 +3886,95 @@ def build_config(args: argparse.Namespace) -> ExecutorConfig:
 
 def main() -> None:
     args = parse_args()
+
+    # =========================================================================
+    # Build premarket LLM sentiment universe
+    # =========================================================================
+
+    if build_sentiment_universe is not None:
+        try:
+            print("\n" + "=" * 80)
+            print("PREMARKET LLM SENTIMENT UNIVERSE")
+            print("=" * 80)
+
+            llm_payload = build_sentiment_universe()
+
+            market_tone = llm_payload.get("market_tone", "unknown")
+            summary = llm_payload.get("summary", "")
+            symbols = llm_payload.get("symbols", [])
+
+            print(f"[llm-universe] market_tone={market_tone}")
+            print(f"[llm-universe] summary={summary}")
+            print(f"[llm-universe] selected_symbols={len(symbols)}")
+
+            if symbols:
+                print(
+                    "[llm-universe] universe="
+                    + ",".join(symbols)
+                )
+
+            selections = llm_payload.get("selections", [])
+
+            if selections:
+                print("\n[llm-universe] reasoning:")
+
+                for i, row in enumerate(selections[:10], start=1):
+                    symbol = row.get("symbol", "")
+                    reason = row.get("reason", "")
+                    print(f"  {i:02d}. {symbol:<8} {reason}")
+
+            print("=" * 80 + "\n")
+
+            write_event(
+                "premarket_llm_universe_generated",
+                {
+                    "market_tone": market_tone,
+                    "summary": summary,
+                    "symbols": symbols,
+                    "symbol_count": len(symbols),
+                },
+            )
+
+        except Exception as exc:
+            print(f"[llm-universe] generation failed: {exc}")
+
+            write_event(
+                "premarket_llm_universe_failed",
+                {
+                    "error": str(exc),
+                },
+            )
+
+    else:
+        print("[llm-universe] selector module unavailable; using existing universe")
+
+    # =========================================================================
+    # Build executor config
+    # =========================================================================
+
     config = build_config(args)
+
+    # Force scanner to use the LLM-created universe JSON.
+    if config.scanner is not None:
+        config.scanner.universe = load_llm_sentiment_universe(
+            json_path=LLM_SENTIMENT_UNIVERSE_JSON_PATH,
+            locked_path=LOCKED_UNIVERSE_PATH,
+            max_symbols=config.scanner.max_universe_symbols,
+        )
+
+        print(
+            "[executor] loaded active LLM monitoring universe "
+            f"symbols={len(config.scanner.universe)}"
+        )
+
+    # =========================================================================
+    # Launch executor
+    # =========================================================================
+
+    print("\n" + "=" * 80)
+    print("STARTING PRODUCTION ORDER EXECUTOR")
+    print("=" * 80)
+
     trader = ProductionOrderExecutor(config)
     trader.run()
 
