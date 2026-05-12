@@ -25,8 +25,11 @@ DISCOVERY_PATH = OUT_DIR / "latest_llm_candidate_discovery.json"
 LOCKED_UNIVERSE_PATH = PROJECT_ROOT / "locked_trading_universe.txt"
 
 MODEL = os.getenv("OPENAI_SENTIMENT_UNIVERSE_MODEL", "gpt-4.1-mini")
-TARGET_COUNT = 30
-YAHOO_GAINERS_COUNT = int(os.getenv("YAHOO_GAINERS_COUNT", "100"))
+TARGET_COUNT = int(os.getenv("TARGET_UNIVERSE_COUNT", "30"))
+YAHOO_GAINERS_COUNT = int(os.getenv("YAHOO_GAINERS_COUNT", "40"))
+LLM_CANDIDATE_LIMIT = int(os.getenv("LLM_CANDIDATE_LIMIT", "40"))
+OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "60"))
+OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "3500"))
 
 MIN_PRICE = float(os.getenv("YAHOO_MIN_PRICE", "2"))
 MAX_PRICE = float(os.getenv("YAHOO_MAX_PRICE", "500"))
@@ -39,7 +42,7 @@ FALLBACK = [
     "QUBT", "SOUN", "AI", "BBAI", "OKLO", "SMR", "CEG", "VST", "SOXX", "QQQ",
 ]
 
-STRONG_CATALYST_TYPES = {
+CATALYST_TYPES = {
     "technical_gainer",
     "financial_strength",
     "analyst_upside",
@@ -58,7 +61,7 @@ You are an institutional premarket stock selection engine.
 You receive Yahoo Finance day-gainers plus company financial details.
 Your job is to select the TOP 30 candidates for today's monitoring universe.
 
-The goal is not to explain every gainer. The goal is to identify the 30 most compelling trade-monitoring candidates based on:
+Identify the most compelling trade-monitoring candidates based on:
 - strongest percent gain
 - unusual volume / relative volume
 - liquidity
@@ -95,9 +98,8 @@ Rules:
 - Use "symbol", not "ticker".
 - Symbols must be uppercase.
 - No duplicate symbols.
-- Every reason must be compelling, specific, and data-backed.
-- Every reason must include at least TWO concrete details when available, such as percent gain, volume, relative volume, market cap, sector, revenue growth, earnings growth, P/E, analyst target, recommendation, short ratio, or business description.
-- Do not use vague reasoning like positive momentum unless paired with concrete data.
+- Every reason must be specific and data-backed.
+- Every reason must include at least TWO concrete details when available.
 - Do not invent facts not present in the supplied data.
 - Confidence must be between 0 and 1.
 - No markdown.
@@ -113,7 +115,7 @@ def normalize_symbol(value: Any) -> str:
     return str(value or "").upper().strip().replace(".", "-")
 
 
-def is_valid_symbol(symbol: str) -> bool:
+def is_valid_symbol(symbol: Any) -> bool:
     symbol = normalize_symbol(symbol)
     return bool(re.fullmatch(r"[A-Z][A-Z0-9-]{1,9}", symbol))
 
@@ -136,24 +138,13 @@ def to_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def clean_reason(reason: Any) -> str:
-    text = str(reason or "").replace("\n", " ").strip()
-    text = re.sub(r"\s+", " ", text)
-    return text[:700] or "Selected from Yahoo gainers and company financial data."
-
-
-def normalize_catalyst_type(value: Any) -> str:
-    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
-    return raw if raw in STRONG_CATALYST_TYPES else "technical_gainer"
-
-
 def fmt_pct(value: Any) -> str:
-    v = to_float(value, 0.0)
-    return f"{v:.2f}%"
+    return f"{to_float(value):.2f}%"
 
 
 def fmt_money(value: Any) -> str:
-    v = to_float(value, 0.0)
+    v = to_float(value)
+
     if v >= 1_000_000_000_000:
         return f"${v / 1_000_000_000_000:.2f}T"
     if v >= 1_000_000_000:
@@ -162,7 +153,19 @@ def fmt_money(value: Any) -> str:
         return f"${v / 1_000_000:.2f}M"
     if v > 0:
         return f"${v:,.0f}"
+
     return "N/A"
+
+
+def clean_reason(reason: Any) -> str:
+    text = str(reason or "").replace("\n", " ").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text[:700] or "Selected from Yahoo gainers and company financial data."
+
+
+def normalize_catalyst_type(value: Any) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return raw if raw in CATALYST_TYPES else "technical_gainer"
 
 
 def fetch_yahoo_gainers(limit: int = YAHOO_GAINERS_COUNT) -> pd.DataFrame:
@@ -202,12 +205,11 @@ def fetch_yahoo_gainers(limit: int = YAHOO_GAINERS_COUNT) -> pd.DataFrame:
 
 
 def passes_basic_filters(row: dict[str, Any]) -> bool:
-    symbol = normalize_symbol(row.get("symbol"))
     price = to_float(row.get("price"))
     volume = to_int(row.get("volume"))
     market_cap = to_int(row.get("market_cap"))
 
-    if not is_valid_symbol(symbol):
+    if not is_valid_symbol(row.get("symbol")):
         return False
     if price < MIN_PRICE or price > MAX_PRICE:
         return False
@@ -224,8 +226,7 @@ def enrich_company_details(symbols: list[str]) -> dict[str, dict[str, Any]]:
 
     for symbol in symbols:
         try:
-            ticker = yf.Ticker(symbol)
-            info = ticker.get_info() or {}
+            info = yf.Ticker(symbol).get_info() or {}
 
             enriched[symbol] = {
                 "company_name": info.get("shortName") or info.get("longName"),
@@ -235,8 +236,6 @@ def enrich_company_details(symbols: list[str]) -> dict[str, dict[str, Any]]:
                 "enterprise_value": info.get("enterpriseValue"),
                 "trailing_pe": info.get("trailingPE"),
                 "forward_pe": info.get("forwardPE"),
-                "peg_ratio": info.get("pegRatio"),
-                "price_to_sales": info.get("priceToSalesTrailing12Months"),
                 "revenue_growth": info.get("revenueGrowth"),
                 "earnings_growth": info.get("earningsGrowth"),
                 "profit_margins": info.get("profitMargins"),
@@ -253,7 +252,6 @@ def enrich_company_details(symbols: list[str]) -> dict[str, dict[str, Any]]:
                 "target_high_price": info.get("targetHighPrice"),
                 "recommendation": info.get("recommendationKey"),
                 "number_of_analyst_opinions": info.get("numberOfAnalystOpinions"),
-                "business_summary": str(info.get("longBusinessSummary") or "")[:700],
             }
 
         except Exception as exc:
@@ -263,17 +261,24 @@ def enrich_company_details(symbols: list[str]) -> dict[str, dict[str, Any]]:
     return enriched
 
 
-def calc_discovery_score(row: dict[str, Any]) -> float:
-    change_pct = to_float(row.get("change_pct"))
-    volume = max(to_float(row.get("volume")), 1.0)
-    avg_volume = max(to_float(row.get("avg_volume")), 1.0)
-    market_cap = max(to_float(row.get("market_cap")), 1.0)
+def calc_relative_volume(row: dict[str, Any]) -> float | None:
+    volume = to_float(row.get("volume"))
+    avg_volume = to_float(row.get("avg_volume"))
 
-    rel_volume = volume / avg_volume if avg_volume > 0 else 1.0
+    if volume > 0 and avg_volume > 0:
+        return volume / avg_volume
+
+    return None
+
+
+def calc_discovery_score(row: dict[str, Any]) -> float:
+    change_pct = max(to_float(row.get("change_pct")), 0.0)
+    rel_volume = to_float(row.get("relative_volume"), 1.0)
+    market_cap = to_float(row.get("market_cap"))
 
     score = 0.0
-    score += min(max(change_pct, 0.0), 80.0) * 2.2
-    score += min(rel_volume, 15.0) * 9.0
+    score += min(change_pct, 80.0) * 2.2
+    score += min(max(rel_volume, 0.0), 15.0) * 9.0
 
     if market_cap >= 50_000_000_000:
         score += 22
@@ -347,10 +352,6 @@ def discover_candidates() -> dict[str, Any]:
             if not is_valid_symbol(symbol):
                 continue
 
-            volume = to_float(r.get("volume"))
-            avg_volume = to_float(r.get("avg_volume"))
-            rel_volume = volume / avg_volume if avg_volume > 0 else None
-
             row = {
                 "symbol": symbol,
                 "name": r.get("name"),
@@ -359,25 +360,26 @@ def discover_candidates() -> dict[str, Any]:
                 "change_pct": r.get("change_pct"),
                 "volume": r.get("volume"),
                 "avg_volume": r.get("avg_volume"),
-                "relative_volume": rel_volume,
+                "relative_volume": calc_relative_volume(r),
                 "market_cap": r.get("market_cap"),
                 "pe_ratio": r.get("pe_ratio"),
                 "exchange": r.get("exchange"),
                 "quote_type": r.get("quote_type"),
-                "discovery_score": calc_discovery_score(r),
                 "source": "yahoo_day_gainers",
             }
+
+            row["discovery_score"] = calc_discovery_score(row)
             rows.append(row)
 
     rows = sorted(rows, key=lambda x: to_float(x.get("discovery_score")), reverse=True)
     rows = rows[:max(YAHOO_GAINERS_COUNT, TARGET_COUNT)]
 
     symbols = [r["symbol"] for r in rows if is_valid_symbol(r.get("symbol"))]
-    enriched = enrich_company_details(symbols[:80])
+    enriched = enrich_company_details(symbols[:LLM_CANDIDATE_LIMIT])
 
     candidates: list[dict[str, Any]] = []
 
-    for row in rows:
+    for row in rows[:LLM_CANDIDATE_LIMIT]:
         symbol = row["symbol"]
         details = enriched.get(symbol, {})
         merged = {**row, **details}
@@ -415,8 +417,10 @@ def discover_candidates() -> dict[str, Any]:
             "max_price": MAX_PRICE,
             "min_volume": MIN_VOLUME,
             "min_market_cap": MIN_MARKET_CAP,
+            "yahoo_gainers_count": YAHOO_GAINERS_COUNT,
+            "llm_candidate_limit": LLM_CANDIDATE_LIMIT,
         },
-        "candidates": candidates[:100],
+        "candidates": candidates[:LLM_CANDIDATE_LIMIT],
     }
 
     DISCOVERY_PATH.write_text(json.dumps(discovery, indent=2) + "\n", encoding="utf-8")
@@ -429,7 +433,7 @@ def discover_candidates() -> dict[str, Any]:
 def compact_candidates_for_llm(discovery: dict[str, Any]) -> list[dict[str, Any]]:
     compact: list[dict[str, Any]] = []
 
-    for row in discovery.get("candidates", [])[:100]:
+    for row in discovery.get("candidates", [])[:LLM_CANDIDATE_LIMIT]:
         compact.append(
             {
                 "symbol": row.get("symbol"),
@@ -447,7 +451,6 @@ def compact_candidates_for_llm(discovery: dict[str, Any]) -> list[dict[str, Any]
                 "revenue_growth": row.get("revenue_growth"),
                 "earnings_growth": row.get("earnings_growth"),
                 "profit_margins": row.get("profit_margins"),
-                "beta": row.get("beta"),
                 "short_ratio": row.get("short_ratio"),
                 "short_percent_of_float": row.get("short_percent_of_float"),
                 "target_mean_price": row.get("target_mean_price"),
@@ -455,7 +458,6 @@ def compact_candidates_for_llm(discovery: dict[str, Any]) -> list[dict[str, Any]
                 "analyst_count": row.get("number_of_analyst_opinions"),
                 "discovery_score": row.get("discovery_score"),
                 "data_catalyst_type": row.get("data_catalyst_type"),
-                "business_summary": row.get("business_summary"),
             }
         )
 
@@ -471,7 +473,6 @@ Today is {datetime.now().strftime("%Y-%m-%d")}.
 Use the Yahoo Finance day-gainers and company financial data below.
 Select the TOP 30 candidates for today's monitoring universe.
 
-Your reasoning must be compelling and data-backed.
 For each selection, explain why it deserves monitoring today using at least TWO concrete fields when available.
 
 Concrete fields include:
@@ -487,21 +488,24 @@ Concrete fields include:
 - analyst target
 - recommendation
 - short ratio
-- business summary
 
 Yahoo gainers and financial details:
-{json.dumps(candidates, indent=2)}
+{json.dumps(candidates, separators=(",", ":"))}
 
 Return the required JSON only.
 """.strip()
 
 
 def call_llm(discovery: dict[str, Any]) -> dict[str, Any]:
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    client = OpenAI(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        timeout=OPENAI_TIMEOUT_SECONDS,
+    )
 
     response = client.chat.completions.create(
         model=MODEL,
-        temperature=0.10,
+        temperature=0.05,
+        max_tokens=OPENAI_MAX_TOKENS,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": build_prompt(discovery)},
