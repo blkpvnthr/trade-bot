@@ -91,11 +91,12 @@ ENV_PATH = PROJECT_ROOT / ".env"
 
 load_dotenv(ENV_PATH)
 
-LLM_SENTIMENT_UNIVERSE_JSON_PATH = OUT_DIR / "latest_llm_sentiment_universe.json"
-
 OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
 LOG_DIR = PROJECT_ROOT / "logs" / "execution"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+LLM_SENTIMENT_UNIVERSE_JSON_PATH = OUT_DIR / "latest_llm_sentiment_universe.json"
 
 DEFAULT_REBALANCE_ORDERS = OUT_DIR / "daily_walkforward_emulated_rebalance_orders.csv"
 DEFAULT_EXIT_ORDERS = OUT_DIR / "daily_walkforward_emulated_exit_orders.csv"
