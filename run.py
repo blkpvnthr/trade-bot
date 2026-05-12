@@ -7,10 +7,15 @@ Streaming-style paper executor inspired by the ProductionPaperTrader structure.
 No dry-run mode.
 
 Default behavior:
-    python run.py
+    python run_integrated.py
+
+No arguments are required. By default this runs continuously in paper mode,
+scans a built-in symbol universe directly from Alpaca daily bars, applies
+market leadership/regime-aware risk controls, and enables the long-call-only
+options booster.
 
 This executor is designed to be simple to reason about:
-    - polls the existing daily_system_outputs order CSVs
+    - scans symbols directly using Alpaca historical daily bars
     - checks Alpaca market clock
     - logs account equity curve
     - journals every attempted/placed/skipped trade
@@ -63,6 +68,15 @@ except Exception:  # scanner/options can be disabled if alpaca-data is unavailab
     OptionChainRequest = None
     TimeFrame = None
 
+try:
+    from portfolio_sentiment_monitor import (
+        SentimentMonitorConfig,
+        run_portfolio_sentiment_monitor,
+    )
+except Exception:  # portfolio sentiment is optional and degrades safely
+    SentimentMonitorConfig = None
+    run_portfolio_sentiment_monitor = None
+
 
 # =============================================================================
 # Paths / environment
@@ -73,6 +87,8 @@ PROJECT_ROOT = THIS_FILE.parent
 ENV_PATH = PROJECT_ROOT / ".env"
 
 load_dotenv(ENV_PATH)
+
+LLM_SENTIMENT_UNIVERSE_JSON_PATH = OUT_DIR / "latest_llm_sentiment_universe.json"
 
 OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
 LOG_DIR = PROJECT_ROOT / "logs" / "execution"
@@ -85,6 +101,7 @@ JOURNAL_PATH = LOG_DIR / "executor_journal.csv"
 EQUITY_CURVE_PATH = LOG_DIR / "executor_equity_curve.csv"
 EVENTS_JSONL = LOG_DIR / "execution_events.jsonl"
 KILL_SWITCH_PATH = LOG_DIR / "kill_switch_state.json"
+PDT_STATE_PATH = LOG_DIR / "pdt_state.json"
 
 # =============================================================================
 # Constants
@@ -115,6 +132,18 @@ MAX_DAILY_LOSS_PCT = 0.02
 MAX_DAILY_LOSS_DOLLARS = 2_000.0
 
 HEARTBEAT_SECONDS = 60
+
+# PDT guard rails. US pattern day trader rules generally become important below
+# $25K equity. These controls are intentionally conservative and are enforced
+# locally before submitting orders. They do not replace broker-side rules.
+PDT_EQUITY_THRESHOLD = 25_000.0
+PDT_ROLLING_WINDOW_DAYS = 5
+PDT_MAX_DAY_TRADES = 3
+PDT_RESERVE_DAY_TRADES = 1
+PDT_BLOCK_SAME_DAY_EXITS_UNDER_25K = True
+PDT_BLOCK_NEW_BUYS_WHEN_NEAR_LIMIT = True
+PDT_STRICT_UNDER_25K = False
+PDT_ALLOW_EMERGENCY_SELLS = True
 
 # Dynamic account scaling.
 # These defaults keep the executor safe on small accounts while still allowing
@@ -154,12 +183,48 @@ WIKI_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 SCANNER_STATE_PATH = LOG_DIR / "scanner_state.json"
 SCANNER_SCORES_PATH = OUT_DIR / "latest_scanner_scores.csv"
 OPTION_BOOSTER_CANDIDATES_PATH = OUT_DIR / "latest_option_booster_candidates.csv"
+LOCKED_UNIVERSE_PATH = PROJECT_ROOT / "locked_trading_universe.txt"
+LEADERSHIP_SCORES_PATH = OUT_DIR / "latest_market_leadership_scores.csv"
+LEADERSHIP_STATE_PATH = LOG_DIR / "market_leadership_state.json"
+LATEST_POSITION_SENTIMENT_PATH = OUT_DIR / "latest_position_sentiment.csv"
+SENTIMENT_ADJUSTED_REBALANCE_ORDERS_PATH = OUT_DIR / "sentiment_adjusted_rebalance_orders.csv"
+SENTIMENT_ADJUSTED_EXIT_ORDERS_PATH = OUT_DIR / "sentiment_adjusted_exit_orders.csv"
+REGIME_STATE_PATH = LOG_DIR / "market_regime_state.json"
+REGIME_SCORES_PATH = OUT_DIR / "latest_market_regime_scores.csv"
+
+# Inverse ETFs are included as normal long-only tradable symbols.
+# The executor never shorts. It may buy inverse ETFs only as long positions when
+# their own scanner score/volume/confidence passes the same filters as any other
+# symbol. Inverse ETF activation is NOT conditioned on bearish regimes.
+INVERSE_ETF_UNIVERSE = [
+    "SQQQ", "SH", "PSQ", "DOG", "RWM", "SDS", "QID", "TZA", "SPXU", "SDOW",
+]
+INVERSE_ETF_SET = set(INVERSE_ETF_UNIVERSE)
+REGIME_REQUIRED_SYMBOLS = ["SPY", "QQQ", "VIXY"]
 
 DEFAULT_SCAN_UNIVERSE = [
-    "QQQ", "TQQQ", "SQQQ", "SPY", "DIA", "IWM", "XLK", "SOXX", "SMH",
-    "AMD", "NVDA", "AVGO", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "TSLA",
-    "PLTR", "COIN", "MARA", "RIOT", "RGTI", "QBTS", "QUBT", "IONQ", "SOUN",
-    "OKLO", "APLD", "ALAB", "ARM",
+    # Core indexes / ETFs / inverse ETFs
+    "SPY", "QQQ", "DIA", "IWM", "XLK", "SOXX", "SMH", "ARKK", "TQQQ", "SQQQ",
+    "SH", "PSQ", "DOG", "RWM", "SDS", "QID", "TZA", "SPXU", "SDOW",
+
+    # Mega-cap and tech leadership
+    "AAPL", "MSFT", "NVDA", "AMD", "AVGO", "ARM", "AMZN", "META", "GOOGL",
+    "GOOG", "TSLA", "NFLX", "ORCL", "CRM", "ADBE", "INTC", "MU", "QCOM",
+    "ASML", "TSM", "SMCI", "DELL", "HPE",
+
+    # AI / data / software / infra
+    "PLTR", "SOUN", "AI", "BBAI", "PATH", "SNOW", "DDOG", "NET", "CRWD",
+    "PANW", "MDB", "ESTC", "C3AI",
+
+    # Crypto miners / crypto beta
+    "COIN", "MARA", "RIOT", "CLSK", "HUT", "BTBT", "IREN", "CIFR", "WULF",
+    "BITF", "HIVE",
+
+    # Quantum / next-gen compute / high-beta innovation
+    "IONQ", "RGTI", "QBTS", "QUBT", "ARQQ", "QMCO", "LAES",
+
+    # Energy / nuclear / power infra often tied to AI compute demand
+    "OKLO", "SMR", "CEG", "VST", "GEV", "ETN", "PWR", "APLD", "ALAB",
 ]
 
 
@@ -188,6 +253,258 @@ class AccountSnapshot:
 
 
 @dataclass
+class LeadershipConfig:
+    enabled: bool = True
+    benchmark: str = "QQQ"
+    lags: tuple[int, ...] = (1, 2, 3, 5)
+    lookback: int = 120
+    min_obs: int = 60
+    min_lead_score: float = 0.05
+    leadership_weight: float = 0.18
+    require_positive_leadership: bool = False
+    divergence_penalty: float = 0.08
+
+
+@dataclass
+class RegimeConfig:
+    enabled: bool = True
+    spy_symbol: str = "SPY"
+    qqq_symbol: str = "QQQ"
+    vix_proxy_symbol: str = "VIXY"
+    lookback_days: int = 80
+
+    risk_on_gross: float = 0.92
+    volatile_risk_on_gross: float = 0.72
+    chop_gross: float = 0.50
+    defensive_gross: float = 0.25
+    bear_inverse_gross: float = 0.35
+
+    risk_on_position_weight: float = 0.18
+    volatile_position_weight: float = 0.12
+    chop_position_weight: float = 0.08
+    defensive_position_weight: float = 0.05
+    bear_inverse_position_weight: float = 0.10
+
+    risk_on_score_bonus: float = 0.04
+    volatile_score_penalty: float = 0.04
+    chop_score_penalty: float = 0.08
+    defensive_score_penalty: float = 0.14
+    bear_inverse_score_bonus: float = 0.08
+
+    # These remain for backward CLI compatibility, but defaults keep inverse
+    # ETFs active as ordinary scanner symbols in every regime.
+    allow_inverse_in_bear: bool = True
+    block_inverse_when_not_bear: bool = False
+    bear_market_only_inverse_routing: bool = False
+
+
+@dataclass
+class MarketRegimeSnapshot:
+    state: str = "CHOP_NEUTRAL"
+    risk_state: str = "NEUTRAL"
+    max_gross_exposure: float = 0.50
+    max_position_weight: float = 0.08
+    setup_score_adjustment: float = -0.08
+    allow_long_stocks: bool = True
+    allow_inverse_etfs: bool = True
+    inverse_only: bool = False
+    allow_options_booster: bool = False
+    spy_ret_5d: float = 0.0
+    spy_ret_20d: float = 0.0
+    qqq_ret_5d: float = 0.0
+    qqq_ret_20d: float = 0.0
+    vix_ret_5d: float = 0.0
+    vix_ret_20d: float = 0.0
+    realized_vol_20d: float = 0.0
+    details: str = ""
+
+
+class MarketRegimeEngine:
+    """Classifies broad market direction using SPY/QQQ plus a VIX proxy.
+
+    Alpaca stock data generally does not expose the cash VIX index as a normal
+    tradable symbol through the stock bars endpoint, so VIXY is used by default
+    as the volatility proxy. You can swap this with --regime-vix-symbol.
+    """
+
+    def __init__(self, config: RegimeConfig = RegimeConfig()):
+        self.config = config
+
+    def _latest_metrics(self, close_df: pd.DataFrame) -> dict[str, float]:
+        cfg = self.config
+
+        def ret(symbol: str, bars: int) -> float:
+            if symbol not in close_df.columns or len(close_df[symbol].dropna()) <= bars:
+                return 0.0
+            s = close_df[symbol].dropna()
+            return float(s.iloc[-1] / max(s.iloc[-bars], 1e-9) - 1.0)
+
+        q = close_df[cfg.qqq_symbol].dropna() if cfg.qqq_symbol in close_df.columns else pd.Series(dtype=float)
+        realized_vol = float(q.pct_change(fill_method=None).tail(20).std() * np.sqrt(252)) if len(q) >= 25 else 0.0
+
+        return {
+            "spy_ret_5d": ret(cfg.spy_symbol, 5),
+            "spy_ret_20d": ret(cfg.spy_symbol, 20),
+            "qqq_ret_5d": ret(cfg.qqq_symbol, 5),
+            "qqq_ret_20d": ret(cfg.qqq_symbol, 20),
+            "vix_ret_5d": ret(cfg.vix_proxy_symbol, 5),
+            "vix_ret_20d": ret(cfg.vix_proxy_symbol, 20),
+            "realized_vol_20d": realized_vol,
+        }
+
+    def classify(self, close_df: pd.DataFrame) -> MarketRegimeSnapshot:
+        cfg = self.config
+        if not cfg.enabled or close_df.empty:
+            return MarketRegimeSnapshot(state="REGIME_DISABLED", risk_state="RISK_ON", max_gross_exposure=cfg.risk_on_gross, max_position_weight=cfg.risk_on_position_weight, setup_score_adjustment=0.0, allow_long_stocks=True, allow_inverse_etfs=True, inverse_only=False, allow_options_booster=True, details="regime engine disabled or no bars")
+
+        metrics = self._latest_metrics(close_df)
+        spy5 = metrics["spy_ret_5d"]
+        spy20 = metrics["spy_ret_20d"]
+        qqq5 = metrics["qqq_ret_5d"]
+        qqq20 = metrics["qqq_ret_20d"]
+        vix5 = metrics["vix_ret_5d"]
+        vix20 = metrics["vix_ret_20d"]
+        rv20 = metrics["realized_vol_20d"]
+
+        trend_positive = spy20 > 0.015 and qqq20 > 0.015 and spy5 > -0.015 and qqq5 > -0.015
+        trend_negative = spy20 < -0.025 and qqq20 < -0.025
+        volatility_spiking = vix5 > 0.08 or vix20 > 0.15 or rv20 > 0.32
+        volatility_elevated = vix5 > 0.03 or vix20 > 0.08 or rv20 > 0.24
+        short_term_breakdown = spy5 < -0.025 and qqq5 < -0.025
+
+        if trend_negative and (volatility_elevated or short_term_breakdown):
+            state = "BEAR_INVERSE_ONLY"
+            return MarketRegimeSnapshot(
+                state=state, risk_state="RISK_OFF", max_gross_exposure=cfg.bear_inverse_gross,
+                max_position_weight=cfg.bear_inverse_position_weight, setup_score_adjustment=cfg.bear_inverse_score_bonus,
+                allow_long_stocks=False, allow_inverse_etfs=cfg.allow_inverse_in_bear, inverse_only=cfg.bear_market_only_inverse_routing,
+                allow_options_booster=False, details="SPY/QQQ trend negative; inverse ETF routing active", **metrics
+            )
+
+        if trend_negative or (short_term_breakdown and volatility_spiking):
+            state = "DEFENSIVE_RISK_OFF"
+            return MarketRegimeSnapshot(
+                state=state, risk_state="RISK_OFF", max_gross_exposure=cfg.defensive_gross,
+                max_position_weight=cfg.defensive_position_weight, setup_score_adjustment=-abs(cfg.defensive_score_penalty),
+                allow_long_stocks=True, allow_inverse_etfs=True, inverse_only=False, allow_options_booster=False,
+                details="Market breakdown/volatility spike; new long risk disabled", **metrics
+            )
+
+        if trend_positive and volatility_spiking:
+            state = "VOLATILE_RISK_ON"
+            return MarketRegimeSnapshot(
+                state=state, risk_state="RISK_ON_VOLATILE", max_gross_exposure=cfg.volatile_risk_on_gross,
+                max_position_weight=cfg.volatile_position_weight, setup_score_adjustment=-abs(cfg.volatile_score_penalty),
+                allow_long_stocks=True, allow_inverse_etfs=True, inverse_only=False, allow_options_booster=True,
+                details="Trend positive but volatility elevated; reduced gross exposure", **metrics
+            )
+
+        if trend_positive and not volatility_elevated:
+            state = "TREND_RISK_ON"
+            return MarketRegimeSnapshot(
+                state=state, risk_state="RISK_ON", max_gross_exposure=cfg.risk_on_gross,
+                max_position_weight=cfg.risk_on_position_weight, setup_score_adjustment=cfg.risk_on_score_bonus,
+                allow_long_stocks=True, allow_inverse_etfs=True, inverse_only=False, allow_options_booster=True,
+                details="SPY/QQQ trend positive and volatility contained", **metrics
+            )
+
+        state = "CHOP_NEUTRAL"
+        return MarketRegimeSnapshot(
+            state=state, risk_state="NEUTRAL", max_gross_exposure=cfg.chop_gross,
+            max_position_weight=cfg.chop_position_weight, setup_score_adjustment=-abs(cfg.chop_score_penalty),
+            allow_long_stocks=True, allow_inverse_etfs=True, inverse_only=False, allow_options_booster=False,
+            details="Mixed SPY/QQQ direction or elevated volatility; reduced participation", **metrics
+        )
+
+
+class MarketLeadershipEngine:
+    """Scores symbols by whether their returns lead the benchmark's future returns.
+
+    close_df columns must be symbols and should include the configured benchmark.
+    The score is intentionally conservative and can be used as a ranking boost,
+    confidence confirmation, or divergence warning for the scanner.
+    """
+
+    def __init__(self, config: LeadershipConfig = LeadershipConfig()):
+        self.config = config
+
+    def compute_returns(self, close_df: pd.DataFrame) -> pd.DataFrame:
+        return close_df.pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan)
+
+    def score_leaders(self, close_df: pd.DataFrame) -> pd.DataFrame:
+        cfg = self.config
+        if close_df.empty or cfg.benchmark not in close_df.columns:
+            return pd.DataFrame()
+
+        returns = self.compute_returns(close_df).tail(cfg.lookback)
+        benchmark_ret = returns[cfg.benchmark]
+        rows: list[dict[str, Any]] = []
+
+        for symbol in returns.columns:
+            if symbol == cfg.benchmark:
+                continue
+
+            symbol_ret = returns[symbol]
+            lag_scores: list[float] = []
+            for lag in cfg.lags:
+                future_benchmark = benchmark_ret.shift(-lag)
+                aligned = pd.concat([symbol_ret, future_benchmark], axis=1).dropna()
+                if len(aligned) < cfg.min_obs:
+                    continue
+                corr = aligned.iloc[:, 0].corr(aligned.iloc[:, 1])
+                if pd.notna(corr):
+                    lag_scores.append(float(corr))
+
+            if not lag_scores:
+                continue
+
+            recent_rs = close_df[symbol] / close_df[cfg.benchmark].replace(0, np.nan)
+            rs_slope = float(np.clip(np.nan_to_num(recent_rs.tail(20).pct_change(fill_method=None).mean()), -0.05, 0.05))
+            volatility_impulse = float(np.clip(np.nan_to_num(abs(symbol_ret.tail(10)).mean()), 0.0, 0.05))
+            best_lag_corr = float(np.nanmax(lag_scores))
+            avg_lag_corr = float(np.nanmean(lag_scores))
+
+            lead_score = (
+                0.70 * best_lag_corr
+                + 0.20 * rs_slope
+                + 0.10 * volatility_impulse
+            )
+
+            rows.append({
+                "symbol": normalize_symbol(symbol),
+                "lead_score": float(lead_score),
+                "best_lag_corr": best_lag_corr,
+                "avg_lag_corr": avg_lag_corr,
+                "rs_slope": rs_slope,
+                "volatility_impulse": volatility_impulse,
+            })
+
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows).sort_values("lead_score", ascending=False).reset_index(drop=True)
+
+    def market_alignment(self, close_df: pd.DataFrame, leader_scores: pd.DataFrame, top_n: int = 8) -> dict[str, Any]:
+        cfg = self.config
+        if close_df.empty or leader_scores.empty or cfg.benchmark not in close_df.columns:
+            return {"leader_alignment": 0.0, "benchmark_momentum": 0.0, "divergence_warning": False}
+
+        top = leader_scores.head(max(1, top_n))["symbol"].tolist()
+        ret = self.compute_returns(close_df)
+        available = [s for s in top if s in ret.columns]
+        if not available:
+            return {"leader_alignment": 0.0, "benchmark_momentum": 0.0, "divergence_warning": False}
+
+        leader_alignment = float(np.nan_to_num(ret[available].tail(5).mean(axis=1).mean()))
+        benchmark_momentum = float(np.nan_to_num(ret[cfg.benchmark].tail(5).mean()))
+        divergence_warning = bool(benchmark_momentum > 0 and leader_alignment < 0)
+        return {
+            "leader_alignment": leader_alignment,
+            "benchmark_momentum": benchmark_momentum,
+            "divergence_warning": divergence_warning,
+        }
+
+
+@dataclass
 class ScannerConfig:
     enabled: bool = True
     universe: Optional[list[str]] = None
@@ -212,12 +529,15 @@ class ScannerConfig:
     profit_lock_trigger_pct: float = 0.06
     profit_giveback_pct: float = 0.025
 
+    leadership: LeadershipConfig = None
+    regime: RegimeConfig = None
+
 
 @dataclass
 class OptionsBoosterConfig:
     # Long-call-only booster. This never shorts options. It only buys calls after
     # the underlying stock position is already open and profitable.
-    enabled: bool = False
+    enabled: bool = True
     feed: str = "indicative"
 
     min_continuation_confidence: float = 0.68
@@ -254,6 +574,37 @@ class OptionsBoosterConfig:
 
 
 @dataclass
+class PortfolioSentimentOverlayConfig:
+    # OpenAI-backed monitor for currently held portfolio constituents only.
+    # This never expands the universe and never creates new entry symbols.
+    enabled: bool = True
+    use_openai: bool = True
+    model: str = os.getenv("OPENAI_SENTIMENT_MODEL", "gpt-5.4-mini")
+    max_headlines_per_symbol: int = 8
+
+    # Conservative risk overlay thresholds. These are intentionally strict so
+    # news/sentiment can reduce risk but cannot bypass normal scanner/executor rules.
+    reduce_score_threshold: float = -0.55
+    exit_score_threshold: float = -0.75
+    min_confidence_for_action: float = 0.70
+    bullish_hold_threshold: float = 0.50
+
+    watch_multiplier: float = 0.85
+    reduce_multiplier: float = 0.50
+    exit_multiplier: float = 0.00
+    bullish_hold_multiplier: float = 1.05
+    max_bullish_multiplier: float = 1.10
+
+    # Reduce means sell this fraction of the current stock position. Exit means
+    # sell the full current stock/option position. Watch only blocks/scales adds.
+    reduce_sell_fraction: float = 0.50
+
+    # If True, a bearish stock sentiment reading also blocks new long-call
+    # option booster entries for that underlying.
+    gate_options_booster: bool = True
+
+
+@dataclass
 class ExecutorConfig:
     paper: bool = True
     live: bool = False
@@ -287,6 +638,14 @@ class ExecutorConfig:
     max_order_dollars: float = MAX_ORDER_DOLLARS
     max_single_order_qty: int = MAX_SINGLE_ORDER_QTY
 
+    # These are recalculated by account scaling every cycle, then clamped by
+    # the current market regime. They let risk-on exposure recover after a
+    # previous risk-off cycle without restarting the process.
+    account_scaled_max_gross_exposure: float = MAX_GROSS_EXPOSURE
+    account_scaled_max_position_weight: float = MAX_POSITION_WEIGHT
+    account_scaled_max_single_order_notional_pct: float = MAX_SINGLE_ORDER_NOTIONAL_PCT
+    account_scaled_max_order_dollars: float = MAX_ORDER_DOLLARS
+
     cooldown_seconds: int = COOLDOWN_SECONDS
 
     enable_kill_switch: bool = True
@@ -295,12 +654,23 @@ class ExecutorConfig:
     max_daily_loss_dollars: float = MAX_DAILY_LOSS_DOLLARS
     kill_switch_equity_floor: float = KILL_SWITCH_EQUITY_FLOOR
 
+    enable_pdt_guard: bool = True
+    pdt_equity_threshold: float = PDT_EQUITY_THRESHOLD
+    pdt_rolling_window_days: int = PDT_ROLLING_WINDOW_DAYS
+    pdt_max_day_trades: int = PDT_MAX_DAY_TRADES
+    pdt_reserve_day_trades: int = PDT_RESERVE_DAY_TRADES
+    pdt_block_same_day_exits_under_25k: bool = PDT_BLOCK_SAME_DAY_EXITS_UNDER_25K
+    pdt_block_new_buys_when_near_limit: bool = PDT_BLOCK_NEW_BUYS_WHEN_NEAR_LIMIT
+    pdt_strict_under_25k: bool = PDT_STRICT_UNDER_25K
+    pdt_allow_emergency_sells: bool = PDT_ALLOW_EMERGENCY_SELLS
+
     order_wait_seconds: int = ORDER_WAIT_SECONDS
     time_in_force: TimeInForce = TimeInForce.DAY
     order_tag_prefix: str = "explosive_alpha"
 
     scanner: ScannerConfig = None
     options_booster: OptionsBoosterConfig = None
+    portfolio_sentiment: PortfolioSentimentOverlayConfig = None
 
 
 # =============================================================================
@@ -447,6 +817,21 @@ class AlpacaBroker:
             portfolio_value=to_float(getattr(acct, "portfolio_value", 0.0)),
         )
 
+    def get_account_flags(self) -> dict[str, Any]:
+        try:
+            acct = self.trading.get_account()
+        except Exception as exc:
+            return {"lookup_error": str(exc)}
+
+        return {
+            "pattern_day_trader": bool(getattr(acct, "pattern_day_trader", False)),
+            "trading_blocked": bool(getattr(acct, "trading_blocked", False)),
+            "account_blocked": bool(getattr(acct, "account_blocked", False)),
+            "daytrade_count": to_int(getattr(acct, "daytrade_count", 0), 0),
+            "multiplier": to_float(getattr(acct, "multiplier", 0.0), 0.0),
+            "status": str(getattr(acct, "status", "")),
+        }
+
     def get_all_open_positions(self) -> list[BrokerPosition]:
         positions: list[BrokerPosition] = []
         try:
@@ -576,6 +961,37 @@ def normalize_symbol(symbol: Any) -> str:
     return safe_symbol(symbol)
 
 
+def load_locked_universe(path: Path = LOCKED_UNIVERSE_PATH, max_symbols: int = 30) -> list[str]:
+    """Load the preferred locked universe when available.
+
+    Supports one symbol per line or comma-separated symbols. Symbols with
+    special characters other than '-' are ignored so bad tickers such as BF.B
+    or accidental text do not break Alpaca requests.
+    """
+    if not path.exists():
+        return list(DEFAULT_SCAN_UNIVERSE)[:max_symbols]
+
+    raw = path.read_text(encoding="utf-8", errors="ignore")
+    tokens = re.split(r"[\s,]+", raw)
+    symbols: list[str] = []
+
+    for token in tokens:
+        sym = normalize_symbol(token)
+        if not sym:
+            continue
+        if not re.fullmatch(r"[A-Z][A-Z0-9-]*", sym):
+            continue
+        if sym not in symbols:
+            symbols.append(sym)
+
+    if not symbols:
+        print(f"[universe] {path} contained no valid symbols; using default universe")
+        return list(DEFAULT_SCAN_UNIVERSE)[:max_symbols]
+
+    print(f"[universe] loaded {len(symbols[:max_symbols])} symbols from {path}")
+    return symbols[:max_symbols]
+
+
 def get_sp500_fallback_symbols() -> list[str]:
     try:
         resp = requests.get(WIKI_SP500_URL, headers=_web_headers(), timeout=30)
@@ -691,6 +1107,11 @@ class MomentumSetupScanner:
 
         self.data = StockHistoricalDataClient(broker.api_key, broker.secret_key)
         self.options_config = executor_config.options_booster or OptionsBoosterConfig(enabled=False)
+        self.leadership_config = config.leadership or LeadershipConfig(enabled=False)
+        self.leadership_engine = MarketLeadershipEngine(self.leadership_config) if self.leadership_config.enabled else None
+        self.regime_config = config.regime or RegimeConfig(enabled=True)
+        self.regime_engine = MarketRegimeEngine(self.regime_config) if self.regime_config.enabled else None
+        self.latest_regime = MarketRegimeSnapshot()
         self.option_data = (
             OptionHistoricalDataClient(broker.api_key, broker.secret_key)
             if OptionHistoricalDataClient is not None
@@ -714,7 +1135,7 @@ class MomentumSetupScanner:
         elif self.config.use_sp500_fallback:
             symbols = get_sp500_fallback_symbols()
         else:
-            symbols = DEFAULT_SCAN_UNIVERSE
+            symbols = list(DEFAULT_SCAN_UNIVERSE)
 
         out: list[str] = []
         for sym in symbols:
@@ -722,6 +1143,97 @@ class MomentumSetupScanner:
             if sym and sym not in out:
                 out.append(sym)
         return out[: self.config.max_universe_symbols]
+
+    def _regime_required_symbols(self) -> list[str]:
+        cfg = self.regime_config
+        if not cfg.enabled:
+            return []
+        return [normalize_symbol(cfg.spy_symbol), normalize_symbol(cfg.qqq_symbol), normalize_symbol(cfg.vix_proxy_symbol)]
+
+    def _route_universe_for_regime(self, base_symbols: list[str], regime: MarketRegimeSnapshot | None) -> list[str]:
+        """Return the direct scan universe.
+
+        Regime is used for exposure/position sizing and score adjustment, but it
+        does not activate, deactivate, force, or block inverse ETFs. Inverse ETFs
+        are treated like every other symbol and must earn their place via the
+        scanner's own momentum/reversal/confidence filters.
+        """
+        base = [normalize_symbol(s) for s in base_symbols if normalize_symbol(s)]
+        routed = list(dict.fromkeys(base + self._regime_required_symbols()))
+        print(
+            "[scanner-routing] direct_scan=True "
+            f"state={getattr(regime, 'state', 'UNKNOWN')} "
+            f"inverse_etfs_active_by_score=True symbols={len(routed)}"
+        )
+        return routed[: max(self.config.max_universe_symbols, len(self._regime_required_symbols()))]
+
+    def _classify_market_regime(self, bars: pd.DataFrame) -> MarketRegimeSnapshot:
+        if self.regime_engine is None:
+            return MarketRegimeSnapshot(state="REGIME_DISABLED", risk_state="RISK_ON", max_gross_exposure=self.executor_config.max_gross_exposure, max_position_weight=self.executor_config.max_position_weight, setup_score_adjustment=0.0, allow_long_stocks=True, allow_inverse_etfs=True, inverse_only=False, allow_options_booster=True)
+
+        close_df = self._close_matrix(bars)
+        regime = self.regime_engine.classify(close_df)
+        self.latest_regime = regime
+        save_json(asdict(regime), REGIME_STATE_PATH)
+        pd.DataFrame([asdict(regime)]).to_csv(REGIME_SCORES_PATH, index=False)
+
+        # Dynamic gross/position exposure switching. Account scaling is applied
+        # each cycle before the scanner runs; these effective limits clamp the
+        # account-scaled limits by the active regime.
+        self.executor_config.max_gross_exposure = min(
+            self.executor_config.account_scaled_max_gross_exposure,
+            regime.max_gross_exposure,
+        )
+        self.executor_config.max_position_weight = min(
+            self.executor_config.account_scaled_max_position_weight,
+            regime.max_position_weight,
+        )
+        self.executor_config.max_single_order_notional_pct = min(
+            self.executor_config.account_scaled_max_single_order_notional_pct,
+            max(regime.max_position_weight, 0.01),
+        )
+        self.executor_config.max_order_dollars = min(
+            self.executor_config.account_scaled_max_order_dollars,
+            max(100.0, regime.max_position_weight * max(self.broker.get_account_snapshot().equity, 1.0)),
+        )
+
+        print(
+            "[regime] "
+            f"state={regime.state} risk_state={regime.risk_state} "
+            f"SPY5={regime.spy_ret_5d:.2%} SPY20={regime.spy_ret_20d:.2%} "
+            f"QQQ5={regime.qqq_ret_5d:.2%} QQQ20={regime.qqq_ret_20d:.2%} "
+            f"VIX5={regime.vix_ret_5d:.2%} RV20={regime.realized_vol_20d:.2%} "
+            f"max_gross={self.executor_config.max_gross_exposure:.2%} "
+            f"max_position={self.executor_config.max_position_weight:.2%} "
+            f"inverse_only={regime.inverse_only}"
+        )
+        return regime
+
+    def _apply_regime_to_scores(self, scores: pd.DataFrame, regime: MarketRegimeSnapshot) -> pd.DataFrame:
+        """Annotate scores and apply regime score pressure without symbol gating.
+
+        Regime controls risk budget and confidence pressure. It does not remove
+        inverse ETFs, does not force inverse-only routing, and does not block
+        regular equities from being considered.
+        """
+        if scores.empty or not self.regime_config.enabled:
+            return scores
+
+        out = scores.copy()
+        out["symbol"] = out["symbol"].map(normalize_symbol)
+        out["market_regime"] = regime.state
+        out["risk_state"] = regime.risk_state
+        out["regime_setup_adjustment"] = regime.setup_score_adjustment
+        out["regime_max_gross_exposure"] = regime.max_gross_exposure
+        out["regime_max_position_weight"] = regime.max_position_weight
+        out["regime_inverse_only"] = False
+        out["is_inverse_etf"] = out["symbol"].isin(INVERSE_ETF_SET)
+
+        adj = float(regime.setup_score_adjustment)
+        out["setup_score"] = (out["setup_score"] + adj).clip(0.0, 1.0)
+        out["trade_confidence"] = (out["trade_confidence"] + adj * 0.75).clip(0.0, 1.0)
+
+        return out.sort_values(["setup_score", "dollar_volume20"], ascending=[False, False]).reset_index(drop=True)
 
     def _feed(self):
         if DataFeed is None:
@@ -788,6 +1300,70 @@ class MomentumSetupScanner:
             g["lower_band_reclaim"] = ((c.shift(1) < g["bb_low"].shift(1)) & (c > g["bb_low"]) & (g["ret_1d"] > 0)).astype(float)
             rows.append(g)
         return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+    def _close_matrix(self, bars: pd.DataFrame) -> pd.DataFrame:
+        if bars.empty:
+            return pd.DataFrame()
+        close_df = bars.pivot_table(index="timestamp", columns="symbol", values="close", aggfunc="last")
+        close_df = close_df.sort_index().ffill().dropna(axis=1, how="all")
+        close_df.columns = [normalize_symbol(c) for c in close_df.columns]
+        return close_df
+
+    def _apply_market_leadership(self, scores: pd.DataFrame, bars: pd.DataFrame) -> pd.DataFrame:
+        cfg = self.leadership_config
+        if not cfg.enabled or self.leadership_engine is None or scores.empty:
+            return scores
+
+        close_df = self._close_matrix(bars)
+        if cfg.benchmark not in close_df.columns:
+            print(f"[leadership] benchmark {cfg.benchmark} missing from bars; skipping leadership scoring")
+            return scores
+
+        leader_scores = self.leadership_engine.score_leaders(close_df)
+        if leader_scores.empty:
+            print("[leadership] no valid leader scores; skipping leadership adjustment")
+            return scores
+
+        LEADERSHIP_SCORES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        leader_scores.to_csv(LEADERSHIP_SCORES_PATH, index=False)
+
+        alignment = self.leadership_engine.market_alignment(close_df, leader_scores, top_n=self.config.top_n)
+        save_json(alignment, LEADERSHIP_STATE_PATH)
+
+        out = scores.merge(leader_scores, on="symbol", how="left")
+        out["lead_score"] = out["lead_score"].fillna(0.0)
+        out["best_lag_corr"] = out["best_lag_corr"].fillna(0.0)
+        out["avg_lag_corr"] = out["avg_lag_corr"].fillna(0.0)
+        out["rs_slope"] = out["rs_slope"].fillna(0.0)
+        out["volatility_impulse"] = out["volatility_impulse"].fillna(0.0)
+
+        # Convert raw lead score into a bounded confirmation term. Positive
+        # leaders boost setup confidence; weak/negative leaders are penalized.
+        leadership_confirm = ((out["lead_score"] - cfg.min_lead_score) / 0.35).clip(-1.0, 1.0)
+        out["leadership_confirm"] = leadership_confirm
+        out["raw_setup_score"] = out["setup_score"]
+        out["raw_trade_confidence"] = out["trade_confidence"]
+        out["leadership_divergence_warning"] = bool(alignment.get("divergence_warning", False))
+
+        out["setup_score"] = (out["setup_score"] + cfg.leadership_weight * leadership_confirm).clip(0.0, 1.0)
+        out["trade_confidence"] = (out["trade_confidence"] + (cfg.leadership_weight * 0.75) * leadership_confirm).clip(0.0, 1.0)
+
+        if alignment.get("divergence_warning", False):
+            out["setup_score"] = (out["setup_score"] - cfg.divergence_penalty).clip(0.0, 1.0)
+            out["trade_confidence"] = (out["trade_confidence"] - cfg.divergence_penalty).clip(0.0, 1.0)
+
+        if cfg.require_positive_leadership:
+            out = out[out["lead_score"] >= cfg.min_lead_score].copy()
+
+        out = out.sort_values(["setup_score", "lead_score", "dollar_volume20"], ascending=[False, False, False])
+        print(
+            "[leadership] "
+            f"benchmark={cfg.benchmark} leaders={len(leader_scores)} "
+            f"alignment={alignment.get('leader_alignment', 0.0):.4f} "
+            f"benchmark_momentum={alignment.get('benchmark_momentum', 0.0):.4f} "
+            f"divergence={alignment.get('divergence_warning', False)}"
+        )
+        return out.reset_index(drop=True)
 
     def _score_latest(self, features: pd.DataFrame) -> pd.DataFrame:
         latest = features.sort_values("timestamp").groupby("symbol", as_index=False).tail(1).copy()
@@ -1138,23 +1714,53 @@ class MomentumSetupScanner:
         return pd.DataFrame(rows)
 
     def build_orders(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        symbols = self._universe()
-        print(f"[scanner] scanning universe symbols={len(symbols)}")
-        bars = self._download_bars(symbols)
+        base_symbols = self._universe()
+
+        # Direct scan: download the configured universe plus SPY/QQQ/VIX proxy
+        # for regime-aware risk/exposure controls. Regime does not gate inverse ETFs.
+        initial_symbols = list(dict.fromkeys(base_symbols + self._regime_required_symbols()))
+        print(f"[scanner] scanning direct universe symbols={len(initial_symbols)}")
+        bars = self._download_bars(initial_symbols)
         if bars.empty:
             print("[scanner] no bars downloaded; keeping existing order files")
             return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
+        regime = self._classify_market_regime(bars)
+        routed_symbols = self._route_universe_for_regime(base_symbols, regime)
+
+        if set(routed_symbols) - set(initial_symbols):
+            print(f"[scanner] redownloading expanded direct universe symbols={len(routed_symbols)}")
+            bars = self._download_bars(routed_symbols)
+            if bars.empty:
+                print("[scanner] no bars downloaded after universe expansion; exits only")
+                return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+            regime = self._classify_market_regime(bars)
+
         features = self._build_features(bars)
         scores = self._score_latest(features)
+        scores = self._apply_market_leadership(scores, bars)
+        scores = self._apply_regime_to_scores(scores, regime)
         if scores.empty:
-            print("[scanner] no symbols passed scanner liquidity/price filters")
-            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+            print("[scanner] no symbols passed scanner/regime filters")
+            acct = self.broker.get_account_snapshot()
+            equity = max(float(acct.equity), 1.0)
+            exits = self._update_high_water_and_exits(pd.DataFrame(), equity)
+            option_exits = self._build_option_exit_orders(equity)
+            if not option_exits.empty:
+                exits = pd.concat([exits, option_exits], ignore_index=True)
+            pd.DataFrame().to_csv(DEFAULT_REBALANCE_ORDERS, index=False)
+            exits.to_csv(DEFAULT_EXIT_ORDERS, index=False)
+            return pd.DataFrame(), exits, pd.DataFrame()
 
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         scores.to_csv(SCANNER_SCORES_PATH, index=False)
         print("[scanner] top setups:")
-        show_cols = ["symbol", "close", "setup_type", "setup_score", "momentum_score", "reversal_score", "rsi14", "ret_5d", "rel_volume"]
+        show_cols = [
+            "symbol", "market_regime", "risk_state", "close", "setup_type",
+            "setup_score", "trade_confidence", "is_inverse_etf", "lead_score",
+            "best_lag_corr", "leadership_confirm", "momentum_score",
+            "reversal_score", "rsi14", "ret_5d", "rel_volume",
+        ]
         print(scores[[c for c in show_cols if c in scores.columns]].head(self.config.top_n).to_string(index=False))
 
         acct = self.broker.get_account_snapshot()
@@ -1173,6 +1779,9 @@ class MomentumSetupScanner:
             if price <= 0:
                 continue
 
+            is_inverse = symbol in INVERSE_ETF_SET
+            # Inverse ETFs are normal long-only candidates. No bearish-regime gate.
+
             current_mv = positions.get(symbol).market_value if symbol in positions else 0.0
             current_weight = float(current_mv) / equity
             type_mult = self.config.reversal_target_weight_mult if r["setup_type"] == "reversal" else 1.0
@@ -1180,6 +1789,7 @@ class MomentumSetupScanner:
                 self.config.max_target_weight,
                 self.config.base_target_weight * (0.50 + 1.50 * float(r["setup_score"])) * type_mult,
                 self.executor_config.max_position_weight,
+                regime.max_position_weight,
             )
             delta_weight = target_weight - current_weight
             delta_dollars = delta_weight * equity
@@ -1193,23 +1803,42 @@ class MomentumSetupScanner:
                     "delta_shares": int(delta_dollars // price),
                     "delta_dollars": float(delta_dollars),
                     "price": price,
-                    "reason": f"scanner_{r['setup_type']}_high_conviction_large_gain_candidate",
+                    "reason": f"scanner_{r['setup_type']}_{regime.state.lower()}_candidate",
                     "target_weight": target_weight,
                     "current_weight": current_weight,
                     "delta_weight": delta_weight,
                     "trade_confidence": float(r["trade_confidence"]),
                     "confidence_score": float(r["setup_score"]),
+                    "market_regime": regime.state,
+                    "risk_state": regime.risk_state,
+                    "regime_max_gross_exposure": regime.max_gross_exposure,
+                    "regime_max_position_weight": regime.max_position_weight,
+                    "is_inverse_etf": bool(is_inverse),
                     "momentum_score": float(r["momentum_score"]),
                     "reversal_score": float(r["reversal_score"]),
                     "rsi14": to_float(r.get("rsi14")),
                     "ret_5d": to_float(r.get("ret_5d")),
                     "rel_volume": to_float(r.get("rel_volume")),
+                    "lead_score": to_float(r.get("lead_score")),
+                    "best_lag_corr": to_float(r.get("best_lag_corr")),
+                    "avg_lag_corr": to_float(r.get("avg_lag_corr")),
+                    "leadership_confirm": to_float(r.get("leadership_confirm")),
+                    "leadership_divergence_warning": bool(r.get("leadership_divergence_warning", False)),
                 }
             )
 
         rebalance = pd.DataFrame(rows)
-        option_boosters = self._build_option_booster_orders(scores, equity)
+
+        # Options booster is disabled in defensive/chop/inverse-only regimes.
+        option_boosters = pd.DataFrame()
+        if regime.allow_options_booster:
+            option_boosters = self._build_option_booster_orders(scores, equity)
+        else:
+            print(f"[options] booster disabled by regime={regime.state}")
+
         if not option_boosters.empty:
+            option_boosters["market_regime"] = regime.state
+            option_boosters["risk_state"] = regime.risk_state
             rebalance = pd.concat([rebalance, option_boosters], ignore_index=True)
 
         exits = self._update_high_water_and_exits(scores, equity)
@@ -1301,10 +1930,15 @@ def apply_dynamic_account_scaling(config: ExecutorConfig, equity: float) -> Exec
         max(35.0, equity * min_notional_pct),
     )
 
-    config.max_gross_exposure = min(config.max_gross_exposure, max_gross)
-    config.max_position_weight = min(config.max_position_weight, max_pos)
-    config.max_single_order_notional_pct = min(config.max_single_order_notional_pct, max_order_pct)
-    config.max_order_dollars = min(config.max_order_dollars, max(100.0, equity * max_order_pct))
+    config.account_scaled_max_gross_exposure = min(MAX_GROSS_EXPOSURE, max_gross)
+    config.account_scaled_max_position_weight = min(MAX_POSITION_WEIGHT, max_pos)
+    config.account_scaled_max_single_order_notional_pct = min(MAX_SINGLE_ORDER_NOTIONAL_PCT, max_order_pct)
+    config.account_scaled_max_order_dollars = min(MAX_ORDER_DOLLARS, max(100.0, equity * max_order_pct))
+
+    config.max_gross_exposure = min(config.max_gross_exposure, config.account_scaled_max_gross_exposure)
+    config.max_position_weight = min(config.max_position_weight, config.account_scaled_max_position_weight)
+    config.max_single_order_notional_pct = min(config.max_single_order_notional_pct, config.account_scaled_max_single_order_notional_pct)
+    config.max_order_dollars = min(config.max_order_dollars, config.account_scaled_max_order_dollars)
 
     config.max_daily_loss_pct = min(config.max_daily_loss_pct, max_daily_loss_pct)
     config.max_daily_loss_dollars = min(
@@ -1373,6 +2007,8 @@ class ProductionOrderExecutor:
             print(f"[account-scaling] unable to fetch account equity during init: {exc}")
         if self.config.scanner is None:
             self.config.scanner = ScannerConfig()
+        if self.config.portfolio_sentiment is None:
+            self.config.portfolio_sentiment = PortfolioSentimentOverlayConfig()
         self.scanner = MomentumSetupScanner(self.broker, self.config.scanner, self.config) if self.config.scanner.enabled else None
 
         self.last_order_time: float = 0.0
@@ -1661,6 +2297,9 @@ class ProductionOrderExecutor:
             "continuation_prob": np.nan,
             "continuation_probability": np.nan,
             "explosive_alpha_probability": np.nan,
+            "market_regime": "",
+            "risk_state": "",
+            "is_inverse_etf": False,
         }
 
         for col, default in defaults.items():
@@ -1885,6 +2524,189 @@ class ProductionOrderExecutor:
             }
         )
 
+    # -------------------------------------------------------------------------
+    # PDT guard rails
+    # -------------------------------------------------------------------------
+
+    def _read_pdt_state(self) -> dict[str, Any]:
+        if not PDT_STATE_PATH.exists():
+            return {"day_trades": [], "same_day_buys": {}, "same_day_sells": {}}
+        try:
+            state = json.loads(PDT_STATE_PATH.read_text(encoding="utf-8"))
+            if not isinstance(state, dict):
+                raise ValueError("PDT state is not a dict")
+            state.setdefault("day_trades", [])
+            state.setdefault("same_day_buys", {})
+            state.setdefault("same_day_sells", {})
+            return state
+        except Exception:
+            return {"day_trades": [], "same_day_buys": {}, "same_day_sells": {}}
+
+    def _write_pdt_state(self, state: dict[str, Any]) -> None:
+        PDT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        state["updated_at"] = now_utc().isoformat()
+        PDT_STATE_PATH.write_text(json.dumps(state, indent=2, default=json_default) + "\n", encoding="utf-8")
+
+    def _pdt_cutoff_date(self) -> datetime.date:
+        return (now_utc() - timedelta(days=max(1, self.config.pdt_rolling_window_days + 2))).date()
+
+    def _pdt_prune_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        today = now_utc().date().isoformat()
+        cutoff = self._pdt_cutoff_date().isoformat()
+
+        state["day_trades"] = [
+            d for d in state.get("day_trades", [])
+            if str(d.get("date", "")) >= cutoff
+        ]
+        state["same_day_buys"] = {
+            safe_symbol(sym): lots for sym, lots in dict(state.get("same_day_buys", {})).items()
+            if any(str(lot.get("date", "")) == today for lot in lots)
+        }
+        state["same_day_sells"] = {
+            safe_symbol(sym): lots for sym, lots in dict(state.get("same_day_sells", {})).items()
+            if any(str(lot.get("date", "")) == today for lot in lots)
+        }
+        return state
+
+    def _pdt_recent_day_trade_count(self, state: dict[str, Any]) -> int:
+        cutoff = self._pdt_cutoff_date().isoformat()
+        return int(sum(1 for d in state.get("day_trades", []) if str(d.get("date", "")) >= cutoff))
+
+    def _pdt_opened_today_qty(self, state: dict[str, Any], symbol: str) -> float:
+        today = now_utc().date().isoformat()
+        lots = state.get("same_day_buys", {}).get(safe_symbol(symbol), [])
+        return float(sum(to_float(lot.get("remaining_qty", lot.get("qty", 0.0))) for lot in lots if str(lot.get("date", "")) == today))
+
+    def _pdt_is_emergency_sell(self, reason: str) -> bool:
+        text = str(reason or "").lower()
+        emergency_terms = [
+            "stop", "loss", "kill", "risk", "drawdown", "cash", "margin",
+            "expiration", "hard_stop", "profit_lock", "giveback",
+        ]
+        return any(term in text for term in emergency_terms)
+
+    def _pdt_guard_allows_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: int,
+        equity: float,
+        reason: str,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        if not self.config.enable_pdt_guard:
+            return True, "pdt_guard_disabled", {}
+
+        state = self._pdt_prune_state(self._read_pdt_state())
+        broker_flags = self.broker.get_account_flags()
+        local_count = self._pdt_recent_day_trade_count(state)
+        broker_count = to_int(broker_flags.get("daytrade_count", 0), 0)
+        day_trade_count = max(local_count, broker_count)
+        remaining = max(0, self.config.pdt_max_day_trades - day_trade_count)
+        under_threshold = float(equity or 0.0) < float(self.config.pdt_equity_threshold)
+
+        meta = {
+            "equity": float(equity or 0.0),
+            "under_pdt_equity_threshold": under_threshold,
+            "pdt_equity_threshold": self.config.pdt_equity_threshold,
+            "local_day_trade_count": local_count,
+            "broker_daytrade_count": broker_count,
+            "day_trade_count_used": day_trade_count,
+            "day_trades_remaining": remaining,
+            "broker_flags": broker_flags,
+        }
+
+        if not under_threshold:
+            return True, "pdt_equity_above_threshold", meta
+
+        if broker_flags.get("pattern_day_trader"):
+            return False, "pdt_broker_account_marked_pattern_day_trader_under_25k", meta
+        if broker_flags.get("trading_blocked") or broker_flags.get("account_blocked"):
+            return False, "pdt_broker_account_or_trading_blocked", meta
+
+        side = str(side).lower()
+        symbol = safe_symbol(symbol)
+
+        # Strict mode is useful for small accounts that want to swing trade only.
+        # It allows risk-reducing sells but blocks new opening buys under $25K.
+        if side == "buy" and self.config.pdt_strict_under_25k:
+            return False, "pdt_strict_under_25k_blocks_new_buy", meta
+
+        if side == "buy" and self.config.pdt_block_new_buys_when_near_limit:
+            if day_trade_count >= max(0, self.config.pdt_max_day_trades - self.config.pdt_reserve_day_trades):
+                return False, "pdt_near_day_trade_limit_blocks_new_buy", meta
+
+        if side == "sell" and self.config.pdt_block_same_day_exits_under_25k:
+            opened_today_qty = self._pdt_opened_today_qty(state, symbol)
+            meta["opened_today_qty"] = opened_today_qty
+            if opened_today_qty > 0:
+                emergency_sell = self.config.pdt_allow_emergency_sells and self._pdt_is_emergency_sell(reason)
+                if remaining <= self.config.pdt_reserve_day_trades and not emergency_sell:
+                    return False, "pdt_same_day_exit_would_use_reserved_day_trade", meta
+                if not emergency_sell:
+                    return False, "pdt_same_day_exit_blocked_under_25k", meta
+
+        return True, "pdt_ok", meta
+
+    def _pdt_record_fill(self, symbol: str, side: str, qty: float, order_id: str, fill_info: dict[str, Any]) -> None:
+        if not self.config.enable_pdt_guard:
+            return
+
+        filled_qty = to_float(fill_info.get("filled_qty", qty), 0.0)
+        if filled_qty <= 0:
+            return
+
+        symbol = safe_symbol(symbol)
+        side = str(side).lower()
+        today = now_utc().date().isoformat()
+        state = self._pdt_prune_state(self._read_pdt_state())
+        state.setdefault("same_day_buys", {})
+        state.setdefault("same_day_sells", {})
+        state.setdefault("day_trades", [])
+
+        if side == "buy":
+            state["same_day_buys"].setdefault(symbol, []).append({
+                "date": today,
+                "qty": float(filled_qty),
+                "remaining_qty": float(filled_qty),
+                "order_id": order_id,
+                "timestamp_utc": now_utc().isoformat(),
+            })
+
+        elif side == "sell":
+            remaining_sell = float(filled_qty)
+            lots = state["same_day_buys"].get(symbol, [])
+            matched_today_qty = 0.0
+            for lot in lots:
+                if str(lot.get("date", "")) != today:
+                    continue
+                lot_remaining = to_float(lot.get("remaining_qty", lot.get("qty", 0.0)), 0.0)
+                if lot_remaining <= 0 or remaining_sell <= 0:
+                    continue
+                matched = min(lot_remaining, remaining_sell)
+                lot["remaining_qty"] = lot_remaining - matched
+                remaining_sell -= matched
+                matched_today_qty += matched
+
+            state["same_day_sells"].setdefault(symbol, []).append({
+                "date": today,
+                "qty": float(filled_qty),
+                "matched_same_day_buy_qty": float(matched_today_qty),
+                "order_id": order_id,
+                "timestamp_utc": now_utc().isoformat(),
+            })
+
+            if matched_today_qty > 0:
+                state["day_trades"].append({
+                    "date": today,
+                    "symbol": symbol,
+                    "qty": float(matched_today_qty),
+                    "sell_order_id": order_id,
+                    "timestamp_utc": now_utc().isoformat(),
+                    "source": "local_fill_match",
+                })
+
+        self._write_pdt_state(state)
+
     def _execute_order_plan(self, plan: pd.DataFrame, cycle_id: str) -> pd.DataFrame:
         if plan.empty:
             return pd.DataFrame()
@@ -1935,6 +2757,31 @@ class ProductionOrderExecutor:
                 acct_after = self._record_account_snapshot("after_skip", cycle_id)
                 acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
                 self._journal_order(cycle_id, "SKIP", row, acct_before, acct_after, "existing open order")
+                continue
+
+            pdt_allowed, pdt_message, pdt_meta = self._pdt_guard_allows_order(
+                symbol=symbol,
+                side=side,
+                qty=qty,
+                equity=equity,
+                reason=reason,
+            )
+            if not pdt_allowed:
+                print(f"[pdt] skip {side.upper()} {qty} {symbol}: {pdt_message}")
+                result = {
+                    "timestamp_utc": now_utc().isoformat(),
+                    "symbol": symbol,
+                    "side": side,
+                    "qty": qty,
+                    "status": "skipped_pdt_guard",
+                    "message": pdt_message,
+                    **{f"pdt_{k}": v for k, v in pdt_meta.items() if k != "broker_flags"},
+                }
+                results.append(result)
+                acct_after = self._record_account_snapshot("after_skip", cycle_id)
+                acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
+                self._journal_order(cycle_id, "SKIP", row, acct_before, acct_after, pdt_message)
+                write_event("order_skipped_pdt_guard", {**result, "broker_flags": pdt_meta.get("broker_flags", {})})
                 continue
 
             if side == "buy":
@@ -2052,6 +2899,7 @@ class ProductionOrderExecutor:
                 )
 
                 write_event("order_submitted", result)
+                self._pdt_record_fill(symbol, side, qty, order_id, fill_info)
                 time.sleep(0.35)
 
             except APIError as exc:
@@ -2095,6 +2943,318 @@ class ProductionOrderExecutor:
         return pd.DataFrame(results)
 
     # -------------------------------------------------------------------------
+    # OpenAI portfolio sentiment overlay
+    # -------------------------------------------------------------------------
+
+    def _sentiment_monitor_config(self):
+        cfg = self.config.portfolio_sentiment or PortfolioSentimentOverlayConfig(enabled=False)
+        if SentimentMonitorConfig is None:
+            return None
+        return SentimentMonitorConfig(
+            model=cfg.model,
+            max_headlines_per_symbol=cfg.max_headlines_per_symbol,
+            reduce_score_threshold=cfg.reduce_score_threshold,
+            exit_score_threshold=cfg.exit_score_threshold,
+            min_confidence_for_action=cfg.min_confidence_for_action,
+            bullish_hold_threshold=cfg.bullish_hold_threshold,
+            watch_multiplier=cfg.watch_multiplier,
+            reduce_multiplier=cfg.reduce_multiplier,
+            exit_multiplier=cfg.exit_multiplier,
+            bullish_hold_multiplier=cfg.bullish_hold_multiplier,
+            max_bullish_multiplier=cfg.max_bullish_multiplier,
+        )
+
+    def _run_portfolio_sentiment_monitor(self, positions_before: pd.DataFrame) -> pd.DataFrame:
+        cfg = self.config.portfolio_sentiment or PortfolioSentimentOverlayConfig(enabled=False)
+        if not cfg.enabled:
+            return pd.DataFrame()
+
+        if positions_before is None or positions_before.empty:
+            empty = pd.DataFrame()
+            save_df(empty, LATEST_POSITION_SENTIMENT_PATH)
+            print("[sentiment] no open positions; portfolio sentiment monitor skipped")
+            return empty
+
+        # Monitor stock underlyings and existing positions. Do not monitor the full
+        # trading universe. Option positions are retained in the broker state, but
+        # the monitor itself works best on normal equity symbols. The option exit
+        # overlay below maps option contracts back to their underlyings.
+        pos = positions_before.copy()
+        pos["symbol"] = pos["symbol"].map(safe_symbol)
+        pos["qty"] = pd.to_numeric(pos.get("qty", 0.0), errors="coerce").fillna(0.0)
+        pos = pos[pos["qty"] > 0].copy()
+        if pos.empty:
+            empty = pd.DataFrame()
+            save_df(empty, LATEST_POSITION_SENTIMENT_PATH)
+            print("[sentiment] no long positions; portfolio sentiment monitor skipped")
+            return empty
+
+        if run_portfolio_sentiment_monitor is None or SentimentMonitorConfig is None:
+            print("[sentiment] portfolio_sentiment_monitor.py not available; skipping LLM overlay")
+            write_event("portfolio_sentiment_unavailable", {"reason": "module_import_failed"})
+            return pd.DataFrame()
+
+        try:
+            monitor_cfg = self._sentiment_monitor_config()
+            sentiment = run_portfolio_sentiment_monitor(
+                positions_df=pos,
+                paper=self.config.paper,
+                config=monitor_cfg,
+                use_openai=bool(cfg.use_openai),
+            )
+            if sentiment is None:
+                sentiment = pd.DataFrame()
+            if not sentiment.empty:
+                sentiment.to_csv(LATEST_POSITION_SENTIMENT_PATH, index=False)
+            else:
+                save_df(sentiment, LATEST_POSITION_SENTIMENT_PATH)
+            print(f"[sentiment] monitor complete rows={len(sentiment)} openai={cfg.use_openai}")
+            write_event(
+                "portfolio_sentiment_monitor_complete",
+                {"rows": len(sentiment), "openai": bool(cfg.use_openai)},
+            )
+            return sentiment
+        except Exception as exc:
+            print(f"[sentiment] monitor failed; continuing without LLM overlay: {exc}")
+            write_event("portfolio_sentiment_monitor_error", {"error": str(exc)})
+            return pd.DataFrame()
+
+    def _sentiment_lookup(self, sentiment_df: pd.DataFrame) -> dict[str, dict[str, Any]]:
+        if sentiment_df is None or sentiment_df.empty or "symbol" not in sentiment_df.columns:
+            return {}
+        s = sentiment_df.copy()
+        s["symbol"] = s["symbol"].map(safe_symbol)
+        return {
+            str(row["symbol"]): row.to_dict()
+            for _, row in s.drop_duplicates("symbol", keep="last").iterrows()
+            if str(row.get("symbol", ""))
+        }
+
+    def _sentiment_multiplier(self, row: dict[str, Any]) -> float:
+        cfg = self.config.portfolio_sentiment or PortfolioSentimentOverlayConfig(enabled=False)
+        pressure = str(row.get("exit_pressure", "hold")).lower().strip()
+        score = to_float(row.get("sentiment_score", 0.0))
+        conf = to_float(row.get("sentiment_confidence", 0.0))
+        source_quality = to_float(row.get("source_quality", 0.0))
+
+        if pressure == "exit" and conf >= cfg.min_confidence_for_action:
+            return cfg.exit_multiplier
+        if pressure == "reduce" and conf >= cfg.min_confidence_for_action:
+            return cfg.reduce_multiplier
+        if pressure == "watch":
+            return cfg.watch_multiplier
+        if (
+            pressure == "hold"
+            and score >= cfg.bullish_hold_threshold
+            and conf >= cfg.min_confidence_for_action
+            and source_quality >= 0.55
+        ):
+            return min(cfg.max_bullish_multiplier, cfg.bullish_hold_multiplier)
+        return 1.0
+
+    def _apply_sentiment_to_rebalance_orders(
+        self,
+        rebalance: pd.DataFrame,
+        sentiment_df: pd.DataFrame,
+    ) -> pd.DataFrame:
+        cfg = self.config.portfolio_sentiment or PortfolioSentimentOverlayConfig(enabled=False)
+        if not cfg.enabled or rebalance is None or rebalance.empty or sentiment_df is None or sentiment_df.empty:
+            return rebalance.copy() if rebalance is not None else pd.DataFrame()
+
+        lookup = self._sentiment_lookup(sentiment_df)
+        if not lookup:
+            return rebalance.copy()
+
+        out = rebalance.copy()
+        if "symbol" not in out.columns:
+            return out
+        out["symbol"] = out["symbol"].map(safe_symbol)
+        if "underlying_symbol" in out.columns:
+            out["underlying_symbol"] = out["underlying_symbol"].map(safe_symbol)
+        else:
+            out["underlying_symbol"] = ""
+
+        keep_rows: list[bool] = []
+        multipliers: list[float] = []
+        pressures: list[str] = []
+        scores: list[float] = []
+        confidences: list[float] = []
+        summaries: list[str] = []
+
+        for _, r in out.iterrows():
+            symbol = safe_symbol(r.get("symbol"))
+            underlying = safe_symbol(r.get("underlying_symbol"))
+            reason = str(r.get("reason", ""))
+            is_option_booster = "option_booster" in reason.lower() or bool(underlying)
+            lookup_symbol = underlying if is_option_booster and underlying else symbol
+            srow = lookup.get(lookup_symbol)
+
+            if not srow:
+                keep_rows.append(True)
+                multipliers.append(1.0)
+                pressures.append("")
+                scores.append(0.0)
+                confidences.append(0.0)
+                summaries.append("")
+                continue
+
+            mult = self._sentiment_multiplier(srow)
+            pressure = str(srow.get("exit_pressure", "hold")).lower()
+            options_allowed = bool(srow.get("options_boost_allowed", False))
+
+            if is_option_booster and cfg.gate_options_booster and not options_allowed:
+                keep_rows.append(False)
+                multipliers.append(0.0)
+            else:
+                keep_rows.append(True)
+                multipliers.append(mult)
+
+            pressures.append(pressure)
+            scores.append(to_float(srow.get("sentiment_score")))
+            confidences.append(to_float(srow.get("sentiment_confidence")))
+            summaries.append(str(srow.get("summary", "")))
+
+        out["sentiment_overlay_mult"] = multipliers
+        out["sentiment_exit_pressure"] = pressures
+        out["sentiment_score"] = scores
+        out["sentiment_confidence"] = confidences
+        out["sentiment_summary"] = summaries
+
+        numeric_cols = [
+            "delta_shares", "delta_dollars", "target_weight", "current_weight",
+            "delta_weight", "trade_confidence", "confidence_score",
+        ]
+        # Only scale BUY/add orders. Sells are risk-reduction orders and should not
+        # be weakened by sentiment overlay.
+        side = out.get("side", "").astype(str).str.lower() if "side" in out.columns else pd.Series("", index=out.index)
+        buy_mask = side.eq("buy")
+        for col in numeric_cols:
+            if col in out.columns:
+                vals = pd.to_numeric(out[col], errors="coerce")
+                out.loc[buy_mask, col] = vals.loc[buy_mask].fillna(0.0) * out.loc[buy_mask, "sentiment_overlay_mult"]
+
+        if "reason" in out.columns:
+            out["reason"] = out["reason"].fillna("").astype(str) + out.apply(
+                lambda r: (
+                    f" | llm_sentiment={r.get('sentiment_exit_pressure', '')}"
+                    f" score={to_float(r.get('sentiment_score')):+.2f}"
+                    f" mult={to_float(r.get('sentiment_overlay_mult'), 1.0):.2f}"
+                ) if str(r.get("sentiment_exit_pressure", "")) else "",
+                axis=1,
+            )
+
+        before = len(out)
+        out = out[pd.Series(keep_rows, index=out.index)].copy()
+        dropped = before - len(out)
+        if dropped:
+            print(f"[sentiment] blocked option/entry rows={dropped} due to portfolio sentiment gate")
+            write_event("portfolio_sentiment_blocked_orders", {"blocked_rows": dropped})
+
+        save_df(out, SENTIMENT_ADJUSTED_REBALANCE_ORDERS_PATH)
+        return out.reset_index(drop=True)
+
+    def _build_sentiment_exit_orders(
+        self,
+        positions_before: pd.DataFrame,
+        sentiment_df: pd.DataFrame,
+        equity: float,
+    ) -> pd.DataFrame:
+        cfg = self.config.portfolio_sentiment or PortfolioSentimentOverlayConfig(enabled=False)
+        if not cfg.enabled or positions_before is None or positions_before.empty or sentiment_df is None or sentiment_df.empty:
+            return pd.DataFrame()
+
+        lookup = self._sentiment_lookup(sentiment_df)
+        if not lookup:
+            return pd.DataFrame()
+
+        rows: list[dict[str, Any]] = []
+        pos = positions_before.copy()
+        pos["symbol"] = pos["symbol"].map(safe_symbol)
+        for col in ["qty", "market_value", "current_price", "unrealized_plpc"]:
+            if col not in pos.columns:
+                pos[col] = 0.0
+            pos[col] = pd.to_numeric(pos[col], errors="coerce").fillna(0.0)
+
+        for _, p in pos.iterrows():
+            symbol = safe_symbol(p.get("symbol"))
+            if not symbol or p.get("qty", 0.0) <= 0:
+                continue
+            parsed = parse_occ_option_symbol(symbol)
+            underlying = safe_symbol(parsed.get("underlying")) if parsed else symbol
+            srow = lookup.get(underlying)
+            if not srow:
+                continue
+
+            pressure = str(srow.get("exit_pressure", "hold")).lower().strip()
+            conf = to_float(srow.get("sentiment_confidence", 0.0))
+            score = to_float(srow.get("sentiment_score", 0.0))
+            if conf < cfg.min_confidence_for_action:
+                continue
+
+            qty = int(to_float(p.get("qty", 0.0)))
+            if qty <= 0:
+                continue
+
+            if pressure == "exit":
+                sell_qty = qty
+                reason = "llm_portfolio_sentiment_exit"
+            elif pressure == "reduce" and not parsed:
+                sell_qty = max(1, int(np.ceil(qty * cfg.reduce_sell_fraction)))
+                reason = "llm_portfolio_sentiment_reduce"
+            else:
+                continue
+
+            price = to_float(p.get("current_price", 0.0))
+            mv = to_float(p.get("market_value", 0.0))
+            est_dollars = abs(price * sell_qty) if price > 0 else abs(mv) * min(1.0, sell_qty / max(qty, 1))
+            rows.append({
+                "symbol": symbol,
+                "side": "sell",
+                "delta_shares": sell_qty,
+                "delta_dollars": est_dollars,
+                "price": price,
+                "reason": f"{reason} score={score:+.2f} conf={conf:.2f} summary={str(srow.get('summary', ''))[:160]}",
+                "target_weight": 0.0,
+                "current_weight": mv / max(equity, 1e-9),
+                "delta_weight": -min(mv, est_dollars) / max(equity, 1e-9),
+                "trade_confidence": 1.0,
+                "sentiment_score": score,
+                "sentiment_confidence": conf,
+                "sentiment_exit_pressure": pressure,
+                "underlying_symbol": underlying if parsed else "",
+            })
+
+        exits = pd.DataFrame(rows)
+        if not exits.empty:
+            print(f"[sentiment] generated risk-reduction exits={len(exits)}")
+            write_event("portfolio_sentiment_exit_orders", {"rows": len(exits)})
+        return exits
+
+    def _apply_portfolio_sentiment_overlay(
+        self,
+        rebalance_orders: pd.DataFrame,
+        exit_orders: pd.DataFrame | None,
+        positions_before: pd.DataFrame,
+        equity: float,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        cfg = self.config.portfolio_sentiment or PortfolioSentimentOverlayConfig(enabled=False)
+        exits = exit_orders.copy() if exit_orders is not None else pd.DataFrame()
+        if not cfg.enabled:
+            return rebalance_orders, exits, pd.DataFrame()
+
+        sentiment = self._run_portfolio_sentiment_monitor(positions_before)
+        if sentiment.empty:
+            return rebalance_orders, exits, sentiment
+
+        adjusted_rebalance = self._apply_sentiment_to_rebalance_orders(rebalance_orders, sentiment)
+        sentiment_exits = self._build_sentiment_exit_orders(positions_before, sentiment, equity)
+        if not sentiment_exits.empty:
+            exits = pd.concat([exits, sentiment_exits], ignore_index=True)
+
+        save_df(exits if exits is not None else pd.DataFrame(), SENTIMENT_ADJUSTED_EXIT_ORDERS_PATH)
+        return adjusted_rebalance, exits, sentiment
+
+    # -------------------------------------------------------------------------
     # Compatibility wrappers
     # -------------------------------------------------------------------------
 
@@ -2109,6 +3269,13 @@ class ProductionOrderExecutor:
         acct_start["gross_exposure"] = gross
 
         positions_before = pd.DataFrame([asdict(p) for p in self.broker.get_all_open_positions()])
+
+        rebalance_orders, exit_orders, sentiment_df = self._apply_portfolio_sentiment_overlay(
+            rebalance_orders=rebalance_orders,
+            exit_orders=exit_orders if exit_orders is not None else pd.DataFrame(),
+            positions_before=positions_before,
+            equity=equity,
+        )
 
         if not self._market_is_open_or_wait():
             results = pd.DataFrame(
@@ -2273,6 +3440,10 @@ class ProductionOrderExecutor:
         print(f"[executor] paper={self.config.paper}")
         print(f"[executor] account_scaling={self.config.enable_account_scaling}")
         print(f"[executor] options_booster={bool(self.config.options_booster and self.config.options_booster.enabled)}")
+        print(f"[executor] portfolio_sentiment={bool(self.config.portfolio_sentiment and self.config.portfolio_sentiment.enabled)} openai={bool(self.config.portfolio_sentiment and self.config.portfolio_sentiment.use_openai)}")
+        leadership_enabled = bool(self.config.scanner and self.config.scanner.leadership and self.config.scanner.leadership.enabled)
+        leadership_benchmark = self.config.scanner.leadership.benchmark if leadership_enabled else "disabled"
+        print(f"[executor] market_leadership={leadership_enabled} benchmark={leadership_benchmark}")
         print("[executor] mode=EXECUTION")
         print("[executor] run_policy=FOREVER_UNTIL_INTERRUPTED")
 
@@ -2412,13 +3583,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-daily-loss-pct", type=float, default=MAX_DAILY_LOSS_PCT)
     parser.add_argument("--max-daily-loss-dollars", type=float, default=MAX_DAILY_LOSS_DOLLARS)
     parser.add_argument("--kill-switch-equity-floor", type=float, default=KILL_SWITCH_EQUITY_FLOOR)
-    parser.add_argument("--loop", action="store_true", help="Run continuously. Default is one cycle.")
+
+    parser.add_argument("--disable-pdt-guard", action="store_true", help="Disable local PDT guard rails. Broker-side PDT restrictions can still reject orders.")
+    parser.add_argument("--pdt-equity-threshold", type=float, default=PDT_EQUITY_THRESHOLD)
+    parser.add_argument("--pdt-max-day-trades", type=int, default=PDT_MAX_DAY_TRADES)
+    parser.add_argument("--pdt-reserve-day-trades", type=int, default=PDT_RESERVE_DAY_TRADES, help="Reserve this many day trades for emergency exits.")
+    parser.add_argument("--pdt-strict-under-25k", action="store_true", help="Under the PDT threshold, block new opening buys and only allow risk-reducing sells.")
+    parser.add_argument("--allow-pdt-same-day-exits", action="store_true", help="Allow same-day exits under $25K unless the max day-trade count is reached.")
+    parser.add_argument("--allow-pdt-new-buys-near-limit", action="store_true", help="Do not block new buys when near the day-trade limit.")
+    parser.add_argument("--disable-pdt-emergency-sells", action="store_true", help="Do not allow emergency/risk-reducing same-day sells to bypass PDT same-day-exit blocking.")
+
+    parser.add_argument("--loop", action="store_true", help="Run continuously. This is already the default; kept for compatibility.")
     parser.add_argument("--once", action="store_true", help="Run one cycle then exit. Default is to run forever.")
 
     parser.add_argument("--disable-scanner", action="store_true", help="Disable internal universe scanner and only read order CSVs.")
-    parser.add_argument("--universe", default="", help="Comma-separated universe. Default uses DEFAULT_SCAN_UNIVERSE.")
+    parser.add_argument("--universe", default="", help="Comma-separated universe. Default scans DEFAULT_SCAN_UNIVERSE directly from Alpaca daily bars.")
     parser.add_argument("--use-sp500-fallback", action="store_true", help="Scan S&P 500 symbols from Wikipedia, capped by --max-universe-symbols.")
-    parser.add_argument("--max-universe-symbols", type=int, default=30)
+    parser.add_argument("--max-universe-symbols", type=int, default=80)
     parser.add_argument("--scanner-top-n", type=int, default=8)
     parser.add_argument("--min-setup-score", type=float, default=0.62)
     parser.add_argument("--min-buy-confidence", type=float, default=0.58)
@@ -2428,7 +3609,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profit-lock-trigger", type=float, default=0.06)
     parser.add_argument("--profit-giveback", type=float, default=0.025)
 
-    parser.add_argument("--enable-options-booster", action="store_true", help="Enable long-call-only booster after positive underlying validation.")
+    parser.add_argument("--disable-market-leadership", action="store_true", help="Disable lagged leadership confirmation inside the scanner.")
+    parser.add_argument("--leadership-benchmark", default="QQQ", help="Benchmark used for lagged leadership scoring, usually QQQ or SPY.")
+    parser.add_argument("--leadership-lookback", type=int, default=120)
+    parser.add_argument("--leadership-min-obs", type=int, default=60)
+    parser.add_argument("--leadership-min-score", type=float, default=0.05)
+    parser.add_argument("--leadership-weight", type=float, default=0.18)
+    parser.add_argument("--require-positive-leadership", action="store_true", help="Only buy symbols with positive leadership scores.")
+
+    parser.add_argument("--disable-regime-engine", action="store_true", help="Disable SPY/QQQ/VIX regime classification and regime routing.")
+    parser.add_argument("--regime-spy-symbol", default="SPY")
+    parser.add_argument("--regime-qqq-symbol", default="QQQ")
+    parser.add_argument("--regime-vix-symbol", default="VIXY", help="Volatility proxy symbol. VIXY is used by default because Alpaca stock bars may not expose cash ^VIX.")
+    parser.add_argument("--risk-on-gross", type=float, default=0.92)
+    parser.add_argument("--volatile-risk-on-gross", type=float, default=0.72)
+    parser.add_argument("--chop-gross", type=float, default=0.50)
+    parser.add_argument("--defensive-gross", type=float, default=0.25)
+    parser.add_argument("--bear-inverse-gross", type=float, default=0.35)
+    parser.add_argument("--disable-bear-inverse-routing", action="store_true", help="Compatibility flag only; inverse ETFs are always scored as normal symbols.")
+    parser.add_argument("--allow-inverse-outside-bear", action="store_true", default=True, help="Compatibility flag only; inverse ETFs are allowed in every regime by default.")
+
+    parser.add_argument("--enable-options-booster", dest="enable_options_booster", action="store_true", default=True, help="Enable long-call-only booster after positive underlying validation. Enabled by default.")
+    parser.add_argument("--disable-options-booster", dest="enable_options_booster", action="store_false", help="Disable the long-call-only options booster.")
     parser.add_argument("--option-min-confidence", type=float, default=0.68)
     parser.add_argument("--option-min-underlying-plpc", type=float, default=0.003)
     parser.add_argument("--option-min-dte", type=int, default=14)
@@ -2451,11 +3653,48 @@ def parse_args() -> argparse.Namespace:
         help="Do not open new calls this close to expiration.",
     )
 
+    parser.add_argument("--disable-portfolio-sentiment", action="store_true", help="Disable OpenAI portfolio constituent sentiment monitoring.")
+    parser.add_argument("--disable-openai-sentiment", action="store_true", help="Run the sentiment overlay in neutral/no-OpenAI mode.")
+    parser.add_argument("--sentiment-model", default=os.getenv("OPENAI_SENTIMENT_MODEL", "gpt-5.4-mini"), help="OpenAI model used by portfolio_sentiment_monitor.py.")
+    parser.add_argument("--sentiment-max-headlines", type=int, default=8)
+    parser.add_argument("--sentiment-reduce-threshold", type=float, default=-0.55)
+    parser.add_argument("--sentiment-exit-threshold", type=float, default=-0.75)
+    parser.add_argument("--sentiment-min-confidence", type=float, default=0.70)
+    parser.add_argument("--sentiment-watch-multiplier", type=float, default=0.85)
+    parser.add_argument("--sentiment-reduce-multiplier", type=float, default=0.50)
+    parser.add_argument("--sentiment-reduce-sell-fraction", type=float, default=0.50)
+    parser.add_argument("--disable-sentiment-option-gate", action="store_true", help="Do not use portfolio sentiment to gate long-call booster entries.")
+
     return parser.parse_args()
 
 
 def build_config(args: argparse.Namespace) -> ExecutorConfig:
     scanner_universe = [normalize_symbol(x) for x in str(args.universe).split(",") if normalize_symbol(x)] or None
+    leadership_config = LeadershipConfig(
+        enabled=not args.disable_market_leadership,
+        benchmark=normalize_symbol(args.leadership_benchmark or "QQQ"),
+        lookback=args.leadership_lookback,
+        min_obs=args.leadership_min_obs,
+        min_lead_score=args.leadership_min_score,
+        leadership_weight=args.leadership_weight,
+        require_positive_leadership=args.require_positive_leadership,
+    )
+
+    regime_config = RegimeConfig(
+        enabled=not args.disable_regime_engine,
+        spy_symbol=normalize_symbol(args.regime_spy_symbol or "SPY"),
+        qqq_symbol=normalize_symbol(args.regime_qqq_symbol or "QQQ"),
+        vix_proxy_symbol=normalize_symbol(args.regime_vix_symbol or "VIXY"),
+        risk_on_gross=args.risk_on_gross,
+        volatile_risk_on_gross=args.volatile_risk_on_gross,
+        chop_gross=args.chop_gross,
+        defensive_gross=args.defensive_gross,
+        bear_inverse_gross=args.bear_inverse_gross,
+        allow_inverse_in_bear=not args.disable_bear_inverse_routing,
+        block_inverse_when_not_bear=False,
+        bear_market_only_inverse_routing=False,
+    )
+
     scanner_config = ScannerConfig(
         enabled=not args.disable_scanner,
         universe=scanner_universe,
@@ -2469,6 +3708,8 @@ def build_config(args: argparse.Namespace) -> ExecutorConfig:
         stop_loss_pct=args.scanner_stop_loss,
         profit_lock_trigger_pct=args.profit_lock_trigger,
         profit_giveback_pct=args.profit_giveback,
+        leadership=leadership_config,
+        regime=regime_config,
     )
     options_config = OptionsBoosterConfig(
         enabled=args.enable_options_booster,
@@ -2483,6 +3724,20 @@ def build_config(args: argparse.Namespace) -> ExecutorConfig:
         max_spread_pct=args.option_max_spread_pct,
         close_before_expiration_days=args.option_close_before_expiration_days,
         block_new_entries_within_expiration_days=args.option_block_new_entries_within_expiration_days,
+    )
+
+    sentiment_config = PortfolioSentimentOverlayConfig(
+        enabled=not args.disable_portfolio_sentiment,
+        use_openai=not args.disable_openai_sentiment,
+        model=args.sentiment_model,
+        max_headlines_per_symbol=args.sentiment_max_headlines,
+        reduce_score_threshold=args.sentiment_reduce_threshold,
+        exit_score_threshold=args.sentiment_exit_threshold,
+        min_confidence_for_action=args.sentiment_min_confidence,
+        watch_multiplier=args.sentiment_watch_multiplier,
+        reduce_multiplier=args.sentiment_reduce_multiplier,
+        reduce_sell_fraction=args.sentiment_reduce_sell_fraction,
+        gate_options_booster=not args.disable_sentiment_option_gate,
     )
 
     return ExecutorConfig(
@@ -2508,8 +3763,17 @@ def build_config(args: argparse.Namespace) -> ExecutorConfig:
         max_daily_loss_pct=args.max_daily_loss_pct,
         max_daily_loss_dollars=args.max_daily_loss_dollars,
         kill_switch_equity_floor=args.kill_switch_equity_floor,
+        enable_pdt_guard=not args.disable_pdt_guard,
+        pdt_equity_threshold=args.pdt_equity_threshold,
+        pdt_max_day_trades=args.pdt_max_day_trades,
+        pdt_reserve_day_trades=args.pdt_reserve_day_trades,
+        pdt_strict_under_25k=args.pdt_strict_under_25k,
+        pdt_block_same_day_exits_under_25k=not args.allow_pdt_same_day_exits,
+        pdt_block_new_buys_when_near_limit=not args.allow_pdt_new_buys_near_limit,
+        pdt_allow_emergency_sells=not args.disable_pdt_emergency_sells,
         scanner=scanner_config,
         options_booster=options_config,
+        portfolio_sentiment=sentiment_config,
     )
 
 
