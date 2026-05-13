@@ -14,7 +14,7 @@ What it does:
     - builds market_context.json from market_context_builder.py
     - builds premarket_trade_plan.json from premarket_trade_planner.py
     - builds regime_position_plan.csv from production_regime_sizing_model.py
-    - trains/refreshes the intraday RL timing model from rl_intraday_structure_trainer.py
+    - validates/loads the saved intraday RL timing model from rl_intraday_structure_trainer.py
     - gates entries/exits with the RL timing policy before Alpaca execution
     - scans the LLM-selected universe using Alpaca daily/intraday bars when regime plan is unavailable
     - uses market context + premarket trade plan as buy-side execution gates
@@ -117,6 +117,7 @@ REGIME_POSITION_PLAN_PATH = OUT_DIR / "regime_position_plan.csv"
 REGIME_UNIVERSE_PATH = OUT_DIR / "regime_universe_30.csv"
 REGIME_ACTIONS_PATH = OUT_DIR / "regime_actions.csv"
 RL_MODEL_PATH = OUT_DIR / "rl_intraday_structure_model.zip"
+RL_METRICS_PATH = OUT_DIR / "rl_intraday_training_metrics.json"
 RL_SIGNAL_LOG_PATH = LOG_DIR / "rl_signal_log.csv"
 SESSION_PREP_STATE_PATH = LOG_DIR / "session_planning_state.json"
 OPTION_BOOSTER_CANDIDATES_PATH = OUT_DIR / "latest_option_booster_candidates.csv"
@@ -329,7 +330,11 @@ class ScannerConfig:
     run_market_context_builder: bool = True
     run_premarket_trade_planner: bool = True
     run_production_regime_sizing_model: bool = True
-    run_rl_intraday_structure_trainer: bool = True
+
+    # RL training is intentionally OFF by default. Train this model offline/on a
+    # scheduled research job, then let run.py validate and load the saved model.
+    run_rl_intraday_structure_trainer: bool = False
+    allow_rl_training_from_run_py: bool = False
     session_planning_timeout_seconds: int = 900
 
     # Regime sizing + RL timing integration.
@@ -340,9 +345,25 @@ class ScannerConfig:
     rl_min_exit_confidence: float = 0.55
     rl_min_enter_short_confidence: float = 0.70
     rl_gate_buys_only: bool = False
+
+    # Fallback policy: when the RL model is missing/stale/invalid, run.py should
+    # not hard-fail exits. Buys can be allowed to continue under regime/scanner
+    # logic if rl_allow_hold_when_model_missing=True.
     rl_allow_hold_when_model_missing: bool = True
     rl_latest_bar_timeframe_minutes: int = 1
     rl_latest_bar_lookback_days: int = 5
+
+    # RL model validation gates. These guard against accidentally trading with a
+    # stale, underfit, or failed training artifact.
+    rl_validate_model_before_trading: bool = True
+    rl_max_model_age_days: int = 14
+    rl_metrics_max_age_days: int = 14
+    rl_min_training_trades: int = 10
+    rl_min_profit_factor: float = 0.75
+    rl_min_win_rate: float = 0.30
+    rl_require_symbol_overlap_file: bool = False
+    rl_shadow_mode: bool = True
+    rl_block_buys_when_model_invalid: bool = False
 
     # Options booster handoff.
     options_booster_enabled: bool = True
@@ -799,8 +820,111 @@ def refresh_production_regime_sizing_model(timeout_seconds: int = 900) -> dict[s
     }
 
 
-def refresh_rl_intraday_structure_model(timeout_seconds: int = 900) -> dict[str, Any]:
-    """Train/refresh rl_intraday_structure_model.zip using rl_intraday_structure_trainer.py."""
+
+def validate_rl_intraday_structure_model(config: Optional[ScannerConfig] = None) -> dict[str, Any]:
+    """
+    Validate the saved RL timing model without retraining it.
+
+    This is intentionally lightweight so run.py can safely call it during startup
+    and before applying the RL timing gate. Training should happen offline unless
+    allow_rl_training_from_run_py is explicitly enabled.
+    """
+    config = config or ScannerConfig()
+    now = now_utc()
+    issues: list[str] = []
+    warnings: list[str] = []
+
+    model_exists = RL_MODEL_PATH.exists()
+    metrics_exists = RL_METRICS_PATH.exists()
+    overlap_exists = (OUT_DIR / "rl_intraday_symbol_overlap.csv").exists()
+
+    model_age_days: float | None = None
+    metrics_age_days: float | None = None
+
+    if not model_exists:
+        issues.append("rl_model_missing")
+    else:
+        model_mtime = datetime.fromtimestamp(RL_MODEL_PATH.stat().st_mtime, tz=timezone.utc)
+        model_age_days = (now - model_mtime).total_seconds() / 86400.0
+        if model_age_days > config.rl_max_model_age_days:
+            issues.append(f"rl_model_stale:{model_age_days:.1f}d")
+
+    metrics: dict[str, Any] = {}
+    if not metrics_exists:
+        issues.append("rl_metrics_missing")
+    else:
+        metrics_mtime = datetime.fromtimestamp(RL_METRICS_PATH.stat().st_mtime, tz=timezone.utc)
+        metrics_age_days = (now - metrics_mtime).total_seconds() / 86400.0
+        if metrics_age_days > config.rl_metrics_max_age_days:
+            issues.append(f"rl_metrics_stale:{metrics_age_days:.1f}d")
+        metrics = read_json_file(RL_METRICS_PATH, {})
+
+    if config.rl_require_symbol_overlap_file and not overlap_exists:
+        warnings.append("rl_symbol_overlap_file_missing")
+
+    diagnostics = metrics.get("diagnostics", {}) if isinstance(metrics, dict) else {}
+    trade_quality = diagnostics.get("trade_quality", {}) if isinstance(diagnostics, dict) else {}
+
+    enter_long = to_int(diagnostics.get("enter_long_count", diagnostics.get("buy_count", 0)))
+    enter_short = to_int(diagnostics.get("enter_short_count", 0))
+    exit_long = to_int(diagnostics.get("exit_long_count", diagnostics.get("sell_count", 0)))
+    exit_short = to_int(diagnostics.get("exit_short_count", 0))
+    training_trades = enter_long + enter_short + exit_long + exit_short
+
+    profit_factor = to_float(trade_quality.get("profit_factor", diagnostics.get("profit_factor", 0.0)), 0.0)
+    win_rate = to_float(trade_quality.get("win_rate", diagnostics.get("win_rate", 0.0)), 0.0)
+
+    if metrics_exists:
+        if training_trades < config.rl_min_training_trades:
+            issues.append(f"rl_training_trades_too_low:{training_trades}")
+        if profit_factor and profit_factor < config.rl_min_profit_factor:
+            warnings.append(f"rl_profit_factor_low:{profit_factor:.2f}")
+        if win_rate and win_rate < config.rl_min_win_rate:
+            warnings.append(f"rl_win_rate_low:{win_rate:.2f}")
+
+    ok = model_exists and metrics_exists and not issues
+    payload = {
+        "ok": bool(ok),
+        "model_exists": bool(model_exists),
+        "metrics_exists": bool(metrics_exists),
+        "overlap_exists": bool(overlap_exists),
+        "model_path": str(RL_MODEL_PATH),
+        "metrics_path": str(RL_METRICS_PATH),
+        "model_age_days": model_age_days,
+        "metrics_age_days": metrics_age_days,
+        "training_trades": int(training_trades),
+        "enter_long_count": int(enter_long),
+        "enter_short_count": int(enter_short),
+        "exit_long_count": int(exit_long),
+        "exit_short_count": int(exit_short),
+        "profit_factor": float(profit_factor),
+        "win_rate": float(win_rate),
+        "issues": issues,
+        "warnings": warnings,
+    }
+    write_event("rl_model_validation", payload)
+    return payload
+
+
+def refresh_rl_intraday_structure_model(timeout_seconds: int = 900, config: Optional[ScannerConfig] = None, force_train: bool = False) -> dict[str, Any]:
+    """
+    Validate the saved RL model by default.
+
+    Training from run.py is disabled unless both force_train=True and
+    allow_rl_training_from_run_py=True. This prevents accidental expensive or
+    unstable retraining every morning.
+    """
+    config = config or ScannerConfig()
+
+    if not force_train or not config.allow_rl_training_from_run_py:
+        payload = validate_rl_intraday_structure_model(config)
+        print(
+            "[rl-model] validation "
+            f"ok={payload.get('ok')} model_exists={payload.get('model_exists')} "
+            f"trades={payload.get('training_trades')} issues={payload.get('issues')}"
+        )
+        return payload
+
     ok, output = run_python_script(RL_INTRADAY_STRUCTURE_TRAINER_PATH, timeout_seconds=timeout_seconds)
     if ok:
         print("[rl-trainer] refreshed via subprocess")
@@ -811,13 +935,12 @@ def refresh_rl_intraday_structure_model(timeout_seconds: int = 900) -> dict[str,
         print(f"[rl-trainer] refresh failed: {output}")
         write_event("rl_intraday_model_refresh_failed", {"error": output})
 
-    return {
-        "ok": ok,
-        "model_exists": RL_MODEL_PATH.exists(),
-        "metrics_exists": (OUT_DIR / "rl_intraday_training_metrics.json").exists(),
+    validation = validate_rl_intraday_structure_model(config)
+    validation.update({
+        "trainer_ok": ok,
         "output_tail": output[-2000:] if output else "",
-    }
-
+    })
+    return validation
 
 def run_session_planning_pipeline(config: ScannerConfig, force: bool = False) -> dict[str, Any]:
     """
@@ -828,7 +951,7 @@ def run_session_planning_pipeline(config: ScannerConfig, force: bool = False) ->
         2. market_context_builder.py
         3. premarket_trade_planner.py
         4. production_regime_sizing_model.py
-        5. rl_intraday_structure_trainer.py
+        5. RL model validation only by default; optional training only when explicitly enabled
     """
     if not config.session_planning_enabled:
         return {"skipped": True, "reason": "session_planning_disabled"}
@@ -884,16 +1007,19 @@ def run_session_planning_pipeline(config: ScannerConfig, force: bool = False) ->
             except Exception as exc:
                 _record_session_step(state, date_et, step, False, str(exc))
 
-    if config.run_rl_intraday_structure_trainer:
-        step = "rl_intraday_structure_trainer"
-        if force or not _session_step_already_done(state, date_et, step):
-            try:
-                payload = refresh_rl_intraday_structure_model(timeout_seconds=config.session_planning_timeout_seconds)
-                # Do not mark the whole session failed just because the model already exists but retraining failed.
-                ok = bool(payload.get("ok") or payload.get("model_exists"))
-                _record_session_step(state, date_et, step, ok, json.dumps(payload, default=json_default))
-            except Exception as exc:
-                _record_session_step(state, date_et, step, RL_MODEL_PATH.exists(), str(exc))
+    # Validate the saved RL model every session. Training remains offline by default.
+    step = "rl_intraday_structure_model_validation"
+    if force or not _session_step_already_done(state, date_et, step):
+        try:
+            payload = refresh_rl_intraday_structure_model(
+                timeout_seconds=config.session_planning_timeout_seconds,
+                config=config,
+                force_train=bool(config.run_rl_intraday_structure_trainer and config.allow_rl_training_from_run_py),
+            )
+            ok = bool(payload.get("ok") or (payload.get("model_exists") and config.rl_allow_hold_when_model_missing))
+            _record_session_step(state, date_et, step, ok, json.dumps(payload, default=json_default))
+        except Exception as exc:
+            _record_session_step(state, date_et, step, bool(RL_MODEL_PATH.exists()), str(exc))
 
     state = _read_session_prep_state()
     state["completed"] = True
@@ -2820,6 +2946,7 @@ class ProductionOrderExecutor:
         self.last_heartbeat_time = 0.0
         self.account_history: list[dict[str, Any]] = []
         self._last_morning_refresh_date: str | None = None
+        self._rl_validation_cache: dict[str, Any] | None = None
 
     def _in_cooldown(self) -> bool:
         return (time.time() - self.last_order_time) < self.config.cooldown_seconds
@@ -3552,16 +3679,35 @@ class ProductionOrderExecutor:
         finally:
             self.scanner.config.intraday_lookback_days = old_lookback
 
+    def _rl_validation(self) -> dict[str, Any]:
+        if self._rl_validation_cache is None:
+            self._rl_validation_cache = validate_rl_intraday_structure_model(self.config.scanner)
+        return self._rl_validation_cache
+
     def _predict_rl_signal(self, symbol: str, latest_bars: pd.DataFrame, structure_map: dict[str, Any]) -> dict[str, Any]:
         symbol = safe_symbol(symbol)
         if not self.config.scanner.use_rl_timing_gate:
             return {"symbol": symbol, "action": "HOLD", "confidence": 0.0, "reason": "rl_gate_disabled"}
+
+        if self.config.scanner.rl_validate_model_before_trading:
+            validation = self._rl_validation()
+            if not validation.get("ok"):
+                return {
+                    "symbol": symbol,
+                    "action": "HOLD",
+                    "confidence": 0.0,
+                    "reason": "rl_model_invalid",
+                    "validation": validation,
+                }
+
         if not RL_INTRADAY_STRUCTURE_TRAINER_PATH.exists():
             return {"symbol": symbol, "action": "HOLD", "confidence": 0.0, "reason": "rl_trainer_missing"}
         if not RL_MODEL_PATH.exists():
             return {"symbol": symbol, "action": "HOLD", "confidence": 0.0, "reason": "rl_model_missing"}
-        if latest_bars.empty or not structure_map:
-            return {"symbol": symbol, "action": "HOLD", "confidence": 0.0, "reason": "rl_inputs_missing"}
+        if latest_bars.empty:
+            return {"symbol": symbol, "action": "HOLD", "confidence": 0.0, "reason": "no_latest_bars"}
+        if not structure_map:
+            return {"symbol": symbol, "action": "HOLD", "confidence": 0.0, "reason": "rl_structure_map_missing"}
 
         try:
             from rl_intraday_structure_trainer import predict_live_action
@@ -3613,9 +3759,21 @@ class ProductionOrderExecutor:
                 confidence = to_float(signal.get("confidence"), 0.0)
                 allow = action == "ENTER_LONG" and confidence >= self.config.scanner.rl_min_enter_long_confidence
 
+                if self.config.scanner.rl_shadow_mode:
+                    shadow = dict(signal)
+                    shadow.update({
+                        "regime_or_scanner_wanted_buy": True,
+                        "raw_buy_row_reason": str(row.get("reason", "")),
+                        "would_pass_rl_gate": bool(allow),
+                    })
+                    write_event("rl_shadow_buy_decision", shadow)
+
                 if not allow and self.config.scanner.rl_allow_hold_when_model_missing:
                     reason = str(signal.get("reason", ""))
-                    allow = reason in {"model_not_found", "rl_model_missing", "rl_trainer_missing", "rl_inputs_missing", "no_latest_bars"}
+                    allow = reason in {
+                        "model_not_found", "rl_model_missing", "rl_trainer_missing", "rl_inputs_missing",
+                        "no_latest_bars", "rl_structure_map_missing", "rl_model_invalid"
+                    } and not self.config.scanner.rl_block_buys_when_model_invalid
 
                 keep_mask.append(bool(allow))
                 if not allow:
@@ -3811,6 +3969,8 @@ class ProductionOrderExecutor:
             print(f"[executor] session_planning_start={self.config.scanner.session_planning_start_hour_et:02d}:{self.config.scanner.session_planning_start_minute_et:02d} ET")
             print(f"[executor] regime_plan_enabled={self.config.scanner.use_regime_position_plan}")
             print(f"[executor] rl_timing_gate_enabled={self.config.scanner.use_rl_timing_gate}")
+            print(f"[executor] rl_training_from_run_py={self.config.scanner.allow_rl_training_from_run_py}")
+            print(f"[executor] rl_shadow_mode={self.config.scanner.rl_shadow_mode}")
         try:
             acct = self.broker.get_account_snapshot()
             profile = self._risk_profile(acct.equity)
@@ -3956,7 +4116,8 @@ def build_default_config() -> ExecutorConfig:
         run_market_context_builder=True,
         run_premarket_trade_planner=True,
         run_production_regime_sizing_model=True,
-        run_rl_intraday_structure_trainer=True,
+        run_rl_intraday_structure_trainer=False,
+        allow_rl_training_from_run_py=False,
         use_regime_position_plan=True,
         prefer_regime_position_plan=True,
         use_rl_timing_gate=True,
