@@ -120,6 +120,10 @@ REGIME_ACTIONS_PATH = OUT_DIR / "regime_actions.csv"
 RL_MODEL_PATH = OUT_DIR / "rl_intraday_structure_model.zip"
 RL_METRICS_PATH = OUT_DIR / "rl_intraday_training_metrics.json"
 RL_SIGNAL_LOG_PATH = LOG_DIR / "rl_signal_log.csv"
+LIVE_EXPERIENCE_JSONL_PATH = LOG_DIR / "live_experience_replay.jsonl"
+LIVE_EXPERIENCE_CSV_PATH = LOG_DIR / "live_experience_replay.csv"
+LIVE_EXPERIENCE_PARQUET_PATH = LOG_DIR / "live_experience_replay.parquet"
+LIVE_EXPERIENCE_OUTCOME_PATH = LOG_DIR / "live_experience_outcomes.csv"
 SESSION_PREP_STATE_PATH = LOG_DIR / "session_planning_state.json"
 OPTION_BOOSTER_CANDIDATES_PATH = OUT_DIR / "latest_option_booster_candidates.csv"
 
@@ -1177,6 +1181,175 @@ def write_event(event: str, payload: Optional[dict[str, Any]] = None) -> None:
     }
     with EVENTS_JSONL.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, default=json_default) + "\n")
+
+
+
+def _flatten_for_experience(prefix: str, payload: Any, max_items: int = 60) -> dict[str, Any]:
+    """Flatten small dict-like payloads into one-level experience columns."""
+    out: dict[str, Any] = {}
+    if not isinstance(payload, dict):
+        return out
+
+    count = 0
+    for key, value in payload.items():
+        if count >= max_items:
+            break
+        clean_key = re.sub(r"[^A-Za-z0-9_]+", "_", str(key)).strip("_").lower()
+        if not clean_key:
+            continue
+        col = f"{prefix}_{clean_key}" if prefix else clean_key
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            out[col] = value
+            count += 1
+        elif hasattr(value, "item"):
+            try:
+                out[col] = value.item()
+                count += 1
+            except Exception:
+                pass
+    return out
+
+
+def _safe_row_dict(row: pd.Series | dict[str, Any] | None) -> dict[str, Any]:
+    if row is None:
+        return {}
+    if isinstance(row, pd.Series):
+        data = row.to_dict()
+    elif isinstance(row, dict):
+        data = dict(row)
+    else:
+        return {}
+    clean: dict[str, Any] = {}
+    for key, value in data.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            clean[str(key)] = value
+        elif hasattr(value, "item"):
+            try:
+                clean[str(key)] = value.item()
+            except Exception:
+                clean[str(key)] = str(value)
+        else:
+            clean[str(key)] = str(value)
+    return clean
+
+
+def append_live_experience(row: dict[str, Any], write_parquet: bool = True) -> None:
+    """
+    Append a live decision/execution sample for offline ML training.
+
+    This intentionally does NOT train inside run.py. It creates a replay store
+    that an after-close trainer can label with future returns/PnL and validate
+    before promoting any model.
+    """
+    row = dict(row)
+    row.setdefault("logged_at_utc", now_utc().isoformat())
+    row.setdefault("future_return_5m", "")
+    row.setdefault("future_return_15m", "")
+    row.setdefault("future_return_60m", "")
+    row.setdefault("max_runup", "")
+    row.setdefault("max_drawdown", "")
+    row.setdefault("outcome_label", "")
+
+    LIVE_EXPERIENCE_JSONL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with LIVE_EXPERIENCE_JSONL_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, default=json_default) + "\n")
+
+    df = pd.DataFrame([row])
+    write_header = not LIVE_EXPERIENCE_CSV_PATH.exists()
+    df.to_csv(LIVE_EXPERIENCE_CSV_PATH, mode="a", header=write_header, index=False)
+
+    if write_parquet:
+        try:
+            if LIVE_EXPERIENCE_PARQUET_PATH.exists():
+                old = pd.read_parquet(LIVE_EXPERIENCE_PARQUET_PATH)
+                pd.concat([old, df], ignore_index=True).to_parquet(LIVE_EXPERIENCE_PARQUET_PATH, index=False)
+            else:
+                df.to_parquet(LIVE_EXPERIENCE_PARQUET_PATH, index=False)
+        except Exception as exc:
+            # Parquet is optional because pyarrow/fastparquet may not be installed.
+            write_event("live_experience_parquet_failed", {"error": str(exc)})
+
+
+def build_live_experience_row(
+    *,
+    cycle_id: str,
+    stage: str,
+    order_row: pd.Series | dict[str, Any] | None = None,
+    acct_before: Optional[dict[str, Any]] = None,
+    acct_after: Optional[dict[str, Any]] = None,
+    result: Optional[dict[str, Any]] = None,
+    position: Optional[BrokerPosition] = None,
+    direction: Optional[dict[str, Any]] = None,
+    message: str = "",
+) -> dict[str, Any]:
+    order = _safe_row_dict(order_row)
+    result = dict(result or {})
+    acct_before = dict(acct_before or {})
+    acct_after = dict(acct_after or {})
+    position = position or BrokerPosition(symbol=safe_symbol(order.get("symbol", result.get("symbol", ""))))
+
+    symbol = safe_symbol(order.get("symbol", result.get("symbol", position.symbol or "")))
+    side = str(order.get("side", result.get("side", ""))).lower()
+    status = str(result.get("status", stage))
+
+    row: dict[str, Any] = {
+        "experience_id": f"{cycle_id}_{symbol}_{side}_{stage}_{int(time.time() * 1000)}",
+        "cycle_id": cycle_id,
+        "stage": stage,
+        "timestamp_utc": now_utc().isoformat(),
+        "symbol": symbol,
+        "side": side,
+        "action_taken": f"{side.upper()}" if side else "NONE",
+        "executed": stage in {"submitted", "filled", "order"} or status.lower() in {"submitted", "filled", "partially_filled", "accepted", "new"},
+        "status": status,
+        "message": message or result.get("message", ""),
+        "reason": order.get("reason", result.get("reason", "")),
+        "qty_requested": order.get("order_qty", result.get("qty", "")),
+        "qty_final": result.get("qty", order.get("order_qty", "")),
+        "decision_price": order.get("price", result.get("price", "")),
+        "estimated_notional": order.get("capped_dollars", order.get("abs_delta_dollars", result.get("estimated_notional", ""))),
+        "target_weight": order.get("target_weight", ""),
+        "current_weight": order.get("current_weight", ""),
+        "delta_weight": order.get("delta_weight", ""),
+        "confidence_used": order.get("confidence_used", order.get("confidence", "")),
+        "confidence_multiplier": order.get("confidence_multiplier", ""),
+        "regime_trade_action": order.get("regime_trade_action", order.get("trade_action", "")),
+        "regime_confidence": order.get("regime_confidence", order.get("trade_confidence", "")),
+        "regime_setup_score": order.get("setup_score", ""),
+        "regime_setup_type": order.get("setup_type", ""),
+        "rl_action": order.get("rl_action", ""),
+        "rl_raw_action": order.get("rl_raw_action", ""),
+        "rl_confidence": order.get("rl_confidence", ""),
+        "rl_entropy": order.get("rl_entropy", ""),
+        "rl_masked": order.get("rl_masked", ""),
+        "rl_mask_reason": order.get("rl_mask_reason", ""),
+        "premarket_valid": order.get("premarket_valid", order.get("premarket_valid_setup", "")),
+        "market_bias": order.get("market_bias", order.get("market_context_bias", "")),
+        "market_permission": order.get("market_permission", order.get("market_context_permission", "")),
+        "market_risk": order.get("market_risk", order.get("market_context_risk_level", "")),
+        "account_equity_before": acct_before.get("equity", ""),
+        "account_cash_before": acct_before.get("cash", ""),
+        "account_buying_power_before": acct_before.get("buying_power", ""),
+        "gross_exposure_before": acct_before.get("gross_exposure", ""),
+        "account_equity_after": acct_after.get("equity", ""),
+        "account_cash_after": acct_after.get("cash", ""),
+        "account_buying_power_after": acct_after.get("buying_power", ""),
+        "gross_exposure_after": acct_after.get("gross_exposure", ""),
+        "position_qty_before": position.qty,
+        "position_market_value_before": position.market_value,
+        "position_avg_entry_price_before": position.avg_entry_price,
+        "position_current_price_before": position.current_price,
+        "position_unrealized_pl_before": position.unrealized_pl,
+        "position_unrealized_plpc_before": position.unrealized_plpc,
+        "order_id": result.get("order_id", ""),
+        "fill_status": result.get("fill_status", result.get("status", "")),
+        "filled_qty": result.get("filled_qty", ""),
+        "filled_avg_price": result.get("filled_avg_price", ""),
+        "slippage_pct": result.get("slippage_pct", ""),
+    }
+
+    row.update(_flatten_for_experience("dir", direction or {}, max_items=40))
+    return row
 
 
 def save_df(df: Optional[pd.DataFrame], path: Path) -> None:
@@ -2977,6 +3150,46 @@ class ProductionOrderExecutor:
     def _positions_by_symbol(self) -> dict[str, BrokerPosition]:
         return {safe_symbol(p.symbol): p for p in self.broker.get_all_open_positions() if p.symbol}
 
+    def _log_live_experience(
+        self,
+        *,
+        cycle_id: str,
+        stage: str,
+        order_row: pd.Series | dict[str, Any] | None = None,
+        acct_before: Optional[dict[str, Any]] = None,
+        acct_after: Optional[dict[str, Any]] = None,
+        result: Optional[dict[str, Any]] = None,
+        direction: Optional[dict[str, Any]] = None,
+        message: str = "",
+    ) -> None:
+        if not self.config.scanner.live_experience_logging_enabled:
+            return
+
+        if stage == "skipped" and not self.config.scanner.live_experience_log_skips:
+            return
+        if stage in {"submitted", "order", "filled"} and not self.config.scanner.live_experience_log_orders:
+            return
+        if stage in {"error", "api_error"} and not self.config.scanner.live_experience_log_errors:
+            return
+
+        symbol = safe_symbol(
+            (order_row.to_dict() if isinstance(order_row, pd.Series) else dict(order_row or {})).get("symbol", "")
+            or (result or {}).get("symbol", "")
+        )
+        position = self.broker.get_position(symbol) if symbol else BrokerPosition(symbol=symbol)
+        row = build_live_experience_row(
+            cycle_id=cycle_id,
+            stage=stage,
+            order_row=order_row,
+            acct_before=acct_before,
+            acct_after=acct_after,
+            result=result,
+            position=position,
+            direction=direction,
+            message=message,
+        )
+        append_live_experience(row, write_parquet=self.config.scanner.live_experience_write_parquet)
+
     def _gross_exposure(self, equity: float) -> float:
         if equity <= 0:
             return 0.0
@@ -3357,6 +3570,17 @@ class ProductionOrderExecutor:
             acct_before["gross_exposure"] = gross_before
 
             skip_message = ""
+            direction = direction_by_symbol.get(symbol, {}) if direction_by_symbol else {}
+
+            # Log the final executable decision state before broker submission/risk skips.
+            self._log_live_experience(
+                cycle_id=cycle_id,
+                stage="decision",
+                order_row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
+                acct_before=acct_before,
+                direction=direction,
+                message="pre_submit_decision",
+            )
 
             if qty <= 0:
                 skip_message = "qty <= 0"
@@ -3364,7 +3588,6 @@ class ProductionOrderExecutor:
                 skip_message = "existing open order for symbol"
 
             if not skip_message and side == "buy" and direction_by_symbol:
-                direction = direction_by_symbol.get(symbol, {})
                 if not bool(direction.get("direction_confirmed", False)):
                     skip_message = f"price_direction_not_confirmed:{direction.get('direction_reject_reason', 'unknown')}"
 
@@ -3404,6 +3627,16 @@ class ProductionOrderExecutor:
                 acct_after = self._record_account_snapshot("after_skip", cycle_id)
                 acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
                 self._journal_order(cycle_id, "SKIP", row, acct_before, acct_after, skip_message)
+                self._log_live_experience(
+                    cycle_id=cycle_id,
+                    stage="skipped",
+                    order_row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
+                    acct_before=acct_before,
+                    acct_after=acct_after,
+                    result=result,
+                    direction=direction,
+                    message=skip_message,
+                )
                 continue
 
             try:
@@ -3446,6 +3679,16 @@ class ProductionOrderExecutor:
                     fill_info,
                 )
                 write_event("order_submitted", result)
+                self._log_live_experience(
+                    cycle_id=cycle_id,
+                    stage="submitted",
+                    order_row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
+                    acct_before=acct_before,
+                    acct_after=acct_after,
+                    result=result,
+                    direction=direction,
+                    message=reason or "submitted",
+                )
                 if side == "sell":
                     fill_status = str(fill_info.get("fill_status", status)).lower()
                     if fill_status in {"filled", "partially_filled", "submitted", "accepted", "new"} or to_float(fill_info.get("filled_qty", 0.0)) > 0:
@@ -3461,6 +3704,16 @@ class ProductionOrderExecutor:
                 results.append(result)
                 self._journal_order(cycle_id, "ERROR", row, acct_before, acct_after, message)
                 write_event("order_api_error", result)
+                self._log_live_experience(
+                    cycle_id=cycle_id,
+                    stage="api_error",
+                    order_row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
+                    acct_before=acct_before,
+                    acct_after=acct_after,
+                    result=result,
+                    direction=direction,
+                    message=message,
+                )
 
             except Exception as exc:
                 message = str(exc)
@@ -3471,6 +3724,16 @@ class ProductionOrderExecutor:
                 results.append(result)
                 self._journal_order(cycle_id, "ERROR", row, acct_before, acct_after, message)
                 write_event("order_error", result)
+                self._log_live_experience(
+                    cycle_id=cycle_id,
+                    stage="error",
+                    order_row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
+                    acct_before=acct_before,
+                    acct_after=acct_after,
+                    result=result,
+                    direction=direction,
+                    message=message,
+                )
 
         return pd.DataFrame(results)
 
@@ -4100,6 +4363,9 @@ class ProductionOrderExecutor:
             print(f"[executor] rl_timing_gate_enabled={self.config.scanner.use_rl_timing_gate}")
             print(f"[executor] rl_training_from_run_py={self.config.scanner.allow_rl_training_from_run_py}")
             print(f"[executor] rl_shadow_mode={self.config.scanner.rl_shadow_mode}")
+            print(f"[executor] live_experience_logging={self.config.scanner.live_experience_logging_enabled}")
+            print(f"[executor] live_experience_jsonl={LIVE_EXPERIENCE_JSONL_PATH}")
+            print(f"[executor] live_experience_csv={LIVE_EXPERIENCE_CSV_PATH}")
         try:
             acct = self.broker.get_account_snapshot()
             profile = self._risk_profile(acct.equity)
