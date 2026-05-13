@@ -9,7 +9,15 @@ Default behavior:
 
 What it does:
     - loads Alpaca credentials from .env
-    - scans a small default universe using Alpaca daily bars
+    - refreshes llm_sentiment_universe_selector.py at the start of the trading day
+    - starts the session-planning pipeline at/after 4:00 AM ET
+    - builds market_context.json from market_context_builder.py
+    - builds premarket_trade_plan.json from premarket_trade_planner.py
+    - builds regime_position_plan.csv from production_regime_sizing_model.py
+    - trains/refreshes the intraday RL timing model from rl_intraday_structure_trainer.py
+    - gates entries/exits with the RL timing policy before Alpaca execution
+    - scans the LLM-selected universe using Alpaca daily/intraday bars when regime plan is unavailable
+    - uses market context + premarket trade plan as buy-side execution gates
     - writes rebalance/exit CSVs into daily_system_outputs/
     - checks Alpaca market clock
     - applies small-account risk controls
@@ -29,9 +37,12 @@ import csv
 import json
 import os
 import re
+import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from io import StringIO
 from pathlib import Path
 from typing import Any, Optional
@@ -39,6 +50,9 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 import requests
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
 from dotenv import load_dotenv
 
 from alpaca.common.exceptions import APIError
@@ -83,6 +97,31 @@ KILL_SWITCH_PATH = LOG_DIR / "kill_switch_state.json"
 SCANNER_STATE_PATH = LOG_DIR / "scanner_state.json"
 SCANNER_SCORES_PATH = OUT_DIR / "latest_scanner_scores.csv"
 NO_REENTRY_STATE_PATH = LOG_DIR / "no_reentry_state.json"
+POSITION_MONITOR_PATH = LOG_DIR / "active_position_monitor.csv"
+
+LLM_SENTIMENT_UNIVERSE_PATH = OUT_DIR / "latest_llm_sentiment_universe.json"
+LLM_SENTIMENT_DISCOVERY_PATH = OUT_DIR / "latest_llm_candidate_discovery.json"
+LOCKED_UNIVERSE_PATH = PROJECT_ROOT / "locked_trading_universe.txt"
+LLM_SENTIMENT_SELECTOR_PATH = PROJECT_ROOT / "llm_sentiment_universe_selector.py"
+MARKET_CONTEXT_BUILDER_PATH = PROJECT_ROOT / "market_context_builder.py"
+PREMARKET_TRADE_PLANNER_PATH = PROJECT_ROOT / "premarket_trade_planner.py"
+PRODUCTION_REGIME_SIZING_MODEL_PATH = PROJECT_ROOT / "production_regime_sizing_model.py"
+RL_INTRADAY_STRUCTURE_TRAINER_PATH = PROJECT_ROOT / "rl_intraday_structure_trainer.py"
+OPTIONS_BOOSTER_PATH = PROJECT_ROOT / "options_booster.py"
+
+MARKET_CONTEXT_PATH = OUT_DIR / "market_context.json"
+PREMARKET_TRADE_PLAN_PATH = OUT_DIR / "premarket_trade_plan.json"
+INTRADAY_STRUCTURE_MAP_PATH = OUT_DIR / "intraday_structure_map.json"
+INTRADAY_BARS_1M_PATH = OUT_DIR / "intraday_bars_1m.csv"
+REGIME_POSITION_PLAN_PATH = OUT_DIR / "regime_position_plan.csv"
+REGIME_UNIVERSE_PATH = OUT_DIR / "regime_universe_30.csv"
+REGIME_ACTIONS_PATH = OUT_DIR / "regime_actions.csv"
+RL_MODEL_PATH = OUT_DIR / "rl_intraday_structure_model.zip"
+RL_SIGNAL_LOG_PATH = LOG_DIR / "rl_signal_log.csv"
+SESSION_PREP_STATE_PATH = LOG_DIR / "session_planning_state.json"
+OPTION_BOOSTER_CANDIDATES_PATH = OUT_DIR / "latest_option_booster_candidates.csv"
+
+ET = ZoneInfo("America/New_York")
 
 
 # =============================================================================
@@ -213,6 +252,129 @@ class ScannerConfig:
     entry_near_support_buffer_pct: float = 0.003
     entry_breakout_buffer_pct: float = 0.002
     max_entry_chase_pct: float = 0.018
+
+    # Active-position monitoring. Every cycle, held symbols are checked on
+    # 1m/5m/15m bars to ensure they are still moving in the right direction.
+    active_position_monitor_enabled: bool = True
+    active_monitor_lookback_days: int = 2
+    # Momentum systems should prune quickly. These thresholds are intentionally
+    # stricter than a swing-trading hold model.
+    min_hold_direction_score: float = 0.55
+    hard_exit_direction_score: float = 0.40
+    intraday_trailing_stop_pct: float = 0.010
+    failed_breakout_loss_pct: float = -0.004
+    failed_breakout_buffer_pct: float = 0.002
+    monitor_exit_on_vwap_loss: bool = True
+    monitor_exit_on_lower_high_lower_low: bool = True
+    monitor_exit_on_failed_breakout: bool = True
+
+    # Final pre-execution direction gate.
+    # Buys must pass this immediately before order submission.
+    # Sells/exits bypass this so risk can always be reduced.
+    require_direction_confirmation_before_buy: bool = True
+    min_pretrade_direction_score: float = 0.62
+    min_pretrade_1m_score: float = 0.52
+    min_pretrade_5m_score: float = 0.55
+    min_pretrade_15m_score: float = 0.50
+    require_price_above_vwap_for_buy: bool = True
+    require_no_lower_low_for_buy: bool = True
+    max_pretrade_pullback_pct: float = -0.006
+
+    # ML next-bar direction prediction.
+    ml_next_bar_enabled: bool = True
+    ml_next_bar_timeframe_minutes: int = 5
+    ml_next_bar_lookback_days: int = 20
+    ml_next_bar_min_train_rows: int = 120
+    ml_next_bar_min_buy_probability: float = 0.58
+    ml_next_bar_min_pyramid_probability: float = 0.62
+    ml_next_bar_max_exit_probability: float = 0.42
+
+    # Pyramiding / loser scale-out behavior.
+    pyramid_winners_enabled: bool = True
+    pyramid_min_unrealized_plpc: float = 0.012
+    pyramid_min_hold_direction_score: float = 0.62
+    pyramid_add_weight: float = 0.025
+    pyramid_max_adds_per_symbol_per_day: int = 2
+
+    scale_out_losers_enabled: bool = True
+    scale_out_loss_pct: float = -0.006
+    scale_out_direction_score: float = 0.50
+    scale_out_fraction: float = 0.50
+    loser_full_exit_loss_pct: float = -0.015
+    loser_full_exit_direction_score: float = 0.38
+
+    # Universe source.
+    # Default is LLM sentiment universe from llm_sentiment_universe_selector.py.
+    use_llm_sentiment_universe: bool = True
+    refresh_llm_sentiment_universe: bool = True
+    min_llm_universe_confidence: float = 0.0
+
+    # Morning orchestration / macro gate.
+    market_context_enabled: bool = True
+    refresh_market_context: bool = True
+    halt_new_buys_on_market_context: bool = True
+    allow_cautious_market_buys: bool = True
+
+    # Premarket trade-plan gate.
+    premarket_plan_enabled: bool = True
+    refresh_premarket_trade_plan: bool = True
+    require_valid_premarket_plan_for_buys: bool = False
+    prefer_premarket_valid_symbols: bool = True
+
+    # 4:00 AM session-planning pipeline.
+    session_planning_enabled: bool = True
+    session_planning_start_hour_et: int = 4
+    session_planning_start_minute_et: int = 0
+    session_planning_force_each_startup: bool = False
+    run_market_context_builder: bool = True
+    run_premarket_trade_planner: bool = True
+    run_production_regime_sizing_model: bool = True
+    run_rl_intraday_structure_trainer: bool = True
+    session_planning_timeout_seconds: int = 900
+
+    # Regime sizing + RL timing integration.
+    use_regime_position_plan: bool = True
+    prefer_regime_position_plan: bool = True
+    use_rl_timing_gate: bool = True
+    rl_min_enter_long_confidence: float = 0.65
+    rl_min_exit_confidence: float = 0.55
+    rl_min_enter_short_confidence: float = 0.70
+    rl_gate_buys_only: bool = False
+    rl_allow_hold_when_model_missing: bool = True
+    rl_latest_bar_timeframe_minutes: int = 1
+    rl_latest_bar_lookback_days: int = 5
+
+    # Options booster handoff.
+    options_booster_enabled: bool = True
+    options_booster_confidence_threshold: float = 0.75
+    options_booster_min_position_plpc: float = 0.0056
+    options_booster_target_dte: int = 30
+    options_booster_min_dte: int = 28
+    options_booster_max_dte: int = 32
+    options_booster_limit_price_source: str = "bid"
+
+    # ML-style call selection: rank option contracts using Greeks + liquidity + TA.
+    # This is a deterministic model/ranker by default; if options_booster.py exposes
+    # richer chain data, these fields let that module select the best contract.
+    options_ml_contract_selection_enabled: bool = True
+    options_target_delta: float = 0.52
+    options_min_delta: float = 0.40
+    options_max_delta: float = 0.65
+    options_max_spread_pct: float = 0.15
+    options_min_open_interest: int = 50
+    options_min_volume: int = 5
+    options_max_theta_abs: float = 0.12
+    options_min_gamma: float = 0.005
+    options_max_iv_rank: float = 0.85
+    options_greek_score_weight: float = 0.35
+    options_technical_score_weight: float = 0.35
+    options_liquidity_score_weight: float = 0.20
+    options_dte_score_weight: float = 0.10
+    options_booster_require_technical_confirmation: bool = True
+    options_booster_min_direction_score: float = 0.64
+    options_booster_min_ml_next_bar_probability: float = 0.60
+    options_booster_once_per_cycle: bool = True
+    options_booster_timeout_seconds: int = 180
 
 
 @dataclass
@@ -416,6 +578,469 @@ def build_account_risk_profile(equity: float) -> AccountRiskProfile:
     )
 
 
+def run_python_script(path: Path, args: Optional[list[str]] = None, timeout_seconds: int = 180) -> tuple[bool, str]:
+    if not path.exists():
+        return False, f"script_not_found: {path}"
+
+    cmd = [sys.executable, str(path)] + list(args or [])
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+        output = "\n".join(x for x in [proc.stdout.strip(), proc.stderr.strip()] if x)
+        return proc.returncode == 0, output
+    except subprocess.TimeoutExpired:
+        return False, f"timeout_after_{timeout_seconds}_seconds"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def refresh_llm_sentiment_universe(timeout_seconds: int = 180) -> None:
+    """Refresh latest_llm_sentiment_universe.json and locked_trading_universe.txt."""
+    try:
+        from llm_sentiment_universe_selector import build_sentiment_universe, write_outputs
+
+        payload = build_sentiment_universe()
+        write_outputs(payload)
+        print(f"[llm-universe] refreshed via import symbols={len(payload.get('symbols', []))}")
+        write_event("llm_universe_refreshed", {"symbols": payload.get("symbols", [])})
+        return
+    except Exception as exc:
+        print(f"[llm-universe] import refresh failed; trying subprocess: {exc}")
+
+    ok, output = run_python_script(LLM_SENTIMENT_SELECTOR_PATH, timeout_seconds=timeout_seconds)
+    if ok:
+        print("[llm-universe] refreshed via subprocess")
+        if output:
+            print(output[-2000:])
+        write_event("llm_universe_refreshed_subprocess", {"output_tail": output[-2000:]})
+    else:
+        print(f"[llm-universe] refresh failed: {output}")
+        write_event("llm_universe_refresh_failed", {"error": output})
+
+
+
+def refresh_market_context(timeout_seconds: int = 240) -> dict[str, Any]:
+    """Build daily market_context.json using market_context_builder.py."""
+    try:
+        from market_context_builder import build_market_context
+
+        payload = build_market_context()
+        print(
+            "[market-context] refreshed via import "
+            f"bias={payload.get('overall_market_bias')} "
+            f"permission={payload.get('trade_permission')} "
+            f"risk={payload.get('risk_level')}"
+        )
+        write_event(
+            "market_context_refreshed",
+            {
+                "overall_market_bias": payload.get("overall_market_bias"),
+                "trade_permission": payload.get("trade_permission"),
+                "risk_level": payload.get("risk_level"),
+            },
+        )
+        return payload
+    except Exception as exc:
+        print(f"[market-context] import refresh failed; trying subprocess: {exc}")
+
+    ok, output = run_python_script(MARKET_CONTEXT_BUILDER_PATH, timeout_seconds=timeout_seconds)
+    if ok:
+        print("[market-context] refreshed via subprocess")
+        if output:
+            print(output[-2000:])
+        write_event("market_context_refreshed_subprocess", {"output_tail": output[-2000:]})
+    else:
+        print(f"[market-context] refresh failed: {output}")
+        write_event("market_context_refresh_failed", {"error": output})
+
+    return read_json_file(MARKET_CONTEXT_PATH, {})
+
+
+def refresh_premarket_trade_plan(timeout_seconds: int = 240) -> dict[str, Any]:
+    """Build premarket_trade_plan.json using premarket_trade_planner.py."""
+    try:
+        from premarket_trade_planner import build_premarket_trade_plan
+
+        payload = build_premarket_trade_plan()
+        print(
+            "[premarket-plan] refreshed via import "
+            f"symbols={payload.get('symbol_count', 0)} valid={payload.get('valid_plan_count', 0)}"
+        )
+        write_event(
+            "premarket_trade_plan_refreshed",
+            {
+                "symbol_count": payload.get("symbol_count"),
+                "valid_plan_count": payload.get("valid_plan_count"),
+                "valid_symbols": payload.get("valid_symbols", []),
+            },
+        )
+        return payload
+    except Exception as exc:
+        print(f"[premarket-plan] import refresh failed; trying subprocess: {exc}")
+
+    ok, output = run_python_script(PREMARKET_TRADE_PLANNER_PATH, timeout_seconds=timeout_seconds)
+    if ok:
+        print("[premarket-plan] refreshed via subprocess")
+        if output:
+            print(output[-2000:])
+        write_event("premarket_trade_plan_refreshed_subprocess", {"output_tail": output[-2000:]})
+    else:
+        print(f"[premarket-plan] refresh failed: {output}")
+        write_event("premarket_trade_plan_refresh_failed", {"error": output})
+
+    return read_json_file(PREMARKET_TRADE_PLAN_PATH, {})
+
+
+def load_market_context(refresh: bool = False) -> dict[str, Any]:
+    if refresh or not MARKET_CONTEXT_PATH.exists():
+        return refresh_market_context()
+    return read_json_file(MARKET_CONTEXT_PATH, {})
+
+
+def load_premarket_trade_plan(refresh: bool = False) -> dict[str, Any]:
+    if refresh or not PREMARKET_TRADE_PLAN_PATH.exists():
+        return refresh_premarket_trade_plan()
+    return read_json_file(PREMARKET_TRADE_PLAN_PATH, {})
+
+
+
+
+def session_planning_start_dt_et(hour: int = 4, minute: int = 0) -> datetime:
+    now = datetime.now(ET)
+    return now.replace(hour=int(hour), minute=int(minute), second=0, microsecond=0)
+
+
+def session_planning_window_is_open(config: ScannerConfig) -> bool:
+    now = datetime.now(ET)
+    if now.weekday() >= 5:
+        return False
+    return now >= session_planning_start_dt_et(
+        config.session_planning_start_hour_et,
+        config.session_planning_start_minute_et,
+    )
+
+
+def wait_until_session_planning_window(config: ScannerConfig) -> None:
+    if not config.session_planning_enabled:
+        return
+    if session_planning_window_is_open(config):
+        return
+
+    start_dt = session_planning_start_dt_et(
+        config.session_planning_start_hour_et,
+        config.session_planning_start_minute_et,
+    )
+
+    while datetime.now(ET) < start_dt:
+        seconds_left = max(1.0, (start_dt - datetime.now(ET)).total_seconds())
+        print(f"[session-prep] waiting until {start_dt.strftime('%H:%M')} ET; {int(seconds_left // 60)} minute(s) left")
+        time.sleep(min(300, max(5, seconds_left)))
+
+
+def _read_session_prep_state() -> dict[str, Any]:
+    return read_json_file(SESSION_PREP_STATE_PATH, {"date_et": "", "steps": {}})
+
+
+def _write_session_prep_state(state: dict[str, Any]) -> None:
+    write_json_file(SESSION_PREP_STATE_PATH, state)
+
+
+def _session_step_already_done(state: dict[str, Any], date_et: str, step_name: str) -> bool:
+    if state.get("date_et") != date_et:
+        return False
+    step = state.get("steps", {}).get(step_name, {})
+    return bool(step.get("ok"))
+
+
+def _record_session_step(state: dict[str, Any], date_et: str, step_name: str, ok: bool, output: str = "") -> None:
+    state["date_et"] = date_et
+    steps = state.setdefault("steps", {})
+    steps[step_name] = {
+        "ok": bool(ok),
+        "completed_at_utc": now_utc().isoformat(),
+        "output_tail": str(output or "")[-3000:],
+    }
+    _write_session_prep_state(state)
+    write_event(
+        "session_planning_step_completed" if ok else "session_planning_step_failed",
+        {"step": step_name, "ok": bool(ok), "output_tail": str(output or "")[-1200:]},
+    )
+
+
+def refresh_production_regime_sizing_model(timeout_seconds: int = 900) -> dict[str, Any]:
+    """Build regime_position_plan.csv using production_regime_sizing_model.py."""
+    try:
+        from production_regime_sizing_model import main as regime_main
+
+        result = regime_main()
+        print("[regime-model] refreshed via import")
+        write_event("regime_model_refreshed", {"method": "import", "result": str(result)[:500]})
+    except Exception as exc:
+        print(f"[regime-model] import refresh failed; trying subprocess: {exc}")
+        ok, output = run_python_script(PRODUCTION_REGIME_SIZING_MODEL_PATH, timeout_seconds=timeout_seconds)
+        if ok:
+            print("[regime-model] refreshed via subprocess")
+            if output:
+                print(output[-2000:])
+            write_event("regime_model_refreshed_subprocess", {"output_tail": output[-2000:]})
+        else:
+            print(f"[regime-model] refresh failed: {output}")
+            write_event("regime_model_refresh_failed", {"error": output})
+
+    return {
+        "regime_position_plan_exists": REGIME_POSITION_PLAN_PATH.exists(),
+        "regime_universe_exists": REGIME_UNIVERSE_PATH.exists(),
+        "regime_actions_exists": REGIME_ACTIONS_PATH.exists(),
+    }
+
+
+def refresh_rl_intraday_structure_model(timeout_seconds: int = 900) -> dict[str, Any]:
+    """Train/refresh rl_intraday_structure_model.zip using rl_intraday_structure_trainer.py."""
+    ok, output = run_python_script(RL_INTRADAY_STRUCTURE_TRAINER_PATH, timeout_seconds=timeout_seconds)
+    if ok:
+        print("[rl-trainer] refreshed via subprocess")
+        if output:
+            print(output[-2500:])
+        write_event("rl_intraday_model_refreshed", {"output_tail": output[-2500:]})
+    else:
+        print(f"[rl-trainer] refresh failed: {output}")
+        write_event("rl_intraday_model_refresh_failed", {"error": output})
+
+    return {
+        "ok": ok,
+        "model_exists": RL_MODEL_PATH.exists(),
+        "metrics_exists": (OUT_DIR / "rl_intraday_training_metrics.json").exists(),
+        "output_tail": output[-2000:] if output else "",
+    }
+
+
+def run_session_planning_pipeline(config: ScannerConfig, force: bool = False) -> dict[str, Any]:
+    """
+    Runs once per ET trading day, starting no earlier than 4:00 AM ET by default.
+
+    Order:
+        1. llm_sentiment_universe_selector.py
+        2. market_context_builder.py
+        3. premarket_trade_planner.py
+        4. production_regime_sizing_model.py
+        5. rl_intraday_structure_trainer.py
+    """
+    if not config.session_planning_enabled:
+        return {"skipped": True, "reason": "session_planning_disabled"}
+
+    wait_until_session_planning_window(config)
+
+    date_et = datetime.now(ET).date().isoformat()
+    state = _read_session_prep_state()
+    if state.get("date_et") != date_et:
+        state = {"date_et": date_et, "started_at_utc": now_utc().isoformat(), "steps": {}}
+        _write_session_prep_state(state)
+
+    if not force and not config.session_planning_force_each_startup and state.get("completed") is True:
+        print(f"[session-prep] already completed for {date_et}")
+        return state
+
+    print(f"[session-prep] starting daily planning pipeline for {date_et}")
+    write_event("session_planning_started", {"date_et": date_et})
+
+    if config.use_llm_sentiment_universe and config.refresh_llm_sentiment_universe:
+        step = "llm_sentiment_universe_selector"
+        if force or not _session_step_already_done(state, date_et, step):
+            try:
+                refresh_llm_sentiment_universe(timeout_seconds=config.session_planning_timeout_seconds)
+                _record_session_step(state, date_et, step, True, "refreshed")
+            except Exception as exc:
+                _record_session_step(state, date_et, step, False, str(exc))
+
+    if config.run_market_context_builder and config.market_context_enabled:
+        step = "market_context_builder"
+        if force or not _session_step_already_done(state, date_et, step):
+            try:
+                payload = refresh_market_context(timeout_seconds=config.session_planning_timeout_seconds)
+                _record_session_step(state, date_et, step, bool(payload), json.dumps(payload, default=json_default)[:3000])
+            except Exception as exc:
+                _record_session_step(state, date_et, step, False, str(exc))
+
+    if config.run_premarket_trade_planner and config.premarket_plan_enabled:
+        step = "premarket_trade_planner"
+        if force or not _session_step_already_done(state, date_et, step):
+            try:
+                payload = refresh_premarket_trade_plan(timeout_seconds=config.session_planning_timeout_seconds)
+                _record_session_step(state, date_et, step, bool(payload), json.dumps(payload, default=json_default)[:3000])
+            except Exception as exc:
+                _record_session_step(state, date_et, step, False, str(exc))
+
+    if config.run_production_regime_sizing_model:
+        step = "production_regime_sizing_model"
+        if force or not _session_step_already_done(state, date_et, step):
+            try:
+                payload = refresh_production_regime_sizing_model(timeout_seconds=config.session_planning_timeout_seconds)
+                _record_session_step(state, date_et, step, bool(payload.get("regime_position_plan_exists")), json.dumps(payload, default=json_default))
+            except Exception as exc:
+                _record_session_step(state, date_et, step, False, str(exc))
+
+    if config.run_rl_intraday_structure_trainer:
+        step = "rl_intraday_structure_trainer"
+        if force or not _session_step_already_done(state, date_et, step):
+            try:
+                payload = refresh_rl_intraday_structure_model(timeout_seconds=config.session_planning_timeout_seconds)
+                # Do not mark the whole session failed just because the model already exists but retraining failed.
+                ok = bool(payload.get("ok") or payload.get("model_exists"))
+                _record_session_step(state, date_et, step, ok, json.dumps(payload, default=json_default))
+            except Exception as exc:
+                _record_session_step(state, date_et, step, RL_MODEL_PATH.exists(), str(exc))
+
+    state = _read_session_prep_state()
+    state["completed"] = True
+    state["completed_at_utc"] = now_utc().isoformat()
+    _write_session_prep_state(state)
+    write_event("session_planning_completed", state)
+    print(f"[session-prep] completed for {date_et}")
+    return state
+
+
+def load_regime_position_plan() -> pd.DataFrame:
+    if not REGIME_POSITION_PLAN_PATH.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(REGIME_POSITION_PLAN_PATH)
+    except Exception as exc:
+        print(f"[regime-plan] failed to read {REGIME_POSITION_PLAN_PATH}: {exc}")
+        return pd.DataFrame()
+    if df.empty:
+        return pd.DataFrame()
+    if "symbol" not in df.columns:
+        print(f"[regime-plan] missing symbol column: {REGIME_POSITION_PLAN_PATH}")
+        return pd.DataFrame()
+    df = df.copy()
+    df["symbol"] = df["symbol"].map(normalize_symbol)
+    return df[df["symbol"] != ""].reset_index(drop=True)
+
+
+def _first_existing_col(df: pd.DataFrame, names: list[str]) -> str | None:
+    for name in names:
+        if name in df.columns:
+            return name
+    return None
+
+
+def _regime_action_value(row: pd.Series) -> str:
+    for col in ["trade_action", "action", "regime_action", "recommended_action", "signal"]:
+        if col in row.index and pd.notna(row.get(col)):
+            return str(row.get(col, "")).upper().strip()
+    return ""
+
+
+def _regime_target_weight(row: pd.Series, default: float = 0.0) -> float:
+    for col in ["target_weight", "weight", "recommended_weight", "target_alloc", "allocation"]:
+        if col in row.index and pd.notna(row.get(col)):
+            val = to_float(row.get(col), default)
+            if val > 1.0:
+                val /= 100.0
+            return float(np.clip(val, 0.0, 1.0))
+    return default
+
+
+def _regime_confidence(row: pd.Series, default: float = 0.55) -> float:
+    for col in ["confidence", "trade_confidence", "confidence_score", "probability", "model_probability", "buy_probability"]:
+        if col in row.index and pd.notna(row.get(col)):
+            val = to_float(row.get(col), default)
+            if val > 1.0:
+                val /= 100.0
+            return float(np.clip(val, 0.0, 1.0))
+    return default
+
+
+def _regime_price(row: pd.Series, fallback: float = 0.0) -> float:
+    for col in ["price", "last_price", "close", "entry_price", "current_price"]:
+        if col in row.index and pd.notna(row.get(col)):
+            val = to_float(row.get(col), fallback)
+            if val > 0:
+                return val
+    return fallback
+
+
+def market_context_blocks_new_buys(context: dict[str, Any], allow_cautious: bool = True) -> tuple[bool, str]:
+    if not context:
+        return False, "market_context_missing"
+
+    permission = str(context.get("trade_permission", "cautious")).lower().strip()
+    bias = str(context.get("overall_market_bias", "mixed")).lower().strip()
+    risk = str(context.get("risk_level", "medium")).lower().strip()
+
+    if permission == "halt_new_buys":
+        return True, f"market_context_halt_new_buys:bias={bias}:risk={risk}"
+    if not allow_cautious and permission == "cautious":
+        return True, f"market_context_cautious_block:bias={bias}:risk={risk}"
+    if bias in {"risk_off", "bearish"} and risk == "high":
+        return True, f"market_context_risk_off_high_risk:permission={permission}"
+
+    return False, f"market_context_allows_buys:permission={permission}:bias={bias}:risk={risk}"
+
+
+def valid_symbols_from_premarket_plan(payload: dict[str, Any]) -> set[str]:
+    symbols = payload.get("valid_symbols", []) if isinstance(payload, dict) else []
+    return {normalize_symbol(s) for s in symbols if normalize_symbol(s)}
+
+def load_llm_sentiment_universe(refresh: bool = True, min_confidence: float = 0.0) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """Load symbols and per-symbol metadata from llm_sentiment_universe_selector.py output."""
+    if refresh:
+        refresh_llm_sentiment_universe()
+
+    payload: dict[str, Any] = {}
+    if LLM_SENTIMENT_UNIVERSE_PATH.exists():
+        payload = read_json_file(LLM_SENTIMENT_UNIVERSE_PATH, {})
+    else:
+        print(f"[llm-universe] missing {LLM_SENTIMENT_UNIVERSE_PATH}; falling back to locked universe/default list")
+
+    metadata: dict[str, dict[str, Any]] = {}
+    symbols: list[str] = []
+
+    selections = payload.get("selections", []) if isinstance(payload, dict) else []
+    if isinstance(selections, list):
+        for item in selections:
+            if not isinstance(item, dict):
+                continue
+            symbol = normalize_symbol(item.get("symbol"))
+            confidence = to_float(item.get("confidence"), 0.0)
+            if not symbol or confidence < min_confidence:
+                continue
+            metadata[symbol] = {
+                "llm_rank": to_int(item.get("rank"), 999),
+                "llm_confidence": confidence,
+                "llm_catalyst_type": str(item.get("catalyst_type", "")),
+                "llm_reason": str(item.get("reason", ""))[:700],
+                "llm_market_tone": str(payload.get("market_tone", "")),
+                "llm_summary": str(payload.get("summary", ""))[:700],
+            }
+            symbols.append(symbol)
+
+    if not symbols and isinstance(payload.get("symbols"), list):
+        symbols = [normalize_symbol(x) for x in payload.get("symbols", []) if normalize_symbol(x)]
+        metadata = {s: {"llm_confidence": 0.50, "llm_rank": i + 1} for i, s in enumerate(symbols)}
+
+    if not symbols and LOCKED_UNIVERSE_PATH.exists():
+        symbols = [normalize_symbol(x) for x in LOCKED_UNIVERSE_PATH.read_text().splitlines() if normalize_symbol(x)]
+        metadata = {s: {"llm_confidence": 0.50, "llm_rank": i + 1, "llm_source": "locked_trading_universe"} for i, s in enumerate(symbols)}
+
+    symbols = [s for s in symbols if is_simple_alpaca_symbol(s)]
+    symbols = list(dict.fromkeys(symbols))
+
+    if symbols:
+        print(f"[llm-universe] loaded symbols={len(symbols)} source={LLM_SENTIMENT_UNIVERSE_PATH}")
+    else:
+        print("[llm-universe] no valid LLM symbols loaded; using DEFAULT_SCAN_UNIVERSE")
+        symbols = list(DEFAULT_SCAN_UNIVERSE)
+        metadata = {s: {"llm_confidence": 0.50, "llm_rank": i + 1, "llm_source": "default_fallback"} for i, s in enumerate(symbols)}
+
+    return symbols, metadata
+
+
 def write_event(event: str, payload: Optional[dict[str, Any]] = None) -> None:
     row = {
         "timestamp_utc": now_utc().isoformat(),
@@ -494,6 +1119,42 @@ def mark_no_reentry_symbol(symbol: str, reason: str = "exit") -> None:
     state["symbols"] = symbols
     write_json_file(NO_REENTRY_STATE_PATH, state)
     write_event("no_reentry_marked", {"symbol": symbol, "reason": reason, "date": today})
+
+
+def load_pyramid_state() -> dict[str, Any]:
+    today = local_trading_day()
+    state = read_json_file(LOG_DIR / "pyramid_state.json", {"date": today, "symbols": {}})
+    if state.get("date") != today:
+        state = {"date": today, "symbols": {}}
+        write_json_file(LOG_DIR / "pyramid_state.json", state)
+    if not isinstance(state.get("symbols"), dict):
+        state["symbols"] = {}
+    return state
+
+
+def save_pyramid_state(state: dict[str, Any]) -> None:
+    write_json_file(LOG_DIR / "pyramid_state.json", state)
+
+
+def pyramid_add_count(symbol: str) -> int:
+    state = load_pyramid_state()
+    return int(to_int(state.get("symbols", {}).get(safe_symbol(symbol), {}).get("adds", 0)))
+
+
+def mark_pyramid_add(symbol: str, reason: str = "pyramid_add") -> None:
+    symbol = safe_symbol(symbol)
+    if not symbol:
+        return
+    state = load_pyramid_state()
+    symbols = state.setdefault("symbols", {})
+    current = symbols.get(symbol, {}) if isinstance(symbols.get(symbol, {}), dict) else {}
+    current["adds"] = to_int(current.get("adds", 0)) + 1
+    current["last_added_at"] = now_utc().isoformat()
+    current["reason"] = reason
+    symbols[symbol] = current
+    state["symbols"] = symbols
+    save_pyramid_state(state)
+    write_event("pyramid_add_marked", {"symbol": symbol, "adds": current["adds"], "reason": reason})
 
 
 # =============================================================================
@@ -703,6 +1364,7 @@ class MomentumSetupScanner:
             raise RuntimeError("alpaca-py data classes are unavailable. Install alpaca-py or disable scanner.")
 
         self.data = StockHistoricalDataClient(broker.api_key, broker.secret_key)
+        self.llm_metadata_by_symbol: dict[str, dict[str, Any]] = {}
 
     def _load_state(self) -> dict[str, Any]:
         if not SCANNER_STATE_PATH.exists():
@@ -718,10 +1380,18 @@ class MomentumSetupScanner:
     def _universe(self) -> list[str]:
         if self.config.universe:
             raw_symbols = self.config.universe
+            self.llm_metadata_by_symbol = {}
+        elif self.config.use_llm_sentiment_universe:
+            raw_symbols, self.llm_metadata_by_symbol = load_llm_sentiment_universe(
+                refresh=self.config.refresh_llm_sentiment_universe,
+                min_confidence=self.config.min_llm_universe_confidence,
+            )
         elif self.config.use_sp500_fallback or self.config.broad_market_scan:
             raw_symbols = get_sp500_fallback_symbols()
+            self.llm_metadata_by_symbol = {}
         else:
             raw_symbols = DEFAULT_SCAN_UNIVERSE
+            self.llm_metadata_by_symbol = {}
 
         symbols: list[str] = []
         rejected: list[str] = []
@@ -1042,6 +1712,402 @@ class MomentumSetupScanner:
             print(out[[c for c in show if c in out.columns]].to_string(index=False))
         return out
 
+    def _intraday_direction_metrics(self, symbol: str, frame: pd.DataFrame, minutes: int, avg_entry_price: float) -> dict[str, Any]:
+        if frame.empty or len(frame) < 5:
+            return {
+                f"{minutes}m_direction_score": 0.5,
+                f"{minutes}m_ret": 0.0,
+                f"{minutes}m_vwap": 0.0,
+                f"{minutes}m_above_vwap": True,
+                f"{minutes}m_lower_highs": False,
+                f"{minutes}m_lower_lows": False,
+                f"{minutes}m_below_fast_sma": False,
+                f"{minutes}m_below_slow_sma": False,
+                f"{minutes}m_failed_reclaim": False,
+            }
+
+        g = frame.sort_values("timestamp").copy()
+        close = g["close"].astype(float)
+        high = g["high"].astype(float)
+        low = g["low"].astype(float)
+        volume = g["volume"].astype(float).replace(0, np.nan)
+
+        last_close = float(close.iloc[-1])
+        ret_n = last_close / max(float(close.iloc[0]), 1e-9) - 1.0
+        ret_recent = last_close / max(float(close.iloc[-min(len(close), 6)]), 1e-9) - 1.0
+        sma_fast = float(close.rolling(min(5, len(close))).mean().iloc[-1])
+        sma_slow = float(close.rolling(min(15, len(close))).mean().iloc[-1])
+        vwap = float((close * volume).sum() / max(volume.sum(), 1e-9)) if volume.notna().any() else last_close
+        above_vwap = last_close >= vwap
+        above_entry = last_close >= avg_entry_price if avg_entry_price > 0 else True
+        below_fast_sma = last_close < sma_fast
+        below_slow_sma = last_close < sma_slow
+
+        recent_highs = high.tail(min(10, len(high))).reset_index(drop=True)
+        recent_lows = low.tail(min(10, len(low))).reset_index(drop=True)
+        lower_highs = bool(len(recent_highs) >= 4 and recent_highs.iloc[-1] < recent_highs.iloc[-3])
+        lower_lows = bool(len(recent_lows) >= 4 and recent_lows.iloc[-1] < recent_lows.iloc[-3])
+        failed_reclaim = bool(len(close) >= 4 and close.iloc[-1] < close.iloc[-2] and high.iloc[-1] <= high.iloc[-2])
+
+        direction_score = (
+            0.22 * np.clip((ret_n + 0.015) / 0.055, 0, 1)
+            + 0.20 * np.clip((ret_recent + 0.006) / 0.030, 0, 1)
+            + 0.18 * float(sma_fast >= sma_slow)
+            + 0.14 * float(above_vwap)
+            + 0.10 * float(above_entry)
+            + 0.08 * float(not lower_lows)
+            + 0.08 * float(not below_slow_sma)
+            - 0.16 * float(lower_highs and lower_lows)
+            - 0.10 * float(below_fast_sma and below_slow_sma)
+            - 0.08 * float(failed_reclaim)
+        )
+        direction_score = float(np.clip(direction_score, 0, 1))
+
+        return {
+            f"{minutes}m_direction_score": direction_score,
+            f"{minutes}m_ret": float(ret_n),
+            f"{minutes}m_recent_ret": float(ret_recent),
+            f"{minutes}m_vwap": vwap,
+            f"{minutes}m_above_vwap": bool(above_vwap),
+            f"{minutes}m_above_entry": bool(above_entry),
+            f"{minutes}m_sma_fast": float(sma_fast),
+            f"{minutes}m_sma_slow": float(sma_slow),
+            f"{minutes}m_lower_highs": bool(lower_highs),
+            f"{minutes}m_lower_lows": bool(lower_lows),
+            f"{minutes}m_below_fast_sma": bool(below_fast_sma),
+            f"{minutes}m_below_slow_sma": bool(below_slow_sma),
+            f"{minutes}m_failed_reclaim": bool(failed_reclaim),
+            f"{minutes}m_last_close": last_close,
+        }
+
+    def _build_next_bar_ml_dataset(self, bars: pd.DataFrame) -> pd.DataFrame:
+        if bars.empty:
+            return pd.DataFrame()
+
+        rows: list[pd.DataFrame] = []
+        for symbol, g in bars.groupby("symbol", sort=False):
+            g = g.sort_values("timestamp").copy()
+            c = g["close"].astype(float)
+            h = g["high"].astype(float)
+            l = g["low"].astype(float)
+            v = g["volume"].astype(float)
+
+            g["ret_1"] = c.pct_change(1, fill_method=None)
+            g["ret_2"] = c.pct_change(2, fill_method=None)
+            g["ret_3"] = c.pct_change(3, fill_method=None)
+            g["ret_6"] = c.pct_change(6, fill_method=None)
+            g["range_pct"] = (h - l) / c.replace(0, np.nan)
+            g["close_location"] = (c - l) / (h - l).replace(0, np.nan)
+            g["vol_ratio"] = v / v.rolling(20).mean().replace(0, np.nan)
+            g["sma5_dist"] = c / c.rolling(5).mean().replace(0, np.nan) - 1.0
+            g["sma15_dist"] = c / c.rolling(15).mean().replace(0, np.nan) - 1.0
+            g["sma30_dist"] = c / c.rolling(30).mean().replace(0, np.nan) - 1.0
+            g["rsi14"] = _rsi(c, 14)
+            ema12 = c.ewm(span=12, adjust=False).mean()
+            ema26 = c.ewm(span=26, adjust=False).mean()
+            g["macd"] = ema12 - ema26
+            g["macd_signal"] = g["macd"].ewm(span=9, adjust=False).mean()
+            g["macd_hist"] = g["macd"] - g["macd_signal"]
+            g["next_bar_up"] = (c.shift(-1) > c).astype(int)
+            rows.append(g)
+
+        return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+    def predict_next_bar_direction(self, symbols: list[str]) -> pd.DataFrame:
+        """Train a local intraday model and predict next-bar up probability per symbol."""
+        symbols = [normalize_symbol(s) for s in symbols if normalize_symbol(s)]
+        if not symbols or not self.config.ml_next_bar_enabled:
+            return pd.DataFrame({"symbol": symbols, "ml_next_bar_probability": 0.50, "ml_next_bar_confirmed": True})
+
+        old_lookback = self.config.intraday_lookback_days
+        self.config.intraday_lookback_days = max(old_lookback, self.config.ml_next_bar_lookback_days)
+        try:
+            bars = self._download_intraday_bars(symbols, self.config.ml_next_bar_timeframe_minutes)
+        finally:
+            self.config.intraday_lookback_days = old_lookback
+
+        dataset = self._build_next_bar_ml_dataset(bars)
+        if dataset.empty:
+            return pd.DataFrame({"symbol": symbols, "ml_next_bar_probability": 0.50, "ml_next_bar_confirmed": False, "ml_next_bar_reason": "no_intraday_training_data"})
+
+        feature_cols = [
+            "ret_1", "ret_2", "ret_3", "ret_6", "range_pct", "close_location",
+            "vol_ratio", "sma5_dist", "sma15_dist", "sma30_dist", "rsi14",
+            "macd", "macd_signal", "macd_hist",
+        ]
+
+        train = dataset.dropna(subset=["next_bar_up"]).copy()
+        train = train.iloc[:-len(symbols)] if len(train) > len(symbols) else train
+        train = train.dropna(how="all", subset=feature_cols)
+
+        if len(train) < self.config.ml_next_bar_min_train_rows or train["next_bar_up"].nunique() < 2:
+            latest = dataset.sort_values("timestamp").groupby("symbol", as_index=False).tail(1).copy()
+            latest["ml_next_bar_probability"] = 0.50
+            latest["ml_next_bar_confirmed"] = False
+            latest["ml_next_bar_reason"] = "insufficient_training_rows"
+            return latest[["symbol", "ml_next_bar_probability", "ml_next_bar_confirmed", "ml_next_bar_reason"]]
+
+        model = Pipeline(
+            steps=[
+                ("imputer", SimpleImputer(strategy="median")),
+                ("clf", HistGradientBoostingClassifier(max_iter=120, learning_rate=0.06, max_leaf_nodes=15, random_state=42)),
+            ]
+        )
+        model.fit(train[feature_cols], train["next_bar_up"].astype(int))
+
+        latest = dataset.sort_values("timestamp").groupby("symbol", as_index=False).tail(1).copy()
+        probs = model.predict_proba(latest[feature_cols])[:, 1]
+        latest["ml_next_bar_probability"] = probs
+        latest["ml_next_bar_confirmed"] = latest["ml_next_bar_probability"] >= self.config.ml_next_bar_min_buy_probability
+        latest["ml_next_bar_reason"] = np.where(latest["ml_next_bar_confirmed"], "next_bar_up_confirmed", "next_bar_probability_too_low")
+
+        out = latest[["symbol", "ml_next_bar_probability", "ml_next_bar_confirmed", "ml_next_bar_reason"]].copy()
+        print("[ml-next-bar] predictions:")
+        print(out.to_string(index=False))
+        return out
+
+    def confirm_buy_direction(self, symbols: list[str]) -> pd.DataFrame:
+        """Final directional confirmation before buy execution.
+
+        Uses fresh 1m/5m/15m bars. A buy must show positive/constructive
+        direction across timeframes, remain above VWAP when required, avoid
+        lower-low deterioration, and avoid sharp immediate pullbacks.
+        """
+        symbols = [normalize_symbol(s) for s in symbols if normalize_symbol(s)]
+        if not symbols or not self.config.require_direction_confirmation_before_buy:
+            return pd.DataFrame({"symbol": symbols, "direction_confirmed": True})
+
+        bars_1m = self._download_intraday_bars(symbols, 1)
+        bars_5m = self._download_intraday_bars(symbols, 5)
+        bars_15m = self._download_intraday_bars(symbols, 15)
+
+        ml_df = self.predict_next_bar_direction(symbols)
+        ml_by_symbol = {safe_symbol(r["symbol"]): r for _, r in ml_df.iterrows()} if not ml_df.empty else {}
+
+        rows: list[dict[str, Any]] = []
+        for symbol in symbols:
+            frames = {
+                1: bars_1m[bars_1m["symbol"] == symbol].copy() if not bars_1m.empty else pd.DataFrame(),
+                5: bars_5m[bars_5m["symbol"] == symbol].copy() if not bars_5m.empty else pd.DataFrame(),
+                15: bars_15m[bars_15m["symbol"] == symbol].copy() if not bars_15m.empty else pd.DataFrame(),
+            }
+
+            metrics: dict[str, Any] = {"symbol": symbol}
+            for minutes, frame in frames.items():
+                metrics.update(self._intraday_direction_metrics(symbol, frame, minutes, 0.0))
+
+            combined = float(np.clip(
+                0.35 * to_float(metrics.get("1m_direction_score"), 0.5)
+                + 0.40 * to_float(metrics.get("5m_direction_score"), 0.5)
+                + 0.25 * to_float(metrics.get("15m_direction_score"), 0.5),
+                0,
+                1,
+            ))
+
+            last_1m = to_float(metrics.get("1m_last_close"), 0.0)
+            ret_1m = to_float(metrics.get("1m_recent_ret"), 0.0)
+            above_vwap_ok = True
+            lower_low_ok = True
+
+            if self.config.require_price_above_vwap_for_buy:
+                above_vwap_ok = bool(metrics.get("1m_above_vwap", True)) and bool(metrics.get("5m_above_vwap", True))
+
+            if self.config.require_no_lower_low_for_buy:
+                lower_low_ok = not bool(metrics.get("1m_lower_lows", False)) and not bool(metrics.get("5m_lower_lows", False))
+
+            pullback_ok = ret_1m >= self.config.max_pretrade_pullback_pct
+
+            ml_info = ml_by_symbol.get(symbol, {})
+            ml_prob = to_float(ml_info.get("ml_next_bar_probability"), 0.50)
+            ml_confirmed = bool(ml_info.get("ml_next_bar_confirmed", True))
+
+            confirmed = (
+                combined >= self.config.min_pretrade_direction_score
+                and to_float(metrics.get("1m_direction_score"), 0.5) >= self.config.min_pretrade_1m_score
+                and to_float(metrics.get("5m_direction_score"), 0.5) >= self.config.min_pretrade_5m_score
+                and to_float(metrics.get("15m_direction_score"), 0.5) >= self.config.min_pretrade_15m_score
+                and above_vwap_ok
+                and lower_low_ok
+                and pullback_ok
+                and last_1m > 0
+                and ml_confirmed
+            )
+
+            reason = "confirmed"
+            if not confirmed:
+                failed = []
+                if combined < self.config.min_pretrade_direction_score:
+                    failed.append("combined_direction_weak")
+                if not above_vwap_ok:
+                    failed.append("below_vwap")
+                if not lower_low_ok:
+                    failed.append("lower_low_structure")
+                if not pullback_ok:
+                    failed.append("active_pullback")
+                if last_1m <= 0:
+                    failed.append("missing_intraday_price")
+                if not ml_confirmed:
+                    failed.append(f"ml_next_bar_prob_low:{ml_prob:.2f}")
+                reason = ",".join(failed) or "direction_not_confirmed"
+
+            rows.append({
+                **metrics,
+                "direction_score": combined,
+                "ml_next_bar_probability": ml_prob,
+                "ml_next_bar_confirmed": ml_confirmed,
+                "direction_confirmed": bool(confirmed),
+                "direction_reject_reason": reason,
+            })
+
+        out = pd.DataFrame(rows)
+        if not out.empty:
+            show = ["symbol", "direction_confirmed", "direction_score", "ml_next_bar_probability", "1m_direction_score", "5m_direction_score", "15m_direction_score", "direction_reject_reason"]
+            print("[direction] pretrade confirmation:")
+            print(out[[c for c in show if c in out.columns]].to_string(index=False))
+        return out
+
+    def monitor_active_positions(self, equity: float) -> pd.DataFrame:
+        """Generate protective sell orders when active holdings lose intraday confirmation."""
+        if not self.config.active_position_monitor_enabled:
+            return pd.DataFrame()
+
+        positions = self.broker.get_all_open_positions()
+        if not positions:
+            return pd.DataFrame()
+
+        symbols = [normalize_symbol(p.symbol) for p in positions if p.symbol]
+        print(f"[monitor] checking active positions with 1m/5m/15m bars symbols={symbols}")
+
+        bars_1m = self._download_intraday_bars(symbols, 1)
+        bars_5m = self._download_intraday_bars(symbols, 5)
+        bars_15m = self._download_intraday_bars(symbols, 15)
+
+        monitor_rows: list[dict[str, Any]] = []
+        exit_rows: list[dict[str, Any]] = []
+
+        for pos in positions:
+            symbol = normalize_symbol(pos.symbol)
+            avg_entry = float(pos.avg_entry_price or 0.0)
+            current_price = float(pos.current_price or 0.0)
+            unrealized_plpc = float(pos.unrealized_plpc or 0.0)
+
+            frames = {
+                1: bars_1m[bars_1m["symbol"] == symbol].copy() if not bars_1m.empty else pd.DataFrame(),
+                5: bars_5m[bars_5m["symbol"] == symbol].copy() if not bars_5m.empty else pd.DataFrame(),
+                15: bars_15m[bars_15m["symbol"] == symbol].copy() if not bars_15m.empty else pd.DataFrame(),
+            }
+
+            metrics: dict[str, Any] = {
+                "timestamp_utc": now_utc().isoformat(),
+                "symbol": symbol,
+                "qty": pos.qty,
+                "current_price": current_price,
+                "avg_entry_price": avg_entry,
+                "unrealized_plpc": unrealized_plpc,
+                "market_value": pos.market_value,
+            }
+
+            for minutes, frame in frames.items():
+                metrics.update(self._intraday_direction_metrics(symbol, frame, minutes, avg_entry))
+
+            direction_score = float(np.clip(
+                0.40 * to_float(metrics.get("1m_direction_score"), 0.5)
+                + 0.35 * to_float(metrics.get("5m_direction_score"), 0.5)
+                + 0.25 * to_float(metrics.get("15m_direction_score"), 0.5),
+                0,
+                1,
+            ))
+            metrics["hold_direction_score"] = direction_score
+
+            lost_vwap = (
+                self.config.monitor_exit_on_vwap_loss
+                and not bool(metrics.get("1m_above_vwap", True))
+                and not bool(metrics.get("5m_above_vwap", True))
+            )
+            structure_break = (
+                self.config.monitor_exit_on_lower_high_lower_low
+                and bool(metrics.get("5m_lower_highs", False))
+                and bool(metrics.get("5m_lower_lows", False))
+            )
+            micro_structure_break = (
+                bool(metrics.get("1m_lower_highs", False))
+                and bool(metrics.get("1m_lower_lows", False))
+                and bool(metrics.get("1m_below_slow_sma", False))
+            )
+            failed_reclaim = bool(metrics.get("1m_failed_reclaim", False)) and bool(metrics.get("5m_failed_reclaim", False))
+            below_fast_and_slow = bool(metrics.get("1m_below_fast_sma", False)) and bool(metrics.get("5m_below_slow_sma", False))
+            trailing_stop_hit = unrealized_plpc <= -abs(self.config.intraday_trailing_stop_pct)
+            failed_breakout_loss = unrealized_plpc <= self.config.failed_breakout_loss_pct
+            failed_breakout_price = avg_entry > 0 and current_price < avg_entry * (1.0 - self.config.failed_breakout_buffer_pct)
+
+            exit_reason = ""
+            if direction_score <= self.config.hard_exit_direction_score:
+                exit_reason = "monitor_hard_direction_failure"
+            elif self.config.monitor_exit_on_failed_breakout and failed_breakout_loss and failed_breakout_price:
+                exit_reason = "monitor_failed_breakout_cut"
+            elif trailing_stop_hit:
+                exit_reason = "monitor_intraday_trailing_stop"
+            elif lost_vwap and structure_break:
+                exit_reason = "monitor_vwap_and_structure_break"
+            elif direction_score < self.config.min_hold_direction_score and (lost_vwap or structure_break or micro_structure_break):
+                exit_reason = "monitor_direction_breakdown"
+            elif direction_score < self.config.min_hold_direction_score and failed_reclaim and below_fast_and_slow:
+                exit_reason = "monitor_failed_reclaim"
+
+            metrics["lost_vwap"] = bool(lost_vwap)
+            metrics["structure_break"] = bool(structure_break)
+            metrics["micro_structure_break"] = bool(micro_structure_break)
+            metrics["failed_reclaim"] = bool(failed_reclaim)
+            metrics["below_fast_and_slow"] = bool(below_fast_and_slow)
+            metrics["failed_breakout_loss"] = bool(failed_breakout_loss)
+            metrics["failed_breakout_price"] = bool(failed_breakout_price)
+            metrics["exit_reason"] = exit_reason
+            monitor_rows.append(metrics)
+
+            if not exit_reason and self.config.scale_out_losers_enabled:
+                if unrealized_plpc <= self.config.loser_full_exit_loss_pct and direction_score <= self.config.min_hold_direction_score:
+                    exit_reason = "loser_full_exit_loss_and_weak_direction"
+                elif unrealized_plpc <= self.config.scale_out_loss_pct and direction_score <= self.config.scale_out_direction_score:
+                    exit_reason = "loser_scale_out_weak_direction"
+
+            if exit_reason:
+                if exit_reason.startswith("loser_scale_out"):
+                    sell_qty = max(1, int(float(pos.qty) * self.config.scale_out_fraction))
+                    target_weight = max(0.0, (float(pos.market_value) - sell_qty * current_price) / max(equity, 1e-9))
+                else:
+                    sell_qty = int(pos.qty)
+                    target_weight = 0.0
+
+                exit_rows.append(
+                    {
+                        "symbol": symbol,
+                        "side": "sell",
+                        "delta_shares": sell_qty,
+                        "delta_dollars": float(sell_qty * current_price),
+                        "price": current_price,
+                        "reason": exit_reason,
+                        "target_weight": target_weight,
+                        "current_weight": float(pos.market_value) / max(equity, 1e-9),
+                        "delta_weight": -float(sell_qty * current_price) / max(equity, 1e-9),
+                        "trade_confidence": 1.0,
+                        "hold_direction_score": direction_score,
+                    }
+                )
+
+        monitor = pd.DataFrame(monitor_rows)
+        if not monitor.empty:
+            monitor.to_csv(POSITION_MONITOR_PATH, index=False)
+            show = [
+                "symbol", "unrealized_plpc", "hold_direction_score",
+                "1m_direction_score", "5m_direction_score", "15m_direction_score",
+                "lost_vwap", "structure_break", "micro_structure_break",
+                "failed_reclaim", "failed_breakout_loss", "exit_reason",
+            ]
+            print("[monitor] active position direction check:")
+            print(monitor[[c for c in show if c in monitor.columns]].to_string(index=False))
+
+        return pd.DataFrame(exit_rows)
+
     def _score_latest(self, features: pd.DataFrame) -> pd.DataFrame:
         latest = features.sort_values("timestamp").groupby("symbol", as_index=False).tail(1).copy()
         if latest.empty:
@@ -1269,6 +2335,21 @@ class MomentumSetupScanner:
 
         features = self._build_features(bars)
         scores = self._score_latest(features)
+        if not scores.empty and self.llm_metadata_by_symbol:
+            meta = pd.DataFrame(
+                [{"symbol": sym, **data} for sym, data in self.llm_metadata_by_symbol.items()]
+            )
+            if not meta.empty:
+                scores = scores.merge(meta, on="symbol", how="left")
+                if "llm_confidence" in scores.columns:
+                    scores["llm_confidence"] = pd.to_numeric(scores["llm_confidence"], errors="coerce").fillna(0.50)
+                    scores["trade_confidence"] = (0.70 * scores["trade_confidence"] + 0.30 * scores["llm_confidence"]).clip(0, 1)
+                    scores["confidence_score"] = (0.70 * scores["confidence_score"] + 0.30 * scores["llm_confidence"]).clip(0, 1)
+                    scores["setup_score"] = scores[["setup_score", "trade_confidence", "confidence_score"]].max(axis=1)
+                    scores = scores.sort_values(
+                        ["trade_confidence", "setup_score", "continuation_probability", "dollar_volume20"],
+                        ascending=[False, False, False, False],
+                    ).reset_index(drop=True)
         if scores.empty:
             print("[scanner] no symbols passed scanner filters")
             return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -1276,7 +2357,7 @@ class MomentumSetupScanner:
         scores.to_csv(SCANNER_SCORES_PATH, index=False)
         print("[scanner] top setups:")
         show_cols = [
-            "symbol", "close", "regime_label", "setup_type", "is_positive_day_opportunity",
+            "symbol", "close", "llm_confidence", "llm_catalyst_type", "regime_label", "setup_type", "is_positive_day_opportunity",
             "opportunity_score", "positive_momentum_score", "confirmed_breakout_score",
             "trade_confidence", "continuation_probability", "setup_score", "trend_score",
             "momentum_score", "liquidity_score", "risk_penalty", "rsi14", "ret_1d",
@@ -1331,6 +2412,16 @@ class MomentumSetupScanner:
             candidates = scores[relaxed_mask].head(self.config.top_n).copy()
 
         candidates = self._annotate_intraday_entries(candidates)
+
+        if not candidates.empty and self.config.ml_next_bar_enabled:
+            ml_preds = self.predict_next_bar_direction(candidates["symbol"].tolist())
+            if not ml_preds.empty:
+                candidates = candidates.merge(ml_preds, on="symbol", how="left")
+                candidates["ml_next_bar_probability"] = pd.to_numeric(candidates["ml_next_bar_probability"], errors="coerce").fillna(0.50)
+                candidates["trade_confidence"] = (0.75 * candidates["trade_confidence"] + 0.25 * candidates["ml_next_bar_probability"]).clip(0, 1)
+                candidates = candidates[candidates["ml_next_bar_probability"] >= self.config.ml_next_bar_min_buy_probability].copy()
+                if candidates.empty:
+                    print("[ml-next-bar] all candidates rejected by next-bar direction filter")
 
         no_reentry_symbols = load_no_reentry_symbols()
         if no_reentry_symbols:
@@ -1390,6 +2481,14 @@ class MomentumSetupScanner:
                     "delta_weight": delta_weight,
                     "trade_confidence": float(r["trade_confidence"]),
                     "confidence_score": float(r["confidence_score"]),
+                    "ml_next_bar_probability": to_float(r.get("ml_next_bar_probability"), 0.50),
+                    "ml_next_bar_confirmed": bool(r.get("ml_next_bar_confirmed", False)),
+                    "llm_confidence": to_float(r.get("llm_confidence"), 0.0),
+                    "llm_rank": to_int(r.get("llm_rank"), 999),
+                    "llm_catalyst_type": str(r.get("llm_catalyst_type", "")),
+                    "llm_reason": str(r.get("llm_reason", "")),
+                    "llm_market_tone": str(r.get("llm_market_tone", "")),
+                    "llm_summary": str(r.get("llm_summary", "")),
                     "continuation_probability": float(r["continuation_probability"]),
                     "ml_probability": float(r["ml_probability"]),
                     "setup_score": float(r["setup_score"]),
@@ -1419,6 +2518,8 @@ class MomentumSetupScanner:
             )
 
         rebalance = pd.DataFrame(rows)
+        rebalance = self._add_pyramid_orders(rebalance, scores, equity)
+        self._trigger_options_booster_if_needed(rebalance)
         exits = self._update_high_water_and_exits(scores, equity)
 
         rebalance.to_csv(DEFAULT_REBALANCE_ORDERS, index=False)
@@ -1426,6 +2527,283 @@ class MomentumSetupScanner:
         print(f"[scanner] wrote rebalance_orders={DEFAULT_REBALANCE_ORDERS} rows={len(rebalance)}")
         print(f"[scanner] wrote exit_orders={DEFAULT_EXIT_ORDERS} rows={len(exits)}")
         return rebalance, exits, scores
+
+    def _add_pyramid_orders(self, rebalance: pd.DataFrame, scores: pd.DataFrame, equity: float) -> pd.DataFrame:
+        """Add incremental buy orders for existing winners that are still confirmed."""
+        if not self.config.pyramid_winners_enabled:
+            return rebalance
+
+        positions = self.broker.get_all_open_positions()
+        if not positions or scores.empty:
+            return rebalance
+
+        score_by_symbol = scores.set_index("symbol").to_dict("index") if "symbol" in scores.columns else {}
+        rows: list[dict[str, Any]] = []
+
+        for pos in positions:
+            symbol = normalize_symbol(pos.symbol)
+            if not symbol or symbol not in score_by_symbol:
+                continue
+            if symbol in load_no_reentry_symbols():
+                continue
+            if pyramid_add_count(symbol) >= self.config.pyramid_max_adds_per_symbol_per_day:
+                continue
+
+            s = score_by_symbol[symbol]
+            confidence = to_float(s.get("trade_confidence"), 0.0)
+            direction_score = to_float(s.get("positive_momentum_score"), to_float(s.get("momentum_score"), 0.0))
+            current_price = to_float(s.get("entry_price"), to_float(s.get("close"), pos.current_price))
+            current_weight = float(pos.market_value) / max(equity, 1e-9)
+
+            ml_prob = to_float(s.get("ml_next_bar_probability"), 0.50)
+
+            if (
+                pos.unrealized_plpc >= self.config.pyramid_min_unrealized_plpc
+                and direction_score >= self.config.pyramid_min_hold_direction_score
+                and ml_prob >= self.config.ml_next_bar_min_pyramid_probability
+                and confidence >= self.config.min_buy_confidence
+                and current_weight < min(self.config.max_target_weight, build_account_risk_profile(equity).max_position_weight)
+            ):
+                add_weight = min(
+                    self.config.pyramid_add_weight,
+                    min(self.config.max_target_weight, build_account_risk_profile(equity).max_position_weight) - current_weight,
+                )
+                delta_dollars = add_weight * equity
+                if delta_dollars >= build_account_risk_profile(equity).min_notional_to_trade and current_price > 0:
+                    rows.append({
+                        "symbol": symbol,
+                        "side": "buy",
+                        "delta_shares": int(delta_dollars // current_price),
+                        "delta_dollars": float(delta_dollars),
+                        "price": current_price,
+                        "market_price": to_float(s.get("close"), current_price),
+                        "entry_price": current_price,
+                        "reason": "pyramid_winner_confirmed_direction",
+                        "target_weight": current_weight + add_weight,
+                        "current_weight": current_weight,
+                        "delta_weight": add_weight,
+                        "trade_confidence": confidence,
+                        "confidence_score": to_float(s.get("confidence_score"), confidence),
+                        "continuation_probability": to_float(s.get("continuation_probability"), confidence),
+                        "momentum_score": to_float(s.get("momentum_score"), direction_score),
+                        "positive_momentum_score": direction_score,
+                        "ml_next_bar_probability": ml_prob,
+                        "unrealized_plpc": float(pos.unrealized_plpc),
+                    })
+                    mark_pyramid_add(symbol, reason="pyramid_winner_confirmed_direction")
+
+        if rows:
+            pyramid_df = pd.DataFrame(rows)
+            print(f"[pyramid] adding {len(pyramid_df)} winner scale-in order(s)")
+            show = ["symbol", "unrealized_plpc", "delta_dollars", "target_weight", "trade_confidence", "reason"]
+            print(pyramid_df[[c for c in show if c in pyramid_df.columns]].to_string(index=False))
+            return pd.concat([rebalance, pyramid_df], ignore_index=True)
+
+        return rebalance
+
+    def _trigger_options_booster_if_needed(self, candidates: pd.DataFrame) -> None:
+        """Hand high-confidence candidates and profitable active holdings to options_booster.py.
+
+        Rule:
+            If an actively held stock is up at least +0.56%, request a long-call
+            booster around 30 DTE using bid-price limit intent.
+        """
+        if not self.config.options_booster_enabled:
+            return
+        if not OPTIONS_BOOSTER_PATH.exists():
+            print(f"[options] options_booster.py not found at {OPTIONS_BOOSTER_PATH}; skipping")
+            return
+
+        frames: list[pd.DataFrame] = []
+
+        if candidates is not None and not candidates.empty and "trade_confidence" in candidates.columns:
+            df = candidates.copy()
+            df["trade_confidence"] = pd.to_numeric(df["trade_confidence"], errors="coerce").fillna(0.0)
+            high = df[df["trade_confidence"] >= self.config.options_booster_confidence_threshold].copy()
+            if not high.empty:
+                high["booster_trigger"] = "high_stock_confidence"
+                frames.append(high)
+
+        position_rows: list[dict[str, Any]] = []
+        active_positions = self.broker.get_all_open_positions()
+        position_symbols_for_ta = [
+            normalize_symbol(p.symbol)
+            for p in active_positions
+            if p.symbol and p.qty > 0 and float(p.unrealized_plpc or 0.0) >= self.config.options_booster_min_position_plpc
+        ]
+        ta_by_symbol: dict[str, dict[str, Any]] = {}
+        if self.config.options_booster_require_technical_confirmation and position_symbols_for_ta:
+            ta_df = self.confirm_buy_direction(position_symbols_for_ta)
+            if not ta_df.empty:
+                ta_by_symbol = {safe_symbol(r["symbol"]): r.to_dict() for _, r in ta_df.iterrows()}
+
+        for pos in active_positions:
+            parsed = parse_occ_option_symbol(pos.symbol) if "parse_occ_option_symbol" in globals() else None
+            if parsed:
+                continue
+            symbol = normalize_symbol(pos.symbol)
+            if not symbol or pos.qty <= 0:
+                continue
+            if float(pos.unrealized_plpc or 0.0) < self.config.options_booster_min_position_plpc:
+                continue
+
+            ta = ta_by_symbol.get(symbol, {})
+            if self.config.options_booster_require_technical_confirmation:
+                direction_confirmed = bool(ta.get("direction_confirmed", False))
+                direction_score = to_float(ta.get("direction_score"), 0.0)
+                ml_prob = to_float(ta.get("ml_next_bar_probability"), 0.0)
+                if (
+                    not direction_confirmed
+                    or direction_score < self.config.options_booster_min_direction_score
+                    or ml_prob < self.config.options_booster_min_ml_next_bar_probability
+                ):
+                    print(
+                        f"[options] skip {symbol}: technical direction not confirmed "
+                        f"direction_score={direction_score:.2f} ml_next_bar={ml_prob:.2f} "
+                        f"reason={ta.get('direction_reject_reason', 'not_confirmed')}"
+                    )
+                    continue
+            else:
+                direction_score = 1.0
+                ml_prob = 1.0
+
+            technical_score = float(np.clip(
+                0.55 * direction_score
+                + 0.35 * ml_prob
+                + 0.10 * min(max(float(pos.unrealized_plpc or 0.0) / 0.03, 0.0), 1.0),
+                0,
+                1,
+            ))
+
+            position_rows.append(
+                {
+                    "symbol": symbol,
+                    "underlying_symbol": symbol,
+                    "close": float(pos.current_price or 0.0),
+                    "price": float(pos.current_price or 0.0),
+                    "trade_confidence": technical_score,
+                    "continuation_confidence": technical_score,
+                    "setup_score": technical_score,
+                    "momentum_score": direction_score,
+                    "setup_type": "momentum",
+                    "unrealized_plpc": float(pos.unrealized_plpc or 0.0),
+                    "position_qty": float(pos.qty),
+                    "booster_trigger": "position_up_0_56pct_with_ml_ta_confirmation",
+                    "target_dte": self.config.options_booster_target_dte,
+                    "min_dte": self.config.options_booster_min_dte,
+                    "max_dte": self.config.options_booster_max_dte,
+                    "limit_price_source": self.config.options_booster_limit_price_source,
+                    "desired_order_type": "ml_ranked_limit_buy_call_at_bid",
+                    "technical_direction_confirmed": True,
+                    "technical_direction_score": direction_score,
+                    "ml_next_bar_probability": ml_prob,
+                    "technical_score": technical_score,
+                    "use_ml_contract_selection": self.config.options_ml_contract_selection_enabled,
+                    "target_delta": self.config.options_target_delta,
+                    "min_delta": self.config.options_min_delta,
+                    "max_delta": self.config.options_max_delta,
+                    "max_spread_pct": self.config.options_max_spread_pct,
+                    "min_open_interest": self.config.options_min_open_interest,
+                    "min_volume": self.config.options_min_volume,
+                    "max_theta_abs": self.config.options_max_theta_abs,
+                    "min_gamma": self.config.options_min_gamma,
+                    "max_iv_rank": self.config.options_max_iv_rank,
+                    "greek_score_weight": self.config.options_greek_score_weight,
+                    "technical_score_weight": self.config.options_technical_score_weight,
+                    "liquidity_score_weight": self.config.options_liquidity_score_weight,
+                    "dte_score_weight": self.config.options_dte_score_weight,
+                }
+            )
+
+        if position_rows:
+            frames.append(pd.DataFrame(position_rows))
+
+        if not frames:
+            print(
+                f"[options] no confidence candidates and no active positions above "
+                f"+{self.config.options_booster_min_position_plpc:.2%}; booster not triggered"
+            )
+            return
+
+        high = pd.concat(frames, ignore_index=True)
+        high["symbol"] = high["symbol"].map(normalize_symbol)
+        high = high.drop_duplicates("symbol", keep="first").reset_index(drop=True)
+        high["continuation_confidence"] = pd.to_numeric(
+            high.get("continuation_confidence", high.get("trade_confidence", 1.0)),
+            errors="coerce",
+        ).fillna(high.get("trade_confidence", 1.0))
+        high["underlying_symbol"] = high["symbol"].map(normalize_symbol)
+        high["source"] = "run_py_position_profit_options_booster"
+        high["created_at_utc"] = now_utc().isoformat()
+        high["target_dte"] = self.config.options_booster_target_dte
+        high["min_dte"] = self.config.options_booster_min_dte
+        high["max_dte"] = self.config.options_booster_max_dte
+        high["limit_price_source"] = self.config.options_booster_limit_price_source
+        high["desired_order_type"] = "ml_ranked_limit_buy_call_at_bid"
+        high["use_ml_contract_selection"] = self.config.options_ml_contract_selection_enabled
+        high["target_delta"] = self.config.options_target_delta
+        high["min_delta"] = self.config.options_min_delta
+        high["max_delta"] = self.config.options_max_delta
+        high["max_spread_pct"] = self.config.options_max_spread_pct
+        high["min_open_interest"] = self.config.options_min_open_interest
+        high["min_volume"] = self.config.options_min_volume
+        high["max_theta_abs"] = self.config.options_max_theta_abs
+        high["min_gamma"] = self.config.options_min_gamma
+        high["max_iv_rank"] = self.config.options_max_iv_rank
+        high["greek_score_weight"] = self.config.options_greek_score_weight
+        high["technical_score_weight"] = self.config.options_technical_score_weight
+        high["liquidity_score_weight"] = self.config.options_liquidity_score_weight
+        high["dte_score_weight"] = self.config.options_dte_score_weight
+        high.to_csv(OPTION_BOOSTER_CANDIDATES_PATH, index=False)
+
+        print(
+            f"[options] triggering options_booster.py for {len(high)} candidate(s); "
+            f"position trigger=+{self.config.options_booster_min_position_plpc:.2%}, "
+            f"target_dte={self.config.options_booster_target_dte}, "
+            f"contract_selection=ML_GREEKS_TA_RANKER, limit_source=bid"
+        )
+        print(high[[c for c in ["symbol", "trade_confidence", "continuation_confidence", "unrealized_plpc", "technical_direction_score", "ml_next_bar_probability", "target_delta", "min_delta", "max_delta", "booster_trigger", "target_dte", "limit_price_source"] if c in high.columns]].to_string(index=False))
+
+        args = [
+            "--once",
+            "--enable-options-booster",
+            "--disable-scanner",
+            "--option-min-confidence",
+            "0.0",
+            "--option-min-underlying-plpc",
+            str(self.config.options_booster_min_position_plpc),
+            "--option-min-dte",
+            str(self.config.options_booster_min_dte),
+            "--option-max-dte",
+            str(self.config.options_booster_max_dte),
+            "--option-target-delta",
+            str(self.config.options_target_delta),
+            "--option-min-delta",
+            str(self.config.options_min_delta),
+            "--option-max-delta",
+            str(self.config.options_max_delta),
+            "--option-max-spread-pct",
+            str(self.config.options_max_spread_pct),
+            "--option-min-open-interest",
+            str(self.config.options_min_open_interest),
+            "--option-min-volume",
+            str(self.config.options_min_volume),
+            "--option-limit-price-source",
+            self.config.options_booster_limit_price_source,
+        ]
+        ok, output = run_python_script(
+            OPTIONS_BOOSTER_PATH,
+            args=args,
+            timeout_seconds=self.config.options_booster_timeout_seconds,
+        )
+        if ok:
+            print("[options] options_booster.py completed")
+            if output:
+                print(output[-2000:])
+            write_event("options_booster_triggered", {"rows": len(high), "output_tail": output[-2000:]})
+        else:
+            print(f"[options] options_booster.py failed: {output}")
+            write_event("options_booster_failed", {"rows": len(high), "error": output})
 
 
 # =============================================================================
@@ -1441,6 +2819,7 @@ class ProductionOrderExecutor:
         self.last_order_time = 0.0
         self.last_heartbeat_time = 0.0
         self.account_history: list[dict[str, Any]] = []
+        self._last_morning_refresh_date: str | None = None
 
     def _in_cooldown(self) -> bool:
         return (time.time() - self.last_order_time) < self.config.cooldown_seconds
@@ -1687,8 +3066,7 @@ class ProductionOrderExecutor:
             return pd.DataFrame()
 
         # Never re-enter a symbol on the same day it was exited.
-        # This applies both to symbols exited earlier today and to symbols that
-        # have a sell order in the current plan.
+        # This guard is BUY-ONLY. SELL/EXIT orders must always remain allowed.
         no_reentry_symbols = load_no_reentry_symbols()
         same_cycle_exit_symbols = set(plan.loc[plan["side"] == "sell", "symbol"].map(safe_symbol))
         blocked_buy_symbols = {sym for sym in no_reentry_symbols.union(same_cycle_exit_symbols) if sym}
@@ -1696,7 +3074,7 @@ class ProductionOrderExecutor:
             buy_block_mask = (plan["side"] == "buy") & plan["symbol"].map(safe_symbol).isin(blocked_buy_symbols)
             blocked_count = int(buy_block_mask.sum())
             if blocked_count:
-                print(f"[no-reentry] removed {blocked_count} buy order(s) for same-day exited symbols: {sorted(blocked_buy_symbols)}")
+                print(f"[no-reentry] removed {blocked_count} BUY order(s); EXIT orders remain allowed: {sorted(blocked_buy_symbols)}")
                 plan = plan[~buy_block_mask].copy()
                 if plan.empty:
                     return pd.DataFrame()
@@ -1822,6 +3200,17 @@ class ProductionOrderExecutor:
         if plan.empty:
             return pd.DataFrame()
 
+        direction_by_symbol: dict[str, dict[str, Any]] = {}
+        if self.scanner is not None and self.config.scanner.require_direction_confirmation_before_buy:
+            buy_symbols = sorted(set(plan.loc[plan["side"] == "buy", "symbol"].map(safe_symbol)))
+            if buy_symbols:
+                direction_df = self.scanner.confirm_buy_direction(buy_symbols)
+                if not direction_df.empty:
+                    direction_by_symbol = {
+                        safe_symbol(row["symbol"]): row.to_dict()
+                        for _, row in direction_df.iterrows()
+                    }
+
         for _, row in plan.iterrows():
             symbol = safe_symbol(row.get("symbol"))
             side = str(row.get("side", "")).lower()
@@ -1844,6 +3233,11 @@ class ProductionOrderExecutor:
                 skip_message = "qty <= 0"
             elif self.broker.has_open_order_for_symbol(symbol):
                 skip_message = "existing open order for symbol"
+
+            if not skip_message and side == "buy" and direction_by_symbol:
+                direction = direction_by_symbol.get(symbol, {})
+                if not bool(direction.get("direction_confirmed", False)):
+                    skip_message = f"price_direction_not_confirmed:{direction.get('direction_reject_reason', 'unknown')}"
 
             if not skip_message and side == "buy":
                 cash_buffer = self._cash_buffer(equity)
@@ -1976,19 +3370,26 @@ class ProductionOrderExecutor:
             self._write_account_equity_curve()
             return pd.DataFrame(), results, self.broker.get_account_snapshot(), positions_before
 
-        if self._in_cooldown():
-            print("[cooldown] execution blocked by cooldown")
-            results = pd.DataFrame([{"timestamp_utc": now_utc().isoformat(), "status": "skipped_cooldown", "message": "cooldown active"}])
-            save_df(pd.DataFrame(), LOG_DIR / f"order_plan_{cycle_id}.csv")
-            save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
-            self._write_account_equity_curve()
-            return pd.DataFrame(), results, self.broker.get_account_snapshot(), positions_before
-
         if self.config.cancel_open_orders_first:
             print("[orders] canceling open orders")
             self.broker.cancel_open_orders()
 
         plan = self._build_order_plan(rebalance_orders, exit_orders if exit_orders is not None else pd.DataFrame(), equity)
+
+        # Cooldown is buy-only. Exits are always allowed so risk can be reduced immediately.
+        if self._in_cooldown() and not plan.empty:
+            sells = plan[plan["side"] == "sell"].copy()
+            buys = plan[plan["side"] == "buy"].copy()
+            if not sells.empty:
+                print(f"[cooldown] active; allowing {len(sells)} exit order(s), deferring {len(buys)} buy order(s)")
+                plan = sells
+            else:
+                print("[cooldown] active; no exits to process, buys deferred")
+                results = pd.DataFrame([{"timestamp_utc": now_utc().isoformat(), "status": "skipped_cooldown", "message": "cooldown active; buys deferred"}])
+                save_df(pd.DataFrame(), LOG_DIR / f"order_plan_{cycle_id}.csv")
+                save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
+                self._write_account_equity_curve()
+                return pd.DataFrame(), results, self.broker.get_account_snapshot(), positions_before
         if plan.empty:
             print("[plan] no valid orders")
             save_df(plan, LOG_DIR / f"order_plan_{cycle_id}.csv")
@@ -2031,10 +3432,347 @@ class ProductionOrderExecutor:
 
         return plan, results, self.broker.get_account_snapshot(), positions_before
 
+    def _regime_plan_to_order_frames(self, regime_plan: pd.DataFrame, equity: float) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Convert regime_position_plan.csv into executor-compatible rebalance/exit frames."""
+        if regime_plan is None or regime_plan.empty:
+            return pd.DataFrame(), pd.DataFrame()
+
+        positions = self._positions_by_symbol()
+        buys: list[dict[str, Any]] = []
+        exits: list[dict[str, Any]] = []
+
+        for _, row in regime_plan.iterrows():
+            symbol = safe_symbol(row.get("symbol"))
+            if not symbol:
+                continue
+
+            action = _regime_action_value(row)
+            target_weight = _regime_target_weight(row, 0.0)
+            confidence = _regime_confidence(row, 0.55)
+            pos = positions.get(symbol, BrokerPosition(symbol=symbol))
+            current_value = max(0.0, float(pos.market_value or 0.0))
+            current_weight = current_value / max(equity, 1.0)
+            price = _regime_price(row, float(pos.current_price or pos.avg_entry_price or 0.0))
+            if price <= 0:
+                # The actual executor can still size from shares if supplied, but regime plans usually need a price.
+                print(f"[regime-plan] skipping {symbol}: no usable price")
+                continue
+
+            reason = f"regime_model:{action or 'NO_ACTION'}"
+
+            if action in {"LIQUIDATE", "EXIT", "EXIT_LONG", "SELL", "CLOSE", "CLOSE_LONG", "REDUCE_TO_ZERO"}:
+                qty = int(max(0, float(pos.qty or 0)))
+                if qty > 0:
+                    exits.append(
+                        {
+                            "symbol": symbol,
+                            "side": "sell",
+                            "delta_shares": qty,
+                            "delta_dollars": qty * price,
+                            "price": price,
+                            "reason": reason,
+                            "target_weight": 0.0,
+                            "current_weight": current_weight,
+                            "delta_weight": -current_weight,
+                            "trade_confidence": confidence,
+                        }
+                    )
+                continue
+
+            if action in {"OPEN_LONG", "BUY", "HOLD_LONG", "ADD_LONG", "CONTINUE_HOLD_WAIT_CONFIRMATION", "REBALANCE_LONG"} and target_weight > 0:
+                target_value = equity * target_weight
+                delta_dollars = target_value - current_value
+                if delta_dollars >= self.config.min_notional_to_trade:
+                    buys.append(
+                        {
+                            "symbol": symbol,
+                            "side": "buy",
+                            "delta_shares": max(0, int(delta_dollars / max(price, 0.01))),
+                            "delta_dollars": delta_dollars,
+                            "price": price,
+                            "reason": reason,
+                            "target_weight": target_weight,
+                            "current_weight": current_weight,
+                            "delta_weight": target_weight - current_weight,
+                            "trade_confidence": confidence,
+                        }
+                    )
+                elif delta_dollars <= -self.config.min_notional_to_trade and float(pos.qty or 0) > 0:
+                    reduce_qty = int(min(float(pos.qty), abs(delta_dollars) / max(price, 0.01)))
+                    if reduce_qty > 0:
+                        exits.append(
+                            {
+                                "symbol": symbol,
+                                "side": "sell",
+                                "delta_shares": reduce_qty,
+                                "delta_dollars": reduce_qty * price,
+                                "price": price,
+                                "reason": reason + ":reduce_to_target",
+                                "target_weight": target_weight,
+                                "current_weight": current_weight,
+                                "delta_weight": target_weight - current_weight,
+                                "trade_confidence": confidence,
+                            }
+                        )
+
+        rebalance = pd.DataFrame(buys)
+        exits_df = pd.DataFrame(exits)
+        if not rebalance.empty:
+            save_df(rebalance, self.config.rebalance_orders_path)
+        if not exits_df.empty:
+            save_df(exits_df, self.config.exit_orders_path)
+        print(f"[regime-plan] converted to buys={len(rebalance)} exits={len(exits_df)}")
+        return rebalance, exits_df
+
+    def _load_rl_structure_map(self) -> dict[str, Any]:
+        if not INTRADAY_STRUCTURE_MAP_PATH.exists():
+            return {}
+        return read_json_file(INTRADAY_STRUCTURE_MAP_PATH, {})
+
+    def _download_latest_bars_for_rl(self, symbols: list[str]) -> pd.DataFrame:
+        symbols = [safe_symbol(s) for s in symbols if safe_symbol(s)]
+        if not symbols or self.scanner is None:
+            if INTRADAY_BARS_1M_PATH.exists():
+                try:
+                    return pd.read_csv(INTRADAY_BARS_1M_PATH)
+                except Exception:
+                    return pd.DataFrame()
+            return pd.DataFrame()
+
+        old_lookback = self.scanner.config.intraday_lookback_days
+        try:
+            self.scanner.config.intraday_lookback_days = max(
+                old_lookback,
+                int(self.config.scanner.rl_latest_bar_lookback_days),
+            )
+            bars = self.scanner._download_intraday_bars(symbols, int(self.config.scanner.rl_latest_bar_timeframe_minutes))
+            if not bars.empty:
+                save_df(bars, INTRADAY_BARS_1M_PATH)
+            return bars
+        finally:
+            self.scanner.config.intraday_lookback_days = old_lookback
+
+    def _predict_rl_signal(self, symbol: str, latest_bars: pd.DataFrame, structure_map: dict[str, Any]) -> dict[str, Any]:
+        symbol = safe_symbol(symbol)
+        if not self.config.scanner.use_rl_timing_gate:
+            return {"symbol": symbol, "action": "HOLD", "confidence": 0.0, "reason": "rl_gate_disabled"}
+        if not RL_INTRADAY_STRUCTURE_TRAINER_PATH.exists():
+            return {"symbol": symbol, "action": "HOLD", "confidence": 0.0, "reason": "rl_trainer_missing"}
+        if not RL_MODEL_PATH.exists():
+            return {"symbol": symbol, "action": "HOLD", "confidence": 0.0, "reason": "rl_model_missing"}
+        if latest_bars.empty or not structure_map:
+            return {"symbol": symbol, "action": "HOLD", "confidence": 0.0, "reason": "rl_inputs_missing"}
+
+        try:
+            from rl_intraday_structure_trainer import predict_live_action
+
+            signal = predict_live_action(
+                model_path=RL_MODEL_PATH,
+                latest_bars=latest_bars,
+                structure_map=structure_map,
+                symbol=symbol,
+            )
+            signal["symbol"] = symbol
+            return signal
+        except Exception as exc:
+            return {"symbol": symbol, "action": "HOLD", "confidence": 0.0, "reason": f"rl_error:{exc}"}
+
+    def _apply_rl_timing_gate(self, rebalance: pd.DataFrame, exits: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Use rl_intraday_structure_trainer.py as timing confirmation.
+
+        BUY rows require ENTER_LONG confidence.
+        Existing exits always remain allowed, and RL EXIT signals can add protective exits.
+        """
+        if not self.config.scanner.use_rl_timing_gate:
+            return rebalance, exits
+
+        symbols = []
+        if rebalance is not None and not rebalance.empty and "symbol" in rebalance.columns:
+            symbols.extend(rebalance["symbol"].map(safe_symbol).tolist())
+        positions = self.broker.get_all_open_positions()
+        symbols.extend([safe_symbol(p.symbol) for p in positions if p.symbol])
+        symbols = sorted(set(s for s in symbols if s))
+
+        if not symbols:
+            return rebalance, exits
+
+        latest_bars = self._download_latest_bars_for_rl(symbols)
+        structure_map = self._load_rl_structure_map()
+        signals: list[dict[str, Any]] = []
+
+        # Gate buys.
+        gated_rebalance = rebalance.copy() if rebalance is not None else pd.DataFrame()
+        if not gated_rebalance.empty:
+            keep_mask = []
+            for _, row in gated_rebalance.iterrows():
+                symbol = safe_symbol(row.get("symbol"))
+                signal = self._predict_rl_signal(symbol, latest_bars, structure_map)
+                signals.append(signal)
+                action = str(signal.get("action", "HOLD")).upper()
+                confidence = to_float(signal.get("confidence"), 0.0)
+                allow = action == "ENTER_LONG" and confidence >= self.config.scanner.rl_min_enter_long_confidence
+
+                if not allow and self.config.scanner.rl_allow_hold_when_model_missing:
+                    reason = str(signal.get("reason", ""))
+                    allow = reason in {"model_not_found", "rl_model_missing", "rl_trainer_missing", "rl_inputs_missing", "no_latest_bars"}
+
+                keep_mask.append(bool(allow))
+                if not allow:
+                    print(f"[rl-gate] blocked BUY {symbol}: action={action} confidence={confidence:.2f} reason={signal.get('reason')} mask={signal.get('mask_reason')}")
+                    write_event("rl_gate_blocked_buy", signal)
+                else:
+                    gated_rebalance.loc[gated_rebalance.index[len(keep_mask) - 1], "reason"] = (
+                        str(row.get("reason", "")) + f":rl_{action}_{confidence:.2f}"
+                    )
+                    gated_rebalance.loc[gated_rebalance.index[len(keep_mask) - 1], "rl_action"] = action
+                    gated_rebalance.loc[gated_rebalance.index[len(keep_mask) - 1], "rl_confidence"] = confidence
+
+            gated_rebalance = gated_rebalance.loc[keep_mask].copy() if keep_mask else gated_rebalance.iloc[0:0].copy()
+
+        # Add RL protective exits for held positions.
+        rl_exit_rows: list[dict[str, Any]] = []
+        existing_exit_symbols = set()
+        if exits is not None and not exits.empty and "symbol" in exits.columns:
+            existing_exit_symbols = set(exits["symbol"].map(safe_symbol))
+
+        for pos in positions:
+            symbol = safe_symbol(pos.symbol)
+            if not symbol or symbol in existing_exit_symbols:
+                continue
+            signal = self._predict_rl_signal(symbol, latest_bars, structure_map)
+            signals.append(signal)
+            action = str(signal.get("action", "HOLD")).upper()
+            confidence = to_float(signal.get("confidence"), 0.0)
+            if action in {"EXIT_LONG", "EXIT_SHORT", "SELL"} and confidence >= self.config.scanner.rl_min_exit_confidence:
+                price = float(pos.current_price or pos.avg_entry_price or 0.0)
+                qty = int(max(0, float(pos.qty or 0)))
+                if price > 0 and qty > 0:
+                    rl_exit_rows.append(
+                        {
+                            "symbol": symbol,
+                            "side": "sell",
+                            "delta_shares": qty,
+                            "delta_dollars": qty * price,
+                            "price": price,
+                            "reason": f"rl_timing_exit:{action}:{confidence:.2f}",
+                            "target_weight": 0.0,
+                            "current_weight": 0.0,
+                            "delta_weight": 0.0,
+                            "trade_confidence": confidence,
+                        }
+                    )
+                    print(f"[rl-gate] added protective exit {symbol}: action={action} confidence={confidence:.2f}")
+                    write_event("rl_gate_added_exit", signal)
+
+        if signals:
+            signal_df = pd.DataFrame(signals)
+            if RL_SIGNAL_LOG_PATH.exists():
+                try:
+                    prior = pd.read_csv(RL_SIGNAL_LOG_PATH)
+                    signal_df = pd.concat([prior, signal_df], ignore_index=True)
+                except Exception:
+                    pass
+            save_df(signal_df.tail(5000), RL_SIGNAL_LOG_PATH)
+
+        if rl_exit_rows:
+            exits = pd.concat([exits if exits is not None else pd.DataFrame(), pd.DataFrame(rl_exit_rows)], ignore_index=True)
+
+        return gated_rebalance, exits if exits is not None else pd.DataFrame()
+
+
+    def _prepare_morning_inputs_once(self) -> None:
+        today = datetime.now(ET).date().isoformat()
+        if self._last_morning_refresh_date == today:
+            # Avoid rebuilding expensive OpenAI/Yahoo/SerpApi inputs every executor loop.
+            self.config.scanner.refresh_llm_sentiment_universe = False
+            self.config.scanner.refresh_market_context = False
+            self.config.scanner.refresh_premarket_trade_plan = False
+            return
+
+        print(f"[morning] preparing daily inputs for {today}")
+        run_session_planning_pipeline(self.config.scanner, force=False)
+
+        self._last_morning_refresh_date = today
+        self.config.scanner.refresh_llm_sentiment_universe = False
+        self.config.scanner.refresh_market_context = False
+        self.config.scanner.refresh_premarket_trade_plan = False
+
     def run_cycle_from_files(self) -> tuple[pd.DataFrame, pd.DataFrame, AccountSnapshot, pd.DataFrame]:
+        # Do not spend time refreshing/scanning before the market is executable.
+        # Exits remain allowed once the market is open; buy-side gates are applied below.
+        if not self._market_is_open_or_wait():
+            cycle_id = run_id()
+            results = pd.DataFrame([{"timestamp_utc": now_utc().isoformat(), "status": "skipped_market_closed", "message": "market is closed"}])
+            save_df(pd.DataFrame(), LOG_DIR / f"order_plan_{cycle_id}.csv")
+            save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
+            self._write_account_equity_curve()
+            return pd.DataFrame(), results, self.broker.get_account_snapshot(), pd.DataFrame([asdict(p) for p in self.broker.get_all_open_positions()])
+
         if self.scanner is not None:
             try:
-                rebalance, exits, _scores = self.scanner.build_orders()
+                self._prepare_morning_inputs_once()
+                acct = self.broker.get_account_snapshot()
+                equity = max(float(acct.equity), 1.0)
+
+                market_context: dict[str, Any] = {}
+                premarket_plan: dict[str, Any] = {}
+
+                if self.config.scanner.market_context_enabled:
+                    market_context = load_market_context(refresh=self.config.scanner.refresh_market_context)
+                    blocked, reason = market_context_blocks_new_buys(
+                        market_context,
+                        allow_cautious=self.config.scanner.allow_cautious_market_buys,
+                    )
+                    print(f"[market-context] {reason}")
+                    write_event("market_context_gate", {"blocked": blocked, "reason": reason})
+                else:
+                    blocked, reason = False, "market_context_disabled"
+
+                if self.config.scanner.premarket_plan_enabled:
+                    premarket_plan = load_premarket_trade_plan(refresh=self.config.scanner.refresh_premarket_trade_plan)
+
+                # Run active-position monitor first so exits are generated before any new buys.
+                monitor_exits = self.scanner.monitor_active_positions(equity)
+
+                regime_plan = load_regime_position_plan() if self.config.scanner.use_regime_position_plan else pd.DataFrame()
+                if self.config.scanner.prefer_regime_position_plan and not regime_plan.empty:
+                    print(f"[regime-plan] using {REGIME_POSITION_PLAN_PATH} rows={len(regime_plan)}")
+                    rebalance, scanner_exits = self._regime_plan_to_order_frames(regime_plan, equity)
+                    _scores = pd.DataFrame()
+                else:
+                    rebalance, scanner_exits, _scores = self.scanner.build_orders()
+
+                exits = pd.concat([monitor_exits, scanner_exits], ignore_index=True)
+
+                # Market-context risk gate is BUY-ONLY. Never block exits.
+                if self.config.scanner.halt_new_buys_on_market_context and blocked and not rebalance.empty:
+                    print(f"[market-context] removing {len(rebalance)} buy candidate(s): {reason}")
+                    write_event("market_context_removed_buys", {"rows": len(rebalance), "reason": reason})
+                    rebalance = rebalance.iloc[0:0].copy()
+
+                # Premarket plan gate is also BUY-ONLY. It optionally restricts buys to valid premarket setups.
+                valid_pm_symbols = valid_symbols_from_premarket_plan(premarket_plan)
+                if self.config.scanner.premarket_plan_enabled and self.config.scanner.prefer_premarket_valid_symbols and valid_pm_symbols and not rebalance.empty:
+                    before = len(rebalance)
+                    rebalance = rebalance[rebalance["symbol"].map(normalize_symbol).isin(valid_pm_symbols)].copy()
+                    removed = before - len(rebalance)
+                    if removed:
+                        print(f"[premarket-plan] kept {len(rebalance)} valid premarket setup buy(s); removed {removed}")
+                        write_event("premarket_plan_filtered_buys", {"kept": len(rebalance), "removed": removed, "valid_symbols": sorted(valid_pm_symbols)})
+                elif self.config.scanner.premarket_plan_enabled and self.config.scanner.require_valid_premarket_plan_for_buys and not valid_pm_symbols and not rebalance.empty:
+                    print("[premarket-plan] no valid premarket setups; removing all buy candidates")
+                    write_event("premarket_plan_removed_all_buys", {"rows": len(rebalance), "reason": "no_valid_premarket_symbols"})
+                    rebalance = rebalance.iloc[0:0].copy()
+
+                # RL timing gate is applied after scanner/regime and buy-only context filters.
+                # Exits remain allowed, and the RL layer may add additional protective exits.
+                rebalance, exits = self._apply_rl_timing_gate(rebalance, exits)
+
+                if not monitor_exits.empty:
+                    exited_today = sorted(set(monitor_exits["symbol"].map(safe_symbol)))
+                    print(f"[monitor] generated protective exits; same-day re-entry blocked for {exited_today}")
+
                 if not rebalance.empty or not exits.empty:
                     return self.run_once_from_frames(rebalance, exits)
             except Exception as exc:
@@ -2063,6 +3801,16 @@ class ProductionOrderExecutor:
         print(f"[executor] journal={JOURNAL_PATH}")
         print(f"[executor] equity_curve={EQUITY_CURVE_PATH}")
         print(f"[executor] paper={self.config.paper}")
+        if self.config.scanner:
+            print(f"[executor] universe_source={'LLM_SENTIMENT' if self.config.scanner.use_llm_sentiment_universe else 'SCANNER_DEFAULT'}")
+            print(f"[executor] options_booster_enabled={self.config.scanner.options_booster_enabled}")
+            print(f"[executor] options_booster_threshold={self.config.scanner.options_booster_confidence_threshold:.0%}")
+            print(f"[executor] market_context_enabled={self.config.scanner.market_context_enabled}")
+            print(f"[executor] premarket_plan_enabled={self.config.scanner.premarket_plan_enabled}")
+            print(f"[executor] session_planning_enabled={self.config.scanner.session_planning_enabled}")
+            print(f"[executor] session_planning_start={self.config.scanner.session_planning_start_hour_et:02d}:{self.config.scanner.session_planning_start_minute_et:02d} ET")
+            print(f"[executor] regime_plan_enabled={self.config.scanner.use_regime_position_plan}")
+            print(f"[executor] rl_timing_gate_enabled={self.config.scanner.use_rl_timing_gate}")
         try:
             acct = self.broker.get_account_snapshot()
             profile = self._risk_profile(acct.equity)
@@ -2180,12 +3928,17 @@ def build_default_config() -> ExecutorConfig:
     scanner_config = ScannerConfig(
         enabled=True,
         universe=None,
-        use_sp500_fallback=True,
+        use_sp500_fallback=False,
         max_universe_symbols=500,
         top_n=30,
         min_setup_score=0.62,
         min_buy_confidence=0.58,
         min_avg_dollar_volume=5_000_000.0,
+        use_llm_sentiment_universe=True,
+        refresh_llm_sentiment_universe=True,
+        min_llm_universe_confidence=0.0,
+        options_booster_enabled=True,
+        options_booster_confidence_threshold=0.75,
         opportunity_scan_enabled=True,
         min_daily_gain_pct=0.005,
         min_opportunity_score=0.60,
@@ -2193,10 +3946,23 @@ def build_default_config() -> ExecutorConfig:
         require_positive_momentum_or_breakout=True,
         base_target_weight=0.03,
         max_target_weight=0.10,
-        broad_market_scan=True,
+        broad_market_scan=False,
         stop_loss_pct=-0.025,
         profit_lock_trigger_pct=0.04,
         profit_giveback_pct=0.015,
+        session_planning_enabled=True,
+        session_planning_start_hour_et=4,
+        session_planning_start_minute_et=0,
+        run_market_context_builder=True,
+        run_premarket_trade_planner=True,
+        run_production_regime_sizing_model=True,
+        run_rl_intraday_structure_trainer=True,
+        use_regime_position_plan=True,
+        prefer_regime_position_plan=True,
+        use_rl_timing_gate=True,
+        rl_min_enter_long_confidence=0.65,
+        rl_min_exit_confidence=0.55,
+        rl_min_enter_short_confidence=0.70,
     )
 
     return ExecutorConfig(
@@ -2207,7 +3973,7 @@ def build_default_config() -> ExecutorConfig:
         rebalance_orders_path=DEFAULT_REBALANCE_ORDERS,
         exit_orders_path=DEFAULT_EXIT_ORDERS,
         require_market_open=True,
-        wait_for_market_open=False,
+        wait_for_market_open=True,
         allow_closed_market=False,
         cancel_open_orders_first=False,
         sell_first=True,

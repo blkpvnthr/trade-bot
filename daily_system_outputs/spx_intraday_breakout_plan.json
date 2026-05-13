@@ -1,0 +1,40 @@
+{
+  "logical_symbol": "SPX",
+  "train_symbol": "SPY",
+  "created_at_utc": "2026-05-13T04:21:31.040039+00:00",
+  "market_bias": "mixed",
+  "trade_permission": "cautious",
+  "current_price": 737.4,
+  "daily_support": 687.715,
+  "daily_resistance": 740.73,
+  "nearest_support": 687.715,
+  "nearest_resistance": 740.73,
+  "atr_daily": 6.7096,
+  "breakout_long_trigger": 741.5352,
+  "breakdown_short_trigger": 686.9098,
+  "long_stop": 735.3623,
+  "short_stop": 693.0827,
+  "long_initial_target": 754.1493,
+  "short_initial_target": 674.2957,
+  "trailing_atr_multiple": 1.2,
+  "model_action": "WAIT",
+  "model_confidence_proxy": 0.35,
+  "feature_snapshot": {
+    "rsi_1m": 58.8028,
+    "rsi_5m": 80.3977,
+    "rsi_15m": 78.8317,
+    "macd_hist_1m": 0.022809,
+    "macd_hist_5m": 0.090365,
+    "macd_hist_15m": 0.601028,
+    "cci_1m": 75.7423,
+    "relative_volume_1m": 0.5335,
+    "dist_to_support_atr": 7.405,
+    "dist_to_resistance_atr": 0.4963
+  },
+  "notes": [
+    "SPX is represented by the configured training symbol unless your data vendor supports direct SPX bars.",
+    "Daily levels come from pivot highs/lows with rolling high/low fallback.",
+    "RL action should be treated as a planning signal, not an unconditional order.",
+    "Market context file was detected and included as a gating input."
+  ]
+}

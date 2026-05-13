@@ -2,16 +2,27 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
 from dotenv import load_dotenv
 from openai import OpenAI
+
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
+
+try:
+    from alpaca.data.enums import DataFeed
+except Exception:
+    DataFeed = None
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -24,12 +35,14 @@ JSON_PATH = OUT_DIR / "latest_llm_sentiment_universe.json"
 DISCOVERY_PATH = OUT_DIR / "latest_llm_candidate_discovery.json"
 LOCKED_UNIVERSE_PATH = PROJECT_ROOT / "locked_trading_universe.txt"
 
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+ET = ZoneInfo("America/New_York")
 
-MODEL = os.getenv("OPENAI_SENTIMENT_UNIVERSE_MODEL", "gpt-4.1-mini")
+MODEL = os.getenv("OPENAI_SENTIMENT_UNIVERSE_MODEL", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"))
+
 TARGET_COUNT = int(os.getenv("TARGET_UNIVERSE_COUNT", "30"))
-YAHOO_GAINERS_COUNT = int(os.getenv("YAHOO_GAINERS_COUNT", "40"))
-LLM_CANDIDATE_LIMIT = int(os.getenv("LLM_CANDIDATE_LIMIT", "40"))
+YAHOO_GAINERS_COUNT = int(os.getenv("YAHOO_GAINERS_COUNT", "50"))
+LLM_CANDIDATE_LIMIT = int(os.getenv("LLM_CANDIDATE_LIMIT", "50"))
+
 OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "60"))
 OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "3500"))
 
@@ -37,6 +50,16 @@ MIN_PRICE = float(os.getenv("YAHOO_MIN_PRICE", "2"))
 MAX_PRICE = float(os.getenv("YAHOO_MAX_PRICE", "500"))
 MIN_VOLUME = int(os.getenv("YAHOO_MIN_VOLUME", "500000"))
 MIN_MARKET_CAP = int(os.getenv("YAHOO_MIN_MARKET_CAP", "100000000"))
+
+MIN_PREMARKET_VOLUME = int(os.getenv("MIN_PREMARKET_VOLUME", "1000000"))
+PREMARKET_TO_MAX_DAILY_VOL_RATIO = float(os.getenv("PREMARKET_TO_MAX_DAILY_VOL_RATIO", "0.75"))
+DAILY_VOLUME_LOOKBACK_DAYS = int(os.getenv("DAILY_VOLUME_LOOKBACK_DAYS", "90"))
+
+ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower().strip()
+ALPACA_CHUNK_SIZE = int(os.getenv("ALPACA_CHUNK_SIZE", "25"))
+
+PREMARKET_START_ET = os.getenv("PREMARKET_START_ET", "04:00")
+PREMARKET_END_ET = os.getenv("PREMARKET_END_ET", "09:30")
 
 FALLBACK = [
     "NVDA", "AMD", "SMCI", "AVGO", "ARM", "PLTR", "TSLA", "META", "MSFT", "GOOGL",
@@ -54,28 +77,25 @@ CATALYST_TYPES = {
     "earnings_growth",
     "revenue_growth",
     "premarket_news_move",
+    "premarket_volume_spike",
     "macro_catalyst",
 }
 
 SYSTEM_PROMPT = """
 You are an institutional premarket stock selection engine.
 
-You receive Yahoo Finance day-gainers plus company financial details.
-Your job is to select the TOP 30 candidates for today's monitoring universe.
+You receive Yahoo Finance day-gainers, company financial details, and Alpaca premarket volume diagnostics.
+Your job is to select the TOP candidates for today's monitoring universe.
 
-Identify the most compelling trade-monitoring candidates based on:
-- strongest percent gain
-- unusual volume / relative volume
-- liquidity
-- market cap quality
-- sector or industry tailwind
-- revenue growth
-- earnings growth
-- profitability
-- analyst upside
-- favorable recommendation
-- short squeeze potential
-- business relevance to current market themes
+Primary Step 1:
+Prioritize stocks with unusual premarket volume.
+
+A stock has high premarket interest when:
+- Alpaca 1-minute extended-hours premarket volume is at least 1,000,000 shares
+- premarket volume is close to or above the highest daily volume in the recent lookback window
+- premarket volume is unusually high versus average daily volume
+
+If premarket volume is already near or above the stock's highest daily volume day, treat it as a major catalyst because it suggests elevated probability of a large regular-session move.
 
 Return ONLY valid JSON.
 
@@ -87,21 +107,20 @@ Schema:
     {
       "rank": 1,
       "symbol": "NVDA",
-      "catalyst_type": "technical_gainer | financial_strength | analyst_upside | sector_catalyst | short_squeeze | liquidity_momentum | earnings_growth | revenue_growth | premarket_news_move | macro_catalyst",
-      "reason": "Compelling 1-2 sentence explanation using concrete data from the supplied Yahoo/financial details.",
+      "catalyst_type": "technical_gainer | financial_strength | analyst_upside | sector_catalyst | short_squeeze | liquidity_momentum | earnings_growth | revenue_growth | premarket_news_move | premarket_volume_spike | macro_catalyst",
+      "reason": "Compelling 1-2 sentence explanation using concrete supplied data.",
       "confidence": 0.0
     }
   ]
 }
 
 Rules:
-- EXACTLY 30 selections.
-- Rank from 1 to 30.
+- Rank from 1 upward.
 - Use "symbol", not "ticker".
 - Symbols must be uppercase.
 - No duplicate symbols.
-- Every reason must be specific and data-backed.
 - Every reason must include at least TWO concrete details when available.
+- Prefer symbols with confirmed unusual Alpaca premarket volume.
 - Do not invent facts not present in the supplied data.
 - Confidence must be between 0 and 1.
 - No markdown.
@@ -126,7 +145,10 @@ def to_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None:
             return default
-        return float(value)
+        v = float(value)
+        if math.isnan(v) or math.isinf(v):
+            return default
+        return v
     except Exception:
         return default
 
@@ -135,9 +157,26 @@ def to_int(value: Any, default: int = 0) -> int:
     try:
         if value is None:
             return default
-        return int(float(value))
+        v = float(value)
+        if math.isnan(v) or math.isinf(v):
+            return default
+        return int(v)
     except Exception:
         return default
+
+
+def safe_json_value(value: Any) -> Any:
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return None
+    if isinstance(value, dict):
+        return {k: safe_json_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [safe_json_value(v) for v in value]
+    return value
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.write_text(json.dumps(safe_json_value(payload), indent=2) + "\n", encoding="utf-8")
 
 
 def fmt_pct(value: Any) -> str:
@@ -162,12 +201,42 @@ def fmt_money(value: Any) -> str:
 def clean_reason(reason: Any) -> str:
     text = str(reason or "").replace("\n", " ").strip()
     text = re.sub(r"\s+", " ", text)
-    return text[:700] or "Selected from Yahoo gainers and company financial data."
+    return text[:700] or "Selected from Alpaca premarket, Yahoo gainers, and company financial data."
 
 
 def normalize_catalyst_type(value: Any) -> str:
     raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     return raw if raw in CATALYST_TYPES else "technical_gainer"
+
+
+def parse_hhmm(value: str) -> time:
+    h, m = value.split(":")
+    return time(int(h), int(m), tzinfo=ET)
+
+
+def get_alpaca_data_client() -> StockHistoricalDataClient | None:
+    key = os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY_ID")
+    secret = os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_API_SECRET_KEY")
+
+    if not key or not secret:
+        print("[alpaca] missing APCA_API_KEY_ID / APCA_API_SECRET_KEY; premarket volume will be zero")
+        return None
+
+    return StockHistoricalDataClient(key, secret)
+
+
+def get_alpaca_feed() -> Any:
+    if DataFeed is None:
+        return None
+
+    if ALPACA_DATA_FEED == "sip":
+        return DataFeed.SIP
+
+    return DataFeed.IEX
+
+
+def chunked(items: list[str], size: int) -> list[list[str]]:
+    return [items[i:i + size] for i in range(0, len(items), size)]
 
 
 def fetch_yahoo_gainers(limit: int = YAHOO_GAINERS_COUNT) -> pd.DataFrame:
@@ -263,6 +332,133 @@ def enrich_company_details(symbols: list[str]) -> dict[str, dict[str, Any]]:
     return enriched
 
 
+def default_premarket_payload() -> dict[str, Any]:
+    return {
+        "premarket_volume": 0,
+        "premarket_bar_count": 0,
+        "premarket_first_bar_utc": None,
+        "premarket_last_bar_utc": None,
+        "max_daily_volume_lookback": 0,
+        "avg_daily_volume_lookback": 0,
+        "premarket_to_max_daily_volume_ratio": 0.0,
+        "premarket_to_avg_daily_volume_ratio": 0.0,
+        "has_unusual_premarket_volume": False,
+        "premarket_data_source": "alpaca_1min_extended_hours",
+    }
+
+
+def enrich_premarket_volume_with_alpaca(symbols: list[str]) -> dict[str, dict[str, Any]]:
+    results = {symbol: default_premarket_payload() for symbol in symbols}
+    client = get_alpaca_data_client()
+
+    if client is None:
+        return results
+
+    today_et = datetime.now(ET).date()
+    premarket_start = datetime.combine(today_et, parse_hhmm(PREMARKET_START_ET)).astimezone(timezone.utc)
+    premarket_end = datetime.combine(today_et, parse_hhmm(PREMARKET_END_ET)).astimezone(timezone.utc)
+
+    daily_end = datetime.combine(today_et, time(0, 0), tzinfo=ET).astimezone(timezone.utc)
+    daily_start = daily_end - timedelta(days=max(DAILY_VOLUME_LOOKBACK_DAYS * 2, 120))
+
+    feed = get_alpaca_feed()
+
+    for group in chunked(symbols, ALPACA_CHUNK_SIZE):
+        try:
+            minute_kwargs = {
+                "symbol_or_symbols": group,
+                "timeframe": TimeFrame.Minute,
+                "start": premarket_start,
+                "end": premarket_end,
+            }
+            if feed is not None:
+                minute_kwargs["feed"] = feed
+
+            minute_request = StockBarsRequest(**minute_kwargs)
+            minute_bars = client.get_stock_bars(minute_request).df
+
+            if minute_bars is not None and not minute_bars.empty:
+                df = minute_bars.reset_index()
+
+                for symbol in group:
+                    sdf = df[df["symbol"] == symbol] if "symbol" in df.columns else pd.DataFrame()
+
+                    if sdf.empty:
+                        continue
+
+                    volume_sum = int(sdf["volume"].fillna(0).sum()) if "volume" in sdf.columns else 0
+
+                    results[symbol]["premarket_volume"] = volume_sum
+                    results[symbol]["premarket_bar_count"] = int(len(sdf))
+
+                    if "timestamp" in sdf.columns and not sdf["timestamp"].empty:
+                        results[symbol]["premarket_first_bar_utc"] = str(sdf["timestamp"].min())
+                        results[symbol]["premarket_last_bar_utc"] = str(sdf["timestamp"].max())
+
+        except Exception as exc:
+            print(f"[alpaca] premarket 1Min fetch failed for {group}: {exc}")
+
+        try:
+            daily_kwargs = {
+                "symbol_or_symbols": group,
+                "timeframe": TimeFrame.Day,
+                "start": daily_start,
+                "end": daily_end,
+            }
+            if feed is not None:
+                daily_kwargs["feed"] = feed
+
+            daily_request = StockBarsRequest(**daily_kwargs)
+            daily_bars = client.get_stock_bars(daily_request).df
+
+            if daily_bars is not None and not daily_bars.empty:
+                df = daily_bars.reset_index()
+
+                for symbol in group:
+                    sdf = df[df["symbol"] == symbol] if "symbol" in df.columns else pd.DataFrame()
+
+                    if sdf.empty or "volume" not in sdf.columns:
+                        continue
+
+                    recent = sdf.tail(DAILY_VOLUME_LOOKBACK_DAYS)
+                    max_daily_volume = int(recent["volume"].fillna(0).max())
+                    avg_daily_volume = int(recent["volume"].fillna(0).mean())
+
+                    premarket_volume = to_int(results[symbol].get("premarket_volume"))
+
+                    ratio_to_max = (
+                        premarket_volume / max_daily_volume
+                        if premarket_volume > 0 and max_daily_volume > 0
+                        else 0.0
+                    )
+
+                    ratio_to_avg = (
+                        premarket_volume / avg_daily_volume
+                        if premarket_volume > 0 and avg_daily_volume > 0
+                        else 0.0
+                    )
+
+                    has_unusual = (
+                        premarket_volume >= MIN_PREMARKET_VOLUME
+                        and ratio_to_max >= PREMARKET_TO_MAX_DAILY_VOL_RATIO
+                    )
+
+                    results[symbol].update(
+                        {
+                            "max_daily_volume_lookback": max_daily_volume,
+                            "avg_daily_volume_lookback": avg_daily_volume,
+                            "premarket_to_max_daily_volume_ratio": round(ratio_to_max, 4),
+                            "premarket_to_avg_daily_volume_ratio": round(ratio_to_avg, 4),
+                            "has_unusual_premarket_volume": has_unusual,
+                        }
+                    )
+
+        except Exception as exc:
+            print(f"[alpaca] daily volume fetch failed for {group}: {exc}")
+
+    return results
+
+
 def calc_relative_volume(row: dict[str, Any]) -> float | None:
     volume = to_float(row.get("volume"))
     avg_volume = to_float(row.get("avg_volume"))
@@ -278,9 +474,23 @@ def calc_discovery_score(row: dict[str, Any]) -> float:
     rel_volume = to_float(row.get("relative_volume"), 1.0)
     market_cap = to_float(row.get("market_cap"))
 
+    premarket_volume = to_float(row.get("premarket_volume"))
+    premarket_ratio = to_float(row.get("premarket_to_max_daily_volume_ratio"))
+    premarket_avg_ratio = to_float(row.get("premarket_to_avg_daily_volume_ratio"))
+    has_unusual = bool(row.get("has_unusual_premarket_volume"))
+
     score = 0.0
     score += min(change_pct, 80.0) * 2.2
     score += min(max(rel_volume, 0.0), 15.0) * 9.0
+
+    if premarket_volume >= MIN_PREMARKET_VOLUME:
+        score += 45
+
+    score += min(premarket_ratio, 2.5) * 55
+    score += min(premarket_avg_ratio, 5.0) * 12
+
+    if has_unusual:
+        score += 80
 
     if market_cap >= 50_000_000_000:
         score += 22
@@ -295,6 +505,10 @@ def calc_discovery_score(row: dict[str, Any]) -> float:
 
 
 def determine_data_catalyst_type(row: dict[str, Any]) -> str:
+    premarket_volume = to_int(row.get("premarket_volume"))
+    premarket_ratio = to_float(row.get("premarket_to_max_daily_volume_ratio"))
+    has_unusual = bool(row.get("has_unusual_premarket_volume"))
+
     revenue_growth = to_float(row.get("revenue_growth"))
     earnings_growth = to_float(row.get("earnings_growth"))
     short_ratio = to_float(row.get("short_ratio"))
@@ -304,6 +518,8 @@ def determine_data_catalyst_type(row: dict[str, Any]) -> str:
     change_pct = to_float(row.get("change_pct"))
     sector = str(row.get("sector") or "").lower()
 
+    if has_unusual or (premarket_volume >= MIN_PREMARKET_VOLUME and premarket_ratio >= 0.5):
+        return "premarket_volume_spike"
     if earnings_growth > 0.15:
         return "earnings_growth"
     if revenue_growth > 0.15:
@@ -320,25 +536,30 @@ def determine_data_catalyst_type(row: dict[str, Any]) -> str:
     return "technical_gainer"
 
 
+def build_fallback_rows() -> list[dict[str, Any]]:
+    return [
+        {
+            "symbol": s,
+            "name": s,
+            "price": None,
+            "change_pct": None,
+            "volume": None,
+            "avg_volume": None,
+            "market_cap": None,
+            "relative_volume": None,
+            **default_premarket_payload(),
+            "discovery_score": 0.0,
+            "source": "fallback",
+        }
+        for s in FALLBACK
+    ]
+
+
 def discover_candidates() -> dict[str, Any]:
     gainers = fetch_yahoo_gainers(YAHOO_GAINERS_COUNT)
 
     if gainers.empty:
-        rows = [
-            {
-                "symbol": s,
-                "name": s,
-                "price": None,
-                "change_pct": None,
-                "volume": None,
-                "avg_volume": None,
-                "market_cap": None,
-                "relative_volume": None,
-                "discovery_score": 0.0,
-                "source": "fallback",
-            }
-            for s in FALLBACK
-        ]
+        rows = build_fallback_rows()
     else:
         raw_rows = gainers.to_dict("records")
         filtered = [r for r in raw_rows if passes_basic_filters(r)]
@@ -370,21 +591,24 @@ def discover_candidates() -> dict[str, Any]:
                 "source": "yahoo_day_gainers",
             }
 
-            row["discovery_score"] = calc_discovery_score(row)
             rows.append(row)
 
-    rows = sorted(rows, key=lambda x: to_float(x.get("discovery_score")), reverse=True)
     rows = rows[:max(YAHOO_GAINERS_COUNT, TARGET_COUNT)]
-
     symbols = [r["symbol"] for r in rows if is_valid_symbol(r.get("symbol"))]
-    enriched = enrich_company_details(symbols[:LLM_CANDIDATE_LIMIT])
+    symbols = symbols[:LLM_CANDIDATE_LIMIT]
+
+    company_details = enrich_company_details(symbols)
+    premarket_details = enrich_premarket_volume_with_alpaca(symbols)
 
     candidates: list[dict[str, Any]] = []
 
     for row in rows[:LLM_CANDIDATE_LIMIT]:
         symbol = row["symbol"]
-        details = enriched.get(symbol, {})
-        merged = {**row, **details}
+        merged = {
+            **row,
+            **company_details.get(symbol, {}),
+            **premarket_details.get(symbol, default_premarket_payload()),
+        }
 
         if not merged.get("market_cap"):
             merged["market_cap"] = row.get("market_cap")
@@ -393,7 +617,11 @@ def discover_candidates() -> dict[str, Any]:
             merged["price"] = merged.get("current_price")
 
         merged["data_catalyst_type"] = determine_data_catalyst_type(merged)
+        merged["discovery_score"] = calc_discovery_score(merged)
+
         candidates.append(merged)
+
+    candidates = sorted(candidates, key=lambda x: to_float(x.get("discovery_score")), reverse=True)
 
     if len(candidates) < TARGET_COUNT:
         existing = {c["symbol"] for c in candidates}
@@ -407,27 +635,37 @@ def discover_candidates() -> dict[str, Any]:
                         "source": "fallback",
                         "discovery_score": 0.0,
                         "data_catalyst_type": "sector_catalyst",
+                        **default_premarket_payload(),
                     }
                 )
 
     discovery = {
         "created_at_utc": now_utc(),
-        "source": "yahoo_day_gainers",
+        "source": "yahoo_day_gainers_with_alpaca_premarket_1min_volume",
         "candidate_count": len(candidates),
         "filters": {
             "min_price": MIN_PRICE,
             "max_price": MAX_PRICE,
             "min_volume": MIN_VOLUME,
             "min_market_cap": MIN_MARKET_CAP,
+            "min_premarket_volume": MIN_PREMARKET_VOLUME,
+            "premarket_to_max_daily_volume_ratio": PREMARKET_TO_MAX_DAILY_VOL_RATIO,
+            "daily_volume_lookback_days": DAILY_VOLUME_LOOKBACK_DAYS,
+            "alpaca_data_feed": ALPACA_DATA_FEED,
+            "premarket_start_et": PREMARKET_START_ET,
+            "premarket_end_et": PREMARKET_END_ET,
             "yahoo_gainers_count": YAHOO_GAINERS_COUNT,
             "llm_candidate_limit": LLM_CANDIDATE_LIMIT,
         },
         "candidates": candidates[:LLM_CANDIDATE_LIMIT],
     }
 
-    DISCOVERY_PATH.write_text(json.dumps(discovery, indent=2) + "\n", encoding="utf-8")
+    write_json(DISCOVERY_PATH, discovery)
+
+    unusual_count = sum(1 for c in discovery["candidates"] if c.get("has_unusual_premarket_volume"))
+
     print(f"[saved] {DISCOVERY_PATH}")
-    print(f"[discovery] yahoo_gainers candidates={len(candidates)}")
+    print(f"[discovery] candidates={len(candidates)} unusual_premarket={unusual_count}")
 
     return discovery
 
@@ -445,6 +683,14 @@ def compact_candidates_for_llm(discovery: dict[str, Any]) -> list[dict[str, Any]
                 "volume": row.get("volume"),
                 "avg_volume": row.get("avg_volume") or row.get("average_volume"),
                 "relative_volume": row.get("relative_volume"),
+                "premarket_volume": row.get("premarket_volume"),
+                "premarket_bar_count": row.get("premarket_bar_count"),
+                "max_daily_volume_lookback": row.get("max_daily_volume_lookback"),
+                "avg_daily_volume_lookback": row.get("avg_daily_volume_lookback"),
+                "premarket_to_max_daily_volume_ratio": row.get("premarket_to_max_daily_volume_ratio"),
+                "premarket_to_avg_daily_volume_ratio": row.get("premarket_to_avg_daily_volume_ratio"),
+                "has_unusual_premarket_volume": row.get("has_unusual_premarket_volume"),
+                "premarket_data_source": row.get("premarket_data_source"),
                 "market_cap": row.get("market_cap"),
                 "sector": row.get("sector"),
                 "industry": row.get("industry"),
@@ -470,88 +716,136 @@ def build_prompt(discovery: dict[str, Any]) -> str:
     candidates = compact_candidates_for_llm(discovery)
 
     return f"""
-Today is {datetime.now().strftime("%Y-%m-%d")}.
+Today is {datetime.now(ET).strftime("%Y-%m-%d")}.
 
-Use the Yahoo Finance day-gainers and company financial data below.
-Select the TOP 30 candidates for today's monitoring universe.
+Use the supplied candidates, Yahoo Finance gainer data, company financial data, and Alpaca premarket 1-minute volume diagnostics.
+Select the TOP {TARGET_COUNT} candidates for today's monitoring universe.
+
+Step 1 priority:
+Find stocks with unusual premarket volume.
+
+Premarket volume is especially important when:
+- premarket_volume >= {MIN_PREMARKET_VOLUME}
+- premarket_to_max_daily_volume_ratio >= {PREMARKET_TO_MAX_DAILY_VOL_RATIO}
+- premarket volume is close to or above max_daily_volume_lookback
+- premarket_to_avg_daily_volume_ratio is elevated
+- premarket_bar_count confirms real extended-hours activity
 
 For each selection, explain why it deserves monitoring today using at least TWO concrete fields when available.
 
-Concrete fields include:
-- percent gain
-- volume
-- relative volume
-- market cap
-- sector/industry
-- revenue growth
-- earnings growth
-- profit margins
-- P/E or forward P/E
-- analyst target
-- recommendation
-- short ratio
-
-Yahoo gainers and financial details:
-{json.dumps(candidates, separators=(",", ":"))}
+Candidates:
+{json.dumps(safe_json_value(candidates), separators=(",", ":"))}
 
 Return the required JSON only.
 """.strip()
 
 
 def call_llm(discovery: dict[str, Any]) -> dict[str, Any]:
-    client = OpenAI(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        timeout=OPENAI_TIMEOUT_SECONDS,
-    )
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is missing")
+
+    client = OpenAI(api_key=api_key, timeout=OPENAI_TIMEOUT_SECONDS)
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": build_prompt(discovery)},
+    ]
 
     response = client.chat.completions.create(
-        model=OPENAI_MODEL,
+        model=MODEL,
         messages=messages,
-        temperature=0.4,
-        max_tokens=2500,
-        timeout=45,
+        temperature=0.2,
+        max_tokens=OPENAI_MAX_TOKENS,
     )
 
-    return json.loads(response.choices[0].message.content.strip())
+    content = response.choices[0].message.content or ""
+    return json.loads(content.strip())
 
 
 def fallback_reason(row: dict[str, Any]) -> str:
     symbol = row.get("symbol")
-    change_pct = row.get("change_pct")
-    volume = row.get("volume")
-    rel_volume = row.get("relative_volume")
-    market_cap = row.get("market_cap")
-    sector = row.get("sector")
-    revenue_growth = row.get("revenue_growth")
-    earnings_growth = row.get("earnings_growth")
-    recommendation = row.get("recommendation")
+    parts = [f"{symbol} was selected from the Alpaca premarket/Yahoo discovery process"]
 
-    parts = [
-        f"{symbol} was added from Yahoo's gainers list with a {fmt_pct(change_pct)} move",
-        f"volume of {volume:,}" if isinstance(volume, (int, float)) else f"volume of {volume}",
-    ]
+    premarket_volume = to_int(row.get("premarket_volume"))
+    max_daily_volume = to_int(row.get("max_daily_volume_lookback"))
+    avg_daily_volume = to_int(row.get("avg_daily_volume_lookback"))
 
-    if rel_volume:
-        parts.append(f"relative volume of {to_float(rel_volume):.2f}x")
-    if market_cap:
-        parts.append(f"market cap of {fmt_money(market_cap)}")
-    if sector:
-        parts.append(f"{sector} sector exposure")
-    if revenue_growth:
-        parts.append(f"revenue growth of {fmt_pct(to_float(revenue_growth) * 100)}")
-    if earnings_growth:
-        parts.append(f"earnings growth of {fmt_pct(to_float(earnings_growth) * 100)}")
-    if recommendation:
-        parts.append(f"analyst recommendation of {recommendation}")
+    if premarket_volume:
+        parts.append(f"Alpaca premarket volume of {premarket_volume:,} shares")
+    if max_daily_volume:
+        parts.append(f"max recent daily volume of {max_daily_volume:,} shares")
+    if avg_daily_volume:
+        parts.append(f"average recent daily volume of {avg_daily_volume:,} shares")
+    if row.get("premarket_to_max_daily_volume_ratio"):
+        parts.append(f"premarket/max daily volume ratio of {to_float(row.get('premarket_to_max_daily_volume_ratio')):.2f}x")
+    if row.get("premarket_to_avg_daily_volume_ratio"):
+        parts.append(f"premarket/average daily volume ratio of {to_float(row.get('premarket_to_avg_daily_volume_ratio')):.2f}x")
+    if row.get("change_pct") is not None:
+        parts.append(f"{fmt_pct(row.get('change_pct'))} price move")
+    if row.get("relative_volume"):
+        parts.append(f"relative volume of {to_float(row.get('relative_volume')):.2f}x")
+    if row.get("market_cap"):
+        parts.append(f"market cap of {fmt_money(row.get('market_cap'))}")
+    if row.get("sector"):
+        parts.append(f"{row.get('sector')} sector exposure")
+    if row.get("revenue_growth"):
+        parts.append(f"revenue growth of {fmt_pct(to_float(row.get('revenue_growth')) * 100)}")
+    if row.get("earnings_growth"):
+        parts.append(f"earnings growth of {fmt_pct(to_float(row.get('earnings_growth')) * 100)}")
+    if row.get("recommendation"):
+        parts.append(f"analyst recommendation of {row.get('recommendation')}")
 
     return clean_reason(", ".join(parts) + ".")
+
+
+def selection_from_discovery_row(row: dict[str, Any], rank: int, confidence: float = 0.50) -> dict[str, Any]:
+    return {
+        "rank": rank,
+        "symbol": normalize_symbol(row.get("symbol")),
+        "catalyst_type": row.get("data_catalyst_type") or "technical_gainer",
+        "reason": fallback_reason(row),
+        "confidence": confidence,
+        "price": row.get("price") or row.get("current_price"),
+        "change_pct": row.get("change_pct"),
+        "volume": row.get("volume"),
+        "avg_volume": row.get("avg_volume") or row.get("average_volume"),
+        "relative_volume": row.get("relative_volume"),
+        "premarket_volume": row.get("premarket_volume"),
+        "premarket_bar_count": row.get("premarket_bar_count"),
+        "premarket_first_bar_utc": row.get("premarket_first_bar_utc"),
+        "premarket_last_bar_utc": row.get("premarket_last_bar_utc"),
+        "max_daily_volume_lookback": row.get("max_daily_volume_lookback"),
+        "avg_daily_volume_lookback": row.get("avg_daily_volume_lookback"),
+        "premarket_to_max_daily_volume_ratio": row.get("premarket_to_max_daily_volume_ratio"),
+        "premarket_to_avg_daily_volume_ratio": row.get("premarket_to_avg_daily_volume_ratio"),
+        "has_unusual_premarket_volume": row.get("has_unusual_premarket_volume"),
+        "premarket_data_source": row.get("premarket_data_source"),
+        "market_cap": row.get("market_cap"),
+        "sector": row.get("sector"),
+        "industry": row.get("industry"),
+        "trailing_pe": row.get("trailing_pe") or row.get("pe_ratio"),
+        "forward_pe": row.get("forward_pe"),
+        "revenue_growth": row.get("revenue_growth"),
+        "earnings_growth": row.get("earnings_growth"),
+        "profit_margins": row.get("profit_margins"),
+        "short_ratio": row.get("short_ratio"),
+        "short_percent_of_float": row.get("short_percent_of_float"),
+        "target_mean_price": row.get("target_mean_price"),
+        "recommendation": row.get("recommendation"),
+        "discovery_score": row.get("discovery_score"),
+        "source": row.get("source"),
+    }
 
 
 def normalize_payload(payload: dict[str, Any], discovery: dict[str, Any]) -> dict[str, Any]:
     raw_selections = payload.get("selections", [])
 
     discovery_by_symbol = {
-        row["symbol"]: row for row in discovery.get("candidates", []) if row.get("symbol")
+        normalize_symbol(row["symbol"]): row
+        for row in discovery.get("candidates", [])
+        if row.get("symbol")
     }
 
     selections: list[dict[str, Any]] = []
@@ -564,39 +858,13 @@ def normalize_payload(payload: dict[str, Any], discovery: dict[str, Any]) -> dic
             continue
 
         d = discovery_by_symbol.get(symbol, {})
-        catalyst_type = normalize_catalyst_type(row.get("catalyst_type") or d.get("data_catalyst_type"))
-        confidence = max(0.0, min(1.0, to_float(row.get("confidence"), 0.0)))
+        base = selection_from_discovery_row(d, len(selections) + 1, to_float(row.get("confidence"), 0.0))
+        base["catalyst_type"] = normalize_catalyst_type(row.get("catalyst_type") or d.get("data_catalyst_type"))
+        base["reason"] = clean_reason(row.get("reason") or fallback_reason(d))
+        base["confidence"] = max(0.0, min(1.0, to_float(row.get("confidence"), 0.0)))
 
         seen.add(symbol)
-
-        selections.append(
-            {
-                "rank": len(selections) + 1,
-                "symbol": symbol,
-                "catalyst_type": catalyst_type,
-                "reason": clean_reason(row.get("reason")),
-                "confidence": confidence,
-                "price": d.get("price") or d.get("current_price"),
-                "change_pct": d.get("change_pct"),
-                "volume": d.get("volume"),
-                "avg_volume": d.get("avg_volume") or d.get("average_volume"),
-                "relative_volume": d.get("relative_volume"),
-                "market_cap": d.get("market_cap"),
-                "sector": d.get("sector"),
-                "industry": d.get("industry"),
-                "trailing_pe": d.get("trailing_pe") or d.get("pe_ratio"),
-                "forward_pe": d.get("forward_pe"),
-                "revenue_growth": d.get("revenue_growth"),
-                "earnings_growth": d.get("earnings_growth"),
-                "profit_margins": d.get("profit_margins"),
-                "short_ratio": d.get("short_ratio"),
-                "short_percent_of_float": d.get("short_percent_of_float"),
-                "target_mean_price": d.get("target_mean_price"),
-                "recommendation": d.get("recommendation"),
-                "discovery_score": d.get("discovery_score"),
-                "source": d.get("source"),
-            }
-        )
+        selections.append(base)
 
         if len(selections) >= TARGET_COUNT:
             break
@@ -611,35 +879,7 @@ def normalize_payload(payload: dict[str, Any], discovery: dict[str, Any]) -> dic
             continue
 
         seen.add(symbol)
-
-        selections.append(
-            {
-                "rank": len(selections) + 1,
-                "symbol": symbol,
-                "catalyst_type": row.get("data_catalyst_type") or "technical_gainer",
-                "reason": fallback_reason(row),
-                "confidence": 0.50,
-                "price": row.get("price") or row.get("current_price"),
-                "change_pct": row.get("change_pct"),
-                "volume": row.get("volume"),
-                "avg_volume": row.get("avg_volume") or row.get("average_volume"),
-                "relative_volume": row.get("relative_volume"),
-                "market_cap": row.get("market_cap"),
-                "sector": row.get("sector"),
-                "industry": row.get("industry"),
-                "trailing_pe": row.get("trailing_pe") or row.get("pe_ratio"),
-                "forward_pe": row.get("forward_pe"),
-                "revenue_growth": row.get("revenue_growth"),
-                "earnings_growth": row.get("earnings_growth"),
-                "profit_margins": row.get("profit_margins"),
-                "short_ratio": row.get("short_ratio"),
-                "short_percent_of_float": row.get("short_percent_of_float"),
-                "target_mean_price": row.get("target_mean_price"),
-                "recommendation": row.get("recommendation"),
-                "discovery_score": row.get("discovery_score"),
-                "source": row.get("source"),
-            }
-        )
+        selections.append(selection_from_discovery_row(row, len(selections) + 1, 0.50))
 
     return {
         "created_at_utc": now_utc(),
@@ -659,7 +899,7 @@ def normalize_payload(payload: dict[str, Any], discovery: dict[str, Any]) -> dic
 
 
 def write_outputs(payload: dict[str, Any]) -> None:
-    JSON_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    write_json(JSON_PATH, payload)
 
     LOCKED_UNIVERSE_PATH.write_text(
         "\n".join(payload["symbols"]) + "\n",
@@ -677,10 +917,10 @@ def build_sentiment_universe() -> dict[str, Any]:
     try:
         raw = call_llm(discovery)
     except Exception as exc:
-        print(f"[llm-universe] LLM failed, using Yahoo gainer ranking: {exc}")
+        print(f"[llm-universe] LLM failed, using discovery ranking: {exc}")
         raw = {
             "market_tone": "mixed",
-            "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.",
+            "summary": "LLM unavailable; using Alpaca premarket volume, Yahoo gainer ranking, liquidity, and financial details.",
             "selections": [
                 {
                     "rank": i + 1,
