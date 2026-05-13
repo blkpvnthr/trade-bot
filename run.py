@@ -137,9 +137,10 @@ INTRADAY_TRAINING_DATASET_PATH = OUT_DIR / "intraday_training_dataset.csv"
 EXIT_TRAINING_DATASET_PATH = OUT_DIR / "exit_training_dataset.csv"
 MULTITIMEFRAME_CONTEXT_PATH = OUT_DIR / "multitimeframe_context.json"
 FEATURE_STREAM_DIR = OUT_DIR / "feature_stream"
-FEATURE_STREAM_SYMBOL_STATE_PATH = FEATURE_STREAM_DIR / f"{datetime.now(ET).strftime("%Y%m%d")}_symbol_state.json"
-FEATURE_STREAM_CSV_PATH = FEATURE_STREAM_DIR / f"{datetime.now(ET).strftime("%Y%m%d")}_intraday_feature_stream.csv"
-FEATURE_STREAM_JSONL_PATH = FEATURE_STREAM_DIR / f"{datetime.now(ET).strftime("%Y%m%d")}_intraday_feature_stream.jsonl"
+TODAY_TAG = datetime.now(ZoneInfo("America/New_York")).strftime("%Y%m%d")
+FEATURE_STREAM_SYMBOL_STATE_PATH = FEATURE_STREAM_DIR / f"{TODAY_TAG}_symbol_state.json"
+FEATURE_STREAM_CSV_PATH = FEATURE_STREAM_DIR / f"{TODAY_TAG}_intraday_feature_stream.csv"
+FEATURE_STREAM_JSONL_PATH = FEATURE_STREAM_DIR / f"{TODAY_TAG}_intraday_feature_stream.jsonl"
 REGIME_POSITION_PLAN_PATH = OUT_DIR / "regime_position_plan.csv"
 REGIME_UNIVERSE_PATH = OUT_DIR / "regime_universe_30.csv"
 REGIME_ACTIONS_PATH = OUT_DIR / "regime_actions.csv"
@@ -157,6 +158,8 @@ DATED_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 DATA_VALIDATION_STATE_PATH = OUT_DIR / "data_validation_state.json"
 
 ET = ZoneInfo("America/New_York")
+EXECUTED_ORDERS_LOG = LOG_DIR / f"{TODAY_TAG}_executed_orders.csv"
+EXECUTED_ORDERS_JSONL = LOG_DIR / f"{TODAY_TAG}_executed_orders.jsonl"
 
 
 # ======================================================================# Dynamic account-scaling defaults
@@ -1630,6 +1633,171 @@ def write_event(event: str, payload: Optional[dict[str, Any]] = None) -> None:
     }
     with EVENTS_JSONL.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, default=json_default) + "\n")
+
+
+def _coerce_log_value(value: Any) -> Any:
+    if isinstance(value, (np.floating, np.integer)):
+        value = value.item()
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return ""
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if value is None:
+        return ""
+    return value
+
+
+def _safe_dict_get_float(payload: dict[str, Any], key: str, default: float | None = None) -> float | None:
+    if not isinstance(payload, dict):
+        return default
+    value = payload.get(key, default)
+    if value is None or value == "":
+        return default
+    try:
+        out = float(value)
+        if math.isnan(out) or math.isinf(out):
+            return default
+        return out
+    except Exception:
+        return default
+
+
+def _executed_order_columns() -> list[str]:
+    return [
+        "timestamp_utc", "symbol", "side", "qty", "order_type",
+        "submitted_at", "filled_at", "filled_avg_price", "status",
+        "order_id", "client_order_id", "strategy", "regime", "confidence", "reason",
+        "exit_reason", "exit_model_action",
+        "exit_probability_hold", "exit_probability_giveback", "exit_probability_reversal",
+        "expected_value_next_5m", "expected_value_next_15m", "expected_value_next_30m",
+        "pnl_pct", "unrealized_pnl", "realized_pnl",
+        "max_favorable_excursion", "max_adverse_excursion",
+        "bars_held", "minutes_held",
+        "distance_to_5m_support", "distance_to_5m_resistance",
+        "distance_to_15m_support", "distance_to_15m_resistance",
+        "distance_to_1h_support", "distance_to_1h_resistance",
+        "distance_to_4h_support", "distance_to_4h_resistance",
+        "5m_trend_stack", "15m_trend_stack", "1h_trend_stack", "4h_trend_stack",
+        "above_vwap", "macd_hist", "rsi_14",
+    ]
+
+
+def log_executed_order(
+    *,
+    symbol: str,
+    side: str,
+    qty: float,
+    order_type: str,
+    submitted_at: str | None = None,
+    filled_at: str | None = None,
+    filled_avg_price: float | None = None,
+    status: str | None = None,
+    order_id: str | None = None,
+    client_order_id: str | None = None,
+    strategy: str | None = None,
+    regime: str | None = None,
+    confidence: float | None = None,
+    reason: str | None = None,
+    exit_reason: str | None = None,
+    exit_model_action: str | None = None,
+    exit_probability_hold: float | None = None,
+    exit_probability_giveback: float | None = None,
+    exit_probability_reversal: float | None = None,
+    expected_value_next_5m: float | None = None,
+    expected_value_next_15m: float | None = None,
+    expected_value_next_30m: float | None = None,
+    pnl_pct: float | None = None,
+    unrealized_pnl: float | None = None,
+    realized_pnl: float | None = None,
+    max_favorable_excursion: float | None = None,
+    max_adverse_excursion: float | None = None,
+    bars_held: int | None = None,
+    minutes_held: float | None = None,
+    distance_to_5m_support: float | None = None,
+    distance_to_5m_resistance: float | None = None,
+    distance_to_15m_support: float | None = None,
+    distance_to_15m_resistance: float | None = None,
+    distance_to_1h_support: float | None = None,
+    distance_to_1h_resistance: float | None = None,
+    distance_to_4h_support: float | None = None,
+    distance_to_4h_resistance: float | None = None,
+    trend_5m: int | None = None,
+    trend_15m: int | None = None,
+    trend_1h: int | None = None,
+    trend_4h: int | None = None,
+    above_vwap: int | None = None,
+    macd_hist: float | None = None,
+    rsi_14: float | None = None,
+) -> None:
+    row = {
+        "timestamp_utc": now_utc().isoformat(),
+        "symbol": safe_symbol(symbol),
+        "side": str(side or "").lower(),
+        "qty": qty,
+        "order_type": order_type,
+        "submitted_at": submitted_at,
+        "filled_at": filled_at,
+        "filled_avg_price": filled_avg_price,
+        "status": status,
+        "order_id": order_id,
+        "client_order_id": client_order_id,
+        "strategy": strategy,
+        "regime": regime,
+        "confidence": confidence,
+        "reason": reason,
+        "exit_reason": exit_reason,
+        "exit_model_action": exit_model_action,
+        "exit_probability_hold": exit_probability_hold,
+        "exit_probability_giveback": exit_probability_giveback,
+        "exit_probability_reversal": exit_probability_reversal,
+        "expected_value_next_5m": expected_value_next_5m,
+        "expected_value_next_15m": expected_value_next_15m,
+        "expected_value_next_30m": expected_value_next_30m,
+        "pnl_pct": pnl_pct,
+        "unrealized_pnl": unrealized_pnl,
+        "realized_pnl": realized_pnl,
+        "max_favorable_excursion": max_favorable_excursion,
+        "max_adverse_excursion": max_adverse_excursion,
+        "bars_held": bars_held,
+        "minutes_held": minutes_held,
+        "distance_to_5m_support": distance_to_5m_support,
+        "distance_to_5m_resistance": distance_to_5m_resistance,
+        "distance_to_15m_support": distance_to_15m_support,
+        "distance_to_15m_resistance": distance_to_15m_resistance,
+        "distance_to_1h_support": distance_to_1h_support,
+        "distance_to_1h_resistance": distance_to_1h_resistance,
+        "distance_to_4h_support": distance_to_4h_support,
+        "distance_to_4h_resistance": distance_to_4h_resistance,
+        "5m_trend_stack": trend_5m,
+        "15m_trend_stack": trend_15m,
+        "1h_trend_stack": trend_1h,
+        "4h_trend_stack": trend_4h,
+        "above_vwap": above_vwap,
+        "macd_hist": macd_hist,
+        "rsi_14": rsi_14,
+    }
+
+    cols = _executed_order_columns()
+    clean_row = {c: _coerce_log_value(row.get(c, "")) for c in cols}
+    write_header = not EXECUTED_ORDERS_LOG.exists()
+
+    EXECUTED_ORDERS_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with EXECUTED_ORDERS_LOG.open("a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=cols)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(clean_row)
+
+    with EXECUTED_ORDERS_JSONL.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(clean_row, default=json_default) + "\n")
+
+    print(
+        f"[execution-log] {clean_row['symbol']} {clean_row['side']} "
+        f"qty={clean_row['qty']} fill={clean_row['filled_avg_price']} "
+        f"status={clean_row['status']} exit_reason={clean_row['exit_reason']}"
+    )
 
 
 
@@ -3942,6 +4110,88 @@ class ProductionOrderExecutor:
     def _row_float(self, row: dict[str, Any], key: str, default: float = 0.0) -> float:
         return to_float(row.get(key, default), default)
 
+    def _order_log_context(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        qty: int,
+        row: pd.Series | dict[str, Any],
+        feat: dict[str, Any] | None,
+        pos_before: BrokerPosition,
+        fill_info: dict[str, Any],
+        order_id: str,
+        client_order_id: str,
+        status: str,
+    ) -> dict[str, Any]:
+        """Build executed-order log kwargs, including exit reasoning and MTF context."""
+        r = row.to_dict() if isinstance(row, pd.Series) else dict(row or {})
+        feat = feat or {}
+        side = str(side or "").lower()
+        fill_price = to_float(fill_info.get("filled_avg_price"), to_float(r.get("price"), 0.0))
+        avg_entry = to_float(pos_before.avg_entry_price, 0.0)
+        pnl_pct = to_float(pos_before.unrealized_plpc, 0.0) if side == "sell" else None
+        unrealized_pnl = to_float(pos_before.unrealized_pl, 0.0) if side == "sell" else None
+        realized_pnl = None
+        if side == "sell" and fill_price > 0 and avg_entry > 0:
+            realized_pnl = (fill_price - avg_entry) * float(qty)
+
+        exit_reason = r.get("exit_reason") or (r.get("reason") if side == "sell" else None)
+        exit_model_action = r.get("exit_model_action") or ("EXIT" if side == "sell" else None)
+
+        def row_or_feat(name: str, fallback: float | None = None) -> float | None:
+            value = r.get(name, None)
+            if value is not None and value != "":
+                return to_float(value, fallback)
+            return _safe_dict_get_float(feat, name, fallback)
+
+        return {
+            "symbol": symbol,
+            "side": side,
+            "qty": qty,
+            "order_type": "market",
+            "submitted_at": str(fill_info.get("submitted_at", "") or ""),
+            "filled_at": str(fill_info.get("filled_at", "") or ""),
+            "filled_avg_price": fill_price,
+            "status": str(fill_info.get("fill_status", status)),
+            "order_id": order_id,
+            "client_order_id": client_order_id,
+            "strategy": "regime_adaptive_intraday",
+            "regime": str(r.get("market_regime", r.get("regime", ""))),
+            "confidence": to_float(r.get("confidence_used", r.get("trade_confidence", r.get("confidence", 0.0))), None),
+            "reason": str(r.get("reason", "")),
+            "exit_reason": str(exit_reason or "") if side == "sell" else None,
+            "exit_model_action": str(exit_model_action or "") if side == "sell" else None,
+            "exit_probability_hold": row_or_feat("exit_probability_hold", row_or_feat("prob_hold_training_target", None)),
+            "exit_probability_giveback": row_or_feat("exit_probability_giveback", row_or_feat("giveback_risk_training_target", None)),
+            "exit_probability_reversal": row_or_feat("exit_probability_reversal", row_or_feat("reversal_risk_training_target", None)),
+            "expected_value_next_5m": row_or_feat("expected_value_next_5m", row_or_feat("future_return_5m", None)),
+            "expected_value_next_15m": row_or_feat("expected_value_next_15m", row_or_feat("future_return_15m", None)),
+            "expected_value_next_30m": row_or_feat("expected_value_next_30m", row_or_feat("future_return_30m", None)),
+            "pnl_pct": pnl_pct,
+            "unrealized_pnl": unrealized_pnl,
+            "realized_pnl": realized_pnl,
+            "max_favorable_excursion": row_or_feat("max_favorable_excursion", row_or_feat("max_favorable_excursion_15m", None)),
+            "max_adverse_excursion": row_or_feat("max_adverse_excursion", row_or_feat("max_adverse_excursion_15m", None)),
+            "bars_held": to_int(r.get("bars_held", 0), 0) if side == "sell" else None,
+            "minutes_held": to_float(r.get("minutes_held", self._minutes_held_for_position(pos_before) if side == "sell" else None), None),
+            "distance_to_5m_support": row_or_feat("distance_to_5m_support", row_or_feat("5m_dist_to_support", None)),
+            "distance_to_5m_resistance": row_or_feat("distance_to_5m_resistance", row_or_feat("5m_dist_to_resistance", None)),
+            "distance_to_15m_support": row_or_feat("distance_to_15m_support", row_or_feat("15m_dist_to_support", None)),
+            "distance_to_15m_resistance": row_or_feat("distance_to_15m_resistance", row_or_feat("15m_dist_to_resistance", None)),
+            "distance_to_1h_support": row_or_feat("distance_to_1h_support", row_or_feat("1h_dist_to_support", None)),
+            "distance_to_1h_resistance": row_or_feat("distance_to_1h_resistance", row_or_feat("1h_dist_to_resistance", None)),
+            "distance_to_4h_support": row_or_feat("distance_to_4h_support", row_or_feat("4h_dist_to_support", None)),
+            "distance_to_4h_resistance": row_or_feat("distance_to_4h_resistance", row_or_feat("4h_dist_to_resistance", None)),
+            "trend_5m": to_int(row_or_feat("5m_trend_stack", None), None),
+            "trend_15m": to_int(row_or_feat("15m_trend_stack", None), None),
+            "trend_1h": to_int(row_or_feat("1h_trend_stack", None), None),
+            "trend_4h": to_int(row_or_feat("4h_trend_stack", None), None),
+            "above_vwap": to_int(row_or_feat("above_vwap", None), None),
+            "macd_hist": row_or_feat("macd_hist", None),
+            "rsi_14": row_or_feat("rsi_14", None),
+        }
+
     def _mtf_buy_gate_for_row(self, row: pd.Series, latest_features: dict[str, dict[str, Any]]) -> tuple[bool, str]:
         """Final BUY-only gate using 5m/15m/1h/4h context. Sells bypass this."""
         if not self.config.scanner.use_mtf_buy_gate:
@@ -4127,6 +4377,33 @@ class ProductionOrderExecutor:
                 "current_weight": 0.0,
                 "delta_weight": 0.0,
                 "trade_confidence": to_float(decision.get("confidence"), 0.65),
+
+                # Exit-reasoning payload preserved into the final executed-order log.
+                "exit_reason": reason,
+                "exit_model_action": action,
+                "exit_probability_hold": self._row_float(feat, "prob_hold_training_target", None),
+                "exit_probability_giveback": self._row_float(feat, "giveback_risk_training_target", None),
+                "exit_probability_reversal": self._row_float(feat, "reversal_risk_training_target", None),
+                "expected_value_next_5m": self._row_float(feat, "expected_value_next_5m", self._row_float(feat, "future_return_5m", None)),
+                "expected_value_next_15m": self._row_float(feat, "expected_value_next_15m", self._row_float(feat, "future_return_15m", None)),
+                "expected_value_next_30m": self._row_float(feat, "expected_value_next_30m", self._row_float(feat, "future_return_30m", None)),
+                "max_favorable_excursion": self._row_float(feat, "max_favorable_excursion_15m", None),
+                "max_adverse_excursion": self._row_float(feat, "max_adverse_excursion_15m", None),
+                "distance_to_5m_support": self._row_float(feat, "5m_dist_to_support", None),
+                "distance_to_5m_resistance": self._row_float(feat, "5m_dist_to_resistance", None),
+                "distance_to_15m_support": self._row_float(feat, "15m_dist_to_support", None),
+                "distance_to_15m_resistance": self._row_float(feat, "15m_dist_to_resistance", None),
+                "distance_to_1h_support": self._row_float(feat, "1h_dist_to_support", None),
+                "distance_to_1h_resistance": self._row_float(feat, "1h_dist_to_resistance", None),
+                "distance_to_4h_support": self._row_float(feat, "4h_dist_to_support", None),
+                "distance_to_4h_resistance": self._row_float(feat, "4h_dist_to_resistance", None),
+                "5m_trend_stack": self._row_float(feat, "5m_trend_stack", None),
+                "15m_trend_stack": self._row_float(feat, "15m_trend_stack", None),
+                "1h_trend_stack": self._row_float(feat, "1h_trend_stack", None),
+                "4h_trend_stack": self._row_float(feat, "4h_trend_stack", None),
+                "above_vwap": self._row_float(feat, "above_vwap", None),
+                "macd_hist": self._row_float(feat, "macd_hist", None),
+                "rsi_14": self._row_float(feat, "rsi_14", None),
             })
             print(f"[exit-learning] {action} {symbol} qty={qty}/{qty_total}: {reason}")
             write_event("exit_learning_exit_added", {"symbol": symbol, "action": action, **decision})
@@ -4221,6 +4498,9 @@ class ProductionOrderExecutor:
             "filled_qty": filled_qty,
             "filled_avg_price": filled_avg_price,
             "slippage_pct": slippage_pct,
+            "submitted_at": str(getattr(last_order, "submitted_at", "") or ""),
+            "filled_at": str(getattr(last_order, "filled_at", "") or ""),
+            "expired_at": str(getattr(last_order, "expired_at", "") or ""),
         }
 
     def _journal_order(
@@ -4289,6 +4569,10 @@ class ProductionOrderExecutor:
                         for _, row in direction_df.iterrows()
                     }
 
+        # Load once per cycle so executed-order logs capture the same
+        # multi-timeframe/exit-learning context that gated the trade.
+        latest_feature_by_symbol = self._latest_feature_by_symbol()
+
         for _, row in plan.iterrows():
             symbol = safe_symbol(row.get("symbol"))
             side = str(row.get("side", "")).lower()
@@ -4307,6 +4591,8 @@ class ProductionOrderExecutor:
 
             skip_message = ""
             direction = direction_by_symbol.get(symbol, {}) if direction_by_symbol else {}
+            feature_context = latest_feature_by_symbol.get(symbol, {}) if latest_feature_by_symbol else {}
+            position_before_order = self.broker.get_position(symbol)
 
             # Log the final executable decision state before broker submission/risk skips.
             self._log_live_experience(
@@ -4387,6 +4673,20 @@ class ProductionOrderExecutor:
                 self._mark_order()
 
                 fill_info = self._poll_fill(order_id, price)
+                log_executed_order(
+                    **self._order_log_context(
+                        symbol=symbol,
+                        side=side,
+                        qty=qty,
+                        row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
+                        feat=feature_context,
+                        pos_before=position_before_order,
+                        fill_info=fill_info,
+                        order_id=order_id,
+                        client_order_id=client_order_id,
+                        status=status,
+                    )
+                )
                 acct_after = self._record_account_snapshot("after_order", cycle_id)
                 acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
 
