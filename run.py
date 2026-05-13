@@ -243,6 +243,7 @@ class ScannerConfig:
     fallback_min_buy_confidence: float = 0.50
     max_overbought_rsi: float = 78.0
     min_regime_score_for_longs: float = 0.40
+    
 
     # New-opportunity scanner: looks for stocks already green on the day
     # with positive momentum or confirmed breakout/reclaim behavior.
@@ -371,6 +372,11 @@ class ScannerConfig:
     rl_shadow_mode: bool = True
     rl_block_buys_when_model_invalid: bool = False
 
+
+    live_experience_logging_enabled: bool = True
+    live_experience_write_parquet: bool = True
+    live_experience_flush_every_event: bool = True
+    
     # Options booster handoff.
     options_booster_enabled: bool = True
     options_booster_confidence_threshold: float = 0.75
