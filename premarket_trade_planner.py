@@ -32,7 +32,7 @@ except Exception:
 PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-OUT_DIR = PROJECT_ROOT / f"{TODAY_TAG}_daily_system_outputs"
+OUT_DIR = PROJECT_ROOT / f"daily_system_outputs"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 LLM_UNIVERSE_PATH = OUT_DIR / f"{TODAY_TAG}_llatest_llm_sentiment_universe.json"
