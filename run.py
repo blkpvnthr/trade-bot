@@ -37,6 +37,7 @@ import csv
 import json
 import os
 import re
+import inspect
 import subprocess
 import sys
 import time
@@ -352,6 +353,7 @@ class ScannerConfig:
     rl_allow_hold_when_model_missing: bool = True
     rl_latest_bar_timeframe_minutes: int = 1
     rl_latest_bar_lookback_days: int = 5
+    rl_position_aware_inference: bool = True
 
     # RL model validation gates. These guard against accidentally trading with a
     # stale, underfit, or failed training artifact.
@@ -3684,7 +3686,127 @@ class ProductionOrderExecutor:
             self._rl_validation_cache = validate_rl_intraday_structure_model(self.config.scanner)
         return self._rl_validation_cache
 
-    def _predict_rl_signal(self, symbol: str, latest_bars: pd.DataFrame, structure_map: dict[str, Any]) -> dict[str, Any]:
+    def _rl_position_state(self, symbol: str, positions_by_symbol: Optional[dict[str, BrokerPosition]] = None) -> dict[str, Any]:
+        """Return current broker position state for position-aware RL inference.
+
+        The current RL trainer may or may not expose position-aware keyword
+        arguments yet. run.py still computes the state and uses it for a final
+        sanity filter so impossible actions do not reach execution.
+        """
+        symbol = safe_symbol(symbol)
+        positions_by_symbol = positions_by_symbol if positions_by_symbol is not None else self._positions_by_symbol()
+        pos = positions_by_symbol.get(symbol)
+
+        if not pos or to_float(pos.qty, 0.0) <= 0:
+            return {
+                "position_side": 0,
+                "position_qty": 0.0,
+                "entry_price": 0.0,
+                "avg_entry_price": 0.0,
+                "current_price": 0.0,
+                "unrealized_plpc": 0.0,
+                "is_position_aware": True,
+            }
+
+        # Alpaca long-only equity wrapper returns positive qty for long positions.
+        # If later short positions are enabled, extend this to inspect side/asset_class.
+        return {
+            "position_side": 1,
+            "position_qty": float(to_float(pos.qty, 0.0)),
+            "entry_price": float(to_float(pos.avg_entry_price, 0.0)),
+            "avg_entry_price": float(to_float(pos.avg_entry_price, 0.0)),
+            "current_price": float(to_float(pos.current_price, 0.0)),
+            "unrealized_plpc": float(to_float(pos.unrealized_plpc, 0.0)),
+            "is_position_aware": True,
+        }
+
+    def _sanitize_rl_signal_for_position(self, signal: dict[str, Any], position_state: dict[str, Any]) -> dict[str, Any]:
+        """Force impossible RL actions back to HOLD using live broker state."""
+        signal = dict(signal or {})
+        action = str(signal.get("action", "HOLD")).upper()
+        side = int(to_int(position_state.get("position_side"), 0))
+
+        blocked_reason: str | None = None
+
+        if side == 1 and action in {"ENTER_LONG", "BUY"}:
+            blocked_reason = "position_aware_block_enter_long_already_long"
+        elif side == -1 and action in {"ENTER_SHORT", "SHORT"}:
+            blocked_reason = "position_aware_block_enter_short_already_short"
+        elif side == 0 and action in {"EXIT_LONG", "EXIT_SHORT", "SELL", "COVER"}:
+            blocked_reason = "position_aware_block_exit_when_flat"
+        elif side == 1 and action == "EXIT_SHORT":
+            blocked_reason = "position_aware_block_exit_short_while_long"
+        elif side == -1 and action == "EXIT_LONG":
+            blocked_reason = "position_aware_block_exit_long_while_short"
+
+        signal["position_side"] = side
+        signal["position_qty"] = float(to_float(position_state.get("position_qty"), 0.0))
+        signal["entry_price"] = float(to_float(position_state.get("entry_price"), 0.0))
+        signal["avg_entry_price"] = float(to_float(position_state.get("avg_entry_price"), 0.0))
+        signal["position_aware"] = True
+
+        if blocked_reason:
+            raw_action = signal.get("raw_action", action)
+            signal["raw_position_unaware_action"] = raw_action
+            signal["position_aware_blocked"] = True
+            signal["position_aware_block_reason"] = blocked_reason
+            signal["action"] = "HOLD"
+            signal["action_id"] = 0
+            signal["reason"] = f"{signal.get('reason', 'rl_signal')}:{blocked_reason}"
+        else:
+            signal["position_aware_blocked"] = False
+
+        return signal
+
+    def _call_predict_live_action_position_aware(
+        self,
+        predict_live_action: Any,
+        symbol: str,
+        latest_bars: pd.DataFrame,
+        structure_map: dict[str, Any],
+        position_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Call trainer inference with position kwargs when supported.
+
+        This keeps run.py backward-compatible with older trainer files while
+        immediately enabling position-aware inference when the trainer accepts
+        position_side / position_qty / entry_price.
+        """
+        base_kwargs = {
+            "model_path": RL_MODEL_PATH,
+            "latest_bars": latest_bars,
+            "structure_map": structure_map,
+            "symbol": symbol,
+        }
+        position_kwargs = {
+            "position_side": int(to_int(position_state.get("position_side"), 0)),
+            "position_qty": float(to_float(position_state.get("position_qty"), 0.0)),
+            "entry_price": float(to_float(position_state.get("entry_price"), 0.0)),
+            "avg_entry_price": float(to_float(position_state.get("avg_entry_price"), 0.0)),
+            "current_price": float(to_float(position_state.get("current_price"), 0.0)),
+            "unrealized_plpc": float(to_float(position_state.get("unrealized_plpc"), 0.0)),
+        }
+
+        if self.config.scanner.rl_position_aware_inference:
+            try:
+                sig = inspect.signature(predict_live_action)
+                supported = set(sig.parameters.keys())
+                kwargs = dict(base_kwargs)
+                kwargs.update({k: v for k, v in position_kwargs.items() if k in supported})
+                return dict(predict_live_action(**kwargs))
+            except (TypeError, ValueError):
+                # Fall back to legacy signature below.
+                pass
+
+        return dict(predict_live_action(**base_kwargs))
+
+    def _predict_rl_signal(
+        self,
+        symbol: str,
+        latest_bars: pd.DataFrame,
+        structure_map: dict[str, Any],
+        positions_by_symbol: Optional[dict[str, BrokerPosition]] = None,
+    ) -> dict[str, Any]:
         symbol = safe_symbol(symbol)
         if not self.config.scanner.use_rl_timing_gate:
             return {"symbol": symbol, "action": "HOLD", "confidence": 0.0, "reason": "rl_gate_disabled"}
@@ -3712,16 +3834,22 @@ class ProductionOrderExecutor:
         try:
             from rl_intraday_structure_trainer import predict_live_action
 
-            signal = predict_live_action(
-                model_path=RL_MODEL_PATH,
+            position_state = self._rl_position_state(symbol, positions_by_symbol)
+            signal = self._call_predict_live_action_position_aware(
+                predict_live_action=predict_live_action,
+                symbol=symbol,
                 latest_bars=latest_bars,
                 structure_map=structure_map,
-                symbol=symbol,
+                position_state=position_state,
             )
             signal["symbol"] = symbol
-            return signal
+            return self._sanitize_rl_signal_for_position(signal, position_state)
         except Exception as exc:
-            return {"symbol": symbol, "action": "HOLD", "confidence": 0.0, "reason": f"rl_error:{exc}"}
+            position_state = self._rl_position_state(symbol, positions_by_symbol)
+            return self._sanitize_rl_signal_for_position(
+                {"symbol": symbol, "action": "HOLD", "confidence": 0.0, "reason": f"rl_error:{exc}"},
+                position_state,
+            )
 
     def _apply_rl_timing_gate(self, rebalance: pd.DataFrame, exits: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
@@ -3737,6 +3865,7 @@ class ProductionOrderExecutor:
         if rebalance is not None and not rebalance.empty and "symbol" in rebalance.columns:
             symbols.extend(rebalance["symbol"].map(safe_symbol).tolist())
         positions = self.broker.get_all_open_positions()
+        positions_by_symbol = {safe_symbol(p.symbol): p for p in positions if p.symbol}
         symbols.extend([safe_symbol(p.symbol) for p in positions if p.symbol])
         symbols = sorted(set(s for s in symbols if s))
 
@@ -3753,7 +3882,7 @@ class ProductionOrderExecutor:
             keep_mask = []
             for _, row in gated_rebalance.iterrows():
                 symbol = safe_symbol(row.get("symbol"))
-                signal = self._predict_rl_signal(symbol, latest_bars, structure_map)
+                signal = self._predict_rl_signal(symbol, latest_bars, structure_map, positions_by_symbol)
                 signals.append(signal)
                 action = str(signal.get("action", "HOLD")).upper()
                 confidence = to_float(signal.get("confidence"), 0.0)
@@ -3798,7 +3927,7 @@ class ProductionOrderExecutor:
             symbol = safe_symbol(pos.symbol)
             if not symbol or symbol in existing_exit_symbols:
                 continue
-            signal = self._predict_rl_signal(symbol, latest_bars, structure_map)
+            signal = self._predict_rl_signal(symbol, latest_bars, structure_map, positions_by_symbol)
             signals.append(signal)
             action = str(signal.get("action", "HOLD")).upper()
             confidence = to_float(signal.get("confidence"), 0.0)
