@@ -19,6 +19,8 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+from market_context_builder import TODAY_TAG
+
 try:
     from alpaca.data.enums import DataFeed
 except Exception:
@@ -31,9 +33,9 @@ load_dotenv(PROJECT_ROOT / ".env")
 OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-JSON_PATH = OUT_DIR / "latest_llm_sentiment_universe.json"
-DISCOVERY_PATH = OUT_DIR / "latest_llm_candidate_discovery.json"
-LOCKED_UNIVERSE_PATH = PROJECT_ROOT / "locked_trading_universe.txt"
+JSON_PATH = OUT_DIR / f"{TODAY_TAG}_latest_llm_sentiment_universe.json"
+DISCOVERY_PATH = OUT_DIR / f"{TODAY_TAG}_latest_llm_candidate_discovery.json"
+LOCKED_UNIVERSE_PATH = PROJECT_ROOT / f"{TODAY_TAG}_locked_trading_universe.txt"
 
 ET = ZoneInfo("America/New_York")
 

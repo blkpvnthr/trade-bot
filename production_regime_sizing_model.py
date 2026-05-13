@@ -42,6 +42,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from market_context_builder import TODAY_TAG
+
 
 # =============================================================================
 # Paths
@@ -53,17 +55,17 @@ PROJECT_ROOT = THIS_FILE.parent
 OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-INPUT_PATH = OUT_DIR / "daily_features.csv"
-MODEL_SCRIPT_PATH = PROJECT_ROOT / "model.py"
+INPUT_PATH = OUT_DIR / f"{TODAY_TAG}_daily_features.csv"
+MODEL_SCRIPT_PATH = PROJECT_ROOT / f"{TODAY_TAG}_model.py"
 
-MARKET_CONTEXT_PATH = OUT_DIR / "market_context.json"
-PREMARKET_TRADE_PLAN_PATH = OUT_DIR / "premarket_trade_plan.json"
-INTRADAY_STRUCTURE_MAP_PATH = OUT_DIR / "intraday_structure_map.json"
+MARKET_CONTEXT_PATH = OUT_DIR / f"{TODAY_TAG}_market_context.json"
+PREMARKET_TRADE_PLAN_PATH = OUT_DIR / f"{TODAY_TAG}_premarket_trade_plan.json"
+INTRADAY_STRUCTURE_MAP_PATH = OUT_DIR / f"{TODAY_TAG}_intraday_structure_map.json"
 
-REGIME_POSITION_PLAN_PATH = OUT_DIR / "regime_position_plan.csv"
-REGIME_UNIVERSE_PATH = OUT_DIR / "regime_universe_30.csv"
-REGIME_ACTIONS_PATH = OUT_DIR / "regime_actions.csv"
-DIAGNOSTICS_PATH = OUT_DIR / "regime_sizing_diagnostics.json"
+REGIME_POSITION_PLAN_PATH = OUT_DIR / f"{TODAY_TAG}_regime_position_plan.csv"
+REGIME_UNIVERSE_PATH = OUT_DIR / f"{TODAY_TAG}_regime_universe_30.csv"
+REGIME_ACTIONS_PATH = OUT_DIR / f"{TODAY_TAG}_regime_actions.csv"
+DIAGNOSTICS_PATH = OUT_DIR / f"{TODAY_TAG}_regime_sizing_diagnostics.json"
 
 MAX_OUTPUT_SYMBOLS = int(os.getenv("REGIME_MAX_OUTPUT_SYMBOLS", "30"))
 

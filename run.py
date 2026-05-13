@@ -82,12 +82,15 @@ from alpaca.trading.requests import MarketOrderRequest
 try:
     from alpaca.data.enums import DataFeed
     from alpaca.data.historical.stock import StockHistoricalDataClient
-    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.historical.option import OptionHistoricalDataClient
+    from alpaca.data.requests import StockBarsRequest, OptionChainRequest
     from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 except Exception:
     DataFeed = None
     StockHistoricalDataClient = None
+    OptionHistoricalDataClient = None
     StockBarsRequest = None
+    OptionChainRequest = None
     TimeFrame = None
 
 
@@ -423,6 +426,21 @@ class ScannerConfig:
     options_booster_max_dte: int = 32
     options_booster_limit_price_source: str = "bid"
 
+    # Alpaca options-data integration. options_booster.py should read option
+    # chains from Alpaca's OptionHistoricalDataClient/OptionChainRequest instead
+    # of Tradier/Yahoo. run.py passes these as environment variables so the
+    # booster can run without CLI arguments and still know the intended data source.
+    options_data_source: str = "alpaca"
+    options_require_alpaca_chain: bool = True
+    options_alpaca_chain_preflight_enabled: bool = True
+    options_flow_scan_enabled: bool = True
+    options_flow_min_volume: int = 10
+    options_flow_min_open_interest: int = 25
+    options_flow_min_volume_oi_ratio: float = 0.25
+    options_flow_min_premium_dollars: float = 25_000.0
+    options_flow_max_underlyings: int = 30
+    options_flow_max_contracts_per_underlying: int = 500
+
     # ML-style call selection: rank option contracts using Greeks + liquidity + TA.
     # This is a deterministic model/ranker by default; if options_booster.py exposes
     # richer chain data, these fields let that module select the best contract.
@@ -648,15 +666,26 @@ def build_account_risk_profile(equity: float) -> AccountRiskProfile:
     )
 
 
-def run_python_script(path: Path, args: Optional[list[str]] = None, timeout_seconds: int = 180) -> tuple[bool, str]:
+def run_python_script(
+    path: Path,
+    args: Optional[list[str]] = None,
+    timeout_seconds: int = 180,
+    env_overrides: Optional[dict[str, str]] = None,
+) -> tuple[bool, str]:
     if not path.exists():
         return False, f"script_not_found: {path}"
 
     cmd = [sys.executable, str(path)] + list(args or [])
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    if env_overrides:
+        env.update({str(k): str(v) for k, v in env_overrides.items()})
+
     try:
         proc = subprocess.run(
             cmd,
             cwd=str(PROJECT_ROOT),
+            env=env,
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
@@ -950,6 +979,73 @@ def run_premarket_data_collector(config: ScannerConfig) -> dict[str, Any]:
 
     snapshot_and_validate_planning_files(config, stage="after_premarket_collector")
     return payload
+
+
+def alpaca_options_data_available(sample_symbol: str = "SPY") -> tuple[bool, str]:
+    """Verify Alpaca option-chain access before triggering options_booster.py."""
+    if OptionHistoricalDataClient is None or OptionChainRequest is None:
+        return False, "alpaca_option_data_classes_unavailable"
+
+    key = os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY_ID")
+    secret = os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_API_SECRET_KEY")
+    if not key or not secret:
+        return False, "missing_alpaca_credentials"
+
+    sample_symbol = normalize_symbol(sample_symbol) or "SPY"
+    try:
+        client = OptionHistoricalDataClient(key, secret)
+        chain = client.get_option_chain(OptionChainRequest(underlying_symbol=sample_symbol))
+        if isinstance(chain, dict):
+            count = len(chain)
+        elif hasattr(chain, "data") and isinstance(chain.data, dict):
+            count = len(chain.data)
+        else:
+            try:
+                count = len(dict(chain)) if chain is not None else 0
+            except Exception:
+                count = 0
+        if count <= 0:
+            return False, f"empty_alpaca_option_chain:{sample_symbol}"
+        return True, f"alpaca_option_chain_ok:{sample_symbol}:contracts={count}"
+    except Exception as exc:
+        return False, f"alpaca_option_chain_error:{sample_symbol}:{exc}"
+
+
+def build_options_booster_env(config: ScannerConfig, candidate_symbols: list[str] | None = None) -> dict[str, str]:
+    """Environment contract for the Alpaca-backed options_booster.py."""
+    env = {
+        "OPTIONS_BOOSTER_ENABLED": "1" if config.options_booster_enabled else "0",
+        "OPTIONS_DATA_SOURCE": str(config.options_data_source or "alpaca").lower(),
+        "OPTIONS_USE_ALPACA": "1",
+        "OPTIONS_REQUIRE_ALPACA_CHAIN": "1" if config.options_require_alpaca_chain else "0",
+        "OPTIONS_REQUIRE_OPEN_UNDERLYING_POSITION": "1",
+        "OPTIONS_MIN_UNDERLYING_PLPC": str(config.options_booster_min_position_plpc),
+        "OPTIONS_MIN_DTE": str(config.options_booster_min_dte),
+        "OPTIONS_MAX_DTE": str(config.options_booster_max_dte),
+        "OPTIONS_TARGET_DTE": str(config.options_booster_target_dte),
+        "OPTIONS_IDEAL_DELTA": str(config.options_target_delta),
+        "OPTIONS_MIN_DELTA": str(config.options_min_delta),
+        "OPTIONS_MAX_DELTA": str(config.options_max_delta),
+        "OPTIONS_MAX_SPREAD_PCT": str(config.options_max_spread_pct),
+        "OPTIONS_MIN_OPEN_INTEREST": str(max(config.options_min_open_interest, config.options_flow_min_open_interest)),
+        "OPTIONS_MIN_VOLUME": str(max(config.options_min_volume, config.options_flow_min_volume)),
+        "OPTIONS_MAX_THETA_ABS": str(config.options_max_theta_abs),
+        "OPTIONS_MIN_GAMMA": str(config.options_min_gamma),
+        "OPTIONS_LIMIT_PRICE_SOURCE": str(config.options_booster_limit_price_source),
+        "OPTIONS_FLOW_SCAN_ENABLED": "1" if config.options_flow_scan_enabled else "0",
+        "OPTIONS_FLOW_MAX_UNDERLYINGS": str(config.options_flow_max_underlyings),
+        "OPTIONS_FLOW_MAX_CONTRACTS_PER_UNDERLYING": str(config.options_flow_max_contracts_per_underlying),
+        "OPTIONS_MIN_VOLUME_OI_RATIO": str(config.options_flow_min_volume_oi_ratio),
+        "OPTIONS_MIN_PREMIUM_FLOW_DOLLARS": str(config.options_flow_min_premium_dollars),
+        "APCA_PAPER": "1",
+    }
+    if candidate_symbols:
+        env["OPTIONS_CANDIDATE_SYMBOLS"] = ",".join(candidate_symbols)
+    if os.getenv("APCA_API_KEY_ID"):
+        env["APCA_API_KEY_ID"] = os.getenv("APCA_API_KEY_ID", "")
+    if os.getenv("APCA_API_SECRET_KEY"):
+        env["APCA_API_SECRET_KEY"] = os.getenv("APCA_API_SECRET_KEY", "")
+    return env
 
 
 def refresh_llm_sentiment_universe(timeout_seconds: int = 180) -> None:
@@ -3387,9 +3483,23 @@ class MomentumSetupScanner:
             f"[options] triggering options_booster.py for {len(high)} candidate(s); "
             f"position trigger=+{self.config.options_booster_min_position_plpc:.2%}, "
             f"target_dte={self.config.options_booster_target_dte}, "
-            f"contract_selection=ML_GREEKS_TA_RANKER, limit_source=bid"
+            f"data_source={self.config.options_data_source.upper()}, "
+            f"contract_selection=ALPACA_OPTION_CHAIN_EV_FLOW_RANKER, "
+            f"limit_source={self.config.options_booster_limit_price_source}"
         )
         print(high[[c for c in ["symbol", "trade_confidence", "continuation_confidence", "unrealized_plpc", "technical_direction_score", "ml_next_bar_probability", "target_delta", "min_delta", "max_delta", "booster_trigger", "target_dte", "limit_price_source"] if c in high.columns]].to_string(index=False))
+
+        if self.config.options_alpaca_chain_preflight_enabled:
+            sample_symbol = normalize_symbol(high.iloc[0].get("symbol", "SPY")) if not high.empty else "SPY"
+            ok_chain, chain_msg = alpaca_options_data_available(sample_symbol)
+            print(f"[options] Alpaca option-chain preflight ok={ok_chain} {chain_msg}")
+            write_event("alpaca_options_chain_preflight", {"ok": ok_chain, "message": chain_msg, "sample_symbol": sample_symbol})
+            if self.config.options_require_alpaca_chain and not ok_chain:
+                print("[options] skipping options booster because Alpaca option-chain preflight failed")
+                write_event("options_booster_skipped_alpaca_chain_unavailable", {"message": chain_msg})
+                return
+
+        booster_env = build_options_booster_env(self.config, high["symbol"].dropna().astype(str).tolist())
 
         args = [
             "--once",
@@ -3422,6 +3532,7 @@ class MomentumSetupScanner:
             OPTIONS_BOOSTER_PATH,
             args=args,
             timeout_seconds=self.config.options_booster_timeout_seconds,
+            env_overrides=booster_env,
         )
         if ok:
             print("[options] options_booster.py completed")
@@ -4681,6 +4792,8 @@ class ProductionOrderExecutor:
             print(f"[executor] universe_source={'LLM_SENTIMENT' if self.config.scanner.use_llm_sentiment_universe else 'SCANNER_DEFAULT'}")
             print(f"[executor] options_booster_enabled={self.config.scanner.options_booster_enabled}")
             print(f"[executor] options_booster_threshold={self.config.scanner.options_booster_confidence_threshold:.0%}")
+            print(f"[executor] options_data_source={self.config.scanner.options_data_source}")
+            print(f"[executor] options_alpaca_chain_preflight={self.config.scanner.options_alpaca_chain_preflight_enabled}")
             print(f"[executor] market_context_enabled={self.config.scanner.market_context_enabled}")
             print(f"[executor] premarket_plan_enabled={self.config.scanner.premarket_plan_enabled}")
             print(f"[executor] session_planning_enabled={self.config.scanner.session_planning_enabled}")

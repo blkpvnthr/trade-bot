@@ -57,6 +57,8 @@ import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 
+from market_context_builder import TODAY_TAG
+
 try:
     from alpaca.trading.client import TradingClient
 except Exception as exc:
@@ -84,21 +86,21 @@ LOG_DIR = PROJECT_ROOT / "logs" / "execution"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-REGIME_POSITION_PLAN_PATH = OUT_DIR / "regime_position_plan.csv"
-REGIME_UNIVERSE_PATH = OUT_DIR / "regime_universe_30.csv"
-SCANNER_SCORES_PATH = OUT_DIR / "latest_scanner_scores.csv"
-LOCKED_UNIVERSE_PATH = PROJECT_ROOT / "locked_trading_universe.txt"
+REGIME_POSITION_PLAN_PATH = OUT_DIR / f"{TODAY_TAG}_regime_position_plan.csv"
+REGIME_UNIVERSE_PATH = OUT_DIR / f"{TODAY_TAG}_regime_universe_30.csv"
+SCANNER_SCORES_PATH = OUT_DIR / f"{TODAY_TAG}_latest_scanner_scores.csv"
+LOCKED_UNIVERSE_PATH = PROJECT_ROOT / f"{TODAY_TAG}_locked_trading_universe.txt"
 
-REBALANCE_ORDERS_PATH = OUT_DIR / "daily_walkforward_emulated_rebalance_orders.csv"
-EXIT_ORDERS_PATH = OUT_DIR / "daily_walkforward_emulated_exit_orders.csv"
+REBALANCE_ORDERS_PATH = OUT_DIR / f"{TODAY_TAG}_daily_walkforward_emulated_rebalance_orders.csv"
+EXIT_ORDERS_PATH = OUT_DIR / f"{TODAY_TAG}_daily_walkforward_emulated_exit_orders.csv"
 
-OPTION_FLOW_CANDIDATES_PATH = OUT_DIR / "latest_option_flow_candidates.csv"
-OPTION_BOOSTER_CANDIDATES_PATH = OUT_DIR / "latest_option_booster_candidates.csv"
-RANKED_CONTRACTS_PATH = OUT_DIR / "latest_option_booster_ranked_contracts.csv"
-SUMMARY_PATH = OUT_DIR / "latest_option_booster_summary.json"
+OPTION_FLOW_CANDIDATES_PATH = OUT_DIR / f"{TODAY_TAG}_latest_option_flow_candidates.csv"
+OPTION_BOOSTER_CANDIDATES_PATH = OUT_DIR / f"{TODAY_TAG}_latest_option_booster_candidates.csv"
+RANKED_CONTRACTS_PATH = OUT_DIR / f"{TODAY_TAG}_latest_option_booster_ranked_contracts.csv"
+SUMMARY_PATH = OUT_DIR / f"{TODAY_TAG}_latest_option_booster_summary.json"
 
-STATE_PATH = LOG_DIR / "option_booster_state.json"
-EVENTS_PATH = LOG_DIR / "option_booster_events.jsonl"
+STATE_PATH = LOG_DIR / f"{TODAY_TAG}_option_booster_state.json"
+EVENTS_PATH = LOG_DIR / f"{TODAY_TAG}_option_booster_events.jsonl"
 
 
 # =============================================================================

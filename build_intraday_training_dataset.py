@@ -14,6 +14,8 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+from market_context_builder import TODAY_TAG
+
 try:
     from alpaca.data.enums import DataFeed
 except Exception:
@@ -23,11 +25,11 @@ except Exception:
 PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
+OUT_DIR = PROJECT_ROOT / f"{TODAY_TAG}_daily_system_outputs"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-STRUCTURE_MAP_PATH = OUT_DIR / "intraday_structure_map.json"
-OUTPUT_PATH = OUT_DIR / "intraday_bars_1m.csv"
+STRUCTURE_MAP_PATH = OUT_DIR / f"{TODAY_TAG}_intraday_structure_map.json"
+OUTPUT_PATH = OUT_DIR / f"{TODAY_TAG}_intraday_bars_1m.csv"
 
 LOOKBACK_DAYS = int(os.getenv("RL_INTRADAY_LOOKBACK_DAYS", "30"))
 ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower().strip()

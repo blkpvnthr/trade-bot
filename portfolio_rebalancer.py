@@ -9,6 +9,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from alpaca.trading.client import TradingClient
 
+from market_context_builder import TODAY_TAG
 from portfolio_optimizer import (
     OptimizerConfig,
     optimize_portfolio,
@@ -28,13 +29,13 @@ SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
 if not API_KEY or not SECRET_KEY:
     raise RuntimeError("Missing APCA_API_KEY_ID / APCA_API_SECRET_KEY")
 
-MODEL_PLAN_PATH = OUT / "regime_position_plan.csv"
-BREAKOUT_CANDIDATES_PATH = OUT / "latest_breakout_candidates.csv"
-SCANNER_SCORES_PATH = OUT / "latest_scanner_scores.csv"
+MODEL_PLAN_PATH = OUT / f"{TODAY_TAG}_regime_position_plan.csv"
+BREAKOUT_CANDIDATES_PATH = OUT / f"{TODAY_TAG}_latest_breakout_candidates.csv"
+SCANNER_SCORES_PATH = OUT / f"{TODAY_TAG}_latest_scanner_scores.csv"
 
-TARGETS_OUT = OUT / "optimized_portfolio_targets.csv"
-REBALANCE_OUT = OUT / "daily_walkforward_emulated_rebalance_orders.csv"
-EXIT_OUT = OUT / "daily_walkforward_emulated_exit_orders.csv"
+TARGETS_OUT = OUT / f"{TODAY_TAG}_optimized_portfolio_targets.csv"
+REBALANCE_OUT = OUT / f"{TODAY_TAG}_daily_walkforward_emulated_rebalance_orders.csv"
+EXIT_OUT = OUT / f"{TODAY_TAG}_daily_walkforward_emulated_exit_orders.csv"
 
 
 def norm(symbol: Any) -> str:

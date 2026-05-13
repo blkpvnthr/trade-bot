@@ -50,6 +50,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from market_context_builder import DAILY_OUTPUT_DIR, TODAY_TAG
+
 
 # =============================================================================
 # Paths
@@ -62,10 +64,12 @@ LOG_DIR = PROJECT_ROOT / "logs" / "execution"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-STATE_PATH = OUT_DIR / "premarket_collector_state.json"
-EVENTS_PATH = LOG_DIR / "premarket_collector_events.jsonl"
-
-
+STATE_PATH = (
+    DAILY_OUTPUT_DIR / f"{TODAY_TAG}_premarket_collector_state.json"
+)
+EVENTS_PATH  = (
+    DAILY_OUTPUT_DIR / f"{TODAY_TAG}_premarket_collector_events.jsonl"
+)
 # =============================================================================
 # Config
 # =============================================================================

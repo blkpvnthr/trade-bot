@@ -61,6 +61,8 @@ from sklearn.metrics import (
 )
 from sklearn.pipeline import Pipeline
 
+from market_context_builder import TODAY_TAG
+
 
 # =============================================================================
 # Paths
@@ -69,20 +71,20 @@ from sklearn.pipeline import Pipeline
 THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 
-INPUT_PATH = PROJECT_ROOT / "daily_system_outputs" / "daily_features.csv"
+INPUT_PATH = PROJECT_ROOT / "daily_system_outputs" / f"{TODAY_TAG}_daily_features.csv"
 OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-OUT_PREDICTIONS = OUT_DIR / "regime_predictions.csv"
-OUT_ACTIONS = OUT_DIR / "regime_actions.csv"
-OUT_UNIVERSE_CSV = OUT_DIR / "regime_universe_30.csv"
-OUT_UNIVERSE_TXT = OUT_DIR / "regime_universe_30.txt"
-OUT_POSITION_PLAN = OUT_DIR / "regime_position_plan.csv"
-OUT_IMPORTANCE = OUT_DIR / "regime_feature_importance.csv"
-OUT_THRESHOLD_TABLE = OUT_DIR / "regime_threshold_table.csv"
+OUT_PREDICTIONS = OUT_DIR / f"{TODAY_TAG}_regime_predictions.csv"
+OUT_ACTIONS = OUT_DIR / f"{TODAY_TAG}_regime_actions.csv"
+OUT_UNIVERSE_CSV = OUT_DIR / f"{TODAY_TAG}_regime_universe_30.csv"
+OUT_UNIVERSE_TXT = OUT_DIR / f"{TODAY_TAG}_regime_universe_30.txt"
+OUT_POSITION_PLAN = OUT_DIR / f"{TODAY_TAG}_regime_position_plan.csv"
+OUT_IMPORTANCE = OUT_DIR / f"{TODAY_TAG}_regime_feature_importance.csv"
+OUT_THRESHOLD_TABLE = OUT_DIR / f"{TODAY_TAG}_regime_threshold_table.csv"
 
-DEFAULT_MARKET_CONTEXT_PATH = OUT_DIR / "market_context.json"
-DEFAULT_PREMARKET_TRADE_PLAN_PATH = OUT_DIR / "premarket_trade_plan.json"
+DEFAULT_MARKET_CONTEXT_PATH = OUT_DIR / f"{TODAY_TAG}_market_context.json"
+DEFAULT_PREMARKET_TRADE_PLAN_PATH = OUT_DIR / f"{TODAY_TAG}_premarket_trade_plan.json"
 
 # Runtime-loaded optional context. These are intentionally globals so the
 # sizing/action functions can remain simple while main() controls the inputs.

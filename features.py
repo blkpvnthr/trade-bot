@@ -14,6 +14,8 @@ from alpaca.data.historical.stock import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+from market_context_builder import TODAY_TAG
+
 
 def normalize_symbol(sym: str) -> str:
     return str(sym).replace(".", "-").upper().strip()
@@ -26,9 +28,9 @@ ENV_PATH = PROJECT_ROOT / ".env"
 OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-OUT_RAW = OUT_DIR / "daily_raw_bars.csv"
-OUT_FEATURES = OUT_DIR / "daily_features.csv"
-OUT_SYMBOLS = OUT_DIR / "download_universe_symbols.csv"
+OUT_RAW = OUT_DIR / f"{TODAY_TAG}_daily_raw_bars.csv"
+OUT_FEATURES = OUT_DIR / f"{TODAY_TAG}_daily_features.csv"
+OUT_SYMBOLS = OUT_DIR / f"{TODAY_TAG}_download_universe_symbols.csv"
 
 WIKI_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"

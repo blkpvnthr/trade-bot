@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import re
 import json
 import math
 import os
@@ -18,12 +19,15 @@ from openai import OpenAI
 try:
     from alpaca.data.enums import DataFeed
     from alpaca.data.historical import StockHistoricalDataClient
-    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.historical.option import OptionHistoricalDataClient
+    from alpaca.data.requests import StockBarsRequest, OptionChainRequest
     from alpaca.data.timeframe import TimeFrame
 except Exception:
     DataFeed = None
     StockHistoricalDataClient = None
+    OptionHistoricalDataClient = None
     StockBarsRequest = None
+    OptionChainRequest = None
     TimeFrame = None
 
 
@@ -37,12 +41,19 @@ load_dotenv(PROJECT_ROOT / ".env")
 OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-MARKET_CONTEXT_PATH = OUT_DIR / "market_context.json"
-LLM_UNIVERSE_PATH = OUT_DIR / "latest_llm_sentiment_universe.json"
-LOCKED_UNIVERSE_PATH = PROJECT_ROOT / "locked_trading_universe.txt"
-
 ET = ZoneInfo("America/New_York")
+TODAY_TAG = datetime.now().strftime("%Y%m%d")
 
+DAILY_OUTPUT_DIR = PROJECT_ROOT / f"{TODAY_TAG}_daily_system_outputs" / "runtime" / TODAY_TAG
+EXECUTION_LOG_DIR = PROJECT_ROOT / f"{TODAY_TAG}_logs" / "execution" / "runtime" / TODAY_TAG
+
+LLM_UNIVERSE_PATH = PROJECT_ROOT / f"{TODAY_TAG}_latest_llm_sentiment_universe.json"
+LOCKED_UNIVERSE_PATH = PROJECT_ROOT / f"{TODAY_TAG}_locked_trading_universe.txt"
+
+MARKET_CONTEXT_PATH = DAILY_OUTPUT_DIR / f"{TODAY_TAG}_market_context.json"
+
+DAILY_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+EXECUTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # =============================================================================
 # Config
@@ -50,8 +61,13 @@ ET = ZoneInfo("America/New_York")
 
 OPENAI_MODEL = os.getenv("OPENAI_MARKET_CONTEXT_MODEL", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"))
 SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
-TRADIER_TOKEN = os.getenv("TRADIER_TOKEN", "")
 ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower().strip()
+ALPACA_OPTIONS_MAX_CHAIN_CONTRACTS = int(os.getenv("ALPACA_OPTIONS_MAX_CHAIN_CONTRACTS", "800"))
+ALPACA_OPTIONS_MIN_DTE = int(os.getenv("ALPACA_OPTIONS_MIN_DTE", "7"))
+ALPACA_OPTIONS_MAX_DTE = int(os.getenv("ALPACA_OPTIONS_MAX_DTE", "45"))
+ALPACA_OPTIONS_MIN_VOLUME = int(os.getenv("ALPACA_OPTIONS_MIN_VOLUME", "0"))
+ALPACA_OPTIONS_MIN_OPEN_INTEREST = int(os.getenv("ALPACA_OPTIONS_MIN_OPEN_INTEREST", "0"))
+ALPACA_OPTIONS_MAX_SPREAD_PCT = float(os.getenv("ALPACA_OPTIONS_MAX_SPREAD_PCT", "0.35"))
 
 MAX_SEARCH_RESULTS = int(os.getenv("MARKET_CONTEXT_MAX_SEARCH_RESULTS", "8"))
 MAX_SYMBOL_OPTIONS = int(os.getenv("MARKET_CONTEXT_MAX_SYMBOL_OPTIONS", "40"))
@@ -187,6 +203,108 @@ def get_alpaca_client() -> StockHistoricalDataClient | None:
         return None
 
     return StockHistoricalDataClient(key, secret)
+
+
+def get_alpaca_option_client() -> OptionHistoricalDataClient | None:
+    if OptionHistoricalDataClient is None:
+        return None
+
+    key = os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY_ID")
+    secret = os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_API_SECRET_KEY")
+
+    if not key or not secret:
+        return None
+
+    try:
+        return OptionHistoricalDataClient(key, secret)
+    except Exception as exc:
+        print(f"[options] failed to initialize Alpaca option client: {exc}")
+        return None
+
+
+OCC_OPTION_SYMBOL_RE = re.compile(r"^([A-Z][A-Z0-9-]*?)(\d{6})([CP])(\d{8})$")
+
+
+def parse_occ_option_symbol(symbol: Any) -> dict[str, Any] | None:
+    raw = normalize_symbol(symbol)
+    match = OCC_OPTION_SYMBOL_RE.match(raw)
+    if not match:
+        return None
+
+    underlying, yymmdd, cp, strike_raw = match.groups()
+
+    try:
+        expiration = datetime.strptime(yymmdd, "%y%m%d").date()
+        strike = int(strike_raw) / 1000.0
+    except Exception:
+        return None
+
+    return {
+        "symbol": raw,
+        "underlying": underlying,
+        "expiration": expiration,
+        "type": "call" if cp == "C" else "put",
+        "strike": strike,
+    }
+
+
+def obj_get(obj: Any, *names: str, default: Any = None) -> Any:
+    for name in names:
+        if isinstance(obj, dict) and name in obj:
+            return obj[name]
+        if hasattr(obj, name):
+            return getattr(obj, name)
+    return default
+
+
+def option_snapshot_metrics(snapshot: Any) -> dict[str, Any]:
+    quote = obj_get(snapshot, "latest_quote", "latestQuote", default=None)
+    greeks = obj_get(snapshot, "greeks", default=None)
+
+    bid = to_float(obj_get(quote, "bid_price", "bp", "bid", default=0.0))
+    ask = to_float(obj_get(quote, "ask_price", "ap", "ask", default=0.0))
+    mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else 0.0
+    spread_pct = (ask - bid) / mid if mid > 0 else None
+
+    return {
+        "bid": bid,
+        "ask": ask,
+        "mid": mid,
+        "spread_pct": spread_pct,
+        "volume": to_int(obj_get(snapshot, "volume", default=0)),
+        "open_interest": to_int(obj_get(snapshot, "open_interest", "openInterest", default=0)),
+        "implied_volatility": to_float(obj_get(snapshot, "implied_volatility", "iv", default=0.0)),
+        "delta": to_float(obj_get(greeks, "delta", default=0.0)),
+        "gamma": to_float(obj_get(greeks, "gamma", default=0.0)),
+        "theta": to_float(obj_get(greeks, "theta", default=0.0)),
+        "vega": to_float(obj_get(greeks, "vega", default=0.0)),
+    }
+
+
+def get_alpaca_option_chain(symbol: str) -> dict[str, Any]:
+    client = get_alpaca_option_client()
+
+    if client is None or OptionChainRequest is None:
+        return {}
+
+    try:
+        request = OptionChainRequest(underlying_symbol=normalize_symbol(symbol))
+        chain = client.get_option_chain(request)
+
+        if isinstance(chain, dict):
+            return chain
+        if hasattr(chain, "data") and isinstance(chain.data, dict):
+            return chain.data
+
+        try:
+            return dict(chain) if chain is not None else {}
+        except Exception:
+            return {}
+
+    except Exception as exc:
+        print(f"[options] Alpaca option chain failed for {symbol}: {exc}")
+        return {}
+
 
 
 def get_feed() -> Any:
@@ -531,105 +649,156 @@ def collect_serpapi_context() -> dict[str, Any]:
 # =============================================================================
 
 def get_options_context_for_symbol(symbol: str) -> dict[str, Any]:
+    """
+    Build options sentiment/flow context from Alpaca option-chain snapshots.
+
+    Output shape intentionally mirrors the old Alpaca-based context:
+        put_volume
+        call_volume
+        put_call_ratio
+        options_bias
+        source
+
+    Additional Alpaca fields are included for diagnostics:
+        call_open_interest / put_open_interest
+        call_premium_flow / put_premium_flow
+        call_put_premium_ratio
+        avg_call_iv / avg_put_iv
+        top_call_contracts / top_put_contracts
+    """
     symbol = normalize_symbol(symbol)
+    chain = get_alpaca_option_chain(symbol)
 
-    if not TRADIER_TOKEN:
+    if not chain:
         return {
             "put_volume": None,
             "call_volume": None,
             "put_call_ratio": None,
             "options_bias": "unknown",
-            "source": "not_configured",
+            "source": "alpaca_options_no_data",
         }
 
-    headers = {
-        "Authorization": f"Bearer {TRADIER_TOKEN}",
-        "Accept": "application/json",
+    today = datetime.now(ET).date()
+
+    call_volume = 0
+    put_volume = 0
+    call_oi = 0
+    put_oi = 0
+    call_premium_flow = 0.0
+    put_premium_flow = 0.0
+    call_iv_values: list[float] = []
+    put_iv_values: list[float] = []
+    call_rows: list[dict[str, Any]] = []
+    put_rows: list[dict[str, Any]] = []
+
+    scanned = 0
+
+    for contract_symbol, snapshot in chain.items():
+        if scanned >= ALPACA_OPTIONS_MAX_CHAIN_CONTRACTS:
+            break
+        scanned += 1
+
+        parsed = parse_occ_option_symbol(contract_symbol)
+        if not parsed:
+            continue
+
+        dte = (parsed["expiration"] - today).days
+        if dte < ALPACA_OPTIONS_MIN_DTE or dte > ALPACA_OPTIONS_MAX_DTE:
+            continue
+
+        metrics = option_snapshot_metrics(snapshot)
+        volume = to_int(metrics.get("volume"))
+        oi = to_int(metrics.get("open_interest"))
+        mid = to_float(metrics.get("mid"))
+        spread_pct = metrics.get("spread_pct")
+
+        if volume < ALPACA_OPTIONS_MIN_VOLUME:
+            continue
+        if oi < ALPACA_OPTIONS_MIN_OPEN_INTEREST:
+            continue
+        if spread_pct is not None and spread_pct > ALPACA_OPTIONS_MAX_SPREAD_PCT:
+            continue
+
+        premium_flow = volume * mid * 100.0 if volume > 0 and mid > 0 else 0.0
+
+        row = {
+            "option_symbol": normalize_symbol(contract_symbol),
+            "expiration": parsed["expiration"].isoformat(),
+            "dte": dte,
+            "strike": parsed["strike"],
+            "volume": volume,
+            "open_interest": oi,
+            "bid": metrics.get("bid"),
+            "ask": metrics.get("ask"),
+            "mid": mid,
+            "spread_pct": spread_pct,
+            "premium_flow": round(premium_flow, 2),
+            "implied_volatility": metrics.get("implied_volatility"),
+            "delta": metrics.get("delta"),
+            "gamma": metrics.get("gamma"),
+            "theta": metrics.get("theta"),
+        }
+
+        iv = to_float(metrics.get("implied_volatility"), 0.0)
+
+        if parsed["type"] == "call":
+            call_volume += volume
+            call_oi += oi
+            call_premium_flow += premium_flow
+            if iv > 0:
+                call_iv_values.append(iv)
+            call_rows.append(row)
+        elif parsed["type"] == "put":
+            put_volume += volume
+            put_oi += oi
+            put_premium_flow += premium_flow
+            if iv > 0:
+                put_iv_values.append(iv)
+            put_rows.append(row)
+
+    put_call_ratio = put_volume / call_volume if call_volume > 0 else None
+    call_put_premium_ratio = call_premium_flow / put_premium_flow if put_premium_flow > 0 else None
+
+    if put_call_ratio is None:
+        bias = "unknown"
+    elif put_call_ratio >= 1.25:
+        bias = "bearish"
+    elif put_call_ratio <= 0.75:
+        bias = "bullish"
+    else:
+        bias = "neutral"
+
+    # If premium flow is heavily call-dominant, upgrade neutral/unknown to bullish.
+    if call_put_premium_ratio is not None and call_put_premium_ratio >= 1.75 and bias in {"neutral", "unknown"}:
+        bias = "bullish"
+    elif call_put_premium_ratio is not None and call_put_premium_ratio <= 0.60 and bias in {"neutral", "unknown"}:
+        bias = "bearish"
+
+    top_calls = sorted(call_rows, key=lambda x: to_float(x.get("premium_flow")), reverse=True)[:5]
+    top_puts = sorted(put_rows, key=lambda x: to_float(x.get("premium_flow")), reverse=True)[:5]
+
+    return {
+        "expiration_window_dte": {
+            "min": ALPACA_OPTIONS_MIN_DTE,
+            "max": ALPACA_OPTIONS_MAX_DTE,
+        },
+        "put_volume": put_volume,
+        "call_volume": call_volume,
+        "put_open_interest": put_oi,
+        "call_open_interest": call_oi,
+        "put_call_ratio": put_call_ratio,
+        "call_premium_flow": round(call_premium_flow, 2),
+        "put_premium_flow": round(put_premium_flow, 2),
+        "call_put_premium_ratio": call_put_premium_ratio,
+        "avg_call_iv": sum(call_iv_values) / len(call_iv_values) if call_iv_values else None,
+        "avg_put_iv": sum(put_iv_values) / len(put_iv_values) if put_iv_values else None,
+        "options_bias": bias,
+        "contracts_scanned": scanned,
+        "contracts_used": len(call_rows) + len(put_rows),
+        "top_call_contracts": top_calls,
+        "top_put_contracts": top_puts,
+        "source": "alpaca_options_chain",
     }
-
-    try:
-        exp = requests.get(
-            "https://api.tradier.com/v1/markets/options/expirations",
-            headers=headers,
-            params={"symbol": symbol, "includeAllRoots": "true", "strikes": "false"},
-            timeout=20,
-        )
-        exp.raise_for_status()
-
-        dates = exp.json().get("expirations", {}).get("date", [])
-
-        if not dates:
-            return {
-                "put_volume": None,
-                "call_volume": None,
-                "put_call_ratio": None,
-                "options_bias": "unknown",
-                "source": "tradier_no_expirations",
-            }
-
-        expiration = dates[0]
-
-        chain = requests.get(
-            "https://api.tradier.com/v1/markets/options/chains",
-            headers=headers,
-            params={"symbol": symbol, "expiration": expiration, "greeks": "false"},
-            timeout=30,
-        )
-        chain.raise_for_status()
-
-        options = chain.json().get("options", {}).get("option", [])
-
-        if isinstance(options, dict):
-            options = [options]
-
-        put_volume = 0
-        call_volume = 0
-        put_oi = 0
-        call_oi = 0
-
-        for opt in options:
-            opt_type = str(opt.get("option_type", "")).lower()
-            volume = to_int(opt.get("volume"))
-            oi = to_int(opt.get("open_interest"))
-
-            if opt_type == "put":
-                put_volume += volume
-                put_oi += oi
-            elif opt_type == "call":
-                call_volume += volume
-                call_oi += oi
-
-        ratio = put_volume / call_volume if call_volume > 0 else None
-
-        if ratio is None:
-            bias = "unknown"
-        elif ratio >= 1.25:
-            bias = "bearish"
-        elif ratio <= 0.75:
-            bias = "bullish"
-        else:
-            bias = "neutral"
-
-        return {
-            "expiration": expiration,
-            "put_volume": put_volume,
-            "call_volume": call_volume,
-            "put_open_interest": put_oi,
-            "call_open_interest": call_oi,
-            "put_call_ratio": ratio,
-            "options_bias": bias,
-            "source": "tradier",
-        }
-
-    except Exception as exc:
-        return {
-            "put_volume": None,
-            "call_volume": None,
-            "put_call_ratio": None,
-            "options_bias": "unknown",
-            "error": str(exc),
-            "source": "tradier_failed",
-        }
 
 
 def options_context(symbols: list[str]) -> dict[str, Any]:
@@ -642,7 +811,19 @@ def options_context(symbols: list[str]) -> dict[str, Any]:
         if isinstance(v.get("put_call_ratio"), (int, float))
     ]
 
+    premium_ratios = [
+        to_float(v.get("call_put_premium_ratio"))
+        for v in symbol_data.values()
+        if isinstance(v.get("call_put_premium_ratio"), (int, float))
+    ]
+
     market_ratio = sum(ratios) / len(ratios) if ratios else None
+    market_call_put_premium_ratio = sum(premium_ratios) / len(premium_ratios) if premium_ratios else None
+
+    total_call_volume = sum(to_int(v.get("call_volume")) for v in symbol_data.values() if isinstance(v, dict))
+    total_put_volume = sum(to_int(v.get("put_volume")) for v in symbol_data.values() if isinstance(v, dict))
+    total_call_premium_flow = sum(to_float(v.get("call_premium_flow")) for v in symbol_data.values() if isinstance(v, dict))
+    total_put_premium_flow = sum(to_float(v.get("put_premium_flow")) for v in symbol_data.values() if isinstance(v, dict))
 
     if market_ratio is None:
         bias = "unknown"
@@ -653,11 +834,28 @@ def options_context(symbols: list[str]) -> dict[str, Any]:
     else:
         bias = "neutral"
 
+    aggregate_call_put_premium_ratio = (
+        total_call_premium_flow / total_put_premium_flow
+        if total_put_premium_flow > 0
+        else None
+    )
+
+    if aggregate_call_put_premium_ratio is not None and aggregate_call_put_premium_ratio >= 1.75 and bias in {"neutral", "unknown"}:
+        bias = "bullish"
+    elif aggregate_call_put_premium_ratio is not None and aggregate_call_put_premium_ratio <= 0.60 and bias in {"neutral", "unknown"}:
+        bias = "bearish"
+
     return {
         "put_call_ratio_market": market_ratio,
+        "call_put_premium_ratio_market": market_call_put_premium_ratio,
+        "aggregate_call_put_premium_ratio": aggregate_call_put_premium_ratio,
         "options_bias_market": bias,
+        "total_call_volume": total_call_volume,
+        "total_put_volume": total_put_volume,
+        "total_call_premium_flow": round(total_call_premium_flow, 2),
+        "total_put_premium_flow": round(total_put_premium_flow, 2),
         "symbols": symbol_data,
-        "source": "tradier" if TRADIER_TOKEN else "not_configured",
+        "source": "alpaca_options_chain" if get_alpaca_option_client() else "alpaca_options_not_configured",
     }
 
 
@@ -923,7 +1121,7 @@ def build_market_context() -> dict[str, Any]:
             "yfinance": True,
             "serpapi": bool(SERPAPI_KEY),
             "openai": bool(os.getenv("OPENAI_API_KEY")),
-            "tradier": bool(TRADIER_TOKEN),
+            "alpaca_options": bool(get_alpaca_option_client()),
         },
     }
 
