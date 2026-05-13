@@ -4115,6 +4115,36 @@ class ProductionOrderExecutor:
         except Exception as exc:
             print(f"[executor] risk profile unavailable at startup: {exc}")
 
+        # ------------------------------------------------------------------
+        # IMPORTANT: run 4:00 AM ET session planning BEFORE the market-open
+        # wait. Otherwise the executor can sit at the clock wait loop until
+        # 9:30 without building market_context, premarket plan, regime plan,
+        # or validating the RL model.
+        # ------------------------------------------------------------------
+        if self.config.scanner and self.config.scanner.session_planning_enabled:
+            today_et = datetime.now(ET).date().isoformat()
+            print(
+                f"[session-prep] startup gate active | "
+                f"target={self.config.scanner.session_planning_start_hour_et:02d}:"
+                f"{self.config.scanner.session_planning_start_minute_et:02d} ET | "
+                f"today={today_et}"
+            )
+            try:
+                run_session_planning_pipeline(
+                    self.config.scanner,
+                    force=bool(self.config.scanner.session_planning_force_each_startup),
+                )
+                # Prevent the first market-open cycle from immediately running
+                # the expensive prep stack again.
+                self._last_morning_refresh_date = today_et
+                self.config.scanner.refresh_llm_sentiment_universe = False
+                self.config.scanner.refresh_market_context = False
+                self.config.scanner.refresh_premarket_trade_plan = False
+                print(f"[session-prep] startup prep complete for {today_et}; entering execution loop")
+            except Exception as exc:
+                print(f"[session-prep] startup prep failed; executor will continue with fallbacks: {exc}")
+                write_event("session_planning_startup_error", {"error": str(exc)})
+
         if self.config.poll_once:
             self.run_cycle_from_files()
             return
