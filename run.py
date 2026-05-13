@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 #!/usr/bin/env python3
 """
 run.py
@@ -48,8 +49,9 @@ What it does:
 Designed for roughly a $13,000 paper account.
 """
 
+=======
+>>>>>>> e2f9bc9 (syncing w/ local)
 from __future__ import annotations
-
 import argparse
 import csv
 import json
@@ -5059,3 +5061,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
