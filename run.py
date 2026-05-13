@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 #!/usr/bin/env python3
 """
 run.py
@@ -49,8 +48,6 @@ What it does:
 Designed for roughly a $13,000 paper account.
 """
 
-=======
->>>>>>> e2f9bc9 (syncing w/ local)
 from __future__ import annotations
 import argparse
 import csv
@@ -96,10 +93,8 @@ except Exception:
     TimeFrame = None
 
 
-# =============================================================================
-# Paths / environment
-# =============================================================================
-
+# ======================================================================# Paths / environment
+# ======================================================================
 THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 ENV_PATH = PROJECT_ROOT / ".env"
@@ -138,6 +133,13 @@ MARKET_CONTEXT_PATH = OUT_DIR / "market_context.json"
 PREMARKET_TRADE_PLAN_PATH = OUT_DIR / "premarket_trade_plan.json"
 INTRADAY_STRUCTURE_MAP_PATH = OUT_DIR / "intraday_structure_map.json"
 INTRADAY_BARS_1M_PATH = OUT_DIR / "intraday_bars_1m.csv"
+INTRADAY_TRAINING_DATASET_PATH = OUT_DIR / "intraday_training_dataset.csv"
+EXIT_TRAINING_DATASET_PATH = OUT_DIR / "exit_training_dataset.csv"
+MULTITIMEFRAME_CONTEXT_PATH = OUT_DIR / "multitimeframe_context.json"
+FEATURE_STREAM_DIR = OUT_DIR / "feature_stream"
+FEATURE_STREAM_SYMBOL_STATE_PATH = FEATURE_STREAM_DIR / f"{datetime.now(ET).strftime("%Y%m%d")}_symbol_state.json"
+FEATURE_STREAM_CSV_PATH = FEATURE_STREAM_DIR / f"{datetime.now(ET).strftime("%Y%m%d")}_intraday_feature_stream.csv"
+FEATURE_STREAM_JSONL_PATH = FEATURE_STREAM_DIR / f"{datetime.now(ET).strftime("%Y%m%d")}_intraday_feature_stream.jsonl"
 REGIME_POSITION_PLAN_PATH = OUT_DIR / "regime_position_plan.csv"
 REGIME_UNIVERSE_PATH = OUT_DIR / "regime_universe_30.csv"
 REGIME_ACTIONS_PATH = OUT_DIR / "regime_actions.csv"
@@ -157,10 +159,8 @@ DATA_VALIDATION_STATE_PATH = OUT_DIR / "data_validation_state.json"
 ET = ZoneInfo("America/New_York")
 
 
-# =============================================================================
-# Dynamic account-scaling defaults
-# =============================================================================
-
+# ======================================================================# Dynamic account-scaling defaults
+# ======================================================================
 POLL_SECONDS = 30
 ORDER_WAIT_SECONDS = 20
 COOLDOWN_SECONDS = 15
@@ -194,10 +194,8 @@ DEFAULT_SCAN_UNIVERSE = [
 ]
 
 
-# =============================================================================
-# Dataclasses
-# =============================================================================
-
+# ======================================================================# Dataclasses
+# ======================================================================
 @dataclass
 class BrokerPosition:
     symbol: Optional[str] = None
@@ -301,6 +299,35 @@ class ScannerConfig:
     monitor_exit_on_vwap_loss: bool = True
     monitor_exit_on_lower_high_lower_low: bool = True
     monitor_exit_on_failed_breakout: bool = True
+
+    # Multi-timeframe feature stream + exit-learning layer.
+    # These consume files produced by build_intraday_training_dataset.py:
+    #   daily_system_outputs/feature_stream/YYYYMMDD_intraday_feature_stream.csv
+    #   daily_system_outputs/feature_stream/YYYYMMDD_symbol_state.json
+    #   daily_system_outputs/YYYYMMDD_multitimeframe_context.json
+    feature_stream_enabled: bool = True
+    feature_stream_max_age_minutes: int = 20
+    use_mtf_buy_gate: bool = True
+    mtf_require_5m_or_15m_trend: bool = True
+    mtf_require_price_above_vwap: bool = True
+    mtf_block_buy_near_resistance_pct: float = 0.0025
+    mtf_near_support_bonus_pct: float = 0.004
+
+    exit_learning_enabled: bool = True
+    exit_learning_min_hold_minutes: int = 15
+    exit_learning_scale_out_fraction: float = 0.50
+    exit_learning_take_profit_min_plpc: float = 0.006
+    exit_learning_trail_stop_min_plpc: float = 0.003
+    exit_learning_cut_loser_max_plpc: float = -0.004
+    exit_learning_prob_giveback_threshold: float = 0.65
+    exit_learning_prob_hold_threshold: float = 0.45
+    exit_learning_reversal_threshold: float = 0.60
+    exit_learning_negative_ev_threshold: float = 0.0
+
+    # Churn control. Buys are blocked during the opening-noise window and
+    # after a same-day exit, but sells/exits are always allowed.
+    no_new_positions_first_minutes: int = 10
+    symbol_reentry_cooldown_minutes: int = 30
 
     # Final pre-execution direction gate.
     # Buys must pass this immediately before order submission.
@@ -513,10 +540,8 @@ class ExecutorConfig:
     scanner: ScannerConfig = field(default_factory=ScannerConfig)
 
 
-# =============================================================================
-# Helpers
-# =============================================================================
-
+# ======================================================================# Helpers
+# ======================================================================
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -1790,7 +1815,7 @@ def save_json(obj: dict[str, Any], path: Path) -> None:
 
 def local_trading_day() -> str:
     """Trading-day key used for same-day no-reentry state."""
-    return datetime.now().date().isoformat()
+    return datetime.now(ET).date().isoformat()
 
 
 def read_json_file(path: Path, default: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -1846,6 +1871,47 @@ def mark_no_reentry_symbol(symbol: str, reason: str = "exit") -> None:
     write_event("no_reentry_marked", {"symbol": symbol, "reason": reason, "date": today})
 
 
+def no_reentry_cooldown_active(symbol: str, cooldown_minutes: int) -> tuple[bool, str]:
+    """Return whether a symbol is blocked by same-day / timed re-entry cooldown."""
+    symbol = safe_symbol(symbol)
+    if not symbol:
+        return False, ""
+
+    today = local_trading_day()
+    state = read_json_file(NO_REENTRY_STATE_PATH, {"date": today, "symbols": {}})
+    if state.get("date") != today:
+        return False, ""
+
+    symbols = state.get("symbols", {})
+    item = symbols.get(symbol) if isinstance(symbols, dict) else None
+    if not isinstance(item, dict):
+        return False, ""
+
+    marked_at = str(item.get("marked_at", ""))
+    if not marked_at:
+        return True, "same_day_exit"
+
+    try:
+        ts = datetime.fromisoformat(marked_at.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age_min = (now_utc() - ts.astimezone(timezone.utc)).total_seconds() / 60.0
+    except Exception:
+        age_min = 0.0
+
+    if age_min < max(0, cooldown_minutes):
+        return True, f"recent_exit_cooldown_{age_min:.1f}m"
+
+    # Same-day no-reentry remains a stronger default than the timed cooldown.
+    return True, "same_day_exit"
+
+
+def minutes_since_regular_open() -> float:
+    now_et = datetime.now(ET)
+    open_et = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    return (now_et - open_et).total_seconds() / 60.0
+
+
 def load_pyramid_state() -> dict[str, Any]:
     today = local_trading_day()
     state = read_json_file(LOG_DIR / "pyramid_state.json", {"date": today, "symbols": {}})
@@ -1882,10 +1948,8 @@ def mark_pyramid_add(symbol: str, reason: str = "pyramid_add") -> None:
     write_event("pyramid_add_marked", {"symbol": symbol, "adds": current["adds"], "reason": reason})
 
 
-# =============================================================================
-# CSV journal
-# =============================================================================
-
+# ======================================================================# CSV journal
+# ======================================================================
 class CsvJournal:
     def __init__(self, path: Path):
         self.path = path
@@ -1911,10 +1975,8 @@ class CsvJournal:
             csv.DictWriter(f, fieldnames=self.columns).writerow(safe_row)
 
 
-# =============================================================================
-# Alpaca broker wrapper
-# =============================================================================
-
+# ======================================================================# Alpaca broker wrapper
+# ======================================================================
 class AlpacaBroker:
     def __init__(self, env_path: Path, paper: bool = True):
         load_dotenv(env_path)
@@ -2028,10 +2090,8 @@ class AlpacaBroker:
         return self.trading.get_order_by_id(order_id)
 
 
-# =============================================================================
-# Scanner helpers
-# =============================================================================
-
+# ======================================================================# Scanner helpers
+# ======================================================================
 def _web_headers() -> dict[str, str]:
     return {
         "User-Agent": (
@@ -3546,10 +3606,8 @@ class MomentumSetupScanner:
             write_event("options_booster_failed", {"rows": len(high), "error": output})
 
 
-# =============================================================================
-# Executor
-# =============================================================================
-
+# ======================================================================# Executor
+# ======================================================================
 class ProductionOrderExecutor:
     def __init__(self, config: ExecutorConfig):
         self.config = config
@@ -3837,6 +3895,245 @@ class ProductionOrderExecutor:
 
     def _confidence_multiplier(self, confidence: float) -> float:
         return float(np.clip(0.50 + confidence, 0.35, 1.15))
+
+    def _load_latest_feature_stream(self) -> pd.DataFrame:
+        """Load latest 1m + 5m/15m/1h/4h features produced by build_intraday_training_dataset.py."""
+        if not self.config.scanner.feature_stream_enabled:
+            return pd.DataFrame()
+
+        candidates = [FEATURE_STREAM_CSV_PATH]
+        if FEATURE_STREAM_DIR.exists():
+            candidates.extend(sorted(FEATURE_STREAM_DIR.glob("*_intraday_feature_stream.csv"), reverse=True))
+        candidates.extend([INTRADAY_TRAINING_DATASET_PATH, EXIT_TRAINING_DATASET_PATH])
+
+        for path in candidates:
+            if not path or not Path(path).exists():
+                continue
+            try:
+                age_min = (time.time() - Path(path).stat().st_mtime) / 60.0
+                if path == FEATURE_STREAM_CSV_PATH or "feature_stream" in str(path):
+                    if age_min > self.config.scanner.feature_stream_max_age_minutes:
+                        print(f"[feature-stream] stale {path} age={age_min:.1f}m; trying fallback")
+                        continue
+                df = pd.read_csv(path)
+                if df.empty or "symbol" not in df.columns:
+                    continue
+                if "timestamp" in df.columns:
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+                    df = df.sort_values(["symbol", "timestamp"])
+                df["symbol"] = df["symbol"].map(safe_symbol)
+                return df
+            except Exception as exc:
+                print(f"[feature-stream] failed loading {path}: {exc}")
+        return pd.DataFrame()
+
+    def _latest_feature_by_symbol(self) -> dict[str, dict[str, Any]]:
+        df = self._load_latest_feature_stream()
+        if df.empty:
+            return {}
+        latest: dict[str, dict[str, Any]] = {}
+        for symbol, g in df.groupby("symbol"):
+            if not symbol:
+                continue
+            row = g.sort_values("timestamp").iloc[-1].to_dict() if "timestamp" in g.columns else g.iloc[-1].to_dict()
+            latest[safe_symbol(symbol)] = row
+        return latest
+
+    def _row_float(self, row: dict[str, Any], key: str, default: float = 0.0) -> float:
+        return to_float(row.get(key, default), default)
+
+    def _mtf_buy_gate_for_row(self, row: pd.Series, latest_features: dict[str, dict[str, Any]]) -> tuple[bool, str]:
+        """Final BUY-only gate using 5m/15m/1h/4h context. Sells bypass this."""
+        if not self.config.scanner.use_mtf_buy_gate:
+            return True, "mtf_gate_disabled"
+
+        symbol = safe_symbol(row.get("symbol"))
+        feat = latest_features.get(symbol, {})
+        if not feat:
+            return True, "feature_stream_missing_allow"
+
+        reasons: list[str] = []
+        close = self._row_float(feat, "close", to_float(row.get("price"), 0.0))
+        dist_vwap = self._row_float(feat, "dist_vwap", 0.0)
+        trend_5m = self._row_float(feat, "5m_trend_stack", 0.0)
+        trend_15m = self._row_float(feat, "15m_trend_stack", 0.0)
+        trend_1h = self._row_float(feat, "1h_trend_stack", 0.0)
+        brk_5m = self._row_float(feat, "5m_breakout_20", 0.0)
+        brk_15m = self._row_float(feat, "15m_breakout_20", 0.0)
+        dres_5m = self._row_float(feat, "5m_dist_to_resistance", 999.0)
+        dres_15m = self._row_float(feat, "15m_dist_to_resistance", 999.0)
+        dsup_5m = self._row_float(feat, "5m_dist_to_support", 999.0)
+        dsup_15m = self._row_float(feat, "15m_dist_to_support", 999.0)
+
+        if self.config.scanner.mtf_require_price_above_vwap and dist_vwap < 0:
+            return False, f"mtf_block:below_1m_vwap:{dist_vwap:.3%}"
+
+        if self.config.scanner.mtf_require_5m_or_15m_trend and max(trend_5m, trend_15m, brk_5m, brk_15m) <= 0:
+            return False, "mtf_block:no_5m_15m_trend_or_breakout"
+
+        near_resistance = min(dres_5m, dres_15m)
+        if near_resistance <= self.config.scanner.mtf_block_buy_near_resistance_pct and max(brk_5m, brk_15m) <= 0:
+            return False, f"mtf_block:near_resistance:{near_resistance:.3%}"
+
+        if trend_1h > 0:
+            reasons.append("1h_trend_aligned")
+        if min(dsup_5m, dsup_15m) <= self.config.scanner.mtf_near_support_bonus_pct:
+            reasons.append("near_support")
+        if max(brk_5m, brk_15m) > 0:
+            reasons.append("short_tf_breakout")
+        if close > 0:
+            reasons.append(f"close={close:.2f}")
+
+        return True, "mtf_pass:" + ",".join(reasons or ["basic"])
+
+    def _apply_mtf_buy_gate_to_plan(self, plan: pd.DataFrame) -> pd.DataFrame:
+        if plan.empty or self.scanner is None or not self.config.scanner.use_mtf_buy_gate:
+            return plan
+
+        latest_features = self._latest_feature_by_symbol()
+        if not latest_features:
+            print("[mtf-gate] no fresh feature stream found; BUY rows allowed by fallback")
+            return plan
+
+        keep = []
+        notes = []
+        open_minutes = minutes_since_regular_open()
+        for _, row in plan.iterrows():
+            side = str(row.get("side", "")).lower()
+            symbol = safe_symbol(row.get("symbol"))
+            if side != "buy":
+                keep.append(True)
+                notes.append("sell_exit_always_allowed")
+                continue
+
+            if 0 <= open_minutes < self.config.scanner.no_new_positions_first_minutes:
+                keep.append(False)
+                notes.append(f"blocked_opening_noise_window_{open_minutes:.1f}m")
+                print(f"[opening-gate] blocked BUY {symbol}; market open only {open_minutes:.1f}m ago")
+                continue
+
+            blocked, cooldown_reason = no_reentry_cooldown_active(symbol, self.config.scanner.symbol_reentry_cooldown_minutes)
+            if blocked:
+                keep.append(False)
+                notes.append(cooldown_reason)
+                print(f"[reentry-gate] blocked BUY {symbol}: {cooldown_reason}")
+                continue
+
+            allow, reason = self._mtf_buy_gate_for_row(row, latest_features)
+            keep.append(bool(allow))
+            notes.append(reason)
+            if not allow:
+                print(f"[mtf-gate] blocked BUY {symbol}: {reason}")
+                write_event("mtf_gate_blocked_buy", {"symbol": symbol, "reason": reason})
+
+        gated = plan.loc[keep].copy() if keep else plan.iloc[0:0].copy()
+        if not gated.empty:
+            gated["mtf_gate_reason"] = [n for k, n in zip(keep, notes) if k]
+            buy_mask = gated["side"] == "buy"
+            gated.loc[buy_mask, "reason"] = gated.loc[buy_mask, "reason"].astype(str) + ":" + gated.loc[buy_mask, "mtf_gate_reason"].astype(str)
+        return gated
+
+    def _minutes_held_for_position(self, pos: BrokerPosition) -> float:
+        # BrokerPosition does not currently store entry timestamp, so use a safe high value.
+        # Live experience replay can later add true entry_time for exact hold-time gating.
+        return 999.0
+
+    def _exit_learning_decision(self, symbol: str, pos: BrokerPosition, feat: dict[str, Any]) -> dict[str, Any]:
+        plpc = to_float(pos.unrealized_plpc, 0.0)
+        ev15 = self._row_float(feat, "expected_value_next_15m", self._row_float(feat, "future_return_15m", 0.0))
+        ev30 = self._row_float(feat, "expected_value_next_30m", self._row_float(feat, "future_return_30m", 0.0))
+        giveback_target = self._row_float(feat, "giveback_risk_training_target", 0.0)
+        reversal_target = self._row_float(feat, "reversal_risk_training_target", 0.0)
+        hold_target = self._row_float(feat, "prob_hold_training_target", 1.0)
+        label = str(feat.get("exit_label", "HOLD")).upper()
+        macd_hist = self._row_float(feat, "macd_hist", 0.0)
+        dist_vwap = self._row_float(feat, "dist_vwap", 0.0)
+        trend_5m = self._row_float(feat, "5m_trend_stack", 0.0)
+        trend_15m = self._row_float(feat, "15m_trend_stack", 0.0)
+        breakdown_5m = self._row_float(feat, "5m_breakdown_20", 0.0)
+        breakdown_15m = self._row_float(feat, "15m_breakdown_20", 0.0)
+
+        minutes_held = self._minutes_held_for_position(pos)
+        min_hold = self.config.scanner.exit_learning_min_hold_minutes
+        if minutes_held < min_hold and plpc > self.config.scanner.exit_learning_cut_loser_max_plpc:
+            return {"action": "HOLD", "reason": f"min_hold_{minutes_held:.1f}m", "confidence": 0.0}
+
+        bearish_structure = (dist_vwap < 0 and macd_hist < 0) or max(breakdown_5m, breakdown_15m) > 0
+        trend_lost = max(trend_5m, trend_15m) <= 0
+
+        if label == "CUT_LOSER_NOW" or (plpc <= self.config.scanner.exit_learning_cut_loser_max_plpc and bearish_structure):
+            return {"action": "EXIT", "reason": f"exit_learning_cut_loser:plpc={plpc:.3%}:ev15={ev15:.3%}", "confidence": 0.85}
+
+        if plpc >= self.config.scanner.exit_learning_take_profit_min_plpc:
+            if label == "TAKE_PROFIT_NOW" or (ev15 <= self.config.scanner.exit_learning_negative_ev_threshold and hold_target < self.config.scanner.exit_learning_prob_hold_threshold):
+                return {"action": "EXIT", "reason": f"exit_learning_take_profit:plpc={plpc:.3%}:ev15={ev15:.3%}", "confidence": 0.75}
+            if label == "SCALE_OUT" or (giveback_target >= 1 and ev15 <= 0.002):
+                return {"action": "SCALE_OUT", "reason": f"exit_learning_scale_out:plpc={plpc:.3%}:ev15={ev15:.3%}", "confidence": 0.68}
+
+        if plpc >= self.config.scanner.exit_learning_trail_stop_min_plpc:
+            if label == "TRAIL_STOP_NOW" or (giveback_target >= 1 and trend_lost):
+                return {"action": "SCALE_OUT", "reason": f"exit_learning_giveback_risk:plpc={plpc:.3%}:trend_lost={trend_lost}", "confidence": 0.70}
+
+        if reversal_target >= 1 and ev15 < 0 and ev30 < 0:
+            return {"action": "EXIT", "reason": f"exit_learning_reversal_risk:ev15={ev15:.3%}:ev30={ev30:.3%}", "confidence": 0.72}
+
+        return {"action": "HOLD", "reason": f"exit_learning_hold:plpc={plpc:.3%}:ev15={ev15:.3%}", "confidence": 0.50}
+
+    def _augment_exit_orders_with_exit_learning(self, exit_orders: pd.DataFrame | None) -> pd.DataFrame:
+        if self.scanner is None or not self.config.scanner.exit_learning_enabled:
+            return exit_orders if exit_orders is not None else pd.DataFrame()
+
+        exits = exit_orders.copy() if exit_orders is not None else pd.DataFrame()
+        latest = self._latest_feature_by_symbol()
+        if not latest:
+            return exits
+
+        existing = set(exits["symbol"].map(safe_symbol)) if not exits.empty and "symbol" in exits.columns else set()
+        rows: list[dict[str, Any]] = []
+
+        for pos in self.broker.get_all_open_positions():
+            symbol = safe_symbol(pos.symbol)
+            if not symbol or symbol in existing:
+                continue
+            feat = latest.get(symbol, {})
+            if not feat:
+                continue
+            decision = self._exit_learning_decision(symbol, pos, feat)
+            action = str(decision.get("action", "HOLD")).upper()
+            if action not in {"EXIT", "SCALE_OUT"}:
+                continue
+
+            qty_total = int(max(0, to_float(pos.qty, 0.0)))
+            if qty_total <= 0:
+                continue
+            if action == "SCALE_OUT":
+                qty = max(1, int(qty_total * self.config.scanner.exit_learning_scale_out_fraction))
+            else:
+                qty = qty_total
+
+            price = to_float(pos.current_price, to_float(pos.avg_entry_price, 0.0))
+            if price <= 0:
+                continue
+
+            reason = str(decision.get("reason", "exit_learning"))
+            rows.append({
+                "symbol": symbol,
+                "side": "sell",
+                "delta_shares": qty,
+                "delta_dollars": qty * price,
+                "price": price,
+                "reason": reason,
+                "target_weight": 0.0,
+                "current_weight": 0.0,
+                "delta_weight": 0.0,
+                "trade_confidence": to_float(decision.get("confidence"), 0.65),
+            })
+            print(f"[exit-learning] {action} {symbol} qty={qty}/{qty_total}: {reason}")
+            write_event("exit_learning_exit_added", {"symbol": symbol, "action": action, **decision})
+
+        if rows:
+            exits = pd.concat([exits, pd.DataFrame(rows)], ignore_index=True)
+        return exits
 
     def _build_order_plan(self, rebalance: pd.DataFrame, exits: pd.DataFrame, equity: float) -> pd.DataFrame:
         rb = self._normalize_order_frame(rebalance)
@@ -4205,7 +4502,9 @@ class ProductionOrderExecutor:
             print("[orders] canceling open orders")
             self.broker.cancel_open_orders()
 
-        plan = self._build_order_plan(rebalance_orders, exit_orders if exit_orders is not None else pd.DataFrame(), equity)
+        exit_orders = self._augment_exit_orders_with_exit_learning(exit_orders if exit_orders is not None else pd.DataFrame())
+        plan = self._build_order_plan(rebalance_orders, exit_orders, equity)
+        plan = self._apply_mtf_buy_gate_to_plan(plan)
 
         # Cooldown is buy-only. Exits are always allowed so risk can be reduced immediately.
         if self._in_cooldown() and not plan.empty:
@@ -4895,10 +5194,8 @@ class ProductionOrderExecutor:
             time.sleep(max(1, int(self.config.poll_seconds)))
 
 
-# =============================================================================
-# Backward-compatible module functions
-# =============================================================================
-
+# ======================================================================# Backward-compatible module functions
+# ======================================================================
 def get_trading_client(config: Optional[ExecutorConfig] = None) -> TradingClient:
     config = config or ExecutorConfig()
     return AlpacaBroker(ENV_PATH, paper=config.paper).trading
@@ -4964,10 +5261,8 @@ def save_execution_results(
     return order_plan_path, results_path
 
 
-# =============================================================================
-# Zero-argument startup
-# =============================================================================
-
+# ======================================================================# Zero-argument startup
+# ======================================================================
 def build_default_config() -> ExecutorConfig:
     """
     Default production-style paper configuration for a roughly $13K account.
