@@ -6,6 +6,24 @@ Clean 13K-account Alpaca paper executor with built-in momentum/reversal scanner.
 
 Default behavior:
     python run.py
+Reload systemd:
+    systemctl daemon-reload
+
+Enable auto-start on reboot:
+    systemctl enable trade-bot
+
+Start it:
+    systemctl start trade-bot
+
+Check status:
+    systemctl status trade-bot
+    
+Restart after code changes:
+    systemctl restart trade-bot
+    
+Live logs:
+    tail -f /root/trade-bot/logs/run.log
+    journalctl -u trade-bot -f
 
 What it does:
     - loads Alpaca credentials from .env
@@ -109,6 +127,7 @@ PREMARKET_TRADE_PLANNER_PATH = PROJECT_ROOT / "premarket_trade_planner.py"
 PRODUCTION_REGIME_SIZING_MODEL_PATH = PROJECT_ROOT / "production_regime_sizing_model.py"
 RL_INTRADAY_STRUCTURE_TRAINER_PATH = PROJECT_ROOT / "rl_intraday_structure_trainer.py"
 OPTIONS_BOOSTER_PATH = PROJECT_ROOT / "options_booster.py"
+PREMARKET_DATA_COLLECTOR_PATH = PROJECT_ROOT / "premarket_data_collector.py"
 
 MARKET_CONTEXT_PATH = OUT_DIR / "market_context.json"
 PREMARKET_TRADE_PLAN_PATH = OUT_DIR / "premarket_trade_plan.json"
@@ -126,6 +145,9 @@ LIVE_EXPERIENCE_PARQUET_PATH = LOG_DIR / "live_experience_replay.parquet"
 LIVE_EXPERIENCE_OUTCOME_PATH = LOG_DIR / "live_experience_outcomes.csv"
 SESSION_PREP_STATE_PATH = LOG_DIR / "session_planning_state.json"
 OPTION_BOOSTER_CANDIDATES_PATH = OUT_DIR / "latest_option_booster_candidates.csv"
+DATED_OUTPUT_DIR = OUT_DIR / "dated"
+DATED_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+DATA_VALIDATION_STATE_PATH = OUT_DIR / "data_validation_state.json"
 
 ET = ZoneInfo("America/New_York")
 
@@ -328,11 +350,26 @@ class ScannerConfig:
     require_valid_premarket_plan_for_buys: bool = False
     prefer_premarket_valid_symbols: bool = True
 
-    # 4:00 AM session-planning pipeline.
+    # 4:00 AM continuous data collection + final session-planning pipeline.
     session_planning_enabled: bool = True
     session_planning_start_hour_et: int = 4
     session_planning_start_minute_et: int = 0
     session_planning_force_each_startup: bool = False
+
+    # Between 4:00 AM and 9:30 AM ET, run.py can launch
+    # premarket_data_collector.py and let it continuously refresh the live
+    # planning files before normal market-open execution begins.
+    premarket_data_collector_enabled: bool = True
+    premarket_data_collector_block_until_market_open: bool = True
+    premarket_data_collector_timeout_seconds: int = 21600
+    premarket_data_collector_run_once_if_outside_window: bool = False
+
+    # Validation/snapshots: keep latest files for the executor, but also write
+    # dated copies so stale data can be detected and audited.
+    dated_data_snapshots_enabled: bool = True
+    require_today_data_for_market_open: bool = False
+    max_premarket_file_age_minutes: int = 180
+
     run_market_context_builder: bool = True
     run_premarket_trade_planner: bool = True
     run_production_regime_sizing_model: bool = True
@@ -630,6 +667,289 @@ def run_python_script(path: Path, args: Optional[list[str]] = None, timeout_seco
         return False, f"timeout_after_{timeout_seconds}_seconds"
     except Exception as exc:
         return False, str(exc)
+
+
+def parse_hhmm_et(value: str) -> tuple[int, int]:
+    hour, minute = str(value).strip().split(":")
+    return int(hour), int(minute)
+
+
+def premarket_collection_window_et() -> tuple[datetime, datetime]:
+    """Return today's configured collector window in ET."""
+    now = datetime.now(ET)
+    start_raw = os.getenv("PREMARKET_COLLECTOR_START_ET", "04:00")
+    end_raw = os.getenv("PREMARKET_COLLECTOR_END_ET", "09:30")
+    sh, sm = parse_hhmm_et(start_raw)
+    eh, em = parse_hhmm_et(end_raw)
+    start = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
+    end = now.replace(hour=eh, minute=em, second=0, microsecond=0)
+    return start, end
+
+
+def premarket_collection_window_is_open() -> bool:
+    now = datetime.now(ET)
+    if now.weekday() >= 5:
+        return False
+    start, end = premarket_collection_window_et()
+    return start <= now < end
+
+
+def wait_until_premarket_collection_window(config: ScannerConfig) -> None:
+    """If run.py starts before 4 AM ET, wait for the premarket collector window."""
+    if not config.premarket_data_collector_enabled:
+        return
+
+    now = datetime.now(ET)
+    start, end = premarket_collection_window_et()
+
+    if now.weekday() >= 5 or now >= end:
+        return
+
+    while datetime.now(ET) < start:
+        seconds_left = max(1.0, (start - datetime.now(ET)).total_seconds())
+        print(
+            f"[premarket-collector] waiting until {start.strftime('%H:%M')} ET; "
+            f"{int(seconds_left // 60)} minute(s) left"
+        )
+        time.sleep(min(300, max(5, seconds_left)))
+
+
+def dated_snapshot_name(path: Path, date_et: str | None = None) -> Path:
+    date_et = date_et or datetime.now(ET).date().isoformat()
+    suffix = path.suffix
+    stem = path.stem
+    return DATED_OUTPUT_DIR / date_et / f"{stem}_{date_et}{suffix}"
+
+
+def snapshot_data_file(path: Path, date_et: str | None = None) -> dict[str, Any]:
+    """Copy a latest data file into daily_system_outputs/dated/YYYY-MM-DD/ for audit/validation."""
+    date_et = date_et or datetime.now(ET).date().isoformat()
+    payload = {
+        "path": str(path),
+        "exists": path.exists(),
+        "snapshot_path": "",
+        "ok": False,
+        "reason": "",
+    }
+    if not path.exists():
+        payload["reason"] = "missing"
+        return payload
+    try:
+        target = dated_snapshot_name(path, date_et)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(path.read_bytes())
+        payload.update({"snapshot_path": str(target), "ok": True, "reason": "snapshotted"})
+        return payload
+    except Exception as exc:
+        payload["reason"] = str(exc)
+        return payload
+
+
+def validate_data_file_freshness(path: Path, max_age_minutes: int = 180) -> dict[str, Any]:
+    now = now_utc()
+    payload: dict[str, Any] = {
+        "path": str(path),
+        "exists": path.exists(),
+        "mtime_utc": "",
+        "age_minutes": None,
+        "date_et": datetime.now(ET).date().isoformat(),
+        "ok": False,
+        "reason": "missing",
+    }
+    if not path.exists():
+        return payload
+    try:
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        age_minutes = (now - mtime).total_seconds() / 60.0
+        mtime_et = mtime.astimezone(ET)
+        today_et = datetime.now(ET).date()
+        ok = mtime_et.date() == today_et and age_minutes <= max_age_minutes
+        payload.update(
+            {
+                "mtime_utc": mtime.isoformat(),
+                "mtime_et": mtime_et.isoformat(),
+                "age_minutes": round(age_minutes, 3),
+                "ok": bool(ok),
+                "reason": "fresh_today" if ok else "stale_or_wrong_date",
+            }
+        )
+    except Exception as exc:
+        payload["reason"] = str(exc)
+    return payload
+
+
+def snapshot_and_validate_planning_files(config: ScannerConfig, stage: str) -> dict[str, Any]:
+    """Date-stamp and validate all key planning/data files used by run.py."""
+    date_et = datetime.now(ET).date().isoformat()
+    files = [
+        LLM_SENTIMENT_UNIVERSE_PATH,
+        LLM_SENTIMENT_DISCOVERY_PATH,
+        MARKET_CONTEXT_PATH,
+        PREMARKET_TRADE_PLAN_PATH,
+        INTRADAY_STRUCTURE_MAP_PATH,
+        INTRADAY_BARS_1M_PATH,
+        REGIME_POSITION_PLAN_PATH,
+        REGIME_UNIVERSE_PATH,
+        REGIME_ACTIONS_PATH,
+        OPTION_BOOSTER_CANDIDATES_PATH,
+        OUT_DIR / "latest_option_flow_candidates.csv",
+        OUT_DIR / "latest_option_booster_ranked_contracts.csv",
+    ]
+    snapshots = []
+    validations = []
+    for path in files:
+        validations.append(validate_data_file_freshness(path, config.max_premarket_file_age_minutes))
+        if config.dated_data_snapshots_enabled:
+            snapshots.append(snapshot_data_file(path, date_et))
+
+    summary = {
+        "stage": stage,
+        "date_et": date_et,
+        "created_at_utc": now_utc().isoformat(),
+        "max_age_minutes": int(config.max_premarket_file_age_minutes),
+        "validations": validations,
+        "snapshots": snapshots,
+        "all_required_fresh": all(v.get("ok") for v in validations if Path(v.get("path", "")).name in {
+            "market_context.json",
+            "premarket_trade_plan.json",
+            "intraday_structure_map.json",
+            "regime_position_plan.csv",
+        }),
+    }
+    write_json_file(DATA_VALIDATION_STATE_PATH, summary)
+    write_event("planning_data_validated", summary)
+    print(
+        f"[data-validation] stage={stage} "
+        f"fresh_required={summary['all_required_fresh']} "
+        f"snapshots={sum(1 for s in snapshots if s.get('ok'))}/{len(snapshots)}"
+    )
+    return summary
+
+
+def run_premarket_data_collector(config: ScannerConfig) -> dict[str, Any]:
+    """
+    Start premarket_data_collector.py before the market-open wait.
+
+    The collector blocks until 9:30 ET by default while it repeatedly refreshes
+    the LLM universe, market context, premarket plan, intraday bars, and options
+    flow. Its stdout streams into run.py/systemd logs.
+    """
+    payload: dict[str, Any] = {
+        "enabled": bool(config.premarket_data_collector_enabled),
+        "collector_path": str(PREMARKET_DATA_COLLECTOR_PATH),
+        "started": False,
+        "ok": False,
+        "returncode": None,
+        "reason": "",
+    }
+
+    if not config.premarket_data_collector_enabled:
+        payload["reason"] = "premarket_data_collector_disabled"
+        return payload
+
+    if not PREMARKET_DATA_COLLECTOR_PATH.exists():
+        payload["reason"] = f"collector_script_missing:{PREMARKET_DATA_COLLECTOR_PATH}"
+        print(f"[premarket-collector] {payload['reason']}")
+        write_event("premarket_collector_missing", payload)
+        return payload
+
+    wait_until_premarket_collection_window(config)
+
+    if not premarket_collection_window_is_open() and not config.premarket_data_collector_run_once_if_outside_window:
+        payload["reason"] = "outside_premarket_collection_window"
+        print("[premarket-collector] outside 04:00-09:30 ET window; skipping continuous collector")
+        write_event("premarket_collector_skipped", payload)
+        snapshot_and_validate_planning_files(config, stage="collector_skipped")
+        return payload
+
+    start, end = premarket_collection_window_et()
+    print(
+        "[premarket-collector] starting continuous collection | "
+        f"window={start.strftime('%H:%M')}-{end.strftime('%H:%M')} ET "
+        f"path={PREMARKET_DATA_COLLECTOR_PATH}"
+    )
+    write_event(
+        "premarket_collector_started",
+        {
+            "path": str(PREMARKET_DATA_COLLECTOR_PATH),
+            "window_start_et": start.isoformat(),
+            "window_end_et": end.isoformat(),
+        },
+    )
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    if config.premarket_data_collector_run_once_if_outside_window:
+        env["PREMARKET_RUN_ONCE_IF_OUTSIDE_WINDOW"] = "1"
+
+    cmd = [sys.executable, str(PREMARKET_DATA_COLLECTOR_PATH)]
+    started_at = time.time()
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        payload["started"] = True
+
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(line.rstrip())
+
+        returncode = proc.wait(timeout=max(1, int(config.premarket_data_collector_timeout_seconds)))
+        elapsed = time.time() - started_at
+        payload.update(
+            {
+                "ok": returncode == 0,
+                "returncode": returncode,
+                "elapsed_seconds": round(elapsed, 3),
+                "reason": "completed" if returncode == 0 else "nonzero_returncode",
+            }
+        )
+        print(f"[premarket-collector] completed returncode={returncode} elapsed={elapsed:.2f}s")
+        write_event("premarket_collector_completed", payload)
+
+    except subprocess.TimeoutExpired:
+        elapsed = time.time() - started_at
+        try:
+            proc.terminate()  # type: ignore[name-defined]
+            proc.wait(timeout=20)  # type: ignore[name-defined]
+        except Exception:
+            try:
+                proc.kill()  # type: ignore[name-defined]
+            except Exception:
+                pass
+        payload.update(
+            {
+                "ok": False,
+                "returncode": -1,
+                "elapsed_seconds": round(elapsed, 3),
+                "reason": f"timeout_after_{config.premarket_data_collector_timeout_seconds}s",
+            }
+        )
+        print(f"[premarket-collector] timeout elapsed={elapsed:.2f}s")
+        write_event("premarket_collector_timeout", payload)
+
+    except Exception as exc:
+        elapsed = time.time() - started_at
+        payload.update(
+            {
+                "ok": False,
+                "returncode": -2,
+                "elapsed_seconds": round(elapsed, 3),
+                "reason": str(exc),
+            }
+        )
+        print(f"[premarket-collector] error: {exc}")
+        write_event("premarket_collector_error", payload)
+
+    snapshot_and_validate_planning_files(config, stage="after_premarket_collector")
+    return payload
 
 
 def refresh_llm_sentiment_universe(timeout_seconds: int = 180) -> None:
@@ -4372,6 +4692,10 @@ class ProductionOrderExecutor:
             print(f"[executor] live_experience_logging={self.config.scanner.live_experience_logging_enabled}")
             print(f"[executor] live_experience_jsonl={LIVE_EXPERIENCE_JSONL_PATH}")
             print(f"[executor] live_experience_csv={LIVE_EXPERIENCE_CSV_PATH}")
+            print(f"[executor] premarket_data_collector_enabled={self.config.scanner.premarket_data_collector_enabled}")
+            print(f"[executor] premarket_data_collector_path={PREMARKET_DATA_COLLECTOR_PATH}")
+            print(f"[executor] dated_data_snapshots_enabled={self.config.scanner.dated_data_snapshots_enabled}")
+            print(f"[executor] data_validation_state={DATA_VALIDATION_STATE_PATH}")
         try:
             acct = self.broker.get_account_snapshot()
             profile = self._risk_profile(acct.equity)
@@ -4388,10 +4712,10 @@ class ProductionOrderExecutor:
             print(f"[executor] risk profile unavailable at startup: {exc}")
 
         # ------------------------------------------------------------------
-        # IMPORTANT: run 4:00 AM ET session planning BEFORE the market-open
-        # wait. Otherwise the executor can sit at the clock wait loop until
-        # 9:30 without building market_context, premarket plan, regime plan,
-        # or validating the RL model.
+        # IMPORTANT: run the continuous 4:00-9:30 ET premarket collector BEFORE
+        # the market-open wait. Otherwise the executor can sit at the clock
+        # loop while premarket volume, structure maps, intraday bars, and
+        # options-flow files go stale.
         # ------------------------------------------------------------------
         if self.config.scanner and self.config.scanner.session_planning_enabled:
             today_et = datetime.now(ET).date().isoformat()
@@ -4401,11 +4725,33 @@ class ProductionOrderExecutor:
                 f"{self.config.scanner.session_planning_start_minute_et:02d} ET | "
                 f"today={today_et}"
             )
+
             try:
+                collector_result = run_premarket_data_collector(self.config.scanner)
+                print(
+                    "[premarket-collector] startup result "
+                    f"started={collector_result.get('started')} "
+                    f"ok={collector_result.get('ok')} "
+                    f"reason={collector_result.get('reason')}"
+                )
+            except Exception as exc:
+                print(f"[premarket-collector] startup collector failed; continuing with one-shot fallback: {exc}")
+                write_event("premarket_collector_startup_error", {"error": str(exc)})
+
+            try:
+                # Final handoff/validation pass after continuous collection.
+                # This builds/refreshes the regime position plan and validates
+                # the saved RL model, but does not retrain RL unless explicitly
+                # enabled in config.
                 run_session_planning_pipeline(
                     self.config.scanner,
-                    force=bool(self.config.scanner.session_planning_force_each_startup),
+                    force=bool(self.config.scanner.session_planning_force_each_startup or collector_result.get("started")),
                 )
+                validation = snapshot_and_validate_planning_files(self.config.scanner, stage="after_session_planning")
+                if self.config.scanner.require_today_data_for_market_open and not validation.get("all_required_fresh"):
+                    print("[data-validation] required files are stale/missing; market-open execution will still use risk fallbacks")
+                    write_event("required_planning_data_stale", validation)
+
                 # Prevent the first market-open cycle from immediately running
                 # the expensive prep stack again.
                 self._last_morning_refresh_date = today_et
