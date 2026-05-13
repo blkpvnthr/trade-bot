@@ -7969,5 +7969,8 @@
 {"timestamp_utc": "2026-05-13T10:44:09.494342+00:00", "event": "cycle_error", "payload": {"error": "<html>\r\n<head><title>401 Authorization Required</title></head>\r\n<body>\r\n<center><h1>401 Authorization Required</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"}}
 {"timestamp_utc": "2026-05-13T10:44:39.523316+00:00", "event": "cycle_error", "payload": {"error": "<html>\r\n<head><title>401 Authorization Required</title></head>\r\n<body>\r\n<center><h1>401 Authorization Required</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"}}
 {"timestamp_utc": "2026-05-13T10:45:09.549716+00:00", "event": "cycle_error", "payload": {"error": "<html>\r\n<head><title>401 Authorization Required</title></head>\r\n<body>\r\n<center><h1>401 Authorization Required</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"}}
+<<<<<<< HEAD
 >>>>>>> 598c67f (setting up cloud)
 {"timestamp_utc": "2026-05-13T10:52:39.905671+00:00", "event": "cycle_error", "payload": {"error": "<html>\r\n<head><title>401 Authorization Required</title></head>\r\n<body>\r\n<center><h1>401 Authorization Required</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"}}
+=======
+>>>>>>> 598c67f (setting up cloud)
