@@ -1,13 +1,13 @@
 {
-  "intraday_bars": {
-    "label": "intraday_bars",
+  "premarket_bars": {
+    "label": "premarket_bars",
     "window_et": {
-      "start": "2026-05-08T09:30:00-04:00",
-      "end": "2026-05-13T04:50:38.151843-04:00"
+      "start": "2026-05-13T04:00:00-04:00",
+      "end": "2026-05-13T09:30:00-04:00"
     },
     "window_utc": {
-      "start": "2026-05-08T13:30:00+00:00",
-      "end": "2026-05-13T08:50:38.151843+00:00"
+      "start": "2026-05-13T08:00:00+00:00",
+      "end": "2026-05-13T13:30:00+00:00"
     },
     "feed": "iex",
     "batches": [
@@ -41,7 +41,39 @@
         ],
         "row_count": 0,
         "counts": {},
-        "error": "<html>\r\n<head><title>401 Authorization Required</title></head>\r\n<body>\r\n<center><h1>401 Authorization Required</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"
+        "error": null
+      },
+      {
+        "symbols": [
+          "ALHC",
+          "ALKS",
+          "ARMK",
+          "ASH",
+          "BTI",
+          "CNC",
+          "CUK",
+          "EQPT",
+          "ERO",
+          "HALO",
+          "HBM",
+          "HII",
+          "HLIO",
+          "HUM",
+          "INSM",
+          "INTR",
+          "LEGN",
+          "LQDA",
+          "MDB",
+          "NOVT",
+          "OSCR",
+          "PACS",
+          "PSN",
+          "QS",
+          "QUBT"
+        ],
+        "row_count": 0,
+        "counts": {},
+        "error": null
       },
       {
         "symbols": [
@@ -53,10 +85,143 @@
         ],
         "row_count": 0,
         "counts": {},
-        "error": "<html>\r\n<head><title>401 Authorization Required</title></head>\r\n<body>\r\n<center><h1>401 Authorization Required</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"
+        "error": null
+      },
+      {
+        "symbols": [
+          "RAL",
+          "SE",
+          "VG",
+          "WOLF",
+          "ZBRA"
+        ],
+        "row_count": 0,
+        "counts": {},
+        "error": null
       }
     ],
     "final_rows": 0,
     "symbols_with_bars": []
+  },
+  "intraday_bars": {
+    "label": "intraday_bars",
+    "window_et": {
+      "start": "2026-05-08T09:30:00-04:00",
+      "end": "2026-05-13T04:08:23.164606-04:00"
+    },
+    "window_utc": {
+      "start": "2026-05-08T13:30:00+00:00",
+      "end": "2026-05-13T08:08:23.164606+00:00"
+    },
+    "feed": "iex",
+    "batches": [
+      {
+        "symbols": [
+          "ALHC",
+          "ALKS",
+          "ARMK",
+          "ASH",
+          "BTI",
+          "CNC",
+          "CUK",
+          "EQPT",
+          "ERO",
+          "HALO",
+          "HBM",
+          "HII",
+          "HLIO",
+          "HUM",
+          "INSM",
+          "INTR",
+          "LEGN",
+          "LQDA",
+          "MDB",
+          "NOVT",
+          "OSCR",
+          "PACS",
+          "PSN",
+          "QS",
+          "QUBT"
+        ],
+        "row_count": 18268,
+        "counts": {
+          "ALHC": 1071,
+          "ALKS": 665,
+          "ARMK": 896,
+          "ASH": 432,
+          "BTI": 994,
+          "CNC": 1029,
+          "EQPT": 732,
+          "ERO": 547,
+          "HALO": 620,
+          "HBM": 1082,
+          "HII": 447,
+          "HLIO": 194,
+          "HUM": 724,
+          "INSM": 1013,
+          "INTR": 917,
+          "LEGN": 930,
+          "LQDA": 792,
+          "MDB": 847,
+          "NOVT": 262,
+          "OSCR": 1139,
+          "PACS": 364,
+          "PSN": 445,
+          "QS": 1025,
+          "QUBT": 1101
+        },
+        "error": null
+      },
+      {
+        "symbols": [
+          "RAL",
+          "SE",
+          "VG",
+          "WOLF",
+          "ZBRA"
+        ],
+        "row_count": 4222,
+        "counts": {
+          "RAL": 728,
+          "SE": 955,
+          "VG": 1161,
+          "WOLF": 922,
+          "ZBRA": 456
+        },
+        "error": null
+      }
+    ],
+    "final_rows": 22490,
+    "symbols_with_bars": [
+      "ALHC",
+      "ALKS",
+      "ARMK",
+      "ASH",
+      "BTI",
+      "CNC",
+      "EQPT",
+      "ERO",
+      "HALO",
+      "HBM",
+      "HII",
+      "HLIO",
+      "HUM",
+      "INSM",
+      "INTR",
+      "LEGN",
+      "LQDA",
+      "MDB",
+      "NOVT",
+      "OSCR",
+      "PACS",
+      "PSN",
+      "QS",
+      "QUBT",
+      "RAL",
+      "SE",
+      "VG",
+      "WOLF",
+      "ZBRA"
+    ]
   }
 }
