@@ -163,6 +163,87 @@ SHORT_NEAR_SUPPORT_PENALTY = float(os.getenv("RL_SHORT_NEAR_SUPPORT_PENALTY", "0
 MISSED_BREAKOUT_HOLD_PENALTY = float(os.getenv("RL_MISSED_BREAKOUT_HOLD_PENALTY", "0.015"))
 MISSED_BREAKDOWN_HOLD_PENALTY = float(os.getenv("RL_MISSED_BREAKDOWN_HOLD_PENALTY", "0.012"))
 
+# Execution-quality reward shaping. These are deliberately small compared with
+# realized-PnL rewards, but they teach the policy timing quality:
+# immediate next-bar continuation, positive daily/intraday momentum, avoiding
+# re-entry churn, avoiding equity drawdowns, and preferring multi-bar winners
+# over one-bar scalps.
+NEXT_BAR_REWARD_MULT = float(os.getenv("RL_NEXT_BAR_REWARD_MULT", "300.0"))
+NEXT_BAR_REWARD_CAP = float(os.getenv("RL_NEXT_BAR_REWARD_CAP", "2.0"))
+NEXT_BAR_NEG_MULT = float(os.getenv("RL_NEXT_BAR_NEG_MULT", "400.0"))
+NEXT_BAR_NEG_CAP = float(os.getenv("RL_NEXT_BAR_NEG_CAP", "3.0"))
+NEXT_BAR_STRONG_MOVE = float(os.getenv("RL_NEXT_BAR_STRONG_MOVE", "0.0025"))
+NEXT_BAR_STRONG_BONUS = float(os.getenv("RL_NEXT_BAR_STRONG_BONUS", "1.0"))
+NEXT_BAR_STRONG_PENALTY = float(os.getenv("RL_NEXT_BAR_STRONG_PENALTY", "1.5"))
+NEXT_3BAR_REWARD_MULT = float(os.getenv("RL_NEXT_3BAR_REWARD_MULT", "200.0"))
+NEXT_3BAR_REWARD_CAP = float(os.getenv("RL_NEXT_3BAR_REWARD_CAP", "1.5"))
+NEXT_5BAR_REWARD_MULT = float(os.getenv("RL_NEXT_5BAR_REWARD_MULT", "150.0"))
+NEXT_5BAR_REWARD_CAP = float(os.getenv("RL_NEXT_5BAR_REWARD_CAP", "2.0"))
+NEXT_3BAR_NEG_MULT = float(os.getenv("RL_NEXT_3BAR_NEG_MULT", "250.0"))
+NEXT_3BAR_NEG_CAP = float(os.getenv("RL_NEXT_3BAR_NEG_CAP", "2.0"))
+NEXT_5BAR_NEG_MULT = float(os.getenv("RL_NEXT_5BAR_NEG_MULT", "200.0"))
+NEXT_5BAR_NEG_CAP = float(os.getenv("RL_NEXT_5BAR_NEG_CAP", "2.5"))
+
+DAILY_MOMENTUM_BONUS_MULT = float(os.getenv("RL_DAILY_MOMENTUM_BONUS_MULT", "4.0"))
+DAILY_MOMENTUM_BONUS_CAP = float(os.getenv("RL_DAILY_MOMENTUM_BONUS_CAP", "0.40"))
+INTRADAY_MOMENTUM_BONUS_MULT = float(os.getenv("RL_INTRADAY_MOMENTUM_BONUS_MULT", "5.0"))
+INTRADAY_MOMENTUM_BONUS_CAP = float(os.getenv("RL_INTRADAY_MOMENTUM_BONUS_CAP", "0.30"))
+OVEREXTENDED_DAILY_CHANGE = float(os.getenv("RL_OVEREXTENDED_DAILY_CHANGE", "0.08"))
+OVEREXTENDED_INTRADAY_CHANGE = float(os.getenv("RL_OVEREXTENDED_INTRADAY_CHANGE", "0.04"))
+OVEREXTENDED_DAILY_PENALTY = float(os.getenv("RL_OVEREXTENDED_DAILY_PENALTY", "0.30"))
+OVEREXTENDED_INTRADAY_PENALTY = float(os.getenv("RL_OVEREXTENDED_INTRADAY_PENALTY", "0.20"))
+
+POSITION_PNL_BONUS_MULT = float(os.getenv("RL_POSITION_PNL_BONUS_MULT", "25.0"))
+POSITION_PNL_BONUS_CAP = float(os.getenv("RL_POSITION_PNL_BONUS_CAP", "1.25"))
+POSITION_PNL_NEG_MULT = float(os.getenv("RL_POSITION_PNL_NEG_MULT", "40.0"))
+POSITION_PNL_NEG_CAP = float(os.getenv("RL_POSITION_PNL_NEG_CAP", "2.0"))
+FAST_PROFIT_THRESHOLD = float(os.getenv("RL_FAST_PROFIT_THRESHOLD", "0.003"))
+FAST_PROFIT_BARS = int(os.getenv("RL_FAST_PROFIT_BARS", "5"))
+FAST_PROFIT_BONUS = float(os.getenv("RL_FAST_PROFIT_BONUS", "0.75"))
+INSTANT_DRAWDOWN_THRESHOLD = float(os.getenv("RL_INSTANT_DRAWDOWN_THRESHOLD", "-0.003"))
+INSTANT_DRAWDOWN_PENALTY = float(os.getenv("RL_INSTANT_DRAWDOWN_PENALTY", "1.5"))
+STAGNANT_POSITION_BARS = int(os.getenv("RL_STAGNANT_POSITION_BARS", "20"))
+STAGNANT_POSITION_THRESHOLD = float(os.getenv("RL_STAGNANT_POSITION_THRESHOLD", "0.001"))
+STAGNANT_POSITION_PENALTY = float(os.getenv("RL_STAGNANT_POSITION_PENALTY", "0.25"))
+
+REENTRY_SAME_SYMBOL_PENALTY = float(os.getenv("RL_REENTRY_SAME_SYMBOL_PENALTY", "1.0"))
+REENTRY_RECENT_EXIT_BARS = int(os.getenv("RL_REENTRY_RECENT_EXIT_BARS", "30"))
+REENTRY_RECENT_EXIT_PENALTY = float(os.getenv("RL_REENTRY_RECENT_EXIT_PENALTY", "1.5"))
+REENTRY_COUNT_TRIGGER = int(os.getenv("RL_REENTRY_COUNT_TRIGGER", "2"))
+REENTRY_COUNT_PENALTY = float(os.getenv("RL_REENTRY_COUNT_PENALTY", "2.0"))
+
+EQUITY_NEG_1STEP_MULT = float(os.getenv("RL_EQUITY_NEG_1STEP_MULT", "50.0"))
+EQUITY_NEG_1STEP_CAP = float(os.getenv("RL_EQUITY_NEG_1STEP_CAP", "1.0"))
+DAILY_EQUITY_DD_1 = float(os.getenv("RL_DAILY_EQUITY_DD_1", "-0.005"))
+DAILY_EQUITY_DD_2 = float(os.getenv("RL_DAILY_EQUITY_DD_2", "-0.010"))
+DAILY_EQUITY_DD_1_PENALTY = float(os.getenv("RL_DAILY_EQUITY_DD_1_PENALTY", "1.0"))
+DAILY_EQUITY_DD_2_PENALTY = float(os.getenv("RL_DAILY_EQUITY_DD_2_PENALTY", "2.0"))
+
+NEG_DAILY_MOMENTUM_MULT = float(os.getenv("RL_NEG_DAILY_MOMENTUM_MULT", "8.0"))
+NEG_DAILY_MOMENTUM_CAP = float(os.getenv("RL_NEG_DAILY_MOMENTUM_CAP", "0.80"))
+NEG_INTRADAY_MOMENTUM_MULT = float(os.getenv("RL_NEG_INTRADAY_MOMENTUM_MULT", "10.0"))
+NEG_INTRADAY_MOMENTUM_CAP = float(os.getenv("RL_NEG_INTRADAY_MOMENTUM_CAP", "1.00"))
+NEG_DAILY_BREAKDOWN_LEVEL = float(os.getenv("RL_NEG_DAILY_BREAKDOWN_LEVEL", "-0.02"))
+NEG_INTRADAY_BREAKDOWN_LEVEL = float(os.getenv("RL_NEG_INTRADAY_BREAKDOWN_LEVEL", "-0.01"))
+NEG_DAILY_BREAKDOWN_PENALTY = float(os.getenv("RL_NEG_DAILY_BREAKDOWN_PENALTY", "0.75"))
+NEG_INTRADAY_BREAKDOWN_PENALTY = float(os.getenv("RL_NEG_INTRADAY_BREAKDOWN_PENALTY", "0.50"))
+
+MISS_FUTURE_5M_THRESHOLD = float(os.getenv("RL_MISS_FUTURE_5M_THRESHOLD", "0.005"))
+MISS_FUTURE_15M_THRESHOLD = float(os.getenv("RL_MISS_FUTURE_15M_THRESHOLD", "0.010"))
+MISS_STRONG_SETUP_PENALTY = float(os.getenv("RL_MISS_STRONG_SETUP_PENALTY", "1.25"))
+MISS_BREAKOUT_PENALTY = float(os.getenv("RL_MISS_BREAKOUT_PENALTY", "2.0"))
+AVOID_BAD_TRADE_REWARD = float(os.getenv("RL_AVOID_BAD_TRADE_REWARD", "0.25"))
+AVOID_ADVERSE_TRADE_REWARD = float(os.getenv("RL_AVOID_ADVERSE_TRADE_REWARD", "0.50"))
+
+SCALP_TINY_MOVE_PENALTY = float(os.getenv("RL_SCALP_TINY_MOVE_PENALTY", "0.75"))
+SCALP_LOSER_PENALTY = float(os.getenv("RL_SCALP_LOSER_PENALTY", "1.25"))
+CHOP_STAGNANT_PENALTY = float(os.getenv("RL_CHOP_STAGNANT_PENALTY", "1.00"))
+ENTRY_CROSS_PENALTY = float(os.getenv("RL_ENTRY_CROSS_PENALTY", "1.00"))
+VWAP_CROSS_PENALTY = float(os.getenv("RL_VWAP_CROSS_PENALTY", "1.25"))
+FAILED_BREAKOUT_PENALTY = float(os.getenv("RL_FAILED_BREAKOUT_PENALTY", "1.50"))
+GIVEBACK_AFTER_MFE_PENALTY = float(os.getenv("RL_GIVEBACK_AFTER_MFE_PENALTY", "1.50"))
+DUAL_TREND_FAILURE_PENALTY = float(os.getenv("RL_DUAL_TREND_FAILURE_PENALTY", "0.75"))
+
 REGIME_ALIGNED_REWARD = float(os.getenv("RL_REGIME_ALIGNED_REWARD", "0.004"))
 REGIME_MISALIGNED_PENALTY = float(os.getenv("RL_REGIME_MISALIGNED_PENALTY", "0.006"))
 
@@ -655,6 +736,36 @@ def add_bar_features(df: pd.DataFrame) -> pd.DataFrame:
     df["ret_10"] = grouped["close"].pct_change(10).fillna(0.0)
     df["ret_20"] = grouped["close"].pct_change(20).fillna(0.0)
 
+
+    # Forward labels used only inside the training environment reward. These let
+    # the execution policy learn whether the next bar / next few bars would have
+    # moved favorably immediately after an entry.
+    df["future_return_1"] = (grouped["close"].shift(-1) / df["close"].replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    df["future_return_3"] = (grouped["close"].shift(-3) / df["close"].replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    df["future_return_5"] = (grouped["close"].shift(-5) / df["close"].replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    df["future_return_15"] = (grouped["close"].shift(-15) / df["close"].replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    future_low_5 = grouped["low"].shift(-1).groupby(df["symbol"]).rolling(5).min().reset_index(level=0, drop=True).shift(-4)
+    df["future_min_return_5"] = (future_low_5 / df["close"].replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    # Daily/intraday momentum context. If previous-session data is unavailable
+    # inside the 1m file, daily_change_pct falls back to intraday_from_open_pct.
+    ts_et = df["timestamp"].dt.tz_convert("America/New_York") if getattr(df["timestamp"].dt, "tz", None) is not None else df["timestamp"].dt.tz_localize("UTC").dt.tz_convert("America/New_York")
+    df["session_date"] = ts_et.dt.date
+    grouped_session = df.groupby(["symbol", "session_date"], group_keys=False)
+    session_open = grouped_session["open"].transform("first")
+    day_high = grouped_session["high"].cummax()
+    day_low = grouped_session["low"].cummin()
+    df["session_open"] = session_open
+    df["day_high_so_far"] = day_high
+    df["day_low_so_far"] = day_low
+    df["intraday_from_open_pct"] = (df["close"] / session_open.replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    prev_session_close = grouped_session["close"].transform("last").groupby(df["symbol"]).shift(1)
+    df["daily_change_pct"] = (df["close"] / prev_session_close.replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan)
+    df["daily_change_pct"] = df["daily_change_pct"].fillna(df["intraday_from_open_pct"])
+    df["distance_from_day_high"] = (df["close"] / day_high.replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    df["distance_from_day_low"] = (df["close"] / day_low.replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
     df["ema_8"] = grouped["close"].transform(lambda s: s.ewm(span=8, adjust=False).mean())
     df["ema_21"] = grouped["close"].transform(lambda s: s.ewm(span=21, adjust=False).mean())
     df["ema_spread"] = (df["ema_8"] / df["ema_21"].replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
@@ -754,7 +865,7 @@ def add_bar_features(df: pd.DataFrame) -> pd.DataFrame:
                 df["close"] / grouped["running_vwap"].rolling(window).mean().reset_index(level=0, drop=True).replace(0, np.nan) - 1.0
             ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-    return df.drop(columns=["_pv", "_cum_pv", "_cum_vol"], errors="ignore")
+    return df.drop(columns=["_pv", "_cum_pv", "_cum_vol", "session_date"], errors="ignore")
 
 
 # =============================================================================
@@ -806,6 +917,20 @@ class IntradayStructureEnv(gym.Env):
         self.trade_events: list[TradeEvent] = []
         self.long_entry_count = 0
         self.short_entry_count = 0
+        self.entry_idx: int | None = None
+        self.entry_was_breakout = False
+        self.entry_cross_count = 0
+        self.vwap_cross_count = 0
+        self.max_favorable_excursion = 0.0
+        self.max_adverse_excursion = 0.0
+        self.previous_step_equity = STARTING_CASH
+        self.entry_idx: int | None = None
+        self.entry_was_breakout = False
+        self.entry_cross_count = 0
+        self.vwap_cross_count = 0
+        self.max_favorable_excursion = 0.0
+        self.max_adverse_excursion = 0.0
+        self.previous_step_equity = STARTING_CASH
 
     def _build_feature_names(self) -> list[str]:
         names = [
@@ -877,6 +1002,19 @@ class IntradayStructureEnv(gym.Env):
             "hierarchical_entry_gate",
             "hierarchical_long_gate",
             "hierarchical_short_gate",
+            "daily_change_pct",
+            "intraday_from_open_pct",
+            "distance_from_day_high",
+            "distance_from_day_low",
+            "current_position_pnl_pct",
+            "bars_since_entry",
+            "reentry_count_today",
+            "minutes_since_last_exit",
+            "daily_equity_drawdown_pct",
+            "entry_cross_count",
+            "vwap_cross_count",
+            "max_favorable_excursion",
+            "max_adverse_excursion",
         ])
 
         return names
@@ -912,6 +1050,7 @@ class IntradayStructureEnv(gym.Env):
         row = self.episode_df.iloc[self.idx]
         price = max(to_float(row["close"]), 0.01)
         previous_equity = self._equity(price)
+        self._update_open_position_trackers(price, row)
 
         forced_reason: str | None = None
 
@@ -954,6 +1093,8 @@ class IntradayStructureEnv(gym.Env):
 
         new_equity = self._equity(price)
         reward += ((new_equity - previous_equity) / max(previous_equity, 1.0)) * REWARD_SCALE
+        reward += self._dense_execution_reward(int(action), price, row, previous_equity, new_equity)
+        self.previous_step_equity = new_equity
 
         self.equity_peak = max(self.equity_peak, new_equity)
         drawdown = new_equity / max(self.equity_peak, 1.0) - 1.0
@@ -1222,6 +1363,19 @@ class IntradayStructureEnv(gym.Env):
             "hierarchical_entry_gate": entry_gate,
             "hierarchical_long_gate": long_gate,
             "hierarchical_short_gate": short_gate,
+            "daily_change_pct": to_float(row.get("daily_change_pct")),
+            "intraday_from_open_pct": to_float(row.get("intraday_from_open_pct")),
+            "distance_from_day_high": to_float(row.get("distance_from_day_high")),
+            "distance_from_day_low": to_float(row.get("distance_from_day_low")),
+            "current_position_pnl_pct": self._unrealized_pct(price),
+            "bars_since_entry": float(self.hold_bars),
+            "reentry_count_today": float(self.long_entry_count + self.short_entry_count),
+            "minutes_since_last_exit": float(self.idx - self.last_exit_idx) if self.last_exit_idx is not None else 999.0,
+            "daily_equity_drawdown_pct": self._daily_equity_drawdown_pct(price),
+            "entry_cross_count": float(self.entry_cross_count),
+            "vwap_cross_count": float(self.vwap_cross_count),
+            "max_favorable_excursion": float(self.max_favorable_excursion),
+            "max_adverse_excursion": float(self.max_adverse_excursion),
         }
 
         if USE_TRANSFORMER_FEATURES:
@@ -1253,6 +1407,284 @@ class IntradayStructureEnv(gym.Env):
 
     def _transaction_cost(self, notional: float) -> float:
         return abs(notional) * ((COMMISSION_BPS + SLIPPAGE_BPS) / 10000.0)
+
+    def _daily_equity_drawdown_pct(self, price: float) -> float:
+        equity = self._equity(price)
+        return equity / max(self.equity_peak, STARTING_CASH, 1.0) - 1.0
+
+    def _side_adjusted_future_return(self, row: pd.Series, horizon: int, side: int | None = None) -> float:
+        side = self.position_side if side is None else side
+        value = to_float(row.get(f"future_return_{horizon}"), 0.0)
+        if side == -1:
+            return -value
+        return value
+
+    def _future_min_return(self, row: pd.Series, horizon: int = 5) -> float:
+        return to_float(row.get(f"future_min_return_{horizon}"), 0.0)
+
+    def _trade_duration_multiplier(self, bars_held: int) -> float:
+        if bars_held <= 1:
+            return 0.50
+        if bars_held <= 3:
+            return 0.85
+        if bars_held <= 5:
+            return 1.00
+        if bars_held <= 10:
+            return 1.25
+        if bars_held <= 20:
+            return 1.50
+        if bars_held <= 40:
+            return 1.75
+        return 1.25
+
+    def _update_open_position_trackers(self, price: float, row: pd.Series) -> None:
+        if self.position_side == 0 or self.entry_price <= 0:
+            return
+
+        pnl_pct = self._unrealized_pct(price)
+        self.max_favorable_excursion = max(self.max_favorable_excursion, pnl_pct)
+        self.max_adverse_excursion = min(self.max_adverse_excursion, pnl_pct)
+
+        if self.idx > 0:
+            prev = self.episode_df.iloc[self.idx - 1]
+            prev_price = to_float(prev.get("close"), price)
+            if (prev_price - self.entry_price) * (price - self.entry_price) < 0:
+                self.entry_cross_count += 1
+
+            prev_vwap = to_float(prev.get("running_vwap"), prev_price)
+            refs = self._market_refs(price, row)
+            if (prev_price - prev_vwap) * (price - refs["vwap"]) < 0:
+                self.vwap_cross_count += 1
+
+    def _reset_position_quality_trackers(self) -> None:
+        self.entry_idx = None
+        self.entry_was_breakout = False
+        self.entry_cross_count = 0
+        self.vwap_cross_count = 0
+        self.max_favorable_excursion = 0.0
+        self.max_adverse_excursion = 0.0
+
+    def _next_bar_reward(self, row: pd.Series, side: int) -> float:
+        r1 = self._side_adjusted_future_return(row, 1, side)
+        r3 = self._side_adjusted_future_return(row, 3, side)
+        r5 = self._side_adjusted_future_return(row, 5, side)
+        reward = 0.0
+
+        if r1 > 0:
+            reward += min(r1 * NEXT_BAR_REWARD_MULT, NEXT_BAR_REWARD_CAP)
+        else:
+            reward -= min(abs(r1) * NEXT_BAR_NEG_MULT, NEXT_BAR_NEG_CAP)
+
+        if r1 > NEXT_BAR_STRONG_MOVE:
+            reward += NEXT_BAR_STRONG_BONUS
+        elif r1 < -NEXT_BAR_STRONG_MOVE:
+            reward -= NEXT_BAR_STRONG_PENALTY
+
+        if r3 > 0:
+            reward += min(r3 * NEXT_3BAR_REWARD_MULT, NEXT_3BAR_REWARD_CAP)
+        else:
+            reward -= min(abs(r3) * NEXT_3BAR_NEG_MULT, NEXT_3BAR_NEG_CAP)
+
+        if r5 > 0:
+            reward += min(r5 * NEXT_5BAR_REWARD_MULT, NEXT_5BAR_REWARD_CAP)
+        else:
+            reward -= min(abs(r5) * NEXT_5BAR_NEG_MULT, NEXT_5BAR_NEG_CAP)
+
+        return reward
+
+    def _daily_momentum_bonus(self, row: pd.Series, side: int) -> float:
+        daily = to_float(row.get("daily_change_pct"), 0.0) * (1 if side == 1 else -1)
+        intraday = to_float(row.get("intraday_from_open_pct"), 0.0) * (1 if side == 1 else -1)
+        reward = 0.0
+
+        if daily > 0:
+            reward += min(daily * DAILY_MOMENTUM_BONUS_MULT, DAILY_MOMENTUM_BONUS_CAP)
+        if intraday > 0:
+            reward += min(intraday * INTRADAY_MOMENTUM_BONUS_MULT, INTRADAY_MOMENTUM_BONUS_CAP)
+        if daily > OVEREXTENDED_DAILY_CHANGE:
+            reward -= OVEREXTENDED_DAILY_PENALTY
+        if intraday > OVEREXTENDED_INTRADAY_CHANGE:
+            reward -= OVEREXTENDED_INTRADAY_PENALTY
+
+        return reward
+
+    def _negative_daily_momentum_penalty(self, row: pd.Series, side: int) -> float:
+        daily = to_float(row.get("daily_change_pct"), 0.0) * (1 if side == 1 else -1)
+        intraday = to_float(row.get("intraday_from_open_pct"), 0.0) * (1 if side == 1 else -1)
+        penalty = 0.0
+
+        if daily < 0:
+            penalty -= min(abs(daily) * NEG_DAILY_MOMENTUM_MULT, NEG_DAILY_MOMENTUM_CAP)
+        if intraday < 0:
+            penalty -= min(abs(intraday) * NEG_INTRADAY_MOMENTUM_MULT, NEG_INTRADAY_MOMENTUM_CAP)
+        if daily < NEG_DAILY_BREAKDOWN_LEVEL:
+            penalty -= NEG_DAILY_BREAKDOWN_PENALTY
+        if intraday < NEG_INTRADAY_BREAKDOWN_LEVEL:
+            penalty -= NEG_INTRADAY_BREAKDOWN_PENALTY
+
+        return penalty
+
+    def _position_pnl_reward(self, price: float, row: pd.Series) -> float:
+        if self.position_side == 0:
+            return 0.0
+
+        pnl_pct = self._unrealized_pct(price)
+        reward = 0.0
+
+        if pnl_pct > 0:
+            reward += min(pnl_pct * POSITION_PNL_BONUS_MULT, POSITION_PNL_BONUS_CAP)
+        else:
+            reward -= min(abs(pnl_pct) * POSITION_PNL_NEG_MULT, POSITION_PNL_NEG_CAP)
+
+        if pnl_pct > FAST_PROFIT_THRESHOLD and self.hold_bars <= FAST_PROFIT_BARS:
+            reward += FAST_PROFIT_BONUS
+        if pnl_pct < INSTANT_DRAWDOWN_THRESHOLD and self.hold_bars <= FAST_PROFIT_BARS:
+            reward -= INSTANT_DRAWDOWN_PENALTY
+        if abs(pnl_pct) < STAGNANT_POSITION_THRESHOLD and self.hold_bars > STAGNANT_POSITION_BARS:
+            reward -= STAGNANT_POSITION_PENALTY
+        if pnl_pct > 0.01:
+            reward += 0.5
+        if pnl_pct > 0.02:
+            reward += 1.0
+
+        return reward
+
+    def _reentry_penalty(self) -> float:
+        penalty = 0.0
+        entries_today = self.long_entry_count + self.short_entry_count
+
+        if entries_today >= 1:
+            penalty -= REENTRY_SAME_SYMBOL_PENALTY
+        if self.last_exit_idx is not None and (self.idx - self.last_exit_idx) < REENTRY_RECENT_EXIT_BARS:
+            penalty -= REENTRY_RECENT_EXIT_PENALTY
+        if entries_today >= REENTRY_COUNT_TRIGGER:
+            penalty -= REENTRY_COUNT_PENALTY
+
+        return penalty
+
+    def _equity_penalty(self, previous_equity: float, new_equity: float, price: float) -> float:
+        penalty = 0.0
+        one_step = new_equity / max(previous_equity, 1.0) - 1.0
+        daily_dd = self._daily_equity_drawdown_pct(price)
+
+        if one_step < 0:
+            penalty -= min(abs(one_step) * EQUITY_NEG_1STEP_MULT, EQUITY_NEG_1STEP_CAP)
+        if daily_dd < DAILY_EQUITY_DD_1:
+            penalty -= DAILY_EQUITY_DD_1_PENALTY
+        if daily_dd < DAILY_EQUITY_DD_2:
+            penalty -= DAILY_EQUITY_DD_2_PENALTY
+
+        return penalty
+
+    def _missed_opportunity_penalty(self, action: int, row: pd.Series, price: float) -> float:
+        if action not in {0, 2, 4}:  # only wait/exit/skip-style decisions are penalized for missing upside
+            return 0.0
+
+        structure = self._structure()
+        r5 = to_float(row.get("future_return_5"), 0.0)
+        r15 = to_float(row.get("future_return_15"), 0.0)
+        reward = 0.0
+
+        if r5 > MISS_FUTURE_5M_THRESHOLD:
+            reward -= 0.50
+        if r15 > MISS_FUTURE_15M_THRESHOLD:
+            reward -= 1.00
+
+        if (
+            to_float(row.get("daily_change_pct"), 0.0) > 0.02
+            and to_float(row.get("volume_ratio_bar"), 1.0) > 2.0
+            and to_float(row.get("bullish_structure_score"), 0.0) > 0.60
+            and to_float(structure.get("trend_score"), 0.0) > 0.50
+        ):
+            reward -= MISS_STRONG_SETUP_PENALTY
+
+        if (
+            to_float(row.get("breakout_persistence_score"), 0.0) > 0.0
+            and r5 > 0.01
+            and r15 > 0.02
+        ):
+            reward -= MISS_BREAKOUT_PENALTY
+
+        if r5 < 0:
+            reward += AVOID_BAD_TRADE_REWARD
+        if self._future_min_return(row, 5) < -0.005:
+            reward += AVOID_ADVERSE_TRADE_REWARD
+        if to_float(row.get("daily_change_pct"), 0.0) < 0:
+            reward += 0.20
+
+        return reward
+
+    def _exit_duration_quality_reward(self, price: float, row: pd.Series, side: int) -> float:
+        if self.entry_price <= 0:
+            return 0.0
+
+        if side == 1:
+            position_return_pct = price / self.entry_price - 1.0
+        else:
+            position_return_pct = self.entry_price / price - 1.0
+
+        duration_mult = self._trade_duration_multiplier(self.hold_bars)
+        reward = 0.0
+
+        if position_return_pct > 0:
+            reward += position_return_pct * 100.0 * duration_mult
+        if position_return_pct > 0.005 and self.hold_bars >= 5:
+            reward += 0.75
+        if position_return_pct > 0.01 and self.hold_bars >= 10:
+            reward += 1.50
+        if position_return_pct > 0.02 and self.hold_bars >= 20:
+            reward += 3.00
+
+        if self.hold_bars <= 2 and abs(position_return_pct) < 0.003:
+            reward -= SCALP_TINY_MOVE_PENALTY
+        if self.hold_bars <= 3 and position_return_pct < 0:
+            reward -= SCALP_LOSER_PENALTY
+        if self.hold_bars >= 10 and abs(position_return_pct) < 0.002:
+            reward -= CHOP_STAGNANT_PENALTY
+        if self.entry_cross_count >= 3:
+            reward -= ENTRY_CROSS_PENALTY
+        if self.vwap_cross_count >= 3:
+            reward -= VWAP_CROSS_PENALTY
+        if self.entry_was_breakout and price < self.entry_price:
+            reward -= FAILED_BREAKOUT_PENALTY
+        if self.max_favorable_excursion > 0.01 and position_return_pct < 0.003:
+            reward -= GIVEBACK_AFTER_MFE_PENALTY
+        if to_float(row.get("bullish_structure_score"), 0.0) < 0.35 and to_float(self._structure().get("trend_score"), 0.0) <= 0:
+            reward -= DUAL_TREND_FAILURE_PENALTY
+
+        return reward
+
+    def _dense_execution_reward(
+        self,
+        action: int,
+        price: float,
+        row: pd.Series,
+        previous_equity: float,
+        new_equity: float,
+    ) -> float:
+        reward = 0.0
+
+        if action == 1:
+            reward += self._next_bar_reward(row, 1)
+            reward += self._daily_momentum_bonus(row, 1)
+            reward += self._negative_daily_momentum_penalty(row, 1)
+            reward += self._reentry_penalty()
+        elif action == 3:
+            reward += self._next_bar_reward(row, -1)
+            reward += self._daily_momentum_bonus(row, -1)
+            reward += self._negative_daily_momentum_penalty(row, -1)
+            reward += self._reentry_penalty()
+        elif action == 0:
+            reward += self._missed_opportunity_penalty(action, row, price)
+
+        reward += self._position_pnl_reward(price, row)
+        reward += self._equity_penalty(previous_equity, new_equity, price)
+
+        # Penalize sloppy entries that immediately experience adverse excursion.
+        if action in {1, 3} and self._future_min_return(row, 5) < -0.005:
+            reward -= 2.0
+
+        return reward
 
     def _short_bias_active(self) -> bool:
         return self.short_entry_count > max(1.0, self.long_entry_count * SHORT_BIAS_RATIO_TRIGGER)
@@ -1307,6 +1739,13 @@ class IntradayStructureEnv(gym.Env):
         self.entry_price = price
         self.position_side = 1
         self.hold_bars = 0
+        self.entry_idx = self.idx
+        refs_for_entry = self._market_refs(price, row)
+        self.entry_was_breakout = bool(price >= refs_for_entry["orb_high"] or to_float(row.get("breakout_persistence_score"), 0.0) > 0.0)
+        self.entry_cross_count = 0
+        self.vwap_cross_count = 0
+        self.max_favorable_excursion = 0.0
+        self.max_adverse_excursion = 0.0
 
         structure = self._structure()
         refs = self._market_refs(price, row)
@@ -1356,6 +1795,7 @@ class IntradayStructureEnv(gym.Env):
         self.realized_pnl += pnl
 
         reward = (pnl / STARTING_CASH) * REWARD_SCALE
+        reward += self._exit_duration_quality_reward(price, row, side=1)
 
         if self.hold_bars < MIN_QUALITY_HOLD_BARS and pnl > 0:
             reward -= PREMATURE_EXIT_PENALTY
@@ -1371,6 +1811,7 @@ class IntradayStructureEnv(gym.Env):
         self.position_side = 0
         self.hold_bars = 0
         self.last_exit_idx = self.idx
+        self._reset_position_quality_trackers()
 
         return reward
 
@@ -1390,6 +1831,13 @@ class IntradayStructureEnv(gym.Env):
         self.entry_price = price
         self.position_side = -1
         self.hold_bars = 0
+        self.entry_idx = self.idx
+        refs_for_entry = self._market_refs(price, row)
+        self.entry_was_breakout = bool(price <= refs_for_entry["orb_low"] or to_float(row.get("breakdown_persistence_score"), 0.0) > 0.0)
+        self.entry_cross_count = 0
+        self.vwap_cross_count = 0
+        self.max_favorable_excursion = 0.0
+        self.max_adverse_excursion = 0.0
 
         structure = self._structure()
         refs = self._market_refs(price, row)
@@ -1436,6 +1884,7 @@ class IntradayStructureEnv(gym.Env):
         self.realized_pnl += pnl
 
         reward = (pnl / STARTING_CASH) * REWARD_SCALE
+        reward += self._exit_duration_quality_reward(price, row, side=-1)
 
         if self.hold_bars < MIN_QUALITY_HOLD_BARS and pnl > 0:
             reward -= PREMATURE_EXIT_PENALTY
@@ -1447,6 +1896,7 @@ class IntradayStructureEnv(gym.Env):
         self.position_side = 0
         self.hold_bars = 0
         self.last_exit_idx = self.idx
+        self._reset_position_quality_trackers()
 
         return reward
 
@@ -1484,9 +1934,11 @@ class IntradayStructureEnv(gym.Env):
                 reward -= 0.003
             if abs(price / max(refs["orb_low"], 0.01) - 1.0) < 0.003:
                 reward -= 0.002
+            reward += self._missed_opportunity_penalty(0, row, price)
             return reward
 
         reward = self._unrealized_pct(price) * 0.08
+        reward += self._position_pnl_reward(price, row)
 
         if self.position_side == 1:
             bullish_structure = to_float(row.get("bullish_structure_score"), 0.0)
