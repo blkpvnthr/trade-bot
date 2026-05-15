@@ -10,9 +10,9 @@ Default usage:
 What it does:
     1. Loads Alpaca credentials from .env.
     2. Builds an underlying universe automatically from:
-        - daily_system_outputs/regime_position_plan.csv
-        - daily_system_outputs/regime_universe_30.csv
-        - daily_system_outputs/latest_scanner_scores.csv
+        - system-data/regime_position_plan.csv
+        - system-data/regime_universe_30.csv
+        - system-data/latest_scanner_scores.csv
         - locked_trading_universe.txt
         - DEFAULT_UNIVERSE fallback
     3. Fetches option chains.
@@ -27,12 +27,12 @@ What it does:
         - expected-value score
     5. Requires underlying stock position to already be open/profitable by default.
     6. Writes:
-        daily_system_outputs/latest_option_flow_candidates.csv
-        daily_system_outputs/latest_option_booster_ranked_contracts.csv
-        daily_system_outputs/latest_option_booster_candidates.csv
-        daily_system_outputs/daily_walkforward_emulated_rebalance_orders.csv
-        daily_system_outputs/daily_walkforward_emulated_exit_orders.csv
-        daily_system_outputs/latest_option_booster_summary.json
+        system-data/latest_option_flow_candidates.csv
+        system-data/latest_option_booster_ranked_contracts.csv
+        system-data/latest_option_booster_candidates.csv
+        system-data/daily_walkforward_emulated_rebalance_orders.csv
+        system-data/daily_walkforward_emulated_exit_orders.csv
+        system-data/latest_option_booster_summary.json
 
 Safety:
     - Long calls only.
@@ -81,8 +81,8 @@ ENV_PATH = PROJECT_ROOT / ".env"
 
 load_dotenv(ENV_PATH, override=True)
 
-OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
-LOG_DIR = PROJECT_ROOT / "logs" / "execution"
+OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
+LOG_DIR = PROJECT_ROOT / "logs" / "execution" / f"{TODAY_TAG}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 

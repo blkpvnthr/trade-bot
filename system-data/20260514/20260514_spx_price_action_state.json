@@ -1,0 +1,12 @@
+{
+  "date_et": "2026-05-15",
+  "start_equity": 105206.49,
+  "position_state": {
+    "symbol": "SPY",
+    "qty": 2.0,
+    "avg_entry_price": 748.045,
+    "high_water_price": 748.13,
+    "entry_time_utc": "",
+    "adds_today": 0
+  }
+}

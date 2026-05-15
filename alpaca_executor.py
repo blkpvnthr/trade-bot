@@ -10,8 +10,8 @@ Default behavior:
     python alpaca_executor.py
 
 Default input files:
-    daily_system_outputs/daily_walkforward_emulated_rebalance_orders.csv
-    daily_system_outputs/daily_walkforward_emulated_exit_orders.csv
+    system-data/daily_walkforward_emulated_rebalance_orders.csv
+    system-data/daily_walkforward_emulated_exit_orders.csv
 
 Paper account is used by default.
 Use --live only when you intentionally want live brokerage execution.
@@ -41,8 +41,11 @@ import os
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
+
+from datetime import datetime, timezone, timedelta
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -55,7 +58,10 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, OrderType, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
 
-
+ET = ZoneInfo("America/New_York")
+TODAY_TAG = datetime.now(ET).strftime("%Y%m%d")
+YESTERDAY_TAG = (datetime.now(ET) - timedelta(days=1)).strftime("%Y%m%d")
+DATA_TAG = os.getenv("RL_DATA_DATE", TODAY_TAG)
 # =============================================================================
 # Paths / environment
 # =============================================================================
@@ -66,12 +72,12 @@ ENV_PATH = PROJECT_ROOT / ".env"
 
 load_dotenv(ENV_PATH)
 
-OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
-LOG_DIR = PROJECT_ROOT / "logs" / "execution"
+OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
+LOG_DIR = PROJECT_ROOT / "logs" / "execution" / f"{TODAY_TAG}"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-DEFAULT_REBALANCE_ORDERS = OUT_DIR / "daily_walkforward_emulated_rebalance_orders.csv"
-DEFAULT_EXIT_ORDERS = OUT_DIR / "daily_walkforward_emulated_exit_orders.csv"
+DEFAULT_REBALANCE_ORDERS = OUT_DIR / f"{TODAY_TAG}_daily_walkforward_emulated_rebalance_orders.csv"
+DEFAULT_EXIT_ORDERS = OUT_DIR / f"{TODAY_TAG}_daily_walkforward_emulated_exit_orders.csv"
 
 
 # =============================================================================

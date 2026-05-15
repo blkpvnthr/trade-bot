@@ -1,0 +1,28 @@
+{
+  "best_params": {
+    "train_lookback_days": 59,
+    "timesteps": 25000,
+    "max_episode_bars": 180,
+    "learning_rate": 0.0001465181270477539,
+    "gamma": 0.9886884381471769,
+    "n_steps": 1024,
+    "batch_size": 128,
+    "ent_coef": 0.00793730366338695,
+    "reward_scale": 123.98760355121524,
+    "entry_bonus": 1.0736321062529641,
+    "bad_entry_penalty": 2.78478083560159,
+    "early_multibar_bonus_mult": 201.93742669544676,
+    "hold_winner_mult": 55.993219878576085,
+    "mfe_capture_mult": 19.767240684961102,
+    "giveback_penalty_mult": 25.565381568951203,
+    "mae_penalty_mult": 4.680926975116515,
+    "min_quality_hold_bars": 11,
+    "flat_hold_penalty": 0.0036799118887083098,
+    "min_entry_confidence": 0.7164247276618194,
+    "min_exit_confidence": 0.4326416408435226
+  },
+  "best_value": 46.63869029737573,
+  "study_name": "spx_multibar_gain_rl_optimizer",
+  "data_tag": "20260514",
+  "created_at_utc": "2026-05-14T17:43:42.765440+00:00"
+}

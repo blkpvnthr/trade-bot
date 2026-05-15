@@ -25,7 +25,7 @@ THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 ENV_PATH = PROJECT_ROOT / ".env"
 
-OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
+OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 OUT_RAW = OUT_DIR / f"{TODAY_TAG}_daily_raw_bars.csv"
@@ -44,15 +44,7 @@ REGIME_SYMBOLS = list(dict.fromkeys([
     "VIXY",
 ]))
 
-CORE_SYMBOLS = list(dict.fromkeys([
-    "QQQ",
-    "DIA",
-    "SPY",
-    "IWM",
-    "VIXY",
-    "IBIT",
-    "TLT",
-]))
+CORE_SYMBOLS = pd.read_csv("data/bullish_2026-05-13.csv")["Symbol"].to_list()
 
 # Set to None to use the full combined universe.
 # Use 500/1000 if Alpaca rate limits are an issue.

@@ -1,0 +1,830 @@
+{
+  "last_runs": {
+    "llm_sentiment_universe_selector": "2026-05-15T13:17:08.655683+00:00",
+    "market_context_builder": "2026-05-15T13:17:28.546034+00:00",
+    "build_intraday_training_dataset": "2026-05-15T13:11:45.942749+00:00",
+    "options_booster": "2026-05-15T13:11:46.776021+00:00"
+  },
+  "cycles": [
+    {
+      "cycle_started_at_utc": "2026-05-15T08:00:00.799756+00:00",
+      "cycle_started_at_et": "2026-05-15T04:00:00.799757-04:00",
+      "results": [
+        {
+          "task": "llm_sentiment_universe_selector",
+          "script": "llm_sentiment_universe_selector.py",
+          "started_at_utc": "2026-05-15T08:00:00.799804+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 19.996,
+          "stdout_tail": "[csv-universe] loaded 19 symbols from /Users/blkpvnthr/Desktop/trader/data/bullish_2026-05-15.csv\n[discovery] researching 19 CSV symbols with yfinance premarket data\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_candidate_discovery.json\n[discovery] csv_symbols=19 candidates=19 unusual_premarket=0\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_sentiment_universe.json\n[saved] /Users/blkpvnthr/Desktop/trader/20260515_locked_trading_universe.txt\n\"CSCO\",\"F\",\"VICR\",\"AIP\",\"AVAH\",\"CGON\",\"KLAR\",\"ONDS\",\"PCT\",\"RDW\",\"STAA\",\"FENC\",\"HYLN\",\"MRAM\",\"RILY\",\"SLQT\",\"UMAC\",\"VLN\",\"IPWR\"\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "market_context_builder",
+          "script": "market_context_builder.py",
+          "started_at_utc": "2026-05-15T08:00:20.796848+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 51.477,
+          "stdout_tail": "[saved] /Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260515/20260515_market_context.json\n{\n  \"overall_market_bias\": \"mixed\",\n  \"trade_permission\": \"cautious\",\n  \"risk_level\": \"medium\",\n  \"summary\": \"Market shows mixed signals with positive sector rotation into growth and energy, but overnight futures are slightly negative and volatility is stable. No major macro events confirmed for today, but caution is advised due to ongoing geopolitical tensions and lack of fresh options data.\",\n  \"event_flags\": {\n    \"fed_events_today\": false,\n    \"opec_events_today\": false,\n    \"jobs_report_today\": false,\n    \"inflation_report_today\": false,\n    \"pce_report_today\": false,\n    \"presidential_trade_speech_today\": false,\n    \"major_earnings_today\": false\n  },\n  \"sector_context_summary\": {\n    \"leading_sectors\": [\n      \"Technology\",\n      \"Energy\",\n      \"Financials\"\n    ],\n    \"lagging_sectors\": [\n      \"Healthcare\",\n      \"Real Estate\",\n      \"Materials\"\n    ],\n    \"sector_rotation_bias\": \"risk_on_growth\"\n  },\n  \"key_etf_context_summary\": {\n    \"risk_signal_bias\": \"risk_on\",\n    \"risk_flags\": []\n  },\n  \"decision_reasons\": [\n    \"Technology, Energy, and Financial sectors are leading, indicating risk-on growth rotation.\",\n    \"SPY and QQQ closed higher yesterday, supporting bullish sentiment.\",\n    \"Overnight futures are down modestly, indicating some caution ahead of market open.\",\n    \"VXX is declining, suggesting lower volatility risk.\",\n    \"No confirmed Fed, CPI, PCE, or jobs reports releasing today, but Fed events are ambiguous and not explicitly confirmed for today.\",\n    \"OPEC events are not confirmed for today despite recent news, reducing immediate oil supply risk impact.\",\n    \"Options data is incomplete with no volume or premium flow, increasing uncertainty.\",\n    \"Geopolitical tensions (US-China summit, Iran) add to cautious stance.\"\n  ]\n}\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "premarket_trade_planner",
+          "script": "premarket_trade_planner.py",
+          "started_at_utc": "2026-05-15T08:01:12.274552+00:00",
+          "ok": false,
+          "returncode": -1,
+          "elapsed_seconds": 900.02,
+          "stdout_tail": "",
+          "stderr_tail": "",
+          "error": "timeout_after_900s"
+        },
+        {
+          "task": "build_intraday_training_dataset",
+          "script": "build_intraday_training_dataset.py",
+          "started_at_utc": "2026-05-15T08:16:12.299484+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 56.495,
+          "stdout_tail": " 'SNTG': 9, 'WOK': 1021, 'WXM': 47, 'YJ': 1}\n[dataset] batch_counts={'JZXN': 354, 'QUCY': 1016}\n[dataset] empty batch=['NMGC', 'QEDN', 'SPQS', 'SPTY', 'GRPS', 'JSHG', 'KAVL', 'TLSS', 'INNI', 'PRAC', 'PREC', 'SONX', 'CRKN', 'CNHC', 'ILST', 'GEGI', 'SPSO', 'CXCQ', 'TGMR', 'AMIH', 'IPRC', 'ZVOI', 'GNAL', 'LSCG', 'PUPS']\n[dataset] empty batch=['SNWR', 'SKYF', 'SING', 'VICA', 'RENO', 'CALA', 'GSNR', 'NMPGY', 'SNNVF', 'ILIM', 'RVVQF', 'GLIV', 'LSEB']\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_bars_1m.csv\n[features] skip BMGL: only 19 rows\n[features] skip BYAH: only 17 rows\n[features] skip CAPL: only 119 rows\n[features] skip CCM: only 21 rows\n[features] skip ELMD: only 86 rows\n[features] skip ENGS: only 85 rows\n[features] skip FAMI: only 6 rows\n[features] skip GENK: only 66 rows\n[features] skip HCHL: only 83 rows\n[features] skip INBS: only 117 rows\n[features] skip JFU: only 17 rows\n[features] skip JXG: only 2 rows\n[features] skip JYD: only 44 rows\n[features] skip LICN: only 18 rows\n[features] skip MGIH: only 11 rows\n[features] skip MOVE: only 81 rows\n[features] skip MSGM: only 60 rows\n[features] skip NAAS: only 7 rows\n[features] skip NDRA: only 17 rows\n[features] skip NEPH: only 28 rows\n[features] skip NTWK: only 22 rows\n[features] skip PIII: only 41 rows\n[features] skip SNES: only 70 rows\n[features] skip SNTG: only 9 rows\n[features] skip WXM: only 47 rows\n[features] skip YJ: only 1 rows\n[features] skip ZBAI: only 5 rows\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_multitimeframe_context.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_exit_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_symbol_state.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.jsonl\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_dataset_summary.json\n[rows_raw] 334,751\n[rows_features] 333,652\n[rows_exit_dataset] 331,867\n[symbols_returned] 146\nACMR,ADEA,AEHL,AIIO,AIP,AKAM,ALMU,ANY,ARBE,ATOM,AUR,BIDU,BIOA,BJRI,BMGL,BWA,BYAH,CAPL,CCCC,CCM,CHRN,CLOV,CMPS,CORT,CSTE,DGII,DMRC,DOC,DSGN,DTIL,ELMD,ENGS,ENPH,ENVX,EOSE,EVC,EVEX,EVTV,F,FAMI,FATN,FEAM,FTK,GEN,GENK,GNLX,GREE,GRPN,GRWG,GUTS,HCHL,HUMA,HYLN,IDR,IMDX,IMUX,INBS,INV,INVZ,JD,JFU,JXG,JYD,JZXN,KC,KLXE,KULR,KYIV,KYTX,LICN,LIDR,LUNR,MBAI,MBLY,MD,MEI,MGIH,MOVE,MRX,MSGM,MVIS,MXCT,NAAS,NBIS,NDRA,NEPH,NEXT,NGNE,NIO,NMAX,NN,NNVC,NP,NRGV,NTWK,NUAI,NVCT,NVEC,NXDR,OABI,OCS,ON,ORA,OUST,PAPL,PENG,PIII,PNTG,PRM,PSNY,QS,QUCY,RFIL,RR,RUM,RVI,SATS,SEAT,SHAZ,SLND,SLNH,SLS,SNES,SNTG,SPCE,STFS,SYNA,TDC,TOMZ,TSEM,TTI,TUSK,VELO,VIVO,VLN,VNET,VOYG,VPG,WHWK,WOK,WOLF,WXM,XMTR,YJ,YMAT,ZBAI\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "options_booster",
+          "script": "options_booster.py",
+          "started_at_utc": "2026-05-15T08:17:08.798633+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 0.779,
+          "stdout_tail": "===== UNUSUAL FLOW OPTIONS BOOSTER =====\n[config] enabled=True\n[config] paper=True\n[config] universe_limit=30\n[config] dte=21-45 target=30\n[config] delta=0.35-0.70\n[config] min_volume=10 min_oi=25 min_vol_oi=0.25\n[config] min_premium_flow=$25,000\n[config] require_open_underlying_position=True\n[universe] loaded=19\n[universe] symbols=CSCO,F,VICR,AIP,AVAH,CGON,KLAR,ONDS,PCT,RDW,STAA,FENC,HYLN,MRAM,RILY,SLQT,UMAC,VLN,IPWR\n[flow] scanning underlyings=19\n[flow] skip CSCO: no underlying price in source rows\n[flow] skip F: no underlying price in source rows\n[flow] skip VICR: no underlying price in source rows\n[flow] skip AIP: no underlying price in source rows\n[flow] skip AVAH: no underlying price in source rows\n[flow] skip CGON: no underlying price in source rows\n[flow] skip KLAR: no underlying price in source rows\n[flow] skip ONDS: no underlying price in source rows\n[flow] skip PCT: no underlying price in source rows\n[flow] skip RDW: no underlying price in source rows\n[flow] skip STAA: no underlying price in source rows\n[flow] skip FENC: no underlying price in source rows\n[flow] skip HYLN: no underlying price in source rows\n[flow] skip MRAM: no underlying price in source rows\n[flow] skip RILY: no underlying price in source rows\n[flow] skip SLQT: no underlying price in source rows\n[flow] skip UMAC: no underlying price in source rows\n[flow] skip VLN: no underlying price in source rows\n[flow] skip IPWR: no underlying price in source rows\n[flow] no unusual positive-EV calls found\n[saved] rebalance_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_rebalance_orders.csv option_rows=0\n[saved] exit_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_exit_orders.csv option_exit_rows=0\n[options] no option orders generated\n",
+          "stderr_tail": "",
+          "error": ""
+        }
+      ],
+      "cycle_completed_at_utc": "2026-05-15T08:17:09.577494+00:00",
+      "cycle_completed_at_et": "2026-05-15T04:17:09.577495-04:00"
+    },
+    {
+      "cycle_started_at_utc": "2026-05-15T08:22:10.724630+00:00",
+      "cycle_started_at_et": "2026-05-15T04:22:10.724666-04:00",
+      "results": [
+        {
+          "task": "llm_sentiment_universe_selector",
+          "script": "llm_sentiment_universe_selector.py",
+          "started_at_utc": "2026-05-15T08:22:10.725508+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 14.523,
+          "stdout_tail": "[csv-universe] loaded 19 symbols from /Users/blkpvnthr/Desktop/trader/data/bullish_2026-05-15.csv\n[discovery] researching 19 CSV symbols with yfinance premarket data\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_candidate_discovery.json\n[discovery] csv_symbols=19 candidates=19 unusual_premarket=0\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_sentiment_universe.json\n[saved] /Users/blkpvnthr/Desktop/trader/20260515_locked_trading_universe.txt\n\"F\",\"VICR\",\"AIP\",\"AVAH\",\"CGON\",\"KLAR\",\"ONDS\",\"PCT\",\"RDW\",\"STAA\",\"FENC\",\"HYLN\",\"MRAM\",\"RILY\",\"SLQT\",\"UMAC\",\"VLN\",\"IPWR\",\"CSCO\"\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "market_context_builder",
+          "script": "market_context_builder.py",
+          "started_at_utc": "2026-05-15T08:22:25.249544+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 21.623,
+          "stdout_tail": "[saved] /Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260515/20260515_market_context.json\n{\n  \"overall_market_bias\": \"mixed\",\n  \"trade_permission\": \"cautious\",\n  \"risk_level\": \"medium\",\n  \"summary\": \"Market shows mixed signals with positive sector rotation into growth and energy, but overnight futures are down and volatility slightly rising. No confirmed major macro events today, but Fed speeches and trade talks ongoing warrant caution.\",\n  \"event_flags\": {\n    \"fed_events_today\": false,\n    \"opec_events_today\": false,\n    \"jobs_report_today\": false,\n    \"inflation_report_today\": false,\n    \"pce_report_today\": false,\n    \"presidential_trade_speech_today\": false,\n    \"major_earnings_today\": false\n  },\n  \"sector_context_summary\": {\n    \"leading_sectors\": [\n      \"Technology\",\n      \"Energy\",\n      \"Financials\"\n    ],\n    \"lagging_sectors\": [\n      \"Healthcare\",\n      \"Real Estate\",\n      \"Materials\"\n    ],\n    \"sector_rotation_bias\": \"risk_on_growth\"\n  },\n  \"key_etf_context_summary\": {\n    \"risk_signal_bias\": \"risk_on\",\n    \"risk_flags\": []\n  },\n  \"decision_reasons\": [\n    \"Overnight futures (ES, NQ, YM, RTY) are down moderately indicating some early weakness.\",\n    \"VIX is slightly up but VXX is down, showing mixed volatility signals.\",\n    \"SPY and QQQ closed higher yesterday, supporting a risk-on growth bias.\",\n    \"Leading sectors are Technology, Energy, and Financials indicating risk-on growth rotation.\",\n    \"No confirmed Fed event today despite multiple Fed-related search results; no explicit mention of Powell speaking today.\",\n    \"No confirmed jobs, inflation, or PCE reports today; recent data is from prior days.\",\n    \"OPEC events are not confirmed for today; recent news is from prior days.\",\n    \"Presidential trade speech ongoing but no explicit confirmation of speech today; ongoing US-China summit noted.\",\n    \"Options data is limited with no clear bias; volumes are zero or unknown for major ETFs.\",\n    \"Given mixed futures and volatility with ongoing geopolitical and Fed-related uncertainty, cautious trading is advised.\"\n  ]\n}\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "premarket_trade_planner",
+          "script": "premarket_trade_planner.py",
+          "started_at_utc": "2026-05-15T08:22:46.876078+00:00",
+          "ok": false,
+          "returncode": -1,
+          "elapsed_seconds": 899.991,
+          "stdout_tail": "",
+          "stderr_tail": "",
+          "error": "timeout_after_900s"
+        },
+        {
+          "task": "build_intraday_training_dataset",
+          "script": "build_intraday_training_dataset.py",
+          "started_at_utc": "2026-05-15T08:37:46.871790+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 57.157,
+          "stdout_tail": " 'SNTG': 9, 'WOK': 1021, 'WXM': 47, 'YJ': 1}\n[dataset] batch_counts={'JZXN': 354, 'QUCY': 1016}\n[dataset] empty batch=['NMGC', 'QEDN', 'SPQS', 'SPTY', 'GRPS', 'JSHG', 'KAVL', 'TLSS', 'INNI', 'PRAC', 'PREC', 'SONX', 'CRKN', 'CNHC', 'ILST', 'GEGI', 'SPSO', 'CXCQ', 'TGMR', 'AMIH', 'IPRC', 'ZVOI', 'GNAL', 'LSCG', 'PUPS']\n[dataset] empty batch=['SNWR', 'SKYF', 'SING', 'VICA', 'RENO', 'CALA', 'GSNR', 'NMPGY', 'SNNVF', 'ILIM', 'RVVQF', 'GLIV', 'LSEB']\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_bars_1m.csv\n[features] skip BMGL: only 19 rows\n[features] skip BYAH: only 17 rows\n[features] skip CAPL: only 119 rows\n[features] skip CCM: only 21 rows\n[features] skip ELMD: only 86 rows\n[features] skip ENGS: only 85 rows\n[features] skip FAMI: only 6 rows\n[features] skip GENK: only 66 rows\n[features] skip HCHL: only 83 rows\n[features] skip INBS: only 117 rows\n[features] skip JFU: only 17 rows\n[features] skip JXG: only 2 rows\n[features] skip JYD: only 44 rows\n[features] skip LICN: only 18 rows\n[features] skip MGIH: only 11 rows\n[features] skip MOVE: only 81 rows\n[features] skip MSGM: only 60 rows\n[features] skip NAAS: only 7 rows\n[features] skip NDRA: only 17 rows\n[features] skip NEPH: only 28 rows\n[features] skip NTWK: only 22 rows\n[features] skip PIII: only 41 rows\n[features] skip SNES: only 70 rows\n[features] skip SNTG: only 9 rows\n[features] skip WXM: only 47 rows\n[features] skip YJ: only 1 rows\n[features] skip ZBAI: only 5 rows\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_multitimeframe_context.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_exit_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_symbol_state.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.jsonl\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_dataset_summary.json\n[rows_raw] 334,751\n[rows_features] 333,652\n[rows_exit_dataset] 331,867\n[symbols_returned] 146\nACMR,ADEA,AEHL,AIIO,AIP,AKAM,ALMU,ANY,ARBE,ATOM,AUR,BIDU,BIOA,BJRI,BMGL,BWA,BYAH,CAPL,CCCC,CCM,CHRN,CLOV,CMPS,CORT,CSTE,DGII,DMRC,DOC,DSGN,DTIL,ELMD,ENGS,ENPH,ENVX,EOSE,EVC,EVEX,EVTV,F,FAMI,FATN,FEAM,FTK,GEN,GENK,GNLX,GREE,GRPN,GRWG,GUTS,HCHL,HUMA,HYLN,IDR,IMDX,IMUX,INBS,INV,INVZ,JD,JFU,JXG,JYD,JZXN,KC,KLXE,KULR,KYIV,KYTX,LICN,LIDR,LUNR,MBAI,MBLY,MD,MEI,MGIH,MOVE,MRX,MSGM,MVIS,MXCT,NAAS,NBIS,NDRA,NEPH,NEXT,NGNE,NIO,NMAX,NN,NNVC,NP,NRGV,NTWK,NUAI,NVCT,NVEC,NXDR,OABI,OCS,ON,ORA,OUST,PAPL,PENG,PIII,PNTG,PRM,PSNY,QS,QUCY,RFIL,RR,RUM,RVI,SATS,SEAT,SHAZ,SLND,SLNH,SLS,SNES,SNTG,SPCE,STFS,SYNA,TDC,TOMZ,TSEM,TTI,TUSK,VELO,VIVO,VLN,VNET,VOYG,VPG,WHWK,WOK,WOLF,WXM,XMTR,YJ,YMAT,ZBAI\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "options_booster",
+          "script": "options_booster.py",
+          "started_at_utc": "2026-05-15T08:38:44.032270+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 0.801,
+          "stdout_tail": "===== UNUSUAL FLOW OPTIONS BOOSTER =====\n[config] enabled=True\n[config] paper=True\n[config] universe_limit=30\n[config] dte=21-45 target=30\n[config] delta=0.35-0.70\n[config] min_volume=10 min_oi=25 min_vol_oi=0.25\n[config] min_premium_flow=$25,000\n[config] require_open_underlying_position=True\n[universe] loaded=19\n[universe] symbols=F,VICR,AIP,AVAH,CGON,KLAR,ONDS,PCT,RDW,STAA,FENC,HYLN,MRAM,RILY,SLQT,UMAC,VLN,IPWR,CSCO\n[flow] scanning underlyings=19\n[flow] skip F: no underlying price in source rows\n[flow] skip VICR: no underlying price in source rows\n[flow] skip AIP: no underlying price in source rows\n[flow] skip AVAH: no underlying price in source rows\n[flow] skip CGON: no underlying price in source rows\n[flow] skip KLAR: no underlying price in source rows\n[flow] skip ONDS: no underlying price in source rows\n[flow] skip PCT: no underlying price in source rows\n[flow] skip RDW: no underlying price in source rows\n[flow] skip STAA: no underlying price in source rows\n[flow] skip FENC: no underlying price in source rows\n[flow] skip HYLN: no underlying price in source rows\n[flow] skip MRAM: no underlying price in source rows\n[flow] skip RILY: no underlying price in source rows\n[flow] skip SLQT: no underlying price in source rows\n[flow] skip UMAC: no underlying price in source rows\n[flow] skip VLN: no underlying price in source rows\n[flow] skip IPWR: no underlying price in source rows\n[flow] skip CSCO: no underlying price in source rows\n[flow] no unusual positive-EV calls found\n[saved] rebalance_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_rebalance_orders.csv option_rows=0\n[saved] exit_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_exit_orders.csv option_exit_rows=0\n[options] no option orders generated\n",
+          "stderr_tail": "",
+          "error": ""
+        }
+      ],
+      "cycle_completed_at_utc": "2026-05-15T08:38:44.833876+00:00",
+      "cycle_completed_at_et": "2026-05-15T04:38:44.833883-04:00"
+    },
+    {
+      "cycle_started_at_utc": "2026-05-15T08:43:45.957281+00:00",
+      "cycle_started_at_et": "2026-05-15T04:43:45.957303-04:00",
+      "results": [
+        {
+          "task": "llm_sentiment_universe_selector",
+          "script": "llm_sentiment_universe_selector.py",
+          "started_at_utc": "2026-05-15T08:43:45.957619+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 14.504,
+          "stdout_tail": "[csv-universe] loaded 19 symbols from /Users/blkpvnthr/Desktop/trader/data/bullish_2026-05-15.csv\n[discovery] researching 19 CSV symbols with yfinance premarket data\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_candidate_discovery.json\n[discovery] csv_symbols=19 candidates=19 unusual_premarket=0\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_sentiment_universe.json\n[saved] /Users/blkpvnthr/Desktop/trader/20260515_locked_trading_universe.txt\n\"CSCO\",\"F\",\"VICR\",\"AIP\",\"AVAH\",\"CGON\",\"KLAR\",\"ONDS\",\"PCT\",\"RDW\",\"STAA\",\"FENC\",\"HYLN\",\"RILY\",\"SLQT\",\"UMAC\",\"VLN\",\"IPWR\",\"MRAM\"\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "market_context_builder",
+          "script": "market_context_builder.py",
+          "started_at_utc": "2026-05-15T08:44:00.462128+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 21.369,
+          "stdout_tail": "[saved] /Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260515/20260515_market_context.json\n{\n  \"overall_market_bias\": \"bearish\",\n  \"trade_permission\": \"cautious\",\n  \"risk_level\": \"medium\",\n  \"summary\": \"Market shows bearish bias with negative overnight futures and rising volatility. Leading sectors are growth-oriented but futures weakness and confirmed Fed event increase caution.\",\n  \"event_flags\": {\n    \"fed_events_today\": true,\n    \"opec_events_today\": false,\n    \"jobs_report_today\": false,\n    \"inflation_report_today\": false,\n    \"pce_report_today\": false,\n    \"presidential_trade_speech_today\": false,\n    \"major_earnings_today\": false\n  },\n  \"sector_context_summary\": {\n    \"leading_sectors\": [\n      \"Technology\",\n      \"Energy\",\n      \"Financials\"\n    ],\n    \"lagging_sectors\": [\n      \"Healthcare\",\n      \"Real Estate\",\n      \"Materials\"\n    ],\n    \"sector_rotation_bias\": \"risk_on_growth\"\n  },\n  \"key_etf_context_summary\": {\n    \"risk_signal_bias\": \"risk_on\",\n    \"risk_flags\": []\n  },\n  \"decision_reasons\": [\n    \"Overnight futures for major indices are sharply negative (ES -0.82%, NQ -1.11%, YM -0.55%, RTY -0.59%).\",\n    \"VIX increased by 3.04%, indicating rising market volatility and risk.\",\n    \"SPY and QQQ closed higher yesterday, but overnight futures weakness suggests potential downside pressure.\",\n    \"Sector rotation is risk_on_growth with Technology, Energy, and Financials leading, but some defensive sectors like Utilities also show gains.\",\n    \"Key ETF risk signals show risk_on bias but with no risk flags; however, VXX is down, indicating some volatility easing intraday but overnight futures and VIX rise suggest caution.\",\n    \"Fed events today confirmed with multiple sources indicating Fed Chair Powell speaking today, increasing market sensitivity.\",\n    \"No confirmed jobs, inflation, PCE, or OPEC events today, but ongoing geopolitical tensions and oil price movements add uncertainty.\",\n    \"Options data is limited with unknown bias, increasing uncertainty in market sentiment.\"\n  ]\n}\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "premarket_trade_planner",
+          "script": "premarket_trade_planner.py",
+          "started_at_utc": "2026-05-15T08:44:21.832462+00:00",
+          "ok": false,
+          "returncode": -1,
+          "elapsed_seconds": 900.009,
+          "stdout_tail": "",
+          "stderr_tail": "",
+          "error": "timeout_after_900s"
+        },
+        {
+          "task": "build_intraday_training_dataset",
+          "script": "build_intraday_training_dataset.py",
+          "started_at_utc": "2026-05-15T08:59:21.842810+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 57.845,
+          "stdout_tail": " 'SNTG': 9, 'WOK': 1021, 'WXM': 47, 'YJ': 1}\n[dataset] batch_counts={'JZXN': 354, 'QUCY': 1016}\n[dataset] empty batch=['NMGC', 'QEDN', 'SPQS', 'SPTY', 'GRPS', 'JSHG', 'KAVL', 'TLSS', 'INNI', 'PRAC', 'PREC', 'SONX', 'CRKN', 'CNHC', 'ILST', 'GEGI', 'SPSO', 'CXCQ', 'TGMR', 'AMIH', 'IPRC', 'ZVOI', 'GNAL', 'LSCG', 'PUPS']\n[dataset] empty batch=['SNWR', 'SKYF', 'SING', 'VICA', 'RENO', 'CALA', 'GSNR', 'NMPGY', 'SNNVF', 'ILIM', 'RVVQF', 'GLIV', 'LSEB']\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_bars_1m.csv\n[features] skip BMGL: only 19 rows\n[features] skip BYAH: only 17 rows\n[features] skip CAPL: only 119 rows\n[features] skip CCM: only 21 rows\n[features] skip ELMD: only 86 rows\n[features] skip ENGS: only 85 rows\n[features] skip FAMI: only 6 rows\n[features] skip GENK: only 66 rows\n[features] skip HCHL: only 83 rows\n[features] skip INBS: only 117 rows\n[features] skip JFU: only 17 rows\n[features] skip JXG: only 2 rows\n[features] skip JYD: only 44 rows\n[features] skip LICN: only 18 rows\n[features] skip MGIH: only 11 rows\n[features] skip MOVE: only 81 rows\n[features] skip MSGM: only 60 rows\n[features] skip NAAS: only 7 rows\n[features] skip NDRA: only 17 rows\n[features] skip NEPH: only 28 rows\n[features] skip NTWK: only 22 rows\n[features] skip PIII: only 41 rows\n[features] skip SNES: only 70 rows\n[features] skip SNTG: only 9 rows\n[features] skip WXM: only 47 rows\n[features] skip YJ: only 1 rows\n[features] skip ZBAI: only 5 rows\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_multitimeframe_context.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_exit_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_symbol_state.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.jsonl\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_dataset_summary.json\n[rows_raw] 334,751\n[rows_features] 333,652\n[rows_exit_dataset] 331,867\n[symbols_returned] 146\nACMR,ADEA,AEHL,AIIO,AIP,AKAM,ALMU,ANY,ARBE,ATOM,AUR,BIDU,BIOA,BJRI,BMGL,BWA,BYAH,CAPL,CCCC,CCM,CHRN,CLOV,CMPS,CORT,CSTE,DGII,DMRC,DOC,DSGN,DTIL,ELMD,ENGS,ENPH,ENVX,EOSE,EVC,EVEX,EVTV,F,FAMI,FATN,FEAM,FTK,GEN,GENK,GNLX,GREE,GRPN,GRWG,GUTS,HCHL,HUMA,HYLN,IDR,IMDX,IMUX,INBS,INV,INVZ,JD,JFU,JXG,JYD,JZXN,KC,KLXE,KULR,KYIV,KYTX,LICN,LIDR,LUNR,MBAI,MBLY,MD,MEI,MGIH,MOVE,MRX,MSGM,MVIS,MXCT,NAAS,NBIS,NDRA,NEPH,NEXT,NGNE,NIO,NMAX,NN,NNVC,NP,NRGV,NTWK,NUAI,NVCT,NVEC,NXDR,OABI,OCS,ON,ORA,OUST,PAPL,PENG,PIII,PNTG,PRM,PSNY,QS,QUCY,RFIL,RR,RUM,RVI,SATS,SEAT,SHAZ,SLND,SLNH,SLS,SNES,SNTG,SPCE,STFS,SYNA,TDC,TOMZ,TSEM,TTI,TUSK,VELO,VIVO,VLN,VNET,VOYG,VPG,WHWK,WOK,WOLF,WXM,XMTR,YJ,YMAT,ZBAI\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "options_booster",
+          "script": "options_booster.py",
+          "started_at_utc": "2026-05-15T09:00:19.694450+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 0.837,
+          "stdout_tail": "===== UNUSUAL FLOW OPTIONS BOOSTER =====\n[config] enabled=True\n[config] paper=True\n[config] universe_limit=30\n[config] dte=21-45 target=30\n[config] delta=0.35-0.70\n[config] min_volume=10 min_oi=25 min_vol_oi=0.25\n[config] min_premium_flow=$25,000\n[config] require_open_underlying_position=True\n[universe] loaded=19\n[universe] symbols=CSCO,F,VICR,AIP,AVAH,CGON,KLAR,ONDS,PCT,RDW,STAA,FENC,HYLN,RILY,SLQT,UMAC,VLN,IPWR,MRAM\n[flow] scanning underlyings=19\n[flow] skip CSCO: no underlying price in source rows\n[flow] skip F: no underlying price in source rows\n[flow] skip VICR: no underlying price in source rows\n[flow] skip AIP: no underlying price in source rows\n[flow] skip AVAH: no underlying price in source rows\n[flow] skip CGON: no underlying price in source rows\n[flow] skip KLAR: no underlying price in source rows\n[flow] skip ONDS: no underlying price in source rows\n[flow] skip PCT: no underlying price in source rows\n[flow] skip RDW: no underlying price in source rows\n[flow] skip STAA: no underlying price in source rows\n[flow] skip FENC: no underlying price in source rows\n[flow] skip HYLN: no underlying price in source rows\n[flow] skip RILY: no underlying price in source rows\n[flow] skip SLQT: no underlying price in source rows\n[flow] skip UMAC: no underlying price in source rows\n[flow] skip VLN: no underlying price in source rows\n[flow] skip IPWR: no underlying price in source rows\n[flow] skip MRAM: no underlying price in source rows\n[flow] no unusual positive-EV calls found\n[saved] rebalance_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_rebalance_orders.csv option_rows=0\n[saved] exit_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_exit_orders.csv option_exit_rows=0\n[options] no option orders generated\n",
+          "stderr_tail": "",
+          "error": ""
+        }
+      ],
+      "cycle_completed_at_utc": "2026-05-15T09:00:20.531647+00:00",
+      "cycle_completed_at_et": "2026-05-15T05:00:20.531649-04:00"
+    },
+    {
+      "cycle_started_at_utc": "2026-05-15T09:05:21.628223+00:00",
+      "cycle_started_at_et": "2026-05-15T05:05:21.628243-04:00",
+      "results": [
+        {
+          "task": "llm_sentiment_universe_selector",
+          "script": "llm_sentiment_universe_selector.py",
+          "started_at_utc": "2026-05-15T09:05:21.628591+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 14.969,
+          "stdout_tail": "[csv-universe] loaded 19 symbols from /Users/blkpvnthr/Desktop/trader/data/bullish_2026-05-15.csv\n[discovery] researching 19 CSV symbols with yfinance premarket data\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_candidate_discovery.json\n[discovery] csv_symbols=19 candidates=19 unusual_premarket=0\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_sentiment_universe.json\n[saved] /Users/blkpvnthr/Desktop/trader/20260515_locked_trading_universe.txt\n\"CSCO\",\"F\",\"VICR\",\"AIP\",\"AVAH\",\"CGON\",\"KLAR\",\"PCT\",\"RDW\",\"STAA\",\"FENC\",\"HYLN\",\"MRAM\",\"RILY\",\"SLQT\",\"UMAC\",\"VLN\",\"IPWR\",\"ONDS\"\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "market_context_builder",
+          "script": "market_context_builder.py",
+          "started_at_utc": "2026-05-15T09:05:36.598710+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 57.734,
+          "stdout_tail": "[saved] /Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260515/20260515_market_context.json\n{\n  \"overall_market_bias\": \"bearish\",\n  \"trade_permission\": \"cautious\",\n  \"risk_level\": \"medium\",\n  \"summary\": \"Market futures are sharply negative with rising volatility, despite positive sector leadership in technology, energy, and financials. No confirmed major macro events today, but caution is warranted due to overnight futures weakness and mixed signals from dollar and bond markets.\",\n  \"event_flags\": {\n    \"fed_events_today\": false,\n    \"opec_events_today\": false,\n    \"jobs_report_today\": false,\n    \"inflation_report_today\": false,\n    \"pce_report_today\": false,\n    \"presidential_trade_speech_today\": false,\n    \"major_earnings_today\": false\n  },\n  \"sector_context_summary\": {\n    \"leading_sectors\": [\n      \"Technology\",\n      \"Energy\",\n      \"Financials\"\n    ],\n    \"lagging_sectors\": [\n      \"Healthcare\",\n      \"Real Estate\",\n      \"Materials\"\n    ],\n    \"sector_rotation_bias\": \"risk_on_growth\"\n  },\n  \"key_etf_context_summary\": {\n    \"risk_signal_bias\": \"risk_on\",\n    \"risk_flags\": []\n  },\n  \"decision_reasons\": [\n    \"Overnight futures for ES, NQ, YM, and RTY are down significantly, indicating negative market sentiment pre-open.\",\n    \"VIX is rising, signaling increased market volatility and risk aversion.\",\n    \"SPY and QQQ closed higher yesterday, showing some strength in broad and tech sectors, but futures weakness tempers optimism.\",\n    \"Leading sectors are Technology, Energy, and Financials, indicating risk-on growth rotation, but lagging sectors include Healthcare, Real Estate, and Materials.\",\n    \"Key ETFs show risk-on bias with VXX declining yesterday, but overnight VIX increase suggests rising risk.\",\n    \"No confirmed Fed, jobs, inflation, PCE, OPEC, or presidential trade speech events today based on explicit evidence, so no event flags are set.\",\n    \"Options data is limited with no volume or premium flow, providing no additional directional bias.\",\n    \"Mixed signals from TLT (bond prices down) and UUP (dollar slightly up) suggest some rate and liquidity pressure.\"\n  ]\n}\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "premarket_trade_planner",
+          "script": "premarket_trade_planner.py",
+          "started_at_utc": "2026-05-15T09:06:34.333129+00:00",
+          "ok": false,
+          "returncode": -1,
+          "elapsed_seconds": 900.03,
+          "stdout_tail": "",
+          "stderr_tail": "",
+          "error": "timeout_after_900s"
+        },
+        {
+          "task": "build_intraday_training_dataset",
+          "script": "build_intraday_training_dataset.py",
+          "started_at_utc": "2026-05-15T09:21:34.370861+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 61.706,
+          "stdout_tail": " 'SNTG': 9, 'WOK': 1021, 'WXM': 47, 'YJ': 1}\n[dataset] batch_counts={'JZXN': 354, 'QUCY': 1016}\n[dataset] empty batch=['NMGC', 'QEDN', 'SPQS', 'SPTY', 'GRPS', 'JSHG', 'KAVL', 'TLSS', 'INNI', 'PRAC', 'PREC', 'SONX', 'CRKN', 'CNHC', 'ILST', 'GEGI', 'SPSO', 'CXCQ', 'TGMR', 'AMIH', 'IPRC', 'ZVOI', 'GNAL', 'LSCG', 'PUPS']\n[dataset] empty batch=['SNWR', 'SKYF', 'SING', 'VICA', 'RENO', 'CALA', 'GSNR', 'NMPGY', 'SNNVF', 'ILIM', 'RVVQF', 'GLIV', 'LSEB']\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_bars_1m.csv\n[features] skip BMGL: only 19 rows\n[features] skip BYAH: only 17 rows\n[features] skip CAPL: only 119 rows\n[features] skip CCM: only 21 rows\n[features] skip ELMD: only 86 rows\n[features] skip ENGS: only 85 rows\n[features] skip FAMI: only 6 rows\n[features] skip GENK: only 66 rows\n[features] skip HCHL: only 83 rows\n[features] skip INBS: only 117 rows\n[features] skip JFU: only 17 rows\n[features] skip JXG: only 2 rows\n[features] skip JYD: only 44 rows\n[features] skip LICN: only 18 rows\n[features] skip MGIH: only 11 rows\n[features] skip MOVE: only 81 rows\n[features] skip MSGM: only 60 rows\n[features] skip NAAS: only 7 rows\n[features] skip NDRA: only 17 rows\n[features] skip NEPH: only 28 rows\n[features] skip NTWK: only 22 rows\n[features] skip PIII: only 41 rows\n[features] skip SNES: only 70 rows\n[features] skip SNTG: only 9 rows\n[features] skip WXM: only 47 rows\n[features] skip YJ: only 1 rows\n[features] skip ZBAI: only 5 rows\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_multitimeframe_context.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_exit_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_symbol_state.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.jsonl\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_dataset_summary.json\n[rows_raw] 334,751\n[rows_features] 333,652\n[rows_exit_dataset] 331,867\n[symbols_returned] 146\nACMR,ADEA,AEHL,AIIO,AIP,AKAM,ALMU,ANY,ARBE,ATOM,AUR,BIDU,BIOA,BJRI,BMGL,BWA,BYAH,CAPL,CCCC,CCM,CHRN,CLOV,CMPS,CORT,CSTE,DGII,DMRC,DOC,DSGN,DTIL,ELMD,ENGS,ENPH,ENVX,EOSE,EVC,EVEX,EVTV,F,FAMI,FATN,FEAM,FTK,GEN,GENK,GNLX,GREE,GRPN,GRWG,GUTS,HCHL,HUMA,HYLN,IDR,IMDX,IMUX,INBS,INV,INVZ,JD,JFU,JXG,JYD,JZXN,KC,KLXE,KULR,KYIV,KYTX,LICN,LIDR,LUNR,MBAI,MBLY,MD,MEI,MGIH,MOVE,MRX,MSGM,MVIS,MXCT,NAAS,NBIS,NDRA,NEPH,NEXT,NGNE,NIO,NMAX,NN,NNVC,NP,NRGV,NTWK,NUAI,NVCT,NVEC,NXDR,OABI,OCS,ON,ORA,OUST,PAPL,PENG,PIII,PNTG,PRM,PSNY,QS,QUCY,RFIL,RR,RUM,RVI,SATS,SEAT,SHAZ,SLND,SLNH,SLS,SNES,SNTG,SPCE,STFS,SYNA,TDC,TOMZ,TSEM,TTI,TUSK,VELO,VIVO,VLN,VNET,VOYG,VPG,WHWK,WOK,WOLF,WXM,XMTR,YJ,YMAT,ZBAI\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "options_booster",
+          "script": "options_booster.py",
+          "started_at_utc": "2026-05-15T09:22:36.081828+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 0.845,
+          "stdout_tail": "===== UNUSUAL FLOW OPTIONS BOOSTER =====\n[config] enabled=True\n[config] paper=True\n[config] universe_limit=30\n[config] dte=21-45 target=30\n[config] delta=0.35-0.70\n[config] min_volume=10 min_oi=25 min_vol_oi=0.25\n[config] min_premium_flow=$25,000\n[config] require_open_underlying_position=True\n[universe] loaded=19\n[universe] symbols=CSCO,F,VICR,AIP,AVAH,CGON,KLAR,PCT,RDW,STAA,FENC,HYLN,MRAM,RILY,SLQT,UMAC,VLN,IPWR,ONDS\n[flow] scanning underlyings=19\n[flow] skip CSCO: no underlying price in source rows\n[flow] skip F: no underlying price in source rows\n[flow] skip VICR: no underlying price in source rows\n[flow] skip AIP: no underlying price in source rows\n[flow] skip AVAH: no underlying price in source rows\n[flow] skip CGON: no underlying price in source rows\n[flow] skip KLAR: no underlying price in source rows\n[flow] skip PCT: no underlying price in source rows\n[flow] skip RDW: no underlying price in source rows\n[flow] skip STAA: no underlying price in source rows\n[flow] skip FENC: no underlying price in source rows\n[flow] skip HYLN: no underlying price in source rows\n[flow] skip MRAM: no underlying price in source rows\n[flow] skip RILY: no underlying price in source rows\n[flow] skip SLQT: no underlying price in source rows\n[flow] skip UMAC: no underlying price in source rows\n[flow] skip VLN: no underlying price in source rows\n[flow] skip IPWR: no underlying price in source rows\n[flow] skip ONDS: no underlying price in source rows\n[flow] no unusual positive-EV calls found\n[saved] rebalance_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_rebalance_orders.csv option_rows=0\n[saved] exit_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_exit_orders.csv option_exit_rows=0\n[options] no option orders generated\n",
+          "stderr_tail": "",
+          "error": ""
+        }
+      ],
+      "cycle_completed_at_utc": "2026-05-15T09:22:36.927650+00:00",
+      "cycle_completed_at_et": "2026-05-15T05:22:36.927657-04:00"
+    },
+    {
+      "cycle_started_at_utc": "2026-05-15T09:27:38.040885+00:00",
+      "cycle_started_at_et": "2026-05-15T05:27:38.040900-04:00",
+      "results": [
+        {
+          "task": "llm_sentiment_universe_selector",
+          "script": "llm_sentiment_universe_selector.py",
+          "started_at_utc": "2026-05-15T09:27:38.041263+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 15.722,
+          "stdout_tail": "[csv-universe] loaded 19 symbols from /Users/blkpvnthr/Desktop/trader/data/bullish_2026-05-15.csv\n[discovery] researching 19 CSV symbols with yfinance premarket data\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_candidate_discovery.json\n[discovery] csv_symbols=19 candidates=19 unusual_premarket=0\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_sentiment_universe.json\n[saved] /Users/blkpvnthr/Desktop/trader/20260515_locked_trading_universe.txt\n\"CSCO\",\"F\",\"VICR\",\"AIP\",\"AVAH\",\"CGON\",\"KLAR\",\"PCT\",\"STAA\",\"FENC\",\"HYLN\",\"MRAM\",\"RILY\",\"SLQT\",\"UMAC\",\"VLN\",\"IPWR\",\"ONDS\",\"RDW\"\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "market_context_builder",
+          "script": "market_context_builder.py",
+          "started_at_utc": "2026-05-15T09:27:53.764431+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 17.634,
+          "stdout_tail": "[saved] /Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260515/20260515_market_context.json\n{\n  \"overall_market_bias\": \"bearish\",\n  \"trade_permission\": \"cautious\",\n  \"risk_level\": \"medium\",\n  \"summary\": \"Market shows bearish overnight futures with rising volatility. Leading sectors are growth-oriented but futures weakness and event uncertainty warrant caution.\",\n  \"event_flags\": {\n    \"fed_events_today\": false,\n    \"opec_events_today\": false,\n    \"jobs_report_today\": false,\n    \"inflation_report_today\": false,\n    \"pce_report_today\": false,\n    \"presidential_trade_speech_today\": false,\n    \"major_earnings_today\": false\n  },\n  \"sector_context_summary\": {\n    \"leading_sectors\": [\n      \"Technology\",\n      \"Energy\",\n      \"Financials\"\n    ],\n    \"lagging_sectors\": [\n      \"Healthcare\",\n      \"Real Estate\",\n      \"Materials\"\n    ],\n    \"sector_rotation_bias\": \"risk_on_growth\"\n  },\n  \"key_etf_context_summary\": {\n    \"risk_signal_bias\": \"risk_on\",\n    \"risk_flags\": []\n  },\n  \"decision_reasons\": [\n    \"Overnight futures for major indices are down sharply (ES -0.76%, NQ -1.07%), indicating negative market sentiment.\",\n    \"VIX increased by 3.38%, showing rising volatility and risk aversion.\",\n    \"Leading sectors are Technology, Energy, and Financials, indicating risk-on growth rotation, but lagging sectors include defensive sectors like Healthcare and Real Estate.\",\n    \"Key ETFs SPY and QQQ closed higher yesterday, but overnight futures weakness and rising VIX suggest caution.\",\n    \"No confirmed Fed event, jobs report, inflation, PCE, OPEC, or presidential trade speech today based on explicit evidence, but some ambiguity exists in Fed event timing.\",\n    \"Options data is limited with unknown bias, providing no strong directional signals.\",\n    \"Market is cautious due to overnight futures weakness and rising volatility despite positive sector rotation.\"\n  ]\n}\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "premarket_trade_planner",
+          "script": "premarket_trade_planner.py",
+          "started_at_utc": "2026-05-15T09:28:11.399550+00:00",
+          "ok": false,
+          "returncode": -1,
+          "elapsed_seconds": 900.011,
+          "stdout_tail": "",
+          "stderr_tail": "",
+          "error": "timeout_after_900s"
+        },
+        {
+          "task": "build_intraday_training_dataset",
+          "script": "build_intraday_training_dataset.py",
+          "started_at_utc": "2026-05-15T09:43:11.412482+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 57.699,
+          "stdout_tail": " 'SNTG': 9, 'WOK': 1021, 'WXM': 47, 'YJ': 1}\n[dataset] batch_counts={'JZXN': 354, 'QUCY': 1016}\n[dataset] empty batch=['NMGC', 'QEDN', 'SPQS', 'SPTY', 'GRPS', 'JSHG', 'KAVL', 'TLSS', 'INNI', 'PRAC', 'PREC', 'SONX', 'CRKN', 'CNHC', 'ILST', 'GEGI', 'SPSO', 'CXCQ', 'TGMR', 'AMIH', 'IPRC', 'ZVOI', 'GNAL', 'LSCG', 'PUPS']\n[dataset] empty batch=['SNWR', 'SKYF', 'SING', 'VICA', 'RENO', 'CALA', 'GSNR', 'NMPGY', 'SNNVF', 'ILIM', 'RVVQF', 'GLIV', 'LSEB']\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_bars_1m.csv\n[features] skip BMGL: only 19 rows\n[features] skip BYAH: only 17 rows\n[features] skip CAPL: only 119 rows\n[features] skip CCM: only 21 rows\n[features] skip ELMD: only 86 rows\n[features] skip ENGS: only 85 rows\n[features] skip FAMI: only 6 rows\n[features] skip GENK: only 66 rows\n[features] skip HCHL: only 83 rows\n[features] skip INBS: only 117 rows\n[features] skip JFU: only 17 rows\n[features] skip JXG: only 2 rows\n[features] skip JYD: only 44 rows\n[features] skip LICN: only 18 rows\n[features] skip MGIH: only 11 rows\n[features] skip MOVE: only 81 rows\n[features] skip MSGM: only 60 rows\n[features] skip NAAS: only 7 rows\n[features] skip NDRA: only 17 rows\n[features] skip NEPH: only 28 rows\n[features] skip NTWK: only 22 rows\n[features] skip PIII: only 41 rows\n[features] skip SNES: only 70 rows\n[features] skip SNTG: only 9 rows\n[features] skip WXM: only 47 rows\n[features] skip YJ: only 1 rows\n[features] skip ZBAI: only 5 rows\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_multitimeframe_context.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_exit_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_symbol_state.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.jsonl\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_dataset_summary.json\n[rows_raw] 334,751\n[rows_features] 333,652\n[rows_exit_dataset] 331,867\n[symbols_returned] 146\nACMR,ADEA,AEHL,AIIO,AIP,AKAM,ALMU,ANY,ARBE,ATOM,AUR,BIDU,BIOA,BJRI,BMGL,BWA,BYAH,CAPL,CCCC,CCM,CHRN,CLOV,CMPS,CORT,CSTE,DGII,DMRC,DOC,DSGN,DTIL,ELMD,ENGS,ENPH,ENVX,EOSE,EVC,EVEX,EVTV,F,FAMI,FATN,FEAM,FTK,GEN,GENK,GNLX,GREE,GRPN,GRWG,GUTS,HCHL,HUMA,HYLN,IDR,IMDX,IMUX,INBS,INV,INVZ,JD,JFU,JXG,JYD,JZXN,KC,KLXE,KULR,KYIV,KYTX,LICN,LIDR,LUNR,MBAI,MBLY,MD,MEI,MGIH,MOVE,MRX,MSGM,MVIS,MXCT,NAAS,NBIS,NDRA,NEPH,NEXT,NGNE,NIO,NMAX,NN,NNVC,NP,NRGV,NTWK,NUAI,NVCT,NVEC,NXDR,OABI,OCS,ON,ORA,OUST,PAPL,PENG,PIII,PNTG,PRM,PSNY,QS,QUCY,RFIL,RR,RUM,RVI,SATS,SEAT,SHAZ,SLND,SLNH,SLS,SNES,SNTG,SPCE,STFS,SYNA,TDC,TOMZ,TSEM,TTI,TUSK,VELO,VIVO,VLN,VNET,VOYG,VPG,WHWK,WOK,WOLF,WXM,XMTR,YJ,YMAT,ZBAI\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "options_booster",
+          "script": "options_booster.py",
+          "started_at_utc": "2026-05-15T09:44:09.116239+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 0.819,
+          "stdout_tail": "===== UNUSUAL FLOW OPTIONS BOOSTER =====\n[config] enabled=True\n[config] paper=True\n[config] universe_limit=30\n[config] dte=21-45 target=30\n[config] delta=0.35-0.70\n[config] min_volume=10 min_oi=25 min_vol_oi=0.25\n[config] min_premium_flow=$25,000\n[config] require_open_underlying_position=True\n[universe] loaded=19\n[universe] symbols=CSCO,F,VICR,AIP,AVAH,CGON,KLAR,PCT,STAA,FENC,HYLN,MRAM,RILY,SLQT,UMAC,VLN,IPWR,ONDS,RDW\n[flow] scanning underlyings=19\n[flow] skip CSCO: no underlying price in source rows\n[flow] skip F: no underlying price in source rows\n[flow] skip VICR: no underlying price in source rows\n[flow] skip AIP: no underlying price in source rows\n[flow] skip AVAH: no underlying price in source rows\n[flow] skip CGON: no underlying price in source rows\n[flow] skip KLAR: no underlying price in source rows\n[flow] skip PCT: no underlying price in source rows\n[flow] skip STAA: no underlying price in source rows\n[flow] skip FENC: no underlying price in source rows\n[flow] skip HYLN: no underlying price in source rows\n[flow] skip MRAM: no underlying price in source rows\n[flow] skip RILY: no underlying price in source rows\n[flow] skip SLQT: no underlying price in source rows\n[flow] skip UMAC: no underlying price in source rows\n[flow] skip VLN: no underlying price in source rows\n[flow] skip IPWR: no underlying price in source rows\n[flow] skip ONDS: no underlying price in source rows\n[flow] skip RDW: no underlying price in source rows\n[flow] no unusual positive-EV calls found\n[saved] rebalance_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_rebalance_orders.csv option_rows=0\n[saved] exit_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_exit_orders.csv option_exit_rows=0\n[options] no option orders generated\n",
+          "stderr_tail": "",
+          "error": ""
+        }
+      ],
+      "cycle_completed_at_utc": "2026-05-15T09:44:09.936431+00:00",
+      "cycle_completed_at_et": "2026-05-15T05:44:09.936437-04:00"
+    },
+    {
+      "cycle_started_at_utc": "2026-05-15T09:49:11.055813+00:00",
+      "cycle_started_at_et": "2026-05-15T05:49:11.055834-04:00",
+      "results": [
+        {
+          "task": "llm_sentiment_universe_selector",
+          "script": "llm_sentiment_universe_selector.py",
+          "started_at_utc": "2026-05-15T09:49:11.056356+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 14.072,
+          "stdout_tail": "[csv-universe] loaded 19 symbols from /Users/blkpvnthr/Desktop/trader/data/bullish_2026-05-15.csv\n[discovery] researching 19 CSV symbols with yfinance premarket data\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_candidate_discovery.json\n[discovery] csv_symbols=19 candidates=19 unusual_premarket=0\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_sentiment_universe.json\n[saved] /Users/blkpvnthr/Desktop/trader/20260515_locked_trading_universe.txt\n\"F\",\"VICR\",\"AIP\",\"AVAH\",\"CGON\",\"KLAR\",\"ONDS\",\"PCT\",\"RDW\",\"STAA\",\"FENC\",\"HYLN\",\"MRAM\",\"RILY\",\"SLQT\",\"UMAC\",\"VLN\",\"IPWR\",\"CSCO\"\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "market_context_builder",
+          "script": "market_context_builder.py",
+          "started_at_utc": "2026-05-15T09:49:25.129256+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 18.561,
+          "stdout_tail": "[saved] /Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260515/20260515_market_context.json\n{\n  \"overall_market_bias\": \"mixed\",\n  \"trade_permission\": \"cautious\",\n  \"risk_level\": \"medium\",\n  \"summary\": \"Market shows mixed signals with positive sector rotation into growth and energy, but overnight futures are sharply negative and volatility is rising. No confirmed major macro events today, but caution is warranted due to futures weakness and rising VIX.\",\n  \"event_flags\": {\n    \"fed_events_today\": false,\n    \"opec_events_today\": false,\n    \"jobs_report_today\": false,\n    \"inflation_report_today\": false,\n    \"pce_report_today\": false,\n    \"presidential_trade_speech_today\": false,\n    \"major_earnings_today\": false\n  },\n  \"sector_context_summary\": {\n    \"leading_sectors\": [\n      \"Technology\",\n      \"Energy\",\n      \"Financials\"\n    ],\n    \"lagging_sectors\": [\n      \"Healthcare\",\n      \"Real Estate\",\n      \"Materials\"\n    ],\n    \"sector_rotation_bias\": \"risk_on_growth\"\n  },\n  \"key_etf_context_summary\": {\n    \"risk_signal_bias\": \"risk_on\",\n    \"risk_flags\": []\n  },\n  \"decision_reasons\": [\n    \"Overnight futures for ES and NQ are down sharply (-0.73% and -1.05% respectively), indicating negative market sentiment pre-open.\",\n    \"VIX is rising by 3.54%, signaling increased volatility and risk aversion.\",\n    \"Leading sectors are Technology, Energy, and Financials, indicating risk-on growth rotation.\",\n    \"SPY and QQQ closed higher yesterday, supporting constructive broad and tech market direction.\",\n    \"VXX is down, which is a positive risk signal, but the overnight futures weakness and rising VIX outweigh this.\",\n    \"No confirmed Fed events, jobs reports, inflation, PCE, OPEC, or presidential trade speeches today based on explicit evidence.\",\n    \"Options data is limited with unknown bias and no significant put/call premium flows detected.\",\n    \"Sector rotation bias is risk_on_growth, but mixed signals from futures and volatility require caution.\"\n  ]\n}\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "premarket_trade_planner",
+          "script": "premarket_trade_planner.py",
+          "started_at_utc": "2026-05-15T09:49:43.691561+00:00",
+          "ok": false,
+          "returncode": -1,
+          "elapsed_seconds": 900.023,
+          "stdout_tail": "",
+          "stderr_tail": "",
+          "error": "timeout_after_900s"
+        },
+        {
+          "task": "build_intraday_training_dataset",
+          "script": "build_intraday_training_dataset.py",
+          "started_at_utc": "2026-05-15T10:04:43.720210+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 56.493,
+          "stdout_tail": " 'SNTG': 9, 'WOK': 1021, 'WXM': 47, 'YJ': 1}\n[dataset] batch_counts={'JZXN': 354, 'QUCY': 1016}\n[dataset] empty batch=['NMGC', 'QEDN', 'SPQS', 'SPTY', 'GRPS', 'JSHG', 'KAVL', 'TLSS', 'INNI', 'PRAC', 'PREC', 'SONX', 'CRKN', 'CNHC', 'ILST', 'GEGI', 'SPSO', 'CXCQ', 'TGMR', 'AMIH', 'IPRC', 'ZVOI', 'GNAL', 'LSCG', 'PUPS']\n[dataset] empty batch=['SNWR', 'SKYF', 'SING', 'VICA', 'RENO', 'CALA', 'GSNR', 'NMPGY', 'SNNVF', 'ILIM', 'RVVQF', 'GLIV', 'LSEB']\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_bars_1m.csv\n[features] skip BMGL: only 19 rows\n[features] skip BYAH: only 17 rows\n[features] skip CAPL: only 119 rows\n[features] skip CCM: only 21 rows\n[features] skip ELMD: only 86 rows\n[features] skip ENGS: only 85 rows\n[features] skip FAMI: only 6 rows\n[features] skip GENK: only 66 rows\n[features] skip HCHL: only 83 rows\n[features] skip INBS: only 117 rows\n[features] skip JFU: only 17 rows\n[features] skip JXG: only 2 rows\n[features] skip JYD: only 44 rows\n[features] skip LICN: only 18 rows\n[features] skip MGIH: only 11 rows\n[features] skip MOVE: only 81 rows\n[features] skip MSGM: only 60 rows\n[features] skip NAAS: only 7 rows\n[features] skip NDRA: only 17 rows\n[features] skip NEPH: only 28 rows\n[features] skip NTWK: only 22 rows\n[features] skip PIII: only 41 rows\n[features] skip SNES: only 70 rows\n[features] skip SNTG: only 9 rows\n[features] skip WXM: only 47 rows\n[features] skip YJ: only 1 rows\n[features] skip ZBAI: only 5 rows\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_multitimeframe_context.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_exit_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_symbol_state.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.jsonl\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_dataset_summary.json\n[rows_raw] 334,751\n[rows_features] 333,652\n[rows_exit_dataset] 331,867\n[symbols_returned] 146\nACMR,ADEA,AEHL,AIIO,AIP,AKAM,ALMU,ANY,ARBE,ATOM,AUR,BIDU,BIOA,BJRI,BMGL,BWA,BYAH,CAPL,CCCC,CCM,CHRN,CLOV,CMPS,CORT,CSTE,DGII,DMRC,DOC,DSGN,DTIL,ELMD,ENGS,ENPH,ENVX,EOSE,EVC,EVEX,EVTV,F,FAMI,FATN,FEAM,FTK,GEN,GENK,GNLX,GREE,GRPN,GRWG,GUTS,HCHL,HUMA,HYLN,IDR,IMDX,IMUX,INBS,INV,INVZ,JD,JFU,JXG,JYD,JZXN,KC,KLXE,KULR,KYIV,KYTX,LICN,LIDR,LUNR,MBAI,MBLY,MD,MEI,MGIH,MOVE,MRX,MSGM,MVIS,MXCT,NAAS,NBIS,NDRA,NEPH,NEXT,NGNE,NIO,NMAX,NN,NNVC,NP,NRGV,NTWK,NUAI,NVCT,NVEC,NXDR,OABI,OCS,ON,ORA,OUST,PAPL,PENG,PIII,PNTG,PRM,PSNY,QS,QUCY,RFIL,RR,RUM,RVI,SATS,SEAT,SHAZ,SLND,SLNH,SLS,SNES,SNTG,SPCE,STFS,SYNA,TDC,TOMZ,TSEM,TTI,TUSK,VELO,VIVO,VLN,VNET,VOYG,VPG,WHWK,WOK,WOLF,WXM,XMTR,YJ,YMAT,ZBAI\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "options_booster",
+          "script": "options_booster.py",
+          "started_at_utc": "2026-05-15T10:05:40.219539+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 0.849,
+          "stdout_tail": "===== UNUSUAL FLOW OPTIONS BOOSTER =====\n[config] enabled=True\n[config] paper=True\n[config] universe_limit=30\n[config] dte=21-45 target=30\n[config] delta=0.35-0.70\n[config] min_volume=10 min_oi=25 min_vol_oi=0.25\n[config] min_premium_flow=$25,000\n[config] require_open_underlying_position=True\n[universe] loaded=19\n[universe] symbols=F,VICR,AIP,AVAH,CGON,KLAR,ONDS,PCT,RDW,STAA,FENC,HYLN,MRAM,RILY,SLQT,UMAC,VLN,IPWR,CSCO\n[flow] scanning underlyings=19\n[flow] skip F: no underlying price in source rows\n[flow] skip VICR: no underlying price in source rows\n[flow] skip AIP: no underlying price in source rows\n[flow] skip AVAH: no underlying price in source rows\n[flow] skip CGON: no underlying price in source rows\n[flow] skip KLAR: no underlying price in source rows\n[flow] skip ONDS: no underlying price in source rows\n[flow] skip PCT: no underlying price in source rows\n[flow] skip RDW: no underlying price in source rows\n[flow] skip STAA: no underlying price in source rows\n[flow] skip FENC: no underlying price in source rows\n[flow] skip HYLN: no underlying price in source rows\n[flow] skip MRAM: no underlying price in source rows\n[flow] skip RILY: no underlying price in source rows\n[flow] skip SLQT: no underlying price in source rows\n[flow] skip UMAC: no underlying price in source rows\n[flow] skip VLN: no underlying price in source rows\n[flow] skip IPWR: no underlying price in source rows\n[flow] skip CSCO: no underlying price in source rows\n[flow] no unusual positive-EV calls found\n[saved] rebalance_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_rebalance_orders.csv option_rows=0\n[saved] exit_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_exit_orders.csv option_exit_rows=0\n[options] no option orders generated\n",
+          "stderr_tail": "",
+          "error": ""
+        }
+      ],
+      "cycle_completed_at_utc": "2026-05-15T10:05:41.072046+00:00",
+      "cycle_completed_at_et": "2026-05-15T06:05:41.072051-04:00"
+    },
+    {
+      "cycle_started_at_utc": "2026-05-15T10:10:42.192903+00:00",
+      "cycle_started_at_et": "2026-05-15T06:10:42.192921-04:00",
+      "results": [
+        {
+          "task": "llm_sentiment_universe_selector",
+          "script": "llm_sentiment_universe_selector.py",
+          "started_at_utc": "2026-05-15T10:10:42.193254+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 14.395,
+          "stdout_tail": "[csv-universe] loaded 19 symbols from /Users/blkpvnthr/Desktop/trader/data/bullish_2026-05-15.csv\n[discovery] researching 19 CSV symbols with yfinance premarket data\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_candidate_discovery.json\n[discovery] csv_symbols=19 candidates=19 unusual_premarket=0\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_sentiment_universe.json\n[saved] /Users/blkpvnthr/Desktop/trader/20260515_locked_trading_universe.txt\n\"CSCO\",\"F\",\"VICR\",\"AIP\",\"AVAH\",\"CGON\",\"KLAR\",\"PCT\",\"RDW\",\"STAA\",\"FENC\",\"HYLN\",\"MRAM\",\"RILY\",\"SLQT\",\"UMAC\",\"VLN\",\"IPWR\",\"ONDS\"\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "market_context_builder",
+          "script": "market_context_builder.py",
+          "started_at_utc": "2026-05-15T10:10:56.589132+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 39.392,
+          "stdout_tail": "[saved] /Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260515/20260515_market_context.json\n{\n  \"overall_market_bias\": \"mixed\",\n  \"trade_permission\": \"cautious\",\n  \"risk_level\": \"medium\",\n  \"summary\": \"Market shows mixed signals with positive sector rotation into growth and energy, but overnight futures are sharply negative and volatility is rising. No confirmed major macro events today, but caution is warranted due to futures weakness and rising VIX.\",\n  \"event_flags\": {\n    \"fed_events_today\": false,\n    \"opec_events_today\": false,\n    \"jobs_report_today\": false,\n    \"inflation_report_today\": false,\n    \"pce_report_today\": false,\n    \"presidential_trade_speech_today\": false,\n    \"major_earnings_today\": false\n  },\n  \"sector_context_summary\": {\n    \"leading_sectors\": [\n      \"Technology\",\n      \"Energy\",\n      \"Financials\"\n    ],\n    \"lagging_sectors\": [\n      \"Healthcare\",\n      \"Real Estate\",\n      \"Materials\"\n    ],\n    \"sector_rotation_bias\": \"risk_on_growth\"\n  },\n  \"key_etf_context_summary\": {\n    \"risk_signal_bias\": \"risk_on\",\n    \"risk_flags\": []\n  },\n  \"decision_reasons\": [\n    \"Overnight futures for major indices (ES, NQ, YM, RTY) are down sharply, indicating negative market sentiment pre-open.\",\n    \"VIX has risen significantly overnight, signaling increased market volatility and risk.\",\n    \"Leading sectors include Technology, Energy, and Financials, indicating risk-on growth rotation.\",\n    \"SPY and QQQ closed higher yesterday, supporting a constructive broad and tech market, but futures weakness tempers this.\",\n    \"No confirmed Fed, CPI, PCE, or jobs reports today based on event evidence; flags remain false due to lack of explicit confirmation.\",\n    \"Options data is limited with unknown bias, providing no strong directional clues.\",\n    \"Sector rotation bias is risk_on_growth, but market caution is advised due to futures and volatility signals.\"\n  ]\n}\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "premarket_trade_planner",
+          "script": "premarket_trade_planner.py",
+          "started_at_utc": "2026-05-15T10:11:35.981368+00:00",
+          "ok": false,
+          "returncode": -1,
+          "elapsed_seconds": 900.02,
+          "stdout_tail": "",
+          "stderr_tail": "",
+          "error": "timeout_after_900s"
+        },
+        {
+          "task": "build_intraday_training_dataset",
+          "script": "build_intraday_training_dataset.py",
+          "started_at_utc": "2026-05-15T10:26:36.006545+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 57.69,
+          "stdout_tail": " 'SNTG': 9, 'WOK': 1021, 'WXM': 47, 'YJ': 1}\n[dataset] batch_counts={'JZXN': 354, 'QUCY': 1016}\n[dataset] empty batch=['NMGC', 'QEDN', 'SPQS', 'SPTY', 'GRPS', 'JSHG', 'KAVL', 'TLSS', 'INNI', 'PRAC', 'PREC', 'SONX', 'CRKN', 'CNHC', 'ILST', 'GEGI', 'SPSO', 'CXCQ', 'TGMR', 'AMIH', 'IPRC', 'ZVOI', 'GNAL', 'LSCG', 'PUPS']\n[dataset] empty batch=['SNWR', 'SKYF', 'SING', 'VICA', 'RENO', 'CALA', 'GSNR', 'NMPGY', 'SNNVF', 'ILIM', 'RVVQF', 'GLIV', 'LSEB']\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_bars_1m.csv\n[features] skip BMGL: only 19 rows\n[features] skip BYAH: only 17 rows\n[features] skip CAPL: only 119 rows\n[features] skip CCM: only 21 rows\n[features] skip ELMD: only 86 rows\n[features] skip ENGS: only 85 rows\n[features] skip FAMI: only 6 rows\n[features] skip GENK: only 66 rows\n[features] skip HCHL: only 83 rows\n[features] skip INBS: only 117 rows\n[features] skip JFU: only 17 rows\n[features] skip JXG: only 2 rows\n[features] skip JYD: only 44 rows\n[features] skip LICN: only 18 rows\n[features] skip MGIH: only 11 rows\n[features] skip MOVE: only 81 rows\n[features] skip MSGM: only 60 rows\n[features] skip NAAS: only 7 rows\n[features] skip NDRA: only 17 rows\n[features] skip NEPH: only 28 rows\n[features] skip NTWK: only 22 rows\n[features] skip PIII: only 41 rows\n[features] skip SNES: only 70 rows\n[features] skip SNTG: only 9 rows\n[features] skip WXM: only 47 rows\n[features] skip YJ: only 1 rows\n[features] skip ZBAI: only 5 rows\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_multitimeframe_context.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_exit_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_symbol_state.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.jsonl\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_dataset_summary.json\n[rows_raw] 334,751\n[rows_features] 333,652\n[rows_exit_dataset] 331,867\n[symbols_returned] 146\nACMR,ADEA,AEHL,AIIO,AIP,AKAM,ALMU,ANY,ARBE,ATOM,AUR,BIDU,BIOA,BJRI,BMGL,BWA,BYAH,CAPL,CCCC,CCM,CHRN,CLOV,CMPS,CORT,CSTE,DGII,DMRC,DOC,DSGN,DTIL,ELMD,ENGS,ENPH,ENVX,EOSE,EVC,EVEX,EVTV,F,FAMI,FATN,FEAM,FTK,GEN,GENK,GNLX,GREE,GRPN,GRWG,GUTS,HCHL,HUMA,HYLN,IDR,IMDX,IMUX,INBS,INV,INVZ,JD,JFU,JXG,JYD,JZXN,KC,KLXE,KULR,KYIV,KYTX,LICN,LIDR,LUNR,MBAI,MBLY,MD,MEI,MGIH,MOVE,MRX,MSGM,MVIS,MXCT,NAAS,NBIS,NDRA,NEPH,NEXT,NGNE,NIO,NMAX,NN,NNVC,NP,NRGV,NTWK,NUAI,NVCT,NVEC,NXDR,OABI,OCS,ON,ORA,OUST,PAPL,PENG,PIII,PNTG,PRM,PSNY,QS,QUCY,RFIL,RR,RUM,RVI,SATS,SEAT,SHAZ,SLND,SLNH,SLS,SNES,SNTG,SPCE,STFS,SYNA,TDC,TOMZ,TSEM,TTI,TUSK,VELO,VIVO,VLN,VNET,VOYG,VPG,WHWK,WOK,WOLF,WXM,XMTR,YJ,YMAT,ZBAI\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "options_booster",
+          "script": "options_booster.py",
+          "started_at_utc": "2026-05-15T10:27:33.697653+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 0.796,
+          "stdout_tail": "===== UNUSUAL FLOW OPTIONS BOOSTER =====\n[config] enabled=True\n[config] paper=True\n[config] universe_limit=30\n[config] dte=21-45 target=30\n[config] delta=0.35-0.70\n[config] min_volume=10 min_oi=25 min_vol_oi=0.25\n[config] min_premium_flow=$25,000\n[config] require_open_underlying_position=True\n[universe] loaded=19\n[universe] symbols=CSCO,F,VICR,AIP,AVAH,CGON,KLAR,PCT,RDW,STAA,FENC,HYLN,MRAM,RILY,SLQT,UMAC,VLN,IPWR,ONDS\n[flow] scanning underlyings=19\n[flow] skip CSCO: no underlying price in source rows\n[flow] skip F: no underlying price in source rows\n[flow] skip VICR: no underlying price in source rows\n[flow] skip AIP: no underlying price in source rows\n[flow] skip AVAH: no underlying price in source rows\n[flow] skip CGON: no underlying price in source rows\n[flow] skip KLAR: no underlying price in source rows\n[flow] skip PCT: no underlying price in source rows\n[flow] skip RDW: no underlying price in source rows\n[flow] skip STAA: no underlying price in source rows\n[flow] skip FENC: no underlying price in source rows\n[flow] skip HYLN: no underlying price in source rows\n[flow] skip MRAM: no underlying price in source rows\n[flow] skip RILY: no underlying price in source rows\n[flow] skip SLQT: no underlying price in source rows\n[flow] skip UMAC: no underlying price in source rows\n[flow] skip VLN: no underlying price in source rows\n[flow] skip IPWR: no underlying price in source rows\n[flow] skip ONDS: no underlying price in source rows\n[flow] no unusual positive-EV calls found\n[saved] rebalance_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_rebalance_orders.csv option_rows=0\n[saved] exit_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_exit_orders.csv option_exit_rows=0\n[options] no option orders generated\n",
+          "stderr_tail": "",
+          "error": ""
+        }
+      ],
+      "cycle_completed_at_utc": "2026-05-15T10:27:34.493843+00:00",
+      "cycle_completed_at_et": "2026-05-15T06:27:34.493845-04:00"
+    },
+    {
+      "cycle_started_at_utc": "2026-05-15T10:32:35.627557+00:00",
+      "cycle_started_at_et": "2026-05-15T06:32:35.627569-04:00",
+      "results": [
+        {
+          "task": "llm_sentiment_universe_selector",
+          "script": "llm_sentiment_universe_selector.py",
+          "started_at_utc": "2026-05-15T10:32:35.627871+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 15.475,
+          "stdout_tail": "[csv-universe] loaded 19 symbols from /Users/blkpvnthr/Desktop/trader/data/bullish_2026-05-15.csv\n[discovery] researching 19 CSV symbols with yfinance premarket data\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_candidate_discovery.json\n[discovery] csv_symbols=19 candidates=19 unusual_premarket=0\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_sentiment_universe.json\n[saved] /Users/blkpvnthr/Desktop/trader/20260515_locked_trading_universe.txt\n\"CSCO\",\"F\",\"VICR\",\"AIP\",\"AVAH\",\"CGON\",\"KLAR\",\"ONDS\",\"PCT\",\"STAA\",\"FENC\",\"HYLN\",\"MRAM\",\"RILY\",\"SLQT\",\"UMAC\",\"VLN\",\"IPWR\",\"RDW\"\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "market_context_builder",
+          "script": "market_context_builder.py",
+          "started_at_utc": "2026-05-15T10:32:51.103981+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 18.907,
+          "stdout_tail": "[saved] /Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260515/20260515_market_context.json\n{\n  \"overall_market_bias\": \"bearish\",\n  \"trade_permission\": \"cautious\",\n  \"risk_level\": \"medium\",\n  \"summary\": \"Market shows bearish overnight futures with declining indices and rising volatility. Sector rotation favors risk-on growth but futures weakness and geopolitical tensions increase caution. No confirmed major macro events today, but uncertainty remains.\",\n  \"event_flags\": {\n    \"fed_events_today\": false,\n    \"opec_events_today\": false,\n    \"jobs_report_today\": false,\n    \"inflation_report_today\": false,\n    \"pce_report_today\": false,\n    \"presidential_trade_speech_today\": false,\n    \"major_earnings_today\": false\n  },\n  \"sector_context_summary\": {\n    \"leading_sectors\": [\n      \"Technology\",\n      \"Energy\",\n      \"Financials\"\n    ],\n    \"lagging_sectors\": [\n      \"Healthcare\",\n      \"Real Estate\",\n      \"Materials\"\n    ],\n    \"sector_rotation_bias\": \"risk_on_growth\"\n  },\n  \"key_etf_context_summary\": {\n    \"risk_signal_bias\": \"risk_on\",\n    \"risk_flags\": []\n  },\n  \"decision_reasons\": [\n    \"Overnight futures for ES, NQ, YM, and RTY are down significantly, indicating negative market sentiment.\",\n    \"VIX increased by 3.7%, showing rising volatility and risk aversion.\",\n    \"SPY and QQQ closed higher yesterday, but futures weakness and VXX decline suggest mixed signals.\",\n    \"Sector rotation is risk_on_growth with Technology, Energy, and Financials leading, but some defensive sectors also show strength.\",\n    \"No confirmed Fed, jobs, inflation, PCE, OPEC, or presidential trade speech events today based on explicit evidence.\",\n    \"Options data shows unknown bias with no significant put/call volume or premium flow to confirm directional conviction.\",\n    \"Geopolitical tensions (Iran and oil turmoil) mentioned in news increase risk perception.\"\n  ]\n}\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "premarket_trade_planner",
+          "script": "premarket_trade_planner.py",
+          "started_at_utc": "2026-05-15T10:33:10.015230+00:00",
+          "ok": false,
+          "returncode": -1,
+          "elapsed_seconds": 900.021,
+          "stdout_tail": "",
+          "stderr_tail": "",
+          "error": "timeout_after_900s"
+        },
+        {
+          "task": "build_intraday_training_dataset",
+          "script": "build_intraday_training_dataset.py",
+          "started_at_utc": "2026-05-15T10:48:10.037601+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 58.398,
+          "stdout_tail": " 'SNTG': 9, 'WOK': 1021, 'WXM': 47, 'YJ': 1}\n[dataset] batch_counts={'JZXN': 354, 'QUCY': 1016}\n[dataset] empty batch=['NMGC', 'QEDN', 'SPQS', 'SPTY', 'GRPS', 'JSHG', 'KAVL', 'TLSS', 'INNI', 'PRAC', 'PREC', 'SONX', 'CRKN', 'CNHC', 'ILST', 'GEGI', 'SPSO', 'CXCQ', 'TGMR', 'AMIH', 'IPRC', 'ZVOI', 'GNAL', 'LSCG', 'PUPS']\n[dataset] empty batch=['SNWR', 'SKYF', 'SING', 'VICA', 'RENO', 'CALA', 'GSNR', 'NMPGY', 'SNNVF', 'ILIM', 'RVVQF', 'GLIV', 'LSEB']\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_bars_1m.csv\n[features] skip BMGL: only 19 rows\n[features] skip BYAH: only 17 rows\n[features] skip CAPL: only 119 rows\n[features] skip CCM: only 21 rows\n[features] skip ELMD: only 86 rows\n[features] skip ENGS: only 85 rows\n[features] skip FAMI: only 6 rows\n[features] skip GENK: only 66 rows\n[features] skip HCHL: only 83 rows\n[features] skip INBS: only 117 rows\n[features] skip JFU: only 17 rows\n[features] skip JXG: only 2 rows\n[features] skip JYD: only 44 rows\n[features] skip LICN: only 18 rows\n[features] skip MGIH: only 11 rows\n[features] skip MOVE: only 81 rows\n[features] skip MSGM: only 60 rows\n[features] skip NAAS: only 7 rows\n[features] skip NDRA: only 17 rows\n[features] skip NEPH: only 28 rows\n[features] skip NTWK: only 22 rows\n[features] skip PIII: only 41 rows\n[features] skip SNES: only 70 rows\n[features] skip SNTG: only 9 rows\n[features] skip WXM: only 47 rows\n[features] skip YJ: only 1 rows\n[features] skip ZBAI: only 5 rows\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_multitimeframe_context.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_exit_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_symbol_state.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.jsonl\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_dataset_summary.json\n[rows_raw] 334,751\n[rows_features] 333,652\n[rows_exit_dataset] 331,867\n[symbols_returned] 146\nACMR,ADEA,AEHL,AIIO,AIP,AKAM,ALMU,ANY,ARBE,ATOM,AUR,BIDU,BIOA,BJRI,BMGL,BWA,BYAH,CAPL,CCCC,CCM,CHRN,CLOV,CMPS,CORT,CSTE,DGII,DMRC,DOC,DSGN,DTIL,ELMD,ENGS,ENPH,ENVX,EOSE,EVC,EVEX,EVTV,F,FAMI,FATN,FEAM,FTK,GEN,GENK,GNLX,GREE,GRPN,GRWG,GUTS,HCHL,HUMA,HYLN,IDR,IMDX,IMUX,INBS,INV,INVZ,JD,JFU,JXG,JYD,JZXN,KC,KLXE,KULR,KYIV,KYTX,LICN,LIDR,LUNR,MBAI,MBLY,MD,MEI,MGIH,MOVE,MRX,MSGM,MVIS,MXCT,NAAS,NBIS,NDRA,NEPH,NEXT,NGNE,NIO,NMAX,NN,NNVC,NP,NRGV,NTWK,NUAI,NVCT,NVEC,NXDR,OABI,OCS,ON,ORA,OUST,PAPL,PENG,PIII,PNTG,PRM,PSNY,QS,QUCY,RFIL,RR,RUM,RVI,SATS,SEAT,SHAZ,SLND,SLNH,SLS,SNES,SNTG,SPCE,STFS,SYNA,TDC,TOMZ,TSEM,TTI,TUSK,VELO,VIVO,VLN,VNET,VOYG,VPG,WHWK,WOK,WOLF,WXM,XMTR,YJ,YMAT,ZBAI\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "options_booster",
+          "script": "options_booster.py",
+          "started_at_utc": "2026-05-15T10:49:08.442289+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 0.797,
+          "stdout_tail": "===== UNUSUAL FLOW OPTIONS BOOSTER =====\n[config] enabled=True\n[config] paper=True\n[config] universe_limit=30\n[config] dte=21-45 target=30\n[config] delta=0.35-0.70\n[config] min_volume=10 min_oi=25 min_vol_oi=0.25\n[config] min_premium_flow=$25,000\n[config] require_open_underlying_position=True\n[universe] loaded=19\n[universe] symbols=CSCO,F,VICR,AIP,AVAH,CGON,KLAR,ONDS,PCT,STAA,FENC,HYLN,MRAM,RILY,SLQT,UMAC,VLN,IPWR,RDW\n[flow] scanning underlyings=19\n[flow] skip CSCO: no underlying price in source rows\n[flow] skip F: no underlying price in source rows\n[flow] skip VICR: no underlying price in source rows\n[flow] skip AIP: no underlying price in source rows\n[flow] skip AVAH: no underlying price in source rows\n[flow] skip CGON: no underlying price in source rows\n[flow] skip KLAR: no underlying price in source rows\n[flow] skip ONDS: no underlying price in source rows\n[flow] skip PCT: no underlying price in source rows\n[flow] skip STAA: no underlying price in source rows\n[flow] skip FENC: no underlying price in source rows\n[flow] skip HYLN: no underlying price in source rows\n[flow] skip MRAM: no underlying price in source rows\n[flow] skip RILY: no underlying price in source rows\n[flow] skip SLQT: no underlying price in source rows\n[flow] skip UMAC: no underlying price in source rows\n[flow] skip VLN: no underlying price in source rows\n[flow] skip IPWR: no underlying price in source rows\n[flow] skip RDW: no underlying price in source rows\n[flow] no unusual positive-EV calls found\n[saved] rebalance_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_rebalance_orders.csv option_rows=0\n[saved] exit_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_exit_orders.csv option_exit_rows=0\n[options] no option orders generated\n",
+          "stderr_tail": "",
+          "error": ""
+        }
+      ],
+      "cycle_completed_at_utc": "2026-05-15T10:49:09.242434+00:00",
+      "cycle_completed_at_et": "2026-05-15T06:49:09.242440-04:00"
+    },
+    {
+      "cycle_started_at_utc": "2026-05-15T10:54:10.370370+00:00",
+      "cycle_started_at_et": "2026-05-15T06:54:10.370387-04:00",
+      "results": [
+        {
+          "task": "llm_sentiment_universe_selector",
+          "script": "llm_sentiment_universe_selector.py",
+          "started_at_utc": "2026-05-15T10:54:10.370832+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 15.144,
+          "stdout_tail": "[csv-universe] loaded 19 symbols from /Users/blkpvnthr/Desktop/trader/data/bullish_2026-05-15.csv\n[discovery] researching 19 CSV symbols with yfinance premarket data\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_candidate_discovery.json\n[discovery] csv_symbols=19 candidates=19 unusual_premarket=0\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_sentiment_universe.json\n[saved] /Users/blkpvnthr/Desktop/trader/20260515_locked_trading_universe.txt\n\"RDW\",\"CSCO\",\"F\",\"VICR\",\"AIP\",\"AVAH\",\"CGON\",\"KLAR\",\"ONDS\",\"PCT\",\"STAA\",\"FENC\",\"HYLN\",\"MRAM\",\"RILY\",\"SLQT\",\"UMAC\",\"VLN\",\"IPWR\"\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "market_context_builder",
+          "script": "market_context_builder.py",
+          "started_at_utc": "2026-05-15T10:54:25.515233+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 19.044,
+          "stdout_tail": "[saved] /Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260515/20260515_market_context.json\n{\n  \"overall_market_bias\": \"mixed\",\n  \"trade_permission\": \"cautious\",\n  \"risk_level\": \"medium\",\n  \"summary\": \"Market shows mixed signals with positive sector rotation into growth and technology, but overnight futures are down and volatility is rising. No confirmed major macro events today, but caution is warranted due to futures weakness and rising VIX.\",\n  \"event_flags\": {\n    \"fed_events_today\": false,\n    \"opec_events_today\": false,\n    \"jobs_report_today\": false,\n    \"inflation_report_today\": false,\n    \"pce_report_today\": false,\n    \"presidential_trade_speech_today\": false,\n    \"major_earnings_today\": false\n  },\n  \"sector_context_summary\": {\n    \"leading_sectors\": [\n      \"Technology\",\n      \"Energy\",\n      \"Financials\"\n    ],\n    \"lagging_sectors\": [\n      \"Healthcare\",\n      \"Real Estate\",\n      \"Materials\"\n    ],\n    \"sector_rotation_bias\": \"risk_on_growth\"\n  },\n  \"key_etf_context_summary\": {\n    \"risk_signal_bias\": \"risk_on\",\n    \"risk_flags\": []\n  },\n  \"decision_reasons\": [\n    \"Technology, Energy, and Financials sectors are leading, indicating risk-on growth rotation.\",\n    \"SPY and QQQ closed higher yesterday, supporting bullish sentiment in broad and tech markets.\",\n    \"VXX is down, indicating lower volatility yesterday, but overnight VIX futures are up about 3.7%, signaling increased risk.\",\n    \"Overnight futures (ES, NQ, YM, RTY) are down moderately, with NQ down nearly 1%, indicating negative pre-market sentiment.\",\n    \"No confirmed Fed, jobs, inflation, PCE, OPEC, or presidential trade speech events today based on explicit evidence, so no event-driven halt is required.\",\n    \"Options data is limited and shows unknown bias, so no strong directional signals from options flow.\",\n    \"Sector rotation bias is risk_on_growth, supporting constructive market environment.\",\n    \"Rising overnight VIX and negative futures justify cautious trading permission despite positive sector and ETF signals.\"\n  ]\n}\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "premarket_trade_planner",
+          "script": "premarket_trade_planner.py",
+          "started_at_utc": "2026-05-15T10:54:44.563466+00:00",
+          "ok": false,
+          "returncode": -1,
+          "elapsed_seconds": 900.014,
+          "stdout_tail": "",
+          "stderr_tail": "",
+          "error": "timeout_after_900s"
+        },
+        {
+          "task": "build_intraday_training_dataset",
+          "script": "build_intraday_training_dataset.py",
+          "started_at_utc": "2026-05-15T11:09:44.582583+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 56.791,
+          "stdout_tail": " 'SNTG': 9, 'WOK': 1021, 'WXM': 47, 'YJ': 1}\n[dataset] batch_counts={'JZXN': 354, 'QUCY': 1016}\n[dataset] empty batch=['NMGC', 'QEDN', 'SPQS', 'SPTY', 'GRPS', 'JSHG', 'KAVL', 'TLSS', 'INNI', 'PRAC', 'PREC', 'SONX', 'CRKN', 'CNHC', 'ILST', 'GEGI', 'SPSO', 'CXCQ', 'TGMR', 'AMIH', 'IPRC', 'ZVOI', 'GNAL', 'LSCG', 'PUPS']\n[dataset] empty batch=['SNWR', 'SKYF', 'SING', 'VICA', 'RENO', 'CALA', 'GSNR', 'NMPGY', 'SNNVF', 'ILIM', 'RVVQF', 'GLIV', 'LSEB']\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_bars_1m.csv\n[features] skip BMGL: only 19 rows\n[features] skip BYAH: only 17 rows\n[features] skip CAPL: only 119 rows\n[features] skip CCM: only 21 rows\n[features] skip ELMD: only 86 rows\n[features] skip ENGS: only 85 rows\n[features] skip FAMI: only 6 rows\n[features] skip GENK: only 66 rows\n[features] skip HCHL: only 83 rows\n[features] skip INBS: only 117 rows\n[features] skip JFU: only 17 rows\n[features] skip JXG: only 2 rows\n[features] skip JYD: only 44 rows\n[features] skip LICN: only 18 rows\n[features] skip MGIH: only 11 rows\n[features] skip MOVE: only 81 rows\n[features] skip MSGM: only 60 rows\n[features] skip NAAS: only 7 rows\n[features] skip NDRA: only 17 rows\n[features] skip NEPH: only 28 rows\n[features] skip NTWK: only 22 rows\n[features] skip PIII: only 41 rows\n[features] skip SNES: only 70 rows\n[features] skip SNTG: only 9 rows\n[features] skip WXM: only 47 rows\n[features] skip YJ: only 1 rows\n[features] skip ZBAI: only 5 rows\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_multitimeframe_context.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_exit_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_symbol_state.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.jsonl\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_dataset_summary.json\n[rows_raw] 334,751\n[rows_features] 333,652\n[rows_exit_dataset] 331,867\n[symbols_returned] 146\nACMR,ADEA,AEHL,AIIO,AIP,AKAM,ALMU,ANY,ARBE,ATOM,AUR,BIDU,BIOA,BJRI,BMGL,BWA,BYAH,CAPL,CCCC,CCM,CHRN,CLOV,CMPS,CORT,CSTE,DGII,DMRC,DOC,DSGN,DTIL,ELMD,ENGS,ENPH,ENVX,EOSE,EVC,EVEX,EVTV,F,FAMI,FATN,FEAM,FTK,GEN,GENK,GNLX,GREE,GRPN,GRWG,GUTS,HCHL,HUMA,HYLN,IDR,IMDX,IMUX,INBS,INV,INVZ,JD,JFU,JXG,JYD,JZXN,KC,KLXE,KULR,KYIV,KYTX,LICN,LIDR,LUNR,MBAI,MBLY,MD,MEI,MGIH,MOVE,MRX,MSGM,MVIS,MXCT,NAAS,NBIS,NDRA,NEPH,NEXT,NGNE,NIO,NMAX,NN,NNVC,NP,NRGV,NTWK,NUAI,NVCT,NVEC,NXDR,OABI,OCS,ON,ORA,OUST,PAPL,PENG,PIII,PNTG,PRM,PSNY,QS,QUCY,RFIL,RR,RUM,RVI,SATS,SEAT,SHAZ,SLND,SLNH,SLS,SNES,SNTG,SPCE,STFS,SYNA,TDC,TOMZ,TSEM,TTI,TUSK,VELO,VIVO,VLN,VNET,VOYG,VPG,WHWK,WOK,WOLF,WXM,XMTR,YJ,YMAT,ZBAI\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "options_booster",
+          "script": "options_booster.py",
+          "started_at_utc": "2026-05-15T11:10:41.377796+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 0.804,
+          "stdout_tail": "===== UNUSUAL FLOW OPTIONS BOOSTER =====\n[config] enabled=True\n[config] paper=True\n[config] universe_limit=30\n[config] dte=21-45 target=30\n[config] delta=0.35-0.70\n[config] min_volume=10 min_oi=25 min_vol_oi=0.25\n[config] min_premium_flow=$25,000\n[config] require_open_underlying_position=True\n[universe] loaded=19\n[universe] symbols=RDW,CSCO,F,VICR,AIP,AVAH,CGON,KLAR,ONDS,PCT,STAA,FENC,HYLN,MRAM,RILY,SLQT,UMAC,VLN,IPWR\n[flow] scanning underlyings=19\n[flow] skip RDW: no underlying price in source rows\n[flow] skip CSCO: no underlying price in source rows\n[flow] skip F: no underlying price in source rows\n[flow] skip VICR: no underlying price in source rows\n[flow] skip AIP: no underlying price in source rows\n[flow] skip AVAH: no underlying price in source rows\n[flow] skip CGON: no underlying price in source rows\n[flow] skip KLAR: no underlying price in source rows\n[flow] skip ONDS: no underlying price in source rows\n[flow] skip PCT: no underlying price in source rows\n[flow] skip STAA: no underlying price in source rows\n[flow] skip FENC: no underlying price in source rows\n[flow] skip HYLN: no underlying price in source rows\n[flow] skip MRAM: no underlying price in source rows\n[flow] skip RILY: no underlying price in source rows\n[flow] skip SLQT: no underlying price in source rows\n[flow] skip UMAC: no underlying price in source rows\n[flow] skip VLN: no underlying price in source rows\n[flow] skip IPWR: no underlying price in source rows\n[flow] no unusual positive-EV calls found\n[saved] rebalance_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_rebalance_orders.csv option_rows=0\n[saved] exit_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_exit_orders.csv option_exit_rows=0\n[options] no option orders generated\n",
+          "stderr_tail": "",
+          "error": ""
+        }
+      ],
+      "cycle_completed_at_utc": "2026-05-15T11:10:42.185007+00:00",
+      "cycle_completed_at_et": "2026-05-15T07:10:42.185012-04:00"
+    },
+    {
+      "cycle_started_at_utc": "2026-05-15T11:15:43.361922+00:00",
+      "cycle_started_at_et": "2026-05-15T07:15:43.361941-04:00",
+      "results": [
+        {
+          "task": "llm_sentiment_universe_selector",
+          "script": "llm_sentiment_universe_selector.py",
+          "started_at_utc": "2026-05-15T11:15:43.362452+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 14.363,
+          "stdout_tail": "[csv-universe] loaded 19 symbols from /Users/blkpvnthr/Desktop/trader/data/bullish_2026-05-15.csv\n[discovery] researching 19 CSV symbols with yfinance premarket data\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_candidate_discovery.json\n[discovery] csv_symbols=19 candidates=19 unusual_premarket=0\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_sentiment_universe.json\n[saved] /Users/blkpvnthr/Desktop/trader/20260515_locked_trading_universe.txt\n\"RDW\",\"CSCO\",\"F\",\"VICR\",\"AIP\",\"AVAH\",\"CGON\",\"KLAR\",\"PCT\",\"STAA\",\"FENC\",\"HYLN\",\"MRAM\",\"RILY\",\"SLQT\",\"UMAC\",\"VLN\",\"IPWR\",\"ONDS\"\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "market_context_builder",
+          "script": "market_context_builder.py",
+          "started_at_utc": "2026-05-15T11:15:57.726352+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 50.487,
+          "stdout_tail": "[saved] /Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260515/20260515_market_context.json\n{\n  \"overall_market_bias\": \"bearish\",\n  \"trade_permission\": \"cautious\",\n  \"risk_level\": \"medium\",\n  \"summary\": \"Market shows bearish overnight futures with rising volatility. Leading sectors are growth-oriented but futures weakness and macro uncertainties advise caution.\",\n  \"event_flags\": {\n    \"fed_events_today\": false,\n    \"opec_events_today\": false,\n    \"jobs_report_today\": false,\n    \"inflation_report_today\": false,\n    \"pce_report_today\": false,\n    \"presidential_trade_speech_today\": false,\n    \"major_earnings_today\": false\n  },\n  \"sector_context_summary\": {\n    \"leading_sectors\": [\n      \"Technology\",\n      \"Energy\",\n      \"Financials\"\n    ],\n    \"lagging_sectors\": [\n      \"Healthcare\",\n      \"Real Estate\",\n      \"Materials\"\n    ],\n    \"sector_rotation_bias\": \"risk_on_growth\"\n  },\n  \"key_etf_context_summary\": {\n    \"risk_signal_bias\": \"risk_on\",\n    \"risk_flags\": []\n  },\n  \"decision_reasons\": [\n    \"Overnight futures for major indices are down notably (ES -0.55%, NQ -0.77%), indicating negative market sentiment pre-open.\",\n    \"VIX futures are rising (+2.5%), signaling increased market volatility and risk aversion.\",\n    \"SPY and QQQ closed higher yesterday, but overnight weakness and rising volatility suggest potential reversal or pressure.\",\n    \"Sector rotation favors risk-on growth sectors (Technology, Energy, Financials) but lagging sectors and mixed signals warrant caution.\",\n    \"No confirmed Fed, CPI, PCE, or jobs reports today, but ambiguous Fed event evidence and ongoing geopolitical trade tensions increase uncertainty.\",\n    \"Key ETF risk signals show risk-on bias but absence of options volume and premium flow data limits confidence.\",\n    \"News indicates futures drop due to bond yield increases and inflation worries, adding to bearish pressure.\"\n  ]\n}\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "premarket_trade_planner",
+          "script": "premarket_trade_planner.py",
+          "started_at_utc": "2026-05-15T11:16:48.213918+00:00",
+          "ok": false,
+          "returncode": -1,
+          "elapsed_seconds": 900.039,
+          "stdout_tail": "",
+          "stderr_tail": "",
+          "error": "timeout_after_900s"
+        },
+        {
+          "task": "build_intraday_training_dataset",
+          "script": "build_intraday_training_dataset.py",
+          "started_at_utc": "2026-05-15T11:31:48.257246+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 58.068,
+          "stdout_tail": " 'SNTG': 9, 'WOK': 1021, 'WXM': 47, 'YJ': 1}\n[dataset] batch_counts={'JZXN': 354, 'QUCY': 1016}\n[dataset] empty batch=['NMGC', 'QEDN', 'SPQS', 'SPTY', 'GRPS', 'JSHG', 'KAVL', 'TLSS', 'INNI', 'PRAC', 'PREC', 'SONX', 'CRKN', 'CNHC', 'ILST', 'GEGI', 'SPSO', 'CXCQ', 'TGMR', 'AMIH', 'IPRC', 'ZVOI', 'GNAL', 'LSCG', 'PUPS']\n[dataset] empty batch=['SNWR', 'SKYF', 'SING', 'VICA', 'RENO', 'CALA', 'GSNR', 'NMPGY', 'SNNVF', 'ILIM', 'RVVQF', 'GLIV', 'LSEB']\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_bars_1m.csv\n[features] skip BMGL: only 19 rows\n[features] skip BYAH: only 17 rows\n[features] skip CAPL: only 119 rows\n[features] skip CCM: only 21 rows\n[features] skip ELMD: only 86 rows\n[features] skip ENGS: only 85 rows\n[features] skip FAMI: only 6 rows\n[features] skip GENK: only 66 rows\n[features] skip HCHL: only 83 rows\n[features] skip INBS: only 117 rows\n[features] skip JFU: only 17 rows\n[features] skip JXG: only 2 rows\n[features] skip JYD: only 44 rows\n[features] skip LICN: only 18 rows\n[features] skip MGIH: only 11 rows\n[features] skip MOVE: only 81 rows\n[features] skip MSGM: only 60 rows\n[features] skip NAAS: only 7 rows\n[features] skip NDRA: only 17 rows\n[features] skip NEPH: only 28 rows\n[features] skip NTWK: only 22 rows\n[features] skip PIII: only 41 rows\n[features] skip SNES: only 70 rows\n[features] skip SNTG: only 9 rows\n[features] skip WXM: only 47 rows\n[features] skip YJ: only 1 rows\n[features] skip ZBAI: only 5 rows\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_multitimeframe_context.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_exit_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_symbol_state.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.jsonl\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_dataset_summary.json\n[rows_raw] 334,751\n[rows_features] 333,652\n[rows_exit_dataset] 331,867\n[symbols_returned] 146\nACMR,ADEA,AEHL,AIIO,AIP,AKAM,ALMU,ANY,ARBE,ATOM,AUR,BIDU,BIOA,BJRI,BMGL,BWA,BYAH,CAPL,CCCC,CCM,CHRN,CLOV,CMPS,CORT,CSTE,DGII,DMRC,DOC,DSGN,DTIL,ELMD,ENGS,ENPH,ENVX,EOSE,EVC,EVEX,EVTV,F,FAMI,FATN,FEAM,FTK,GEN,GENK,GNLX,GREE,GRPN,GRWG,GUTS,HCHL,HUMA,HYLN,IDR,IMDX,IMUX,INBS,INV,INVZ,JD,JFU,JXG,JYD,JZXN,KC,KLXE,KULR,KYIV,KYTX,LICN,LIDR,LUNR,MBAI,MBLY,MD,MEI,MGIH,MOVE,MRX,MSGM,MVIS,MXCT,NAAS,NBIS,NDRA,NEPH,NEXT,NGNE,NIO,NMAX,NN,NNVC,NP,NRGV,NTWK,NUAI,NVCT,NVEC,NXDR,OABI,OCS,ON,ORA,OUST,PAPL,PENG,PIII,PNTG,PRM,PSNY,QS,QUCY,RFIL,RR,RUM,RVI,SATS,SEAT,SHAZ,SLND,SLNH,SLS,SNES,SNTG,SPCE,STFS,SYNA,TDC,TOMZ,TSEM,TTI,TUSK,VELO,VIVO,VLN,VNET,VOYG,VPG,WHWK,WOK,WOLF,WXM,XMTR,YJ,YMAT,ZBAI\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "options_booster",
+          "script": "options_booster.py",
+          "started_at_utc": "2026-05-15T11:32:46.326455+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 0.824,
+          "stdout_tail": "===== UNUSUAL FLOW OPTIONS BOOSTER =====\n[config] enabled=True\n[config] paper=True\n[config] universe_limit=30\n[config] dte=21-45 target=30\n[config] delta=0.35-0.70\n[config] min_volume=10 min_oi=25 min_vol_oi=0.25\n[config] min_premium_flow=$25,000\n[config] require_open_underlying_position=True\n[universe] loaded=19\n[universe] symbols=RDW,CSCO,F,VICR,AIP,AVAH,CGON,KLAR,PCT,STAA,FENC,HYLN,MRAM,RILY,SLQT,UMAC,VLN,IPWR,ONDS\n[flow] scanning underlyings=19\n[flow] skip RDW: no underlying price in source rows\n[flow] skip CSCO: no underlying price in source rows\n[flow] skip F: no underlying price in source rows\n[flow] skip VICR: no underlying price in source rows\n[flow] skip AIP: no underlying price in source rows\n[flow] skip AVAH: no underlying price in source rows\n[flow] skip CGON: no underlying price in source rows\n[flow] skip KLAR: no underlying price in source rows\n[flow] skip PCT: no underlying price in source rows\n[flow] skip STAA: no underlying price in source rows\n[flow] skip FENC: no underlying price in source rows\n[flow] skip HYLN: no underlying price in source rows\n[flow] skip MRAM: no underlying price in source rows\n[flow] skip RILY: no underlying price in source rows\n[flow] skip SLQT: no underlying price in source rows\n[flow] skip UMAC: no underlying price in source rows\n[flow] skip VLN: no underlying price in source rows\n[flow] skip IPWR: no underlying price in source rows\n[flow] skip ONDS: no underlying price in source rows\n[flow] no unusual positive-EV calls found\n[saved] rebalance_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_rebalance_orders.csv option_rows=0\n[saved] exit_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_exit_orders.csv option_exit_rows=0\n[options] no option orders generated\n",
+          "stderr_tail": "",
+          "error": ""
+        }
+      ],
+      "cycle_completed_at_utc": "2026-05-15T11:32:47.150906+00:00",
+      "cycle_completed_at_et": "2026-05-15T07:32:47.150908-04:00"
+    },
+    {
+      "cycle_started_at_utc": "2026-05-15T11:37:48.242688+00:00",
+      "cycle_started_at_et": "2026-05-15T07:37:48.242705-04:00",
+      "results": [
+        {
+          "task": "llm_sentiment_universe_selector",
+          "script": "llm_sentiment_universe_selector.py",
+          "started_at_utc": "2026-05-15T11:37:48.243123+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 15.026,
+          "stdout_tail": "[csv-universe] loaded 19 symbols from /Users/blkpvnthr/Desktop/trader/data/bullish_2026-05-15.csv\n[discovery] researching 19 CSV symbols with yfinance premarket data\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_candidate_discovery.json\n[discovery] csv_symbols=19 candidates=19 unusual_premarket=0\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_sentiment_universe.json\n[saved] /Users/blkpvnthr/Desktop/trader/20260515_locked_trading_universe.txt\n\"RDW\",\"F\",\"VICR\",\"AIP\",\"AVAH\",\"CGON\",\"KLAR\",\"ONDS\",\"PCT\",\"STAA\",\"FENC\",\"HYLN\",\"MRAM\",\"RILY\",\"SLQT\",\"UMAC\",\"VLN\",\"IPWR\",\"CSCO\"\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "market_context_builder",
+          "script": "market_context_builder.py",
+          "started_at_utc": "2026-05-15T11:38:03.270535+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 48.275,
+          "stdout_tail": "[saved] /Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260515/20260515_market_context.json\n{\n  \"overall_market_bias\": \"mixed\",\n  \"trade_permission\": \"cautious\",\n  \"risk_level\": \"medium\",\n  \"summary\": \"Market shows mixed signals with positive sector leadership in technology, energy, and financials, but futures are down and volatility is slightly rising. No confirmed major macro events today, but caution is warranted due to overnight futures weakness and rising yields.\",\n  \"event_flags\": {\n    \"fed_events_today\": false,\n    \"opec_events_today\": false,\n    \"jobs_report_today\": false,\n    \"inflation_report_today\": false,\n    \"pce_report_today\": false,\n    \"presidential_trade_speech_today\": false,\n    \"major_earnings_today\": false\n  },\n  \"sector_context_summary\": {\n    \"leading_sectors\": [\n      \"Technology\",\n      \"Energy\",\n      \"Financials\"\n    ],\n    \"lagging_sectors\": [\n      \"Healthcare\",\n      \"Real Estate\",\n      \"Materials\"\n    ],\n    \"sector_rotation_bias\": \"risk_on_growth\"\n  },\n  \"key_etf_context_summary\": {\n    \"risk_signal_bias\": \"risk_on\",\n    \"risk_flags\": []\n  },\n  \"decision_reasons\": [\n    \"Technology, Energy, and Financial sectors are leading, indicating risk-on growth bias.\",\n    \"SPY and QQQ closed higher yesterday, but overnight futures are down notably, indicating early weakness.\",\n    \"VXX is down, suggesting lower volatility, but VIX is slightly up overnight, indicating some risk.\",\n    \"No confirmed Fed, CPI, PCE, or jobs reports today; economic calendar shows no explicit releases today.\",\n    \"Options data is limited with unknown bias, increasing uncertainty.\",\n    \"OPEC events are not confirmed for today; recent OPEC decisions are from earlier dates.\",\n    \"Presidential trade speech events are not explicitly confirmed for today.\"\n  ]\n}\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "premarket_trade_planner",
+          "script": "premarket_trade_planner.py",
+          "started_at_utc": "2026-05-15T11:38:51.546233+00:00",
+          "ok": false,
+          "returncode": -1,
+          "elapsed_seconds": 900.024,
+          "stdout_tail": "",
+          "stderr_tail": "",
+          "error": "timeout_after_900s"
+        },
+        {
+          "task": "build_intraday_training_dataset",
+          "script": "build_intraday_training_dataset.py",
+          "started_at_utc": "2026-05-15T11:53:51.572053+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 56.579,
+          "stdout_tail": " 'SNTG': 9, 'WOK': 1021, 'WXM': 47, 'YJ': 1}\n[dataset] batch_counts={'JZXN': 354, 'QUCY': 1016}\n[dataset] empty batch=['NMGC', 'QEDN', 'SPQS', 'SPTY', 'GRPS', 'JSHG', 'KAVL', 'TLSS', 'INNI', 'PRAC', 'PREC', 'SONX', 'CRKN', 'CNHC', 'ILST', 'GEGI', 'SPSO', 'CXCQ', 'TGMR', 'AMIH', 'IPRC', 'ZVOI', 'GNAL', 'LSCG', 'PUPS']\n[dataset] empty batch=['SNWR', 'SKYF', 'SING', 'VICA', 'RENO', 'CALA', 'GSNR', 'NMPGY', 'SNNVF', 'ILIM', 'RVVQF', 'GLIV', 'LSEB']\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_bars_1m.csv\n[features] skip BMGL: only 19 rows\n[features] skip BYAH: only 17 rows\n[features] skip CAPL: only 119 rows\n[features] skip CCM: only 21 rows\n[features] skip ELMD: only 86 rows\n[features] skip ENGS: only 85 rows\n[features] skip FAMI: only 6 rows\n[features] skip GENK: only 66 rows\n[features] skip HCHL: only 83 rows\n[features] skip INBS: only 117 rows\n[features] skip JFU: only 17 rows\n[features] skip JXG: only 2 rows\n[features] skip JYD: only 44 rows\n[features] skip LICN: only 18 rows\n[features] skip MGIH: only 11 rows\n[features] skip MOVE: only 81 rows\n[features] skip MSGM: only 60 rows\n[features] skip NAAS: only 7 rows\n[features] skip NDRA: only 17 rows\n[features] skip NEPH: only 28 rows\n[features] skip NTWK: only 22 rows\n[features] skip PIII: only 41 rows\n[features] skip SNES: only 70 rows\n[features] skip SNTG: only 9 rows\n[features] skip WXM: only 47 rows\n[features] skip YJ: only 1 rows\n[features] skip ZBAI: only 5 rows\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_multitimeframe_context.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_exit_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_symbol_state.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.jsonl\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_dataset_summary.json\n[rows_raw] 334,751\n[rows_features] 333,652\n[rows_exit_dataset] 331,867\n[symbols_returned] 146\nACMR,ADEA,AEHL,AIIO,AIP,AKAM,ALMU,ANY,ARBE,ATOM,AUR,BIDU,BIOA,BJRI,BMGL,BWA,BYAH,CAPL,CCCC,CCM,CHRN,CLOV,CMPS,CORT,CSTE,DGII,DMRC,DOC,DSGN,DTIL,ELMD,ENGS,ENPH,ENVX,EOSE,EVC,EVEX,EVTV,F,FAMI,FATN,FEAM,FTK,GEN,GENK,GNLX,GREE,GRPN,GRWG,GUTS,HCHL,HUMA,HYLN,IDR,IMDX,IMUX,INBS,INV,INVZ,JD,JFU,JXG,JYD,JZXN,KC,KLXE,KULR,KYIV,KYTX,LICN,LIDR,LUNR,MBAI,MBLY,MD,MEI,MGIH,MOVE,MRX,MSGM,MVIS,MXCT,NAAS,NBIS,NDRA,NEPH,NEXT,NGNE,NIO,NMAX,NN,NNVC,NP,NRGV,NTWK,NUAI,NVCT,NVEC,NXDR,OABI,OCS,ON,ORA,OUST,PAPL,PENG,PIII,PNTG,PRM,PSNY,QS,QUCY,RFIL,RR,RUM,RVI,SATS,SEAT,SHAZ,SLND,SLNH,SLS,SNES,SNTG,SPCE,STFS,SYNA,TDC,TOMZ,TSEM,TTI,TUSK,VELO,VIVO,VLN,VNET,VOYG,VPG,WHWK,WOK,WOLF,WXM,XMTR,YJ,YMAT,ZBAI\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "options_booster",
+          "script": "options_booster.py",
+          "started_at_utc": "2026-05-15T11:54:48.155137+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 0.837,
+          "stdout_tail": "===== UNUSUAL FLOW OPTIONS BOOSTER =====\n[config] enabled=True\n[config] paper=True\n[config] universe_limit=30\n[config] dte=21-45 target=30\n[config] delta=0.35-0.70\n[config] min_volume=10 min_oi=25 min_vol_oi=0.25\n[config] min_premium_flow=$25,000\n[config] require_open_underlying_position=True\n[universe] loaded=19\n[universe] symbols=RDW,F,VICR,AIP,AVAH,CGON,KLAR,ONDS,PCT,STAA,FENC,HYLN,MRAM,RILY,SLQT,UMAC,VLN,IPWR,CSCO\n[flow] scanning underlyings=19\n[flow] skip RDW: no underlying price in source rows\n[flow] skip F: no underlying price in source rows\n[flow] skip VICR: no underlying price in source rows\n[flow] skip AIP: no underlying price in source rows\n[flow] skip AVAH: no underlying price in source rows\n[flow] skip CGON: no underlying price in source rows\n[flow] skip KLAR: no underlying price in source rows\n[flow] skip ONDS: no underlying price in source rows\n[flow] skip PCT: no underlying price in source rows\n[flow] skip STAA: no underlying price in source rows\n[flow] skip FENC: no underlying price in source rows\n[flow] skip HYLN: no underlying price in source rows\n[flow] skip MRAM: no underlying price in source rows\n[flow] skip RILY: no underlying price in source rows\n[flow] skip SLQT: no underlying price in source rows\n[flow] skip UMAC: no underlying price in source rows\n[flow] skip VLN: no underlying price in source rows\n[flow] skip IPWR: no underlying price in source rows\n[flow] skip CSCO: no underlying price in source rows\n[flow] no unusual positive-EV calls found\n[saved] rebalance_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_rebalance_orders.csv option_rows=0\n[saved] exit_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_exit_orders.csv option_exit_rows=0\n[options] no option orders generated\n",
+          "stderr_tail": "",
+          "error": ""
+        }
+      ],
+      "cycle_completed_at_utc": "2026-05-15T11:54:48.995339+00:00",
+      "cycle_completed_at_et": "2026-05-15T07:54:48.995345-04:00"
+    },
+    {
+      "cycle_started_at_utc": "2026-05-15T12:33:17.328248+00:00",
+      "cycle_started_at_et": "2026-05-15T08:33:17.328249-04:00",
+      "results": [
+        {
+          "task": "llm_sentiment_universe_selector",
+          "script": "llm_sentiment_universe_selector.py",
+          "started_at_utc": "2026-05-15T12:33:17.328300+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 15.311,
+          "stdout_tail": "[csv-universe] loaded 19 symbols from /Users/blkpvnthr/Desktop/trader/data/bullish_2026-05-15.csv\n[discovery] researching 19 CSV symbols with yfinance premarket data\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_candidate_discovery.json\n[discovery] csv_symbols=19 candidates=19 unusual_premarket=0\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_sentiment_universe.json\n[saved] /Users/blkpvnthr/Desktop/trader/20260515_locked_trading_universe.txt\n\"CSCO\",\"F\",\"VICR\",\"AIP\",\"AVAH\",\"CGON\",\"KLAR\",\"PCT\",\"RDW\",\"STAA\",\"FENC\",\"HYLN\",\"MRAM\",\"RILY\",\"SLQT\",\"UMAC\",\"VLN\",\"IPWR\",\"ONDS\"\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "market_context_builder",
+          "script": "market_context_builder.py",
+          "started_at_utc": "2026-05-15T12:33:32.640780+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 40.173,
+          "stdout_tail": "[saved] /Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260515/20260515_market_context.json\n{\n  \"overall_market_bias\": \"bearish\",\n  \"trade_permission\": \"cautious\",\n  \"risk_level\": \"medium\",\n  \"summary\": \"Market shows bearish overnight futures with rising volatility, despite positive sector leadership in growth sectors. No confirmed major macro events today, but caution advised due to futures weakness and volatility increase.\",\n  \"event_flags\": {\n    \"fed_events_today\": false,\n    \"opec_events_today\": false,\n    \"jobs_report_today\": false,\n    \"inflation_report_today\": false,\n    \"pce_report_today\": false,\n    \"presidential_trade_speech_today\": false,\n    \"major_earnings_today\": false\n  },\n  \"sector_context_summary\": {\n    \"leading_sectors\": [\n      \"Technology\",\n      \"Energy\",\n      \"Financials\"\n    ],\n    \"lagging_sectors\": [\n      \"Healthcare\",\n      \"Real Estate\",\n      \"Materials\"\n    ],\n    \"sector_rotation_bias\": \"risk_on_growth\"\n  },\n  \"key_etf_context_summary\": {\n    \"risk_signal_bias\": \"risk_on\",\n    \"risk_flags\": []\n  },\n  \"decision_reasons\": [\n    \"Overnight futures for major indices are sharply negative (ES -0.78%, NQ -1.06%, YM -0.57%, RTY -0.79%).\",\n    \"VIX increased significantly overnight (+6.14%), indicating rising market volatility and risk.\",\n    \"Leading sectors are Technology, Energy, and Financials, indicating risk-on growth rotation, but this is overshadowed by weak futures and rising volatility.\",\n    \"Key ETFs SPY and QQQ closed higher yesterday, but overnight futures weakness and VIX rise suggest risk-off sentiment developing.\",\n    \"No confirmed Fed, jobs, inflation, PCE, OPEC, or presidential trade speech events today based on strict event evidence rules, so no event flags set true.\",\n    \"Options data is limited with unknown bias; no strong signals from put/call ratios or premium flows.\",\n    \"News indicates futures tumble due to inflation worries and geopolitical concerns, supporting bearish bias.\"\n  ]\n}\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "premarket_trade_planner",
+          "script": "premarket_trade_planner.py",
+          "started_at_utc": "2026-05-15T12:34:12.815698+00:00",
+          "ok": false,
+          "returncode": -1,
+          "elapsed_seconds": 899.999,
+          "stdout_tail": "",
+          "stderr_tail": "",
+          "error": "timeout_after_900s"
+        },
+        {
+          "task": "build_intraday_training_dataset",
+          "script": "build_intraday_training_dataset.py",
+          "started_at_utc": "2026-05-15T12:49:12.820197+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 56.396,
+          "stdout_tail": " 'SNTG': 9, 'WOK': 1024, 'WXM': 47, 'YJ': 1}\n[dataset] batch_counts={'JZXN': 371, 'QUCY': 1021}\n[dataset] empty batch=['NMGC', 'QEDN', 'SPQS', 'SPTY', 'GRPS', 'JSHG', 'KAVL', 'TLSS', 'INNI', 'PRAC', 'PREC', 'SONX', 'CRKN', 'CNHC', 'ILST', 'GEGI', 'SPSO', 'CXCQ', 'TGMR', 'AMIH', 'IPRC', 'ZVOI', 'GNAL', 'LSCG', 'PUPS']\n[dataset] empty batch=['SNWR', 'SKYF', 'SING', 'VICA', 'RENO', 'CALA', 'GSNR', 'NMPGY', 'SNNVF', 'ILIM', 'RVVQF', 'GLIV', 'LSEB']\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_bars_1m.csv\n[features] skip BMGL: only 19 rows\n[features] skip BYAH: only 17 rows\n[features] skip CAPL: only 119 rows\n[features] skip CCM: only 21 rows\n[features] skip ELMD: only 86 rows\n[features] skip ENGS: only 85 rows\n[features] skip FAMI: only 6 rows\n[features] skip GENK: only 66 rows\n[features] skip HCHL: only 83 rows\n[features] skip INBS: only 117 rows\n[features] skip JFU: only 17 rows\n[features] skip JXG: only 2 rows\n[features] skip JYD: only 44 rows\n[features] skip LICN: only 18 rows\n[features] skip MGIH: only 11 rows\n[features] skip MOVE: only 81 rows\n[features] skip MSGM: only 60 rows\n[features] skip NAAS: only 7 rows\n[features] skip NDRA: only 17 rows\n[features] skip NEPH: only 28 rows\n[features] skip NTWK: only 22 rows\n[features] skip PIII: only 41 rows\n[features] skip SNES: only 70 rows\n[features] skip SNTG: only 9 rows\n[features] skip WXM: only 47 rows\n[features] skip YJ: only 1 rows\n[features] skip ZBAI: only 5 rows\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_multitimeframe_context.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_exit_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_symbol_state.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.jsonl\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_dataset_summary.json\n[rows_raw] 334,785\n[rows_features] 333,686\n[rows_exit_dataset] 331,901\n[symbols_returned] 146\nACMR,ADEA,AEHL,AIIO,AIP,AKAM,ALMU,ANY,ARBE,ATOM,AUR,BIDU,BIOA,BJRI,BMGL,BWA,BYAH,CAPL,CCCC,CCM,CHRN,CLOV,CMPS,CORT,CSTE,DGII,DMRC,DOC,DSGN,DTIL,ELMD,ENGS,ENPH,ENVX,EOSE,EVC,EVEX,EVTV,F,FAMI,FATN,FEAM,FTK,GEN,GENK,GNLX,GREE,GRPN,GRWG,GUTS,HCHL,HUMA,HYLN,IDR,IMDX,IMUX,INBS,INV,INVZ,JD,JFU,JXG,JYD,JZXN,KC,KLXE,KULR,KYIV,KYTX,LICN,LIDR,LUNR,MBAI,MBLY,MD,MEI,MGIH,MOVE,MRX,MSGM,MVIS,MXCT,NAAS,NBIS,NDRA,NEPH,NEXT,NGNE,NIO,NMAX,NN,NNVC,NP,NRGV,NTWK,NUAI,NVCT,NVEC,NXDR,OABI,OCS,ON,ORA,OUST,PAPL,PENG,PIII,PNTG,PRM,PSNY,QS,QUCY,RFIL,RR,RUM,RVI,SATS,SEAT,SHAZ,SLND,SLNH,SLS,SNES,SNTG,SPCE,STFS,SYNA,TDC,TOMZ,TSEM,TTI,TUSK,VELO,VIVO,VLN,VNET,VOYG,VPG,WHWK,WOK,WOLF,WXM,XMTR,YJ,YMAT,ZBAI\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "options_booster",
+          "script": "options_booster.py",
+          "started_at_utc": "2026-05-15T12:50:09.220702+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 0.795,
+          "stdout_tail": "===== UNUSUAL FLOW OPTIONS BOOSTER =====\n[config] enabled=True\n[config] paper=True\n[config] universe_limit=30\n[config] dte=21-45 target=30\n[config] delta=0.35-0.70\n[config] min_volume=10 min_oi=25 min_vol_oi=0.25\n[config] min_premium_flow=$25,000\n[config] require_open_underlying_position=True\n[universe] loaded=19\n[universe] symbols=CSCO,F,VICR,AIP,AVAH,CGON,KLAR,PCT,RDW,STAA,FENC,HYLN,MRAM,RILY,SLQT,UMAC,VLN,IPWR,ONDS\n[flow] scanning underlyings=19\n[flow] skip CSCO: no underlying price in source rows\n[flow] skip F: no underlying price in source rows\n[flow] skip VICR: no underlying price in source rows\n[flow] skip AIP: no underlying price in source rows\n[flow] skip AVAH: no underlying price in source rows\n[flow] skip CGON: no underlying price in source rows\n[flow] skip KLAR: no underlying price in source rows\n[flow] skip PCT: no underlying price in source rows\n[flow] skip RDW: no underlying price in source rows\n[flow] skip STAA: no underlying price in source rows\n[flow] skip FENC: no underlying price in source rows\n[flow] skip HYLN: no underlying price in source rows\n[flow] skip MRAM: no underlying price in source rows\n[flow] skip RILY: no underlying price in source rows\n[flow] skip SLQT: no underlying price in source rows\n[flow] skip UMAC: no underlying price in source rows\n[flow] skip VLN: no underlying price in source rows\n[flow] skip IPWR: no underlying price in source rows\n[flow] skip ONDS: no underlying price in source rows\n[flow] no unusual positive-EV calls found\n[saved] rebalance_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_rebalance_orders.csv option_rows=0\n[saved] exit_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_exit_orders.csv option_exit_rows=0\n[options] no option orders generated\n",
+          "stderr_tail": "",
+          "error": ""
+        }
+      ],
+      "cycle_completed_at_utc": "2026-05-15T12:50:10.019453+00:00",
+      "cycle_completed_at_et": "2026-05-15T08:50:10.019466-04:00"
+    },
+    {
+      "cycle_started_at_utc": "2026-05-15T12:55:11.141160+00:00",
+      "cycle_started_at_et": "2026-05-15T08:55:11.141187-04:00",
+      "results": [
+        {
+          "task": "llm_sentiment_universe_selector",
+          "script": "llm_sentiment_universe_selector.py",
+          "started_at_utc": "2026-05-15T12:55:11.141422+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 14.902,
+          "stdout_tail": "[csv-universe] loaded 19 symbols from /Users/blkpvnthr/Desktop/trader/data/bullish_2026-05-15.csv\n[discovery] researching 19 CSV symbols with yfinance premarket data\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_candidate_discovery.json\n[discovery] csv_symbols=19 candidates=19 unusual_premarket=0\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_sentiment_universe.json\n[saved] /Users/blkpvnthr/Desktop/trader/20260515_locked_trading_universe.txt\n\"CSCO\",\"F\",\"VICR\",\"AIP\",\"AVAH\",\"CGON\",\"KLAR\",\"ONDS\",\"PCT\",\"STAA\",\"FENC\",\"HYLN\",\"MRAM\",\"RILY\",\"SLQT\",\"UMAC\",\"VLN\",\"IPWR\",\"RDW\"\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "market_context_builder",
+          "script": "market_context_builder.py",
+          "started_at_utc": "2026-05-15T12:55:26.044236+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 23.531,
+          "stdout_tail": "[saved] /Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260515/20260515_market_context.json\n{\n  \"overall_market_bias\": \"bearish\",\n  \"trade_permission\": \"cautious\",\n  \"risk_level\": \"medium\",\n  \"summary\": \"Market shows bearish overnight futures with rising volatility. Leading sectors are growth-oriented but futures weakness and macro uncertainties advise caution.\",\n  \"event_flags\": {\n    \"fed_events_today\": true,\n    \"opec_events_today\": true,\n    \"jobs_report_today\": false,\n    \"inflation_report_today\": false,\n    \"pce_report_today\": false,\n    \"presidential_trade_speech_today\": true,\n    \"major_earnings_today\": false\n  },\n  \"sector_context_summary\": {\n    \"leading_sectors\": [\n      \"Technology\",\n      \"Energy\",\n      \"Financials\"\n    ],\n    \"lagging_sectors\": [\n      \"Healthcare\",\n      \"Real Estate\",\n      \"Materials\"\n    ],\n    \"sector_rotation_bias\": \"risk_on_growth\"\n  },\n  \"key_etf_context_summary\": {\n    \"risk_signal_bias\": \"risk_on\",\n    \"risk_flags\": []\n  },\n  \"decision_reasons\": [\n    \"Overnight futures for major indices are sharply negative (ES -0.94%, NQ -1.31%, YM -0.74%, RTY -0.93%) indicating bearish sentiment.\",\n    \"VIX/VXX is rising (VIX +6.36%) but VXX closed lower yesterday, showing mixed volatility signals but overall risk is elevated.\",\n    \"SPY and QQQ closed higher yesterday, led by Technology, Energy, and Financials sectors, indicating risk-on growth sector rotation.\",\n    \"Key macro events today include Fed events, inflation reports, jobs report, and presidential trade speech, increasing market uncertainty.\",\n    \"No confirmed major earnings today, but scheduled earnings exist, adding to cautious environment.\",\n    \"Options data is limited with unknown bias, no significant put/call or premium flow signals detected.\",\n    \"Dollar (UUP) is slightly rising, and TLT is falling, indicating some dollar strength and rate pressure.\"\n  ]\n}\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "premarket_trade_planner",
+          "script": "premarket_trade_planner.py",
+          "started_at_utc": "2026-05-15T12:55:49.579014+00:00",
+          "ok": false,
+          "returncode": -1,
+          "elapsed_seconds": 900.019,
+          "stdout_tail": "",
+          "stderr_tail": "",
+          "error": "timeout_after_900s"
+        },
+        {
+          "task": "build_intraday_training_dataset",
+          "script": "build_intraday_training_dataset.py",
+          "started_at_utc": "2026-05-15T13:10:49.600301+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 56.336,
+          "stdout_tail": " 'SNTG': 9, 'WOK': 1025, 'WXM': 47, 'YJ': 1}\n[dataset] batch_counts={'JZXN': 392, 'QUCY': 1023}\n[dataset] empty batch=['NMGC', 'QEDN', 'SPQS', 'SPTY', 'GRPS', 'JSHG', 'KAVL', 'TLSS', 'INNI', 'PRAC', 'PREC', 'SONX', 'CRKN', 'CNHC', 'ILST', 'GEGI', 'SPSO', 'CXCQ', 'TGMR', 'AMIH', 'IPRC', 'ZVOI', 'GNAL', 'LSCG', 'PUPS']\n[dataset] empty batch=['SNWR', 'SKYF', 'SING', 'VICA', 'RENO', 'CALA', 'GSNR', 'NMPGY', 'SNNVF', 'ILIM', 'RVVQF', 'GLIV', 'LSEB']\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_bars_1m.csv\n[features] skip BMGL: only 19 rows\n[features] skip BYAH: only 17 rows\n[features] skip CAPL: only 119 rows\n[features] skip CCM: only 21 rows\n[features] skip ELMD: only 86 rows\n[features] skip ENGS: only 85 rows\n[features] skip FAMI: only 6 rows\n[features] skip GENK: only 66 rows\n[features] skip HCHL: only 83 rows\n[features] skip INBS: only 117 rows\n[features] skip JFU: only 17 rows\n[features] skip JXG: only 2 rows\n[features] skip JYD: only 44 rows\n[features] skip LICN: only 18 rows\n[features] skip MGIH: only 11 rows\n[features] skip MOVE: only 81 rows\n[features] skip MSGM: only 60 rows\n[features] skip NAAS: only 7 rows\n[features] skip NDRA: only 17 rows\n[features] skip NEPH: only 28 rows\n[features] skip NTWK: only 22 rows\n[features] skip PIII: only 41 rows\n[features] skip SNES: only 70 rows\n[features] skip SNTG: only 9 rows\n[features] skip WXM: only 47 rows\n[features] skip YJ: only 1 rows\n[features] skip ZBAI: only 5 rows\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_multitimeframe_context.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_exit_training_dataset.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_symbol_state.json\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.csv\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_intraday_feature_stream.jsonl\n[saved] /Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_dataset_summary.json\n[rows_raw] 334,812\n[rows_features] 333,713\n[rows_exit_dataset] 331,928\n[symbols_returned] 146\nACMR,ADEA,AEHL,AIIO,AIP,AKAM,ALMU,ANY,ARBE,ATOM,AUR,BIDU,BIOA,BJRI,BMGL,BWA,BYAH,CAPL,CCCC,CCM,CHRN,CLOV,CMPS,CORT,CSTE,DGII,DMRC,DOC,DSGN,DTIL,ELMD,ENGS,ENPH,ENVX,EOSE,EVC,EVEX,EVTV,F,FAMI,FATN,FEAM,FTK,GEN,GENK,GNLX,GREE,GRPN,GRWG,GUTS,HCHL,HUMA,HYLN,IDR,IMDX,IMUX,INBS,INV,INVZ,JD,JFU,JXG,JYD,JZXN,KC,KLXE,KULR,KYIV,KYTX,LICN,LIDR,LUNR,MBAI,MBLY,MD,MEI,MGIH,MOVE,MRX,MSGM,MVIS,MXCT,NAAS,NBIS,NDRA,NEPH,NEXT,NGNE,NIO,NMAX,NN,NNVC,NP,NRGV,NTWK,NUAI,NVCT,NVEC,NXDR,OABI,OCS,ON,ORA,OUST,PAPL,PENG,PIII,PNTG,PRM,PSNY,QS,QUCY,RFIL,RR,RUM,RVI,SATS,SEAT,SHAZ,SLND,SLNH,SLS,SNES,SNTG,SPCE,STFS,SYNA,TDC,TOMZ,TSEM,TTI,TUSK,VELO,VIVO,VLN,VNET,VOYG,VPG,WHWK,WOK,WOLF,WXM,XMTR,YJ,YMAT,ZBAI\n",
+          "stderr_tail": "",
+          "error": ""
+        },
+        {
+          "task": "options_booster",
+          "script": "options_booster.py",
+          "started_at_utc": "2026-05-15T13:11:45.944062+00:00",
+          "ok": true,
+          "returncode": 0,
+          "elapsed_seconds": 0.832,
+          "stdout_tail": "===== UNUSUAL FLOW OPTIONS BOOSTER =====\n[config] enabled=True\n[config] paper=True\n[config] universe_limit=30\n[config] dte=21-45 target=30\n[config] delta=0.35-0.70\n[config] min_volume=10 min_oi=25 min_vol_oi=0.25\n[config] min_premium_flow=$25,000\n[config] require_open_underlying_position=True\n[universe] loaded=19\n[universe] symbols=CSCO,F,VICR,AIP,AVAH,CGON,KLAR,ONDS,PCT,STAA,FENC,HYLN,MRAM,RILY,SLQT,UMAC,VLN,IPWR,RDW\n[flow] scanning underlyings=19\n[flow] skip CSCO: no underlying price in source rows\n[flow] skip F: no underlying price in source rows\n[flow] skip VICR: no underlying price in source rows\n[flow] skip AIP: no underlying price in source rows\n[flow] skip AVAH: no underlying price in source rows\n[flow] skip CGON: no underlying price in source rows\n[flow] skip KLAR: no underlying price in source rows\n[flow] skip ONDS: no underlying price in source rows\n[flow] skip PCT: no underlying price in source rows\n[flow] skip STAA: no underlying price in source rows\n[flow] skip FENC: no underlying price in source rows\n[flow] skip HYLN: no underlying price in source rows\n[flow] skip MRAM: no underlying price in source rows\n[flow] skip RILY: no underlying price in source rows\n[flow] skip SLQT: no underlying price in source rows\n[flow] skip UMAC: no underlying price in source rows\n[flow] skip VLN: no underlying price in source rows\n[flow] skip IPWR: no underlying price in source rows\n[flow] skip RDW: no underlying price in source rows\n[flow] no unusual positive-EV calls found\n[saved] rebalance_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_rebalance_orders.csv option_rows=0\n[saved] exit_orders=/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_daily_walkforward_emulated_exit_orders.csv option_exit_rows=0\n[options] no option orders generated\n",
+          "stderr_tail": "",
+          "error": ""
+        }
+      ],
+      "cycle_completed_at_utc": "2026-05-15T13:11:46.779320+00:00",
+      "cycle_completed_at_et": "2026-05-15T09:11:46.779328-04:00"
+    }
+  ],
+  "updated_at_utc": "2026-05-15T13:17:28.546042+00:00"
+}

@@ -34,10 +34,10 @@ except Exception:
 PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-OUT_DIR = PROJECT_ROOT / f"{TODAY_TAG}_daily_system_outputs"
+OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-FEATURE_STREAM_DIR = OUT_DIR / "feature_stream"
+FEATURE_STREAM_DIR = OUT_DIR / f"{TODAY_TAG}_Feature_stream"
 FEATURE_STREAM_DIR.mkdir(parents=True, exist_ok=True)
 
 STRUCTURE_MAP_PATH = OUT_DIR / f"{TODAY_TAG}_intraday_structure_map.json"
@@ -66,13 +66,9 @@ GIVEBACK_THRESHOLD = float(os.getenv("EXIT_LABEL_GIVEBACK_PCT", "0.004"))
 CUT_LOSER_THRESHOLD = float(os.getenv("EXIT_LABEL_CUT_LOSER_PCT", "-0.006"))
 CONTINUATION_THRESHOLD = float(os.getenv("EXIT_LABEL_CONTINUATION_PCT", "0.002"))
 
-DEFAULT_SYMBOLS = [
-    "SPY", "QQQ", "NVDA", "TSLA",
-    "AAPL", "MSFT", "AMD", "META",
-]
+DEFAULT_SYMBOLS = pd.read_csv("data/bullish_2026-05-13.csv")["Symbol"].to_list()
 
-
-# =============================================================================
+# ============================================================================
 # Helpers
 # =============================================================================
 

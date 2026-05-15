@@ -38,14 +38,15 @@ except Exception:
 PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
-OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 ET = ZoneInfo("America/New_York")
 TODAY_TAG = datetime.now().strftime("%Y%m%d")
 
-DAILY_OUTPUT_DIR = PROJECT_ROOT / f"{TODAY_TAG}_daily_system_outputs" / "runtime" / TODAY_TAG
-EXECUTION_LOG_DIR = PROJECT_ROOT / f"{TODAY_TAG}_logs" / "execution" / "runtime" / TODAY_TAG
+OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
+
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+DAILY_OUTPUT_DIR = PROJECT_ROOT / "daily_system_outputs" /  TODAY_TAG
+EXECUTION_LOG_DIR = PROJECT_ROOT / "execution_logs" / TODAY_TAG
 
 LLM_UNIVERSE_PATH = PROJECT_ROOT / f"{TODAY_TAG}_latest_llm_sentiment_universe.json"
 LOCKED_UNIVERSE_PATH = PROJECT_ROOT / f"{TODAY_TAG}_locked_trading_universe.txt"

@@ -8,19 +8,19 @@ Default usage:
     python production_regime_sizing_model.py
 
 What it does:
-    1. Loads daily_system_outputs/daily_features.csv if present.
+    1. Loads system-data/daily_features.csv if present.
     2. If missing, attempts to run model.py to generate daily_features.csv.
     3. Loads:
-        daily_system_outputs/market_context.json
-        daily_system_outputs/premarket_trade_plan.json
-        daily_system_outputs/intraday_structure_map.json
+        system-data/market_context.json
+        system-data/premarket_trade_plan.json
+        system-data/intraday_structure_map.json
     4. Scores symbols for long continuation/reversal quality.
     5. Applies market-regime, premarket, liquidity, volatility, and PDT-aware sizing.
     6. Writes:
-        daily_system_outputs/regime_position_plan.csv
-        daily_system_outputs/regime_universe_30.csv
-        daily_system_outputs/regime_actions.csv
-        daily_system_outputs/regime_sizing_diagnostics.json
+        system-data/regime_position_plan.csv
+        system-data/regime_universe_30.csv
+        system-data/regime_actions.csv
+        system-data/regime_sizing_diagnostics.json
 
 This script does NOT place trades.
 It only creates a portfolio/sizing plan for run.py.
@@ -52,11 +52,11 @@ from market_context_builder import TODAY_TAG
 THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 
-OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
+OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 INPUT_PATH = OUT_DIR / f"{TODAY_TAG}_daily_features.csv"
-MODEL_SCRIPT_PATH = PROJECT_ROOT / f"{TODAY_TAG}_model.py"
+MODEL_SCRIPT_PATH = PROJECT_ROOT / "model.py"
 
 MARKET_CONTEXT_PATH = OUT_DIR / f"{TODAY_TAG}_market_context.json"
 PREMARKET_TRADE_PLAN_PATH = OUT_DIR / f"{TODAY_TAG}_premarket_trade_plan.json"

@@ -1,6 +1,31 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+"""
+premarket_trade_planner.py
+
+Builds a premarket breakout/consolidation trade plan and intraday structure map
+using yfinance minute bars instead of Alpaca market data.
+
+Default:
+    python premarket_trade_planner.py
+
+Inputs:
+    system-data/YYYYMMDD/YYYYMMDD_latest_llm_sentiment_universe.json
+    or YYYYMMDD_locked_trading_universe.txt
+
+Outputs:
+    system-data/YYYYMMDD/YYYYMMDD_premarket_trade_plan.json
+    system-data/YYYYMMDD/YYYYMMDD_intraday_structure_map.json
+    system-data/YYYYMMDD/YYYYMMDD_premarket_trade_plan_diagnostics.json
+
+Notes:
+    - Uses yfinance 1m bars with prepost=True for premarket data.
+    - Uses yfinance 1m bars with prepost=True for intraday/structure data.
+    - Does not place trades.
+    - Structure maps are confirmation inputs for run.py / RL timing logic.
+"""
+
 import json
 import math
 import os
@@ -12,17 +37,13 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import yfinance as yf
 from dotenv import load_dotenv
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
-
-from market_context_builder import TODAY_TAG
 
 try:
-    from alpaca.data.enums import DataFeed
+    from market_context_builder import TODAY_TAG
 except Exception:
-    DataFeed = None
+    TODAY_TAG = datetime.now(ZoneInfo("America/New_York")).strftime("%Y%m%d")
 
 
 # =============================================================================
@@ -32,12 +53,13 @@ except Exception:
 PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-OUT_DIR = PROJECT_ROOT / f"daily_system_outputs"
+OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-LLM_UNIVERSE_PATH = OUT_DIR / f"{TODAY_TAG}_llatest_llm_sentiment_universe.json"
+# Fixed typo from older version: latest / premarket instead of llatest / lpremarket.
+LLM_UNIVERSE_PATH = OUT_DIR / f"{TODAY_TAG}_latest_llm_sentiment_universe.json"
 LOCKED_UNIVERSE_PATH = PROJECT_ROOT / f"{TODAY_TAG}_locked_trading_universe.txt"
-TRADE_PLAN_PATH = OUT_DIR / f"{TODAY_TAG}_lpremarket_trade_plan.json"
+TRADE_PLAN_PATH = OUT_DIR / f"{TODAY_TAG}_premarket_trade_plan.json"
 STRUCTURE_MAP_PATH = OUT_DIR / f"{TODAY_TAG}_intraday_structure_map.json"
 DIAGNOSTICS_PATH = OUT_DIR / f"{TODAY_TAG}_premarket_trade_plan_diagnostics.json"
 
@@ -48,8 +70,9 @@ ET = ZoneInfo("America/New_York")
 # Configuration
 # =============================================================================
 
-ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower().strip()
-ALPACA_CHUNK_SIZE = int(os.getenv("ALPACA_CHUNK_SIZE", "25"))
+YF_BATCH_SIZE = int(os.getenv("YF_BATCH_SIZE", "25"))
+YF_INTRADAY_PERIOD = os.getenv("YF_INTRADAY_PERIOD", "5d")
+YF_AUTO_ADJUST = os.getenv("YF_AUTO_ADJUST", "0").lower() in {"1", "true", "yes"}
 
 MIN_PREMARKET_VOLUME = int(os.getenv("MIN_PREMARKET_VOLUME", "1000"))
 PREMARKET_START_ET = os.getenv("PREMARKET_START_ET", "04:00")
@@ -199,6 +222,8 @@ def safe_json_value(value: Any) -> Any:
         return [safe_json_value(v) for v in value]
     if isinstance(value, pd.Timestamp):
         return value.isoformat()
+    if isinstance(value, datetime):
+        return value.isoformat()
     return value
 
 
@@ -207,20 +232,15 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     print(f"[saved] {path}")
 
 
-def get_alpaca_client() -> StockHistoricalDataClient:
-    key = os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY_ID")
-    secret = os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_API_SECRET_KEY")
-
-    if not key or not secret:
-        raise RuntimeError("Missing APCA_API_KEY_ID/APCA_API_SECRET_KEY in .env")
-
-    return StockHistoricalDataClient(key, secret)
-
-
-def get_feed() -> Any:
-    if DataFeed is None:
-        return None
-    return DataFeed.SIP if ALPACA_DATA_FEED == "sip" else DataFeed.IEX
+def merge_diagnostics(label: str, diagnostics: dict[str, Any]) -> None:
+    existing: dict[str, Any] = {}
+    if DIAGNOSTICS_PATH.exists():
+        try:
+            existing = json.loads(DIAGNOSTICS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+    existing[label] = diagnostics
+    write_json(DIAGNOSTICS_PATH, existing)
 
 
 def load_universe() -> list[str]:
@@ -253,12 +273,81 @@ def load_universe() -> list[str]:
             if normalize_symbol(line)
         ]
 
-    return sorted(set(s for s in symbols if s))
+    symbols = sorted(set(s for s in symbols if s))
+    print(f"[universe] symbols={len(symbols)}")
+    return symbols
 
 
 # =============================================================================
-# Data ingestion
+# yfinance data ingestion
 # =============================================================================
+
+def flatten_yfinance_download(df: pd.DataFrame, symbols: list[str]) -> pd.DataFrame:
+    """
+    Normalize yfinance download output into:
+        symbol, timestamp, open, high, low, close, volume, timestamp_et
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    frames: list[pd.DataFrame] = []
+
+    if isinstance(df.columns, pd.MultiIndex):
+        # Typical shape with group_by="column": level 0 = OHLCV, level 1 = ticker.
+        level0 = [str(x).lower() for x in df.columns.get_level_values(0)]
+        if any(x in {"open", "high", "low", "close", "volume"} for x in level0):
+            ticker_level = 1
+        else:
+            ticker_level = 0
+
+        tickers = sorted(set(str(x) for x in df.columns.get_level_values(ticker_level)))
+
+        for ticker in tickers:
+            symbol = normalize_symbol(ticker)
+            try:
+                sdf = df.xs(ticker, axis=1, level=ticker_level).copy()
+            except Exception:
+                continue
+            sdf.columns = [str(c).lower().replace(" ", "_") for c in sdf.columns]
+            sdf = sdf.reset_index()
+            sdf["symbol"] = symbol
+            frames.append(sdf)
+    else:
+        symbol = normalize_symbol(symbols[0]) if symbols else ""
+        sdf = df.copy()
+        sdf.columns = [str(c).lower().replace(" ", "_") for c in sdf.columns]
+        sdf = sdf.reset_index()
+        sdf["symbol"] = symbol
+        frames.append(sdf)
+
+    if not frames:
+        return pd.DataFrame()
+
+    out = pd.concat(frames, ignore_index=True)
+
+    timestamp_col = None
+    for col in ["datetime", "date", "timestamp"]:
+        if col in out.columns:
+            timestamp_col = col
+            break
+    if timestamp_col is None:
+        timestamp_col = out.columns[0]
+
+    out = out.rename(columns={timestamp_col: "timestamp"})
+
+    for col in ["open", "high", "low", "close", "volume"]:
+        if col not in out.columns:
+            out[col] = 0.0
+        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+
+    out["timestamp"] = pd.to_datetime(out["timestamp"], utc=True, errors="coerce")
+    out = out.dropna(subset=["timestamp"])
+    out["symbol"] = out["symbol"].map(normalize_symbol)
+    out = out[out["symbol"] != ""].copy()
+    out["timestamp_et"] = out["timestamp"].dt.tz_convert(ET)
+
+    return out[["symbol", "timestamp", "timestamp_et", "open", "high", "low", "close", "volume"]]
+
 
 def fetch_minute_bars(
     symbols: list[str],
@@ -266,65 +355,61 @@ def fetch_minute_bars(
     end_et: datetime,
     label: str,
 ) -> pd.DataFrame:
+    """
+    Fetch 1-minute bars with yfinance.
+
+    yfinance only permits recent 1-minute history, so this uses a period-based
+    download and then filters to the requested ET window.
+    """
     if not symbols:
         return pd.DataFrame()
-
-    client = get_alpaca_client()
-    feed = get_feed()
-    start_utc = start_et.astimezone(timezone.utc)
-    end_utc = end_et.astimezone(timezone.utc)
 
     frames: list[pd.DataFrame] = []
     diagnostics: dict[str, Any] = {
         "label": label,
+        "source": "yfinance",
         "window_et": {"start": start_et.isoformat(), "end": end_et.isoformat()},
-        "window_utc": {"start": start_utc.isoformat(), "end": end_utc.isoformat()},
-        "feed": ALPACA_DATA_FEED,
+        "period": YF_INTRADAY_PERIOD,
+        "interval": "1m",
+        "prepost": True,
         "batches": [],
     }
 
+    print(f"[{label}] source=yfinance period={YF_INTRADAY_PERIOD} interval=1m prepost=True")
     print(f"[{label}] window_et={start_et} -> {end_et}")
-    print(f"[{label}] window_utc={start_utc} -> {end_utc}")
-    print(f"[{label}] symbols={len(symbols)} feed={ALPACA_DATA_FEED}")
+    print(f"[{label}] symbols={len(symbols)} batch_size={YF_BATCH_SIZE}")
 
-    for batch in chunked(symbols, ALPACA_CHUNK_SIZE):
-        kwargs = {
-            "symbol_or_symbols": batch,
-            "timeframe": TimeFrame.Minute,
-            "start": start_utc,
-            "end": end_utc,
-        }
-        if feed is not None:
-            kwargs["feed"] = feed
-
+    for batch in chunked(symbols, YF_BATCH_SIZE):
         batch_diag = {"symbols": batch, "row_count": 0, "counts": {}, "error": None}
+        tickers = " ".join(batch)
+
         try:
-            response = client.get_stock_bars(StockBarsRequest(**kwargs))
-            if response is None or response.df is None or response.df.empty:
+            raw = yf.download(
+                tickers=tickers,
+                period=YF_INTRADAY_PERIOD,
+                interval="1m",
+                prepost=True,
+                group_by="column",
+                auto_adjust=YF_AUTO_ADJUST,
+                progress=False,
+                threads=True,
+            )
+
+            df = flatten_yfinance_download(raw, batch)
+            if df.empty:
                 print(f"[{label}] empty batch={batch}")
                 diagnostics["batches"].append(batch_diag)
                 continue
 
-            df = response.df.reset_index()
-            if df.empty:
-                diagnostics["batches"].append(batch_diag)
-                continue
-
-            required = {"symbol", "timestamp", "open", "high", "low", "close", "volume"}
-            missing = required - set(df.columns)
-            if missing:
-                raise RuntimeError(f"Alpaca bars missing required columns: {sorted(missing)}")
-
-            df["symbol"] = df["symbol"].astype(str).str.upper().str.strip()
-            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
-            df = df.dropna(subset=["timestamp"])
-            df["timestamp_et"] = df["timestamp"].dt.tz_convert(ET)
             df = df[(df["timestamp_et"] >= start_et) & (df["timestamp_et"] < end_et)].copy()
 
             counts = df.groupby("symbol").size().to_dict() if not df.empty else {}
             batch_diag["row_count"] = int(len(df))
-            batch_diag["counts"] = {k: int(v) for k, v in counts.items()}
-            frames.append(df)
+            batch_diag["counts"] = {str(k): int(v) for k, v in counts.items()}
+
+            if not df.empty:
+                frames.append(df)
+
             print(f"[{label}] batch_counts={counts}")
 
         except Exception as exc:
@@ -336,23 +421,14 @@ def fetch_minute_bars(
     if not frames:
         diagnostics["final_rows"] = 0
         diagnostics["symbols_with_bars"] = []
-        write_json(DIAGNOSTICS_PATH, {label: diagnostics})
-        print(f"[{label}] no Alpaca bars returned")
+        merge_diagnostics(label, diagnostics)
+        print(f"[{label}] no yfinance bars returned")
         return pd.DataFrame()
 
     out = pd.concat(frames, ignore_index=True).sort_values(["symbol", "timestamp"]).reset_index(drop=True)
     diagnostics["final_rows"] = int(len(out))
     diagnostics["symbols_with_bars"] = sorted(out["symbol"].dropna().unique().tolist())
-
-    # Merge diagnostics with existing diagnostics file, if present.
-    existing: dict[str, Any] = {}
-    if DIAGNOSTICS_PATH.exists():
-        try:
-            existing = json.loads(DIAGNOSTICS_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            existing = {}
-    existing[label] = diagnostics
-    write_json(DIAGNOSTICS_PATH, existing)
+    merge_diagnostics(label, diagnostics)
 
     print(f"[{label}] final_rows={len(out)}")
     print(f"[{label}] symbols_with_bars={','.join(diagnostics['symbols_with_bars'])}")
@@ -428,6 +504,8 @@ def detect_pivot_levels(df: pd.DataFrame) -> list[dict[str, Any]]:
     levels: list[dict[str, Any]] = []
     n = PIVOT_LEFT_RIGHT_BARS
 
+    avg_vol_series = df["volume"].rolling(20, min_periods=1).mean()
+
     for i in range(n, len(df) - n):
         high = safe_float(df.loc[i, "high"])
         low = safe_float(df.loc[i, "low"])
@@ -436,7 +514,7 @@ def detect_pivot_levels(df: pd.DataFrame) -> list[dict[str, Any]]:
         left_low = df.loc[i - n:i - 1, "low"].min()
         right_low = df.loc[i + 1:i + n, "low"].min()
         vol = safe_float(df.loc[i, "volume"])
-        avg_vol = safe_float(df["volume"].rolling(20, min_periods=1).mean().iloc[i], 1.0)
+        avg_vol = safe_float(avg_vol_series.iloc[i], 1.0)
         vol_weight = max(1.0, min(5.0, vol / max(avg_vol, 1.0)))
 
         if high >= left_high and high >= right_high:
@@ -450,18 +528,32 @@ def detect_pivot_levels(df: pd.DataFrame) -> list[dict[str, Any]]:
 def add_vwap_columns(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
+
     df = df.sort_values("timestamp").copy()
-    typical = (df["high"].astype(float) + df["low"].astype(float) + df["close"].astype(float)) / 3.0
-    volume = df["volume"].astype(float).clip(lower=0)
+
+    for col in ["high", "low", "close", "volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    typical = (df["high"] + df["low"] + df["close"]) / 3.0
+    volume = df["volume"].clip(lower=0.0)
     pv = typical * volume
-    cum_vol = volume.cumsum().replace(0, pd.NA)
-    df["vwap"] = (pv.cumsum() / cum_vol).astype(float)
-    df["vwap_dev"] = df["close"].astype(float) - df["vwap"]
-    df["vwap_dev_std"] = df["vwap_dev"].expanding(min_periods=5).std().fillna(0.0)
+
+    cum_vol = volume.cumsum()
+    cum_pv = pv.cumsum()
+
+    # Avoid pd.NA because astype(float) can choke on NAType.
+    df["vwap"] = (cum_pv / cum_vol.replace(0, float("nan"))).astype(float)
+    df["vwap"] = df["vwap"].ffill().fillna(df["close"])
+
+    df["vwap_dev"] = df["close"] - df["vwap"]
+    df["vwap_dev_std"] = df["vwap_dev"].expanding(min_periods=5).std()
+    df["vwap_dev_std"] = df["vwap_dev_std"].replace([float("inf"), -float("inf")], 0.0).fillna(0.0)
+
     df["vwap_upper_1"] = df["vwap"] + VWAP_BAND_STD_MULT_1 * df["vwap_dev_std"]
     df["vwap_lower_1"] = df["vwap"] - VWAP_BAND_STD_MULT_1 * df["vwap_dev_std"]
     df["vwap_upper_2"] = df["vwap"] + VWAP_BAND_STD_MULT_2 * df["vwap_dev_std"]
     df["vwap_lower_2"] = df["vwap"] - VWAP_BAND_STD_MULT_2 * df["vwap_dev_std"]
+
     return df
 
 
@@ -557,7 +649,6 @@ def build_liquidity_profile(df: pd.DataFrame) -> dict[str, Any]:
     dollar_score = min(1.0, total_dollar_volume / max(MIN_INTRADAY_DOLLAR_VOLUME, 1.0))
     stability_score = 1.0
     if avg_range_pct is not None:
-        # Penalize hyper-wide bars but do not fully disqualify volatile names.
         stability_score = max(0.0, min(1.0, 1.0 - max(0.0, avg_range_pct - 0.03) / 0.08))
 
     liquidity_score = round(0.45 * dollar_score + 0.35 * bar_score + 0.20 * stability_score, 4)
@@ -614,7 +705,6 @@ def build_intraday_structure_map_for_symbol(
 
     level_candidates: list[dict[str, Any]] = []
 
-    # Premarket extrema and consolidation levels.
     if plan.support is not None:
         level_candidates.append({"price": plan.support, "source": "premarket_consolidation_support", "touch_count": 2, "weight": 4.0})
     if plan.resistance is not None:
@@ -624,8 +714,8 @@ def build_intraday_structure_map_for_symbol(
     if plan.premarket_high is not None:
         level_candidates.append({"price": plan.premarket_high, "source": "premarket_high", "touch_count": 1, "weight": 2.0})
 
-    # Intraday pivots and ORB.
     level_candidates.extend(detect_pivot_levels(ibar))
+
     orb = build_orb_map(ibar)
     if orb.get("high") is not None:
         level_candidates.append({"price": orb["high"], "source": "orb_high", "touch_count": 1, "weight": 5.0})
@@ -677,7 +767,6 @@ def build_intraday_structure_map_for_symbol(
     liquidity = build_liquidity_profile(ibar if not ibar.empty else pbar)
     near = nearest_levels(current_price, clustered)
 
-    # Trade-map status: this is not an order. It tells the executor/RL layer how to behave.
     long_allowed = bool(
         liquidity.get("liquid_enough")
         and (
@@ -864,14 +953,14 @@ def build_daily_trade_plan_json(plan: PremarketPlan, structure_map: dict[str, An
 
 def analyze_symbol(symbol: str, bars: pd.DataFrame) -> PremarketPlan:
     if bars.empty or "symbol" not in bars.columns:
-        return empty_plan(symbol, "No premarket bars found. No premarket breakout entry will be created.")
+        return empty_plan(symbol, "No yfinance premarket bars found. No premarket breakout entry will be created.")
 
     sdf = bars[bars["symbol"] == symbol].copy()
     if sdf.empty:
-        return empty_plan(symbol, "No premarket bars found. No premarket breakout entry will be created.")
+        return empty_plan(symbol, "No yfinance premarket bars found. No premarket breakout entry will be created.")
 
     sdf = sdf.sort_values("timestamp").reset_index(drop=True)
-    premarket_volume = int(sdf["volume"].fillna(0).sum())
+    premarket_volume = int(pd.to_numeric(sdf["volume"], errors="coerce").fillna(0).sum())
     premarket_open = float(sdf.iloc[0]["open"])
     premarket_close = float(sdf.iloc[-1]["close"])
     premarket_high = float(sdf["high"].max())
@@ -911,7 +1000,6 @@ def analyze_symbol(symbol: str, bars: pd.DataFrame) -> PremarketPlan:
             consolidation_count,
         )
 
-    # Pick the most recent consolidation because it is most relevant to the open.
     consolidation = consolidations[-1]
     support = float(consolidation["low"].min())
     resistance = float(consolidation["high"].max())
@@ -942,7 +1030,7 @@ def analyze_symbol(symbol: str, bars: pd.DataFrame) -> PremarketPlan:
     return PremarketPlan(
         symbol=symbol,
         valid=True,
-        reason="Valid setup: premarket volume, strong initial move, consolidation, support/resistance marked.",
+        reason="Valid setup: yfinance premarket volume, strong initial move, consolidation, support/resistance marked.",
         premarket_volume=premarket_volume,
         premarket_open=round(premarket_open, 4),
         premarket_high=round(premarket_high, 4),
@@ -994,12 +1082,13 @@ def build_premarket_trade_plan() -> dict[str, Any]:
     if not symbols:
         payload = {
             "created_at_utc": now_utc(),
+            "data_source": "yfinance",
             "valid_plan_count": 0,
             "plans": [],
             "error": "No symbols found in latest LLM universe or locked universe.",
         }
         write_json(TRADE_PLAN_PATH, payload)
-        write_json(STRUCTURE_MAP_PATH, {"created_at_utc": now_utc(), "structures": []})
+        write_json(STRUCTURE_MAP_PATH, {"created_at_utc": now_utc(), "data_source": "yfinance", "structures": []})
         return payload
 
     premarket_bars = fetch_premarket_bars(symbols)
@@ -1022,9 +1111,9 @@ def build_premarket_trade_plan() -> dict[str, Any]:
 
     payload = {
         "created_at_utc": now_utc(),
+        "data_source": "yfinance",
         "premarket_window_et": {"start": PREMARKET_START_ET, "end": PREMARKET_END_ET},
         "regular_session_window_et": {"start": REGULAR_SESSION_START_ET, "end": REGULAR_SESSION_END_ET},
-        "data_feed": ALPACA_DATA_FEED,
         "symbol_count": len(symbols),
         "valid_plan_count": len(valid),
         "valid_symbols": [p["symbol"] for p in valid],
@@ -1036,6 +1125,7 @@ def build_premarket_trade_plan() -> dict[str, Any]:
 
     structure_payload = {
         "created_at_utc": now_utc(),
+        "data_source": "yfinance",
         "symbol_count": len(symbols),
         "long_allowed_symbols": long_allowed,
         "structures": structure_maps,

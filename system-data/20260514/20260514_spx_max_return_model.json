@@ -1,0 +1,25 @@
+{
+  "updated_at_utc": "2026-05-14T17:59:51.950401+00:00",
+  "symbol": "SPY",
+  "label_rows": 160,
+  "oracle_rows": 1,
+  "weights": {
+    "setup_score": -0.16427073974243778,
+    "breakout_score": -0.0943396226415093,
+    "reclaim_score": -0.32389937106918243,
+    "direction_score_1m": -0.3333333333333334,
+    "direction_score_5m": -0.17484276729559733,
+    "direction_score_15m": -0.07924528301886774,
+    "above_vwap": 0.0,
+    "support_bounce": 0.0,
+    "price_vs_vwap": -0.0010111911374399447,
+    "price_vs_orb_high": -0.0010260546087283342,
+    "price_vs_daily_resistance": -0.001020763268097228,
+    "rel_volume_1m": -0.25111471944489927,
+    "rsi_1m": -0.36961432075900785,
+    "macd_hist_1m": -0.11535790580368047,
+    "minute_from_open": -0.013595768730043645
+  },
+  "target": "one_trade_per_session_max_future_return",
+  "lookahead_bars": 60
+}

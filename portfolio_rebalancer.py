@@ -4,7 +4,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any
+from datetime import datetime, timedelta
 
+from zoneinfo import ZoneInfo
 import pandas as pd
 from dotenv import load_dotenv
 from alpaca.trading.client import TradingClient
@@ -17,8 +19,13 @@ from portfolio_optimizer import (
 )
 
 
+ET = ZoneInfo("America/New_York")
+TODAY_TAG = datetime.now(ET).strftime("%Y%m%d")
+YESTERDAY_TAG = (datetime.now(ET) - timedelta(days=1)).strftime("%Y%m%d")
+DATA_TAG = os.getenv("RL_DATA_DATE", os.getenv("SPX_RL_DATA_DATE", TODAY_TAG))
+
 ROOT = Path(__file__).resolve().parent
-OUT = ROOT / "daily_system_outputs"
+OUT = ROOT / "system-data" / f"{TODAY_TAG}"
 OUT.mkdir(parents=True, exist_ok=True)
 
 load_dotenv(ROOT / ".env")

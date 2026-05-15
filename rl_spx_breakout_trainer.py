@@ -55,6 +55,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from zoneinfo import ZoneInfo
 import gymnasium as gym
 import numpy as np
 import pandas as pd
@@ -80,6 +81,11 @@ except Exception:
     DummyVecEnv = None
 
 
+ET = ZoneInfo("America/New_York")
+YESTERDAY_TAG = (datetime.now(ET) - timedelta(days=1)).strftime("%Y%m%d")
+TODAY_TAG = datetime.now(ET).strftime("%Y%m%d")
+DATA_TAG = os.getenv("RL_DATA_DATE", TODAY_TAG)
+
 # =============================================================================
 # Paths / config
 # =============================================================================
@@ -87,7 +93,7 @@ except Exception:
 PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
+OUT_DIR = PROJECT_ROOT / "system-data" / f"{DATA_TAG}_SPX"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 MODEL_DIR = PROJECT_ROOT / "models"
@@ -99,12 +105,12 @@ TRAIN_SYMBOL = os.getenv("SPX_TRAIN_SYMBOL", "SPY").upper().strip()
 LOOKBACK_DAYS = int(os.getenv("SPX_RL_LOOKBACK_DAYS", "730"))
 TRAIN_TIMESTEPS = int(os.getenv("SPX_RL_TIMESTEPS", "300000"))
 
-FEATURE_PATH = Path(os.getenv("SPX_RL_FEATURE_PATH", OUT_DIR / "spx_rl_features.parquet"))
+FEATURE_PATH = Path(os.getenv("SPX_RL_FEATURE_PATH", OUT_DIR / f"{DATA_TAG}_spx_rl_features.parquet"))
 MODEL_PATH = Path(os.getenv("SPX_RL_MODEL_PATH", MODEL_DIR / "spx_breakout_ppo.zip"))
-PLAN_PATH = Path(os.getenv("SPX_RL_PLAN_PATH", OUT_DIR / "spx_intraday_breakout_plan.json"))
+PLAN_PATH = Path(os.getenv("SPX_RL_PLAN_PATH", OUT_DIR / f"{DATA_TAG}_spx_intraday_breakout_plan.json"))
 
-MARKET_CONTEXT_PATH = OUT_DIR / "market_context.json"
-PREMARKET_PLAN_PATH = OUT_DIR / "premarket_trade_plan.json"
+MARKET_CONTEXT_PATH = OUT_DIR / f"{DATA_TAG}_market_context.json"
+PREMARKET_PLAN_PATH = OUT_DIR / f"{DATA_TAG}_premarket_trade_plan.json"
 
 ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower().strip()
 

@@ -36,7 +36,7 @@ What it does:
     - gates entries/exits with the RL timing policy before Alpaca execution
     - scans the LLM-selected universe using Alpaca daily/intraday bars when regime plan is unavailable
     - uses market context + premarket trade plan as buy-side execution gates
-    - writes rebalance/exit CSVs into daily_system_outputs/
+    - writes rebalance/exit CSVs into system-data/
     - checks Alpaca market clock
     - applies small-account risk controls
     - sells before buys
@@ -64,19 +64,36 @@ from zoneinfo import ZoneInfo
 from io import StringIO
 from pathlib import Path
 from typing import Any, Optional
+import subprocess
+import threading
+import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 import requests
+
+try:
+    import pywt
+except Exception:
+    pywt = None
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from dotenv import load_dotenv
 
+from execution_alpha_gate import add_execution_alpha_scores
+
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, OrderStatus, OrderType, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
+
+try:
+    from alpaca.trading.requests import TrailingStopOrderRequest
+except Exception:
+    TrailingStopOrderRequest = None
 
 try:
     from alpaca.data.enums import DataFeed
@@ -101,26 +118,2006 @@ ENV_PATH = PROJECT_ROOT / ".env"
 
 load_dotenv(ENV_PATH)
 
-OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
-LOG_DIR = PROJECT_ROOT / "logs" / "execution"
+ET = ZoneInfo("America/New_York")
+TODAY_TAG = datetime.now(ET).strftime("%Y%m%d")
+YESTERDAY_TAG = (datetime.now(ET) - timedelta(days=1)).strftime("%Y%m%d")
+DATA_TAG = os.getenv("RUN_DATA_DATE", os.getenv("RL_DATA_DATE", TODAY_TAG))
+
+OUT_DIR = PROJECT_ROOT / "system-data" / DATA_TAG
+LOG_DIR = PROJECT_ROOT / "logs" / "execution" / DATA_TAG
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-DEFAULT_REBALANCE_ORDERS = OUT_DIR / "daily_walkforward_emulated_rebalance_orders.csv"
-DEFAULT_EXIT_ORDERS = OUT_DIR / "daily_walkforward_emulated_exit_orders.csv"
 
-JOURNAL_PATH = LOG_DIR / "executor_journal.csv"
-EQUITY_CURVE_PATH = LOG_DIR / "executor_equity_curve.csv"
-EVENTS_JSONL = LOG_DIR / "execution_events.jsonl"
-KILL_SWITCH_PATH = LOG_DIR / "kill_switch_state.json"
-SCANNER_STATE_PATH = LOG_DIR / "scanner_state.json"
-SCANNER_SCORES_PATH = OUT_DIR / "latest_scanner_scores.csv"
-NO_REENTRY_STATE_PATH = LOG_DIR / "no_reentry_state.json"
-POSITION_MONITOR_PATH = LOG_DIR / "active_position_monitor.csv"
+# =============================================================================
+# FORECAST ENSEMBLE LAYER: ARIMA + LSTM + STACKED-LSTM + ATTENTION-LSTM
+# =============================================================================
+#
+# This layer implements the paper's model stack as a production-friendly
+# forecasting ensemble inside run.py:
+#   - ARIMA-style baseline from recent adjusted/close prices.
+#   - LSTM / Stacked-LSTM / Attention-LSTM signal ingestion from an optional
+#     external forecast_engine.py.
+#   - Local no-argument fallback when trained deep forecast files are missing.
+#   - Final ensemble fields used by direction gating, Kelly sizing, and logs.
+#
+# No command-line arguments are required.
 
-LLM_SENTIMENT_UNIVERSE_PATH = OUT_DIR / "latest_llm_sentiment_universe.json"
-LLM_SENTIMENT_DISCOVERY_PATH = OUT_DIR / "latest_llm_candidate_discovery.json"
-LOCKED_UNIVERSE_PATH = PROJECT_ROOT / "locked_trading_universe.txt"
+FORECAST_ENSEMBLE_ENABLED = os.getenv("FORECAST_ENSEMBLE_ENABLED", "1").lower() in {"1", "true", "yes"}
+FORECAST_ENSEMBLE_REFRESH_ON_START = os.getenv("FORECAST_ENSEMBLE_REFRESH_ON_START", "0").lower() in {"1", "true", "yes"}
+FORECAST_ENSEMBLE_SCRIPT_PATH = PROJECT_ROOT / os.getenv("FORECAST_ENSEMBLE_SCRIPT", "forecast_engine.py")
+
+FORECAST_ENSEMBLE_PATH = OUT_DIR / f"{DATA_TAG}_forecast_ensemble_signals.json"
+FORECAST_ENSEMBLE_CSV_PATH = OUT_DIR / f"{DATA_TAG}_forecast_ensemble_signals.csv"
+FORECAST_ENSEMBLE_EVENTS_PATH = LOG_DIR / f"{DATA_TAG}_forecast_ensemble_events.jsonl"
+
+FORECAST_LOOKBACK_BARS = int(os.getenv("FORECAST_LOOKBACK_BARS", "120"))
+FORECAST_MIN_HISTORY_BARS = int(os.getenv("FORECAST_MIN_HISTORY_BARS", "40"))
+FORECAST_BUY_THRESHOLD = float(os.getenv("FORECAST_BUY_THRESHOLD", "0.62"))
+FORECAST_STRONG_BUY_THRESHOLD = float(os.getenv("FORECAST_STRONG_BUY_THRESHOLD", "0.72"))
+FORECAST_MAX_DRAWDOWN_PROB_FOR_BUY = float(os.getenv("FORECAST_MAX_DRAWDOWN_PROB_FOR_BUY", "0.42"))
+FORECAST_MIN_EXPECTED_RETURN_FOR_BUY = float(os.getenv("FORECAST_MIN_EXPECTED_RETURN_FOR_BUY", "0.0015"))
+FORECAST_BLOCK_BUYS_WHEN_MISSING = os.getenv("FORECAST_BLOCK_BUYS_WHEN_MISSING", "0").lower() in {"1", "true", "yes"}
+FORECAST_SIGNAL_MAX_AGE_SECONDS = int(os.getenv("FORECAST_SIGNAL_MAX_AGE_SECONDS", "900"))
+
+FORECAST_WEIGHTS = {
+    "arima": float(os.getenv("FORECAST_WEIGHT_ARIMA", "0.10")),
+    "lstm": float(os.getenv("FORECAST_WEIGHT_LSTM", "0.20")),
+    "stacked_lstm": float(os.getenv("FORECAST_WEIGHT_STACKED_LSTM", "0.15")),
+    "attention_lstm": float(os.getenv("FORECAST_WEIGHT_ATTENTION_LSTM", "0.35")),
+    "deeplob": float(os.getenv("FORECAST_WEIGHT_DEEPLOB", "0.10")),
+    "rl": float(os.getenv("FORECAST_WEIGHT_RL", "0.10")),
+}
+
+
+# DWT preprocessing for forecasting.
+# PyWavelets is optional. If unavailable, execution falls back to raw returns.
+DWT_FORECAST_ENABLED = os.getenv("DWT_FORECAST_ENABLED", "1").lower() in {"1", "true", "yes"}
+DWT_WAVELET = os.getenv("DWT_WAVELET", "db4")
+DWT_LEVEL = int(os.getenv("DWT_LEVEL", "3"))
+DWT_DENOISE_MODE = os.getenv("DWT_DENOISE_MODE", "soft")
+DWT_THRESHOLD_SCALE = float(os.getenv("DWT_THRESHOLD_SCALE", "0.50"))
+
+
+def _dwt_denoise_series(values: Any) -> np.ndarray:
+    arr = pd.Series(values).astype(float).replace([np.inf, -np.inf], np.nan).ffill().bfill().fillna(0.0).to_numpy()
+
+    if not DWT_FORECAST_ENABLED or pywt is None or len(arr) < 16:
+        return arr
+
+    try:
+        wavelet = pywt.Wavelet(DWT_WAVELET)
+        max_level = pywt.dwt_max_level(data_len=len(arr), filter_len=wavelet.dec_len)
+        level = max(1, min(DWT_LEVEL, max_level))
+        coeffs = pywt.wavedec(arr, DWT_WAVELET, mode="symmetric", level=level)
+
+        detail = coeffs[-1]
+        sigma = np.median(np.abs(detail - np.median(detail))) / 0.6745 if len(detail) else 0.0
+        threshold = DWT_THRESHOLD_SCALE * sigma * np.sqrt(2.0 * np.log(max(len(arr), 2)))
+
+        denoised_coeffs = [coeffs[0]]
+        for coeff in coeffs[1:]:
+            denoised_coeffs.append(pywt.threshold(coeff, threshold, mode=DWT_DENOISE_MODE))
+
+        rec = pywt.waverec(denoised_coeffs, DWT_WAVELET, mode="symmetric")[: len(arr)]
+        if len(rec) < len(arr):
+            rec = np.pad(rec, (0, len(arr) - len(rec)), mode="edge")
+        return rec.astype(float)
+    except Exception as exc:
+        try:
+            _forecast_write_event("dwt_denoise_failed", {"error": str(exc), "wavelet": DWT_WAVELET, "level": DWT_LEVEL})
+        except Exception:
+            pass
+        return arr
+
+
+def _dwt_feature_pack(close: Any) -> dict[str, Any]:
+    close_clean = pd.Series(close).astype(float).replace([np.inf, -np.inf], np.nan).ffill().bfill().dropna()
+
+    if close_clean.empty:
+        return {
+            "dwt_enabled": bool(DWT_FORECAST_ENABLED and pywt is not None),
+            "dwt_wavelet": DWT_WAVELET,
+            "dwt_level": DWT_LEVEL,
+            "dwt_trend_score": 0.50,
+            "dwt_detail_energy_ratio": 0.0,
+            "dwt_denoised_return_5": 0.0,
+            "dwt_denoised_return_20": 0.0,
+            "denoised_close": close_clean,
+        }
+
+    denoised = pd.Series(_dwt_denoise_series(close_clean), index=close_clean.index)
+    den_ret = denoised.pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+
+    ret_5 = float(denoised.iloc[-1] / denoised.iloc[-min(len(denoised), 6)] - 1.0) if len(denoised) >= 6 else 0.0
+    ret_20 = float(denoised.iloc[-1] / denoised.iloc[-min(len(denoised), 21)] - 1.0) if len(denoised) >= 21 else ret_5
+
+    raw_ret = close_clean.pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+    raw_energy = float(np.sum(np.square(raw_ret.tail(80)))) if len(raw_ret) else 0.0
+    den_energy = float(np.sum(np.square(den_ret.tail(80)))) if len(den_ret) else 0.0
+    detail_energy_ratio = max(0.0, raw_energy - den_energy) / max(raw_energy, 1e-9)
+
+    vol = float(den_ret.tail(20).std()) if len(den_ret) >= 3 else 1e-6
+    vol = max(vol, 1e-6)
+    trend_raw = (0.65 * ret_5 + 0.35 * ret_20) / vol
+    trend_score = _forecast_sigmoid(trend_raw) if "_forecast_sigmoid" in globals() else 0.50
+
+    return {
+        "dwt_enabled": bool(DWT_FORECAST_ENABLED and pywt is not None),
+        "dwt_wavelet": DWT_WAVELET,
+        "dwt_level": DWT_LEVEL,
+        "dwt_trend_score": float(trend_score),
+        "dwt_detail_energy_ratio": float(detail_energy_ratio),
+        "dwt_denoised_return_5": float(ret_5),
+        "dwt_denoised_return_20": float(ret_20),
+        "denoised_close": denoised,
+    }
+
+
+
+
+def _forecast_now_utc_iso() -> str:
+    try:
+        return now_utc().isoformat()
+    except Exception:
+        return datetime.now(timezone.utc).isoformat()
+
+
+def _forecast_clip01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _forecast_sigmoid(value: float) -> float:
+    value = max(-20.0, min(20.0, float(value)))
+    return float(1.0 / (1.0 + np.exp(-value)))
+
+
+def _forecast_write_event(event: str, payload: dict[str, Any]) -> None:
+    try:
+        row = {
+            "timestamp_utc": _forecast_now_utc_iso(),
+            "event": event,
+            "payload": payload,
+        }
+        with FORECAST_ENSEMBLE_EVENTS_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, default=json_default) + "\n")
+    except Exception:
+        pass
+
+
+def refresh_forecast_ensemble_if_available() -> None:
+    """
+    Optionally run an external model engine.
+
+    Expected external output:
+        system-data/YYYYMMDD/YYYYMMDD_forecast_ensemble_signals.json
+
+    Expected JSON:
+        {
+          "created_at_utc": "...",
+          "signals": [
+            {
+              "symbol": "NVDA",
+              "ensemble_score": 0.74,
+              "up_probability": 0.71,
+              "expected_return": 0.006,
+              "drawdown_probability": 0.25,
+              "arima_score": 0.58,
+              "lstm_score": 0.64,
+              "stacked_lstm_score": 0.61,
+              "attention_lstm_score": 0.77
+            }
+          ]
+        }
+    """
+    if not FORECAST_ENSEMBLE_ENABLED or not FORECAST_ENSEMBLE_REFRESH_ON_START:
+        return
+
+    if not FORECAST_ENSEMBLE_SCRIPT_PATH.exists():
+        print(f"[forecast] external script missing; using local fallback: {FORECAST_ENSEMBLE_SCRIPT_PATH}")
+        return
+
+    ok, output = run_python_script(
+        FORECAST_ENSEMBLE_SCRIPT_PATH,
+        args=[],
+        timeout_seconds=int(os.getenv("FORECAST_ENSEMBLE_TIMEOUT_SECONDS", "300")),
+        env_overrides={
+            "RUN_DATA_DATE": DATA_TAG,
+            "FORECAST_ENSEMBLE_OUTPUT": str(FORECAST_ENSEMBLE_PATH),
+            "PSO_LSTM_BEST_PARAMS_PATH": str(PSO_LSTM_BEST_PARAMS_PATH),
+            "DWT_FORECAST_ENABLED": "1" if DWT_FORECAST_ENABLED else "0",
+            "DWT_WAVELET": DWT_WAVELET,
+            "DWT_LEVEL": str(DWT_LEVEL),
+            **{f"PSO_LSTM_{k.upper()}": str(v) for k, v in load_pso_lstm_best_params().items() if v is not None},
+        },
+    )
+    print(f"[forecast] external refresh ok={ok}")
+    if output:
+        print(output[-4000:])
+    _forecast_write_event("forecast_external_refresh", {"ok": ok, "output_tail": output[-4000:]})
+
+
+def _forecast_score_from_returns(rets: pd.Series) -> dict[str, float]:
+    """
+    Local fallback forecast when trained ARIMA/LSTM files are not present.
+
+    It approximates:
+      - ARIMA drift using short/medium return autocorrelation and mean drift.
+      - LSTM score using nonlinear momentum/volatility features.
+      - Stacked-LSTM score using longer context / trend persistence.
+      - Attention-LSTM score by emphasizing recent high-information bars.
+    """
+    r = pd.to_numeric(rets, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    if len(r) < 10:
+        return {
+            "arima_score": 0.50,
+            "lstm_score": 0.50,
+            "stacked_lstm_score": 0.50,
+            "attention_lstm_score": 0.50,
+            "expected_return": 0.0,
+            "drawdown_probability": 0.50,
+            "forecast_source": "fallback_insufficient_history",
+        }
+
+    recent = r.tail(min(len(r), FORECAST_LOOKBACK_BARS))
+    drift_5 = float(recent.tail(5).mean()) if len(recent) >= 5 else float(recent.mean())
+    drift_20 = float(recent.tail(20).mean()) if len(recent) >= 20 else float(recent.mean())
+    vol_20 = float(recent.tail(20).std()) if len(recent) >= 20 else float(recent.std())
+    vol_20 = max(vol_20, 1e-6)
+
+    autocorr_1 = float(recent.autocorr(lag=1)) if len(recent) > 5 else 0.0
+    if not np.isfinite(autocorr_1):
+        autocorr_1 = 0.0
+
+    # ARIMA-style baseline: drift + autocorrelation persistence.
+    arima_raw = (drift_20 / vol_20) + 0.35 * autocorr_1
+    arima_score = _forecast_sigmoid(arima_raw)
+
+    # Single LSTM approximation: short-term momentum normalized by volatility.
+    lstm_raw = (0.65 * drift_5 + 0.35 * drift_20) / vol_20
+    lstm_score = _forecast_sigmoid(lstm_raw)
+
+    # Stacked-LSTM approximation: persistent multi-window structure.
+    drift_60 = float(recent.tail(60).mean()) if len(recent) >= 60 else float(recent.mean())
+    stacked_raw = (0.25 * drift_5 + 0.35 * drift_20 + 0.40 * drift_60) / vol_20
+    stacked_lstm_score = _forecast_sigmoid(stacked_raw)
+
+    # Attention-LSTM approximation: weight recent bars by absolute information.
+    abs_r = recent.abs()
+    weights = abs_r / max(float(abs_r.sum()), 1e-9)
+    attention_return = float((recent * weights).sum())
+    attention_raw = attention_return / vol_20
+    attention_lstm_score = _forecast_sigmoid(attention_raw)
+
+    expected_return = float(0.40 * drift_5 + 0.35 * drift_20 + 0.25 * attention_return)
+    downside_hits = float((recent.tail(20) < -vol_20).mean()) if len(recent) >= 20 else float((recent < -vol_20).mean())
+    drawdown_probability = _forecast_clip01(0.50 * downside_hits + 0.50 * (1.0 - attention_lstm_score))
+
+    return {
+        "arima_score": float(arima_score),
+        "lstm_score": float(lstm_score),
+        "stacked_lstm_score": float(stacked_lstm_score),
+        "attention_lstm_score": float(attention_lstm_score),
+        "expected_return": float(expected_return),
+        "drawdown_probability": float(drawdown_probability),
+        "forecast_source": "local_fallback_arima_lstm_attention_proxy",
+    }
+
+
+def _forecast_load_price_history(symbols: list[str]) -> dict[str, pd.DataFrame]:
+    """
+    Load local price history already produced by the system.
+
+    Preferred:
+      - intraday 1m bars
+      - daily features
+      - daily_system_outputs/daily_features.csv
+    """
+    out: dict[str, pd.DataFrame] = {}
+    symbols_set = {normalize_symbol(s) for s in symbols if normalize_symbol(s)}
+
+    paths = [
+        INTRADAY_BARS_1M_PATH,
+        OUT_DIR / f"{DATA_TAG}_daily_features.csv",
+        PROJECT_ROOT / "daily_system_outputs" / "daily_features.csv",
+    ]
+
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            df = pd.read_csv(path)
+            if "symbol" not in df.columns:
+                continue
+            close_col = "close" if "close" in df.columns else "Close" if "Close" in df.columns else None
+            if close_col is None:
+                continue
+
+            df = df.copy()
+            df["symbol"] = df["symbol"].map(normalize_symbol)
+            df = df[df["symbol"].isin(symbols_set)]
+            if df.empty:
+                continue
+
+            time_col = "timestamp" if "timestamp" in df.columns else "date" if "date" in df.columns else None
+            if time_col:
+                df[time_col] = pd.to_datetime(df[time_col], errors="coerce", utc=True)
+                df = df.sort_values(["symbol", time_col])
+            else:
+                df = df.sort_values(["symbol"])
+
+            for symbol, g in df.groupby("symbol", sort=False):
+                x = g.copy()
+                x["close"] = pd.to_numeric(x[close_col], errors="coerce")
+                x = x.dropna(subset=["close"])
+                if len(x) >= FORECAST_MIN_HISTORY_BARS and symbol not in out:
+                    out[symbol] = x
+        except Exception as exc:
+            _forecast_write_event("forecast_price_history_load_error", {"path": str(path), "error": str(exc)})
+
+    return out
+
+
+def _forecast_load_external_signals() -> dict[str, dict[str, Any]]:
+    if not FORECAST_ENSEMBLE_PATH.exists():
+        return {}
+
+    try:
+        age_seconds = time.time() - FORECAST_ENSEMBLE_PATH.stat().st_mtime
+        if age_seconds > FORECAST_SIGNAL_MAX_AGE_SECONDS:
+            print(f"[forecast] stale external signals age_seconds={age_seconds:.1f}; rebuilding fallback")
+            return {}
+
+        payload = json.loads(FORECAST_ENSEMBLE_PATH.read_text(encoding="utf-8"))
+        signals = payload.get("signals", [])
+        out = {}
+        for row in signals:
+            symbol = normalize_symbol(row.get("symbol"))
+            if symbol:
+                out[symbol] = row
+        return out
+    except Exception as exc:
+        _forecast_write_event("forecast_external_signal_load_error", {"error": str(exc)})
+        return {}
+
+
+def _forecast_merge_deeplob_signal(symbol: str, payload: dict[str, Any]) -> dict[str, Any]:
+    deeplob_path = OUT_DIR / f"{DATA_TAG}_deeplob_live_signals.json"
+    if not deeplob_path.exists():
+        payload.setdefault("deeplob_score", 0.50)
+        return payload
+
+    try:
+        data = json.loads(deeplob_path.read_text(encoding="utf-8"))
+        for row in data.get("signals", []):
+            if normalize_symbol(row.get("symbol")) == symbol:
+                payload["deeplob_score"] = float(row.get("prob_up", row.get("confidence", 0.50)) or 0.50)
+                payload["deeplob_action"] = row.get("action")
+                return payload
+    except Exception:
+        pass
+
+    payload.setdefault("deeplob_score", 0.50)
+    return payload
+
+
+def _forecast_merge_rl_signal(symbol: str, payload: dict[str, Any]) -> dict[str, Any]:
+    # Prefer latest RL diagnostics if present.
+    if RL_DIAGNOSTICS_PATH.exists():
+        try:
+            df = pd.read_csv(RL_DIAGNOSTICS_PATH)
+            if "symbol" in df.columns:
+                df["symbol"] = df["symbol"].map(normalize_symbol)
+                match = df[df["symbol"] == symbol]
+                if not match.empty:
+                    row = match.iloc[-1]
+                    for col in ["rl_confidence", "confidence", "enter_long_confidence", "action_confidence"]:
+                        if col in row.index:
+                            payload["rl_score"] = float(row.get(col) or 0.50)
+                            return payload
+        except Exception:
+            pass
+
+    payload.setdefault("rl_score", 0.50)
+    return payload
+
+
+def build_forecast_ensemble_for_symbols(symbols: list[str]) -> dict[str, dict[str, Any]]:
+    """
+    Build/load forecasts for requested symbols.
+
+    Returns dict keyed by symbol with:
+      ensemble_score, up_probability, expected_return, drawdown_probability,
+      arima_score, lstm_score, stacked_lstm_score, attention_lstm_score.
+    """
+    if not FORECAST_ENSEMBLE_ENABLED:
+        return {}
+
+    symbols = sorted({normalize_symbol(s) for s in symbols if normalize_symbol(s)})
+    if not symbols:
+        return {}
+
+    external = _forecast_load_external_signals()
+    price_history = _forecast_load_price_history(symbols)
+
+    results: dict[str, dict[str, Any]] = {}
+
+    for symbol in symbols:
+        if symbol in external:
+            row = dict(external[symbol])
+        else:
+            hist = price_history.get(symbol)
+            if hist is None or hist.empty or len(hist) < FORECAST_MIN_HISTORY_BARS:
+                if FORECAST_BLOCK_BUYS_WHEN_MISSING:
+                    row = {
+                        "symbol": symbol,
+                        "ensemble_score": 0.0,
+                        "up_probability": 0.0,
+                        "expected_return": 0.0,
+                        "drawdown_probability": 1.0,
+                        "forecast_source": "missing_history_blocked",
+                    }
+                else:
+                    row = {
+                        "symbol": symbol,
+                        "ensemble_score": 0.50,
+                        "up_probability": 0.50,
+                        "expected_return": 0.0,
+                        "drawdown_probability": 0.50,
+                        "forecast_source": "missing_history_neutral",
+                    }
+            else:
+                close = pd.to_numeric(hist["close"], errors="coerce").dropna()
+                dwt_features = _dwt_feature_pack(close)
+                denoised_close = dwt_features.pop("denoised_close")
+                rets = pd.Series(denoised_close).pct_change().dropna()
+
+                row = {"symbol": symbol, **_forecast_score_from_returns(rets), **dwt_features}
+
+                dwt_score = float(row.get("dwt_trend_score", 0.50) or 0.50)
+                row["lstm_score"] = float(0.70 * row.get("lstm_score", 0.50) + 0.30 * dwt_score)
+                row["stacked_lstm_score"] = float(0.75 * row.get("stacked_lstm_score", 0.50) + 0.25 * dwt_score)
+                row["attention_lstm_score"] = float(0.65 * row.get("attention_lstm_score", 0.50) + 0.35 * dwt_score)
+                row["expected_return"] = float(
+                    0.70 * row.get("expected_return", 0.0)
+                    + 0.30 * row.get("dwt_denoised_return_5", 0.0)
+                )
+
+        row = _forecast_merge_deeplob_signal(symbol, row)
+        row = _forecast_merge_rl_signal(symbol, row)
+
+        # Normalize component names and compute weighted ensemble.
+        arima = float(row.get("arima_score", row.get("arima_up_probability", 0.50)) or 0.50)
+        lstm = float(row.get("lstm_score", row.get("lstm_up_probability", 0.50)) or 0.50)
+        stacked = float(row.get("stacked_lstm_score", row.get("stacked_lstm_up_probability", 0.50)) or 0.50)
+        attention = float(row.get("attention_lstm_score", row.get("attention_lstm_up_probability", 0.50)) or 0.50)
+        deeplob = float(row.get("deeplob_score", 0.50) or 0.50)
+        rl = float(row.get("rl_score", 0.50) or 0.50)
+
+        weights = FORECAST_WEIGHTS
+        weight_sum = max(sum(weights.values()), 1e-9)
+
+        ensemble = (
+            weights["arima"] * arima
+            + weights["lstm"] * lstm
+            + weights["stacked_lstm"] * stacked
+            + weights["attention_lstm"] * attention
+            + weights["deeplob"] * deeplob
+            + weights["rl"] * rl
+        ) / weight_sum
+
+        expected_return = float(row.get("expected_return", row.get("forecast_expected_return", 0.0)) or 0.0)
+        drawdown_probability = float(row.get("drawdown_probability", row.get("future_drawdown_probability", 0.50)) or 0.50)
+
+        row.update(
+            {
+                "symbol": symbol,
+                "arima_score": _forecast_clip01(arima),
+                "lstm_score": _forecast_clip01(lstm),
+                "stacked_lstm_score": _forecast_clip01(stacked),
+                "attention_lstm_score": _forecast_clip01(attention),
+                "deeplob_score": _forecast_clip01(deeplob),
+                "rl_score": _forecast_clip01(rl),
+                "ensemble_score": _forecast_clip01(float(ensemble)),
+                "up_probability": _forecast_clip01(float(row.get("up_probability", ensemble) or ensemble)),
+                "expected_return": expected_return,
+                "drawdown_probability": _forecast_clip01(drawdown_probability),
+                "forecast_buy_approved": bool(
+                    ensemble >= FORECAST_BUY_THRESHOLD
+                    and expected_return >= FORECAST_MIN_EXPECTED_RETURN_FOR_BUY
+                    and drawdown_probability <= FORECAST_MAX_DRAWDOWN_PROB_FOR_BUY
+                ),
+                "forecast_strong_buy": bool(ensemble >= FORECAST_STRONG_BUY_THRESHOLD),
+                "created_at_utc": _forecast_now_utc_iso(),
+            }
+        )
+
+        row = apply_pso_params_to_forecast_row(row)
+        results[symbol] = row
+
+    payload = {
+        "created_at_utc": _forecast_now_utc_iso(),
+        "weights": FORECAST_WEIGHTS,
+        "signals": list(results.values()),
+    }
+    try:
+        FORECAST_ENSEMBLE_PATH.write_text(json.dumps(payload, indent=2, default=json_default) + "\n", encoding="utf-8")
+        pd.DataFrame(payload["signals"]).to_csv(FORECAST_ENSEMBLE_CSV_PATH, index=False)
+        print(f"[forecast] saved {FORECAST_ENSEMBLE_PATH} rows={len(results)}")
+    except Exception as exc:
+        _forecast_write_event("forecast_save_error", {"error": str(exc)})
+
+    return results
+
+
+def apply_forecast_ensemble_to_order_plan(plan: pd.DataFrame, config: ScannerConfig | None = None) -> pd.DataFrame:
+    """
+    Attach forecast ensemble fields to the order plan and optionally gate BUYs.
+
+    SELL rows are never blocked by the forecast layer.
+    """
+    if not FORECAST_ENSEMBLE_ENABLED or plan is None or plan.empty or "symbol" not in plan.columns:
+        return plan
+
+    out = plan.copy()
+    symbols = out["symbol"].map(normalize_symbol).dropna().unique().tolist()
+    forecasts = build_forecast_ensemble_for_symbols(symbols)
+
+    if not forecasts:
+        if FORECAST_BLOCK_BUYS_WHEN_MISSING and "side" in out.columns:
+            buy_mask = out["side"].astype(str).str.lower() == "buy"
+            out.loc[buy_mask, "forecast_reject_reason"] = "forecast_missing"
+            out.loc[buy_mask, "forecast_buy_approved"] = False
+        return out
+
+    for idx, row in out.iterrows():
+        symbol = normalize_symbol(row.get("symbol"))
+        forecast = forecasts.get(symbol, {})
+        if not forecast:
+            continue
+
+        for key in [
+            "ensemble_score",
+            "up_probability",
+            "expected_return",
+            "drawdown_probability",
+            "arima_score",
+            "lstm_score",
+            "stacked_lstm_score",
+            "attention_lstm_score",
+            "dwt_trend_score",
+            "dwt_detail_energy_ratio",
+            "dwt_denoised_return_5",
+            "dwt_denoised_return_20",
+            "deeplob_score",
+            "rl_score",
+            "forecast_buy_approved",
+            "forecast_strong_buy",
+            "forecast_source",
+        ]:
+            if key in forecast:
+                out.at[idx, key] = forecast[key]
+
+        # Feed forecast probabilities into existing Kelly sizing.
+        if "continuation_probability" not in out.columns:
+            out["continuation_probability"] = np.nan
+        if "expected_return" in forecast:
+            out.at[idx, "forecast_expected_return"] = forecast.get("expected_return")
+        out.at[idx, "continuation_probability"] = forecast.get("up_probability", forecast.get("ensemble_score", 0.50))
+
+        side = str(row.get("side", "")).lower()
+        if side == "buy":
+            approved = bool(forecast.get("forecast_buy_approved", False))
+            if not approved:
+                out.at[idx, "forecast_reject_reason"] = (
+                    f"forecast_weak:"
+                    f"ensemble={float(forecast.get('ensemble_score', 0.0)):.2f},"
+                    f"expected_return={float(forecast.get('expected_return', 0.0)):.4f},"
+                    f"drawdown_prob={float(forecast.get('drawdown_probability', 1.0)):.2f}"
+                )
+
+            old_reason = str(row.get("reason", ""))
+            if "forecast_ensemble" not in old_reason:
+                out.at[idx, "reason"] = (
+                    f"{old_reason}|forecast_ensemble:"
+                    f"score={float(forecast.get('ensemble_score', 0.0)):.2f}:"
+                    f"attn={float(forecast.get('attention_lstm_score', 0.0)):.2f}:"
+                    f"up={float(forecast.get('up_probability', 0.0)):.2f}"
+                )
+
+    if "side" in out.columns:
+        buy_mask = out["side"].astype(str).str.lower() == "buy"
+        reject_mask = buy_mask & (out.get("forecast_buy_approved", pd.Series(True, index=out.index)).astype(str).str.lower().isin({"false", "0", "nan"}))
+        if FORECAST_BLOCK_BUYS_WHEN_MISSING:
+            if reject_mask.any():
+                skipped = out.loc[reject_mask, ["symbol", "side", "ensemble_score", "expected_return", "drawdown_probability", "forecast_reject_reason"]].copy()
+                print("[forecast] skipped BUY rows:")
+                print(skipped.to_string(index=False))
+                out = out.loc[~reject_mask].copy()
+        else:
+            # Soft mode: do not drop rows; lower confidence so existing gates/Kelly can size down.
+            if reject_mask.any() and "confidence_used" in out.columns:
+                out.loc[reject_mask, "confidence_used"] = pd.to_numeric(out.loc[reject_mask, "confidence_used"], errors="coerce").fillna(0.0) * 0.75
+
+    return out.reset_index(drop=True)
+
+
+
+
+# =============================================================================
+# PSO-LSTM HYPERPARAMETER OPTIMIZER
+# =============================================================================
+#
+# Particle Swarm Optimization layer for the forecasting ensemble.
+#
+# Purpose:
+#   - tune LSTM / Stacked-LSTM / Attention-LSTM hyperparameters
+#   - use no command-line arguments
+#   - write best params to system-data/YYYYMMDD/YYYYMMDD_pso_lstm_best_params.json
+#   - allow forecast_engine.py or local forecast logic to consume the optimized
+#     lookback, hidden neurons, layers, epochs, batch size, and learning rate.
+#
+# Search dimensions:
+#   0 = hidden neurons
+#   1 = epochs / optimization iterations
+#   2 = lookback bars
+#   3 = LSTM layers
+#   4 = learning rate scaled
+#   5 = batch size scaled
+#
+# The PSO update follows:
+#   v = w*v + c1*r1*(pbest - x) + c2*r2*(gbest - x)
+#   x = x + v
+
+PSO_LSTM_ENABLED = os.getenv("PSO_LSTM_ENABLED", "1").lower() in {"1", "true", "yes"}
+PSO_LSTM_OPTIMIZE_ON_START = os.getenv("PSO_LSTM_OPTIMIZE_ON_START", "0").lower() in {"1", "true", "yes"}
+PSO_LSTM_USE_IN_FORECAST = os.getenv("PSO_LSTM_USE_IN_FORECAST", "1").lower() in {"1", "true", "yes"}
+
+PSO_LSTM_BEST_PARAMS_PATH = OUT_DIR / f"{DATA_TAG}_pso_lstm_best_params.json"
+PSO_LSTM_TRIALS_PATH = OUT_DIR / f"{DATA_TAG}_pso_lstm_trials.jsonl"
+PSO_LSTM_EVENTS_PATH = LOG_DIR / f"{DATA_TAG}_pso_lstm_events.jsonl"
+
+PSO_SWARM_SIZE = int(os.getenv("PSO_SWARM_SIZE", "20"))
+PSO_MAX_ITER = int(os.getenv("PSO_MAX_ITER", "50"))
+PSO_INERTIA_W = float(os.getenv("PSO_INERTIA_W", "0.80"))
+PSO_C1 = float(os.getenv("PSO_C1", "1.50"))
+PSO_C2 = float(os.getenv("PSO_C2", "1.50"))
+PSO_VELOCITY_MIN = float(os.getenv("PSO_VELOCITY_MIN", "-2.0"))
+PSO_VELOCITY_MAX = float(os.getenv("PSO_VELOCITY_MAX", "2.0"))
+
+# Keep the paper's [0, 300] search idea, but map dimensions into sane
+# production ranges for this trading system.
+PSO_LSTM_BOUNDS = np.array(
+    [
+        [16, 300],       # hidden neurons
+        [10, 100],       # epochs
+        [20, 100],       # lookback bars; supports 20-day and 50-day retrospective settings
+        [1, 3],          # hidden/lstm layers
+        [1, 100],        # learning-rate bucket -> 1e-5 to 1e-3
+        [16, 128],       # batch size
+    ],
+    dtype=float,
+)
+
+PSO_LSTM_DEFAULT_PARAMS = {
+    "hidden_neurons": 128,
+    "epochs": 50,
+    "lookback": 50,
+    "layers": 1,
+    "learning_rate": 0.0007,
+    "batch_size": 30,
+    "fitness": None,
+    "source": "default",
+}
+
+
+def _pso_lstm_event(event: str, payload: dict[str, Any]) -> None:
+    try:
+        row = {
+            "timestamp_utc": _forecast_now_utc_iso() if "_forecast_now_utc_iso" in globals() else datetime.now(timezone.utc).isoformat(),
+            "event": event,
+            "payload": payload,
+        }
+        with PSO_LSTM_EVENTS_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, default=json_default) + "\n")
+    except Exception:
+        pass
+
+
+def pso_position_to_lstm_params(position: np.ndarray) -> dict[str, Any]:
+    """
+    Convert a particle position into actual LSTM hyperparameters.
+    """
+    x = np.asarray(position, dtype=float)
+    hidden = int(np.clip(round(x[0]), 16, 300))
+    epochs = int(np.clip(round(x[1]), 10, 100))
+    lookback = int(np.clip(round(x[2]), 20, 100))
+    layers = int(np.clip(round(x[3]), 1, 3))
+
+    # Map bucket [1,100] to [1e-5,1e-3] log-ish.
+    lr_bucket = float(np.clip(x[4], 1, 100))
+    learning_rate = float(10 ** np.interp(lr_bucket, [1, 100], [-5, -3]))
+
+    batch_size_raw = int(np.clip(round(x[5]), 16, 128))
+    # Favor mini-batch around 30 as described, but still allow PSO search.
+    batch_choices = np.array([16, 24, 30, 32, 48, 64, 96, 128])
+    batch_size = int(batch_choices[np.argmin(np.abs(batch_choices - batch_size_raw))])
+
+    return {
+        "hidden_neurons": hidden,
+        "epochs": epochs,
+        "lookback": lookback,
+        "layers": layers,
+        "learning_rate": learning_rate,
+        "batch_size": batch_size,
+    }
+
+
+def load_pso_lstm_best_params() -> dict[str, Any]:
+    if not PSO_LSTM_BEST_PARAMS_PATH.exists():
+        return dict(PSO_LSTM_DEFAULT_PARAMS)
+
+    try:
+        payload = json.loads(PSO_LSTM_BEST_PARAMS_PATH.read_text(encoding="utf-8"))
+        if "best_params" in payload:
+            params = payload["best_params"]
+        else:
+            params = payload
+        out = dict(PSO_LSTM_DEFAULT_PARAMS)
+        out.update(params)
+        out["source"] = payload.get("source", out.get("source", "pso_lstm"))
+        out["fitness"] = payload.get("best_fitness", out.get("fitness"))
+        return out
+    except Exception:
+        return dict(PSO_LSTM_DEFAULT_PARAMS)
+
+
+def save_pso_lstm_best_params(params: dict[str, Any], fitness: float, diagnostics: dict[str, Any] | None = None) -> None:
+    payload = {
+        "ok": True,
+        "created_at_utc": _forecast_now_utc_iso() if "_forecast_now_utc_iso" in globals() else datetime.now(timezone.utc).isoformat(),
+        "data_tag": DATA_TAG,
+        "best_fitness": float(fitness),
+        "best_params": params,
+        "diagnostics": diagnostics or {},
+        "source": "pso_lstm",
+        "description": "PSO-optimized LSTM/Stacked-LSTM/Attention-LSTM hyperparameters",
+    }
+    PSO_LSTM_BEST_PARAMS_PATH.write_text(json.dumps(payload, indent=2, default=json_default) + "\n", encoding="utf-8")
+    print(f"[pso-lstm] saved best params={PSO_LSTM_BEST_PARAMS_PATH}")
+
+
+def _pso_symbol_price_frame(symbols: list[str]) -> pd.DataFrame:
+    """
+    Build a compact multi-symbol close-price dataset from existing local files.
+    """
+    frames = []
+    paths = [
+        INTRADAY_BARS_1M_PATH if "INTRADAY_BARS_1M_PATH" in globals() else OUT_DIR / f"{DATA_TAG}_intraday_bars_1m.csv",
+        OUT_DIR / f"{DATA_TAG}_daily_features.csv",
+        PROJECT_ROOT / "daily_system_outputs" / "daily_features.csv",
+    ]
+
+    wanted = {normalize_symbol(s) for s in symbols if normalize_symbol(s)}
+
+    for path in paths:
+        if not path.exists():
+            continue
+
+        try:
+            df = pd.read_csv(path)
+            if "symbol" not in df.columns:
+                continue
+
+            close_col = "close" if "close" in df.columns else "Close" if "Close" in df.columns else "adj_close" if "adj_close" in df.columns else None
+            if close_col is None:
+                continue
+
+            time_col = "timestamp" if "timestamp" in df.columns else "date" if "date" in df.columns else None
+            df = df.copy()
+            df["symbol"] = df["symbol"].map(normalize_symbol)
+            if wanted:
+                df = df[df["symbol"].isin(wanted)]
+            df["close"] = pd.to_numeric(df[close_col], errors="coerce")
+            if time_col:
+                df["timestamp"] = pd.to_datetime(df[time_col], errors="coerce", utc=True)
+            else:
+                df["timestamp"] = pd.RangeIndex(len(df))
+
+            df = df.dropna(subset=["symbol", "close"])
+            if not df.empty:
+                frames.append(df[["timestamp", "symbol", "close"]])
+        except Exception as exc:
+            _pso_lstm_event("pso_price_frame_load_error", {"path": str(path), "error": str(exc)})
+
+    if not frames:
+        return pd.DataFrame(columns=["timestamp", "symbol", "close"])
+
+    out = pd.concat(frames, ignore_index=True)
+    return out.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+
+
+def _pso_lstm_proxy_fitness(params: dict[str, Any], price_frame: pd.DataFrame) -> float:
+    """
+    Fast no-dependency proxy fitness.
+
+    This keeps run.py lightweight. It estimates how well a given lookback can
+    predict next-period return direction using a simple attention-weighted
+    return model, while penalizing over-complex LSTM settings.
+
+    If you wire an external forecast_engine.py, that engine can use these saved
+    PSO params for real LSTM training. This proxy allows the optimizer itself to
+    run safely inside run.py without expensive deep training every startup.
+    """
+    if price_frame.empty:
+        return -9999.0
+
+    lookback = int(params["lookback"])
+    layers = int(params["layers"])
+    hidden = int(params["hidden_neurons"])
+    epochs = int(params["epochs"])
+    lr = float(params["learning_rate"])
+    batch = int(params["batch_size"])
+
+    scores = []
+    total_samples = 0
+
+    for symbol, g in price_frame.groupby("symbol", sort=False):
+        close = pd.to_numeric(g["close"], errors="coerce").dropna().astype(float)
+        if len(close) < lookback + 25:
+            continue
+
+        dwt_pack = _dwt_feature_pack(close)
+        denoised_close = pd.Series(dwt_pack.get("denoised_close", close))
+        rets = denoised_close.pct_change().dropna().reset_index(drop=True)
+        if len(rets) < lookback + 10:
+            continue
+
+        correct = 0
+        count = 0
+        pnl = 0.0
+        losses = 0.0
+
+        for i in range(lookback, len(rets) - 1):
+            window = rets.iloc[i - lookback:i].to_numpy(dtype=float)
+            target = float(rets.iloc[i + 1])
+
+            # Soft-attention proxy: larger absolute bars get higher weight.
+            abs_w = np.abs(window)
+            weights = abs_w / max(abs_w.sum(), 1e-9)
+            attention_return = float(np.sum(window * weights))
+
+            # LSTM-ish memory proxy: recent drift plus attention return.
+            recent_return = float(np.mean(window[-min(10, len(window)):]))
+            long_return = float(np.mean(window))
+            pred = 0.50 * attention_return + 0.35 * recent_return + 0.15 * long_return
+
+            if np.sign(pred) == np.sign(target) or abs(target) < 1e-6:
+                correct += 1
+
+            if pred > 0:
+                pnl += target
+                if target < 0:
+                    losses += abs(target)
+
+            count += 1
+
+        if count > 0:
+            accuracy = correct / count
+            avg_pnl = pnl / count
+            downside = losses / max(count, 1)
+            scores.append(accuracy * 2.0 + avg_pnl * 500.0 - downside * 300.0)
+            total_samples += count
+
+    if not scores:
+        return -9999.0
+
+    base = float(np.mean(scores))
+
+    # Complexity penalty prevents PSO from always selecting max neurons/layers.
+    complexity_penalty = (
+        (hidden / 300.0) * 0.05
+        + max(0, layers - 1) * 0.03
+        + (epochs / 100.0) * 0.02
+    )
+
+    # Batch size around 30 is favored per the paper.
+    batch_penalty = abs(batch - 30) / 128.0 * 0.04
+
+    # LR penalty for extremes.
+    lr_penalty = abs(np.log10(max(lr, 1e-9)) - np.log10(7e-4)) * 0.02
+
+    fitness = base - complexity_penalty - batch_penalty - lr_penalty
+    return float(fitness)
+
+
+def run_pso_lstm_optimization(symbols: list[str] | None = None) -> dict[str, Any]:
+    """
+    Run PSO optimization and save best LSTM hyperparameters.
+
+    This runs without arguments and uses current universe/order symbols.
+    """
+    if not PSO_LSTM_ENABLED:
+        return {"ok": False, "reason": "disabled"}
+
+    if symbols is None:
+        try:
+            symbols = get_es_symbols_from_orders()
+        except Exception:
+            symbols = []
+
+    price_frame = _pso_symbol_price_frame(symbols or [])
+    if price_frame.empty:
+        params = dict(PSO_LSTM_DEFAULT_PARAMS)
+        save_pso_lstm_best_params(params, -9999.0, {"reason": "missing_price_history"})
+        return {"ok": False, "reason": "missing_price_history", "best_params": params}
+
+    rng = np.random.default_rng(int(os.getenv("PSO_RANDOM_SEED", "42")))
+    bounds = PSO_LSTM_BOUNDS
+    dim = bounds.shape[0]
+
+    positions = rng.uniform(bounds[:, 0], bounds[:, 1], size=(PSO_SWARM_SIZE, dim))
+    velocities = rng.uniform(PSO_VELOCITY_MIN, PSO_VELOCITY_MAX, size=(PSO_SWARM_SIZE, dim))
+
+    pbest_positions = positions.copy()
+    pbest_fitness = np.full(PSO_SWARM_SIZE, np.inf, dtype=float)
+
+    gbest_position = None
+    gbest_fitness = np.inf
+
+    for iteration in range(1, PSO_MAX_ITER + 1):
+        for i in range(PSO_SWARM_SIZE):
+            params = pso_position_to_lstm_params(positions[i])
+            # PSO convention in the paper minimizes f(x), so use negative fitness.
+            objective = -_pso_lstm_proxy_fitness(params, price_frame)
+
+            trial_row = {
+                "timestamp_utc": _forecast_now_utc_iso() if "_forecast_now_utc_iso" in globals() else datetime.now(timezone.utc).isoformat(),
+                "iteration": iteration,
+                "particle": i,
+                "objective": float(objective),
+                "fitness": float(-objective),
+                "params": params,
+            }
+            with PSO_LSTM_TRIALS_PATH.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(trial_row, default=json_default) + "\n")
+
+            if objective < pbest_fitness[i]:
+                pbest_fitness[i] = objective
+                pbest_positions[i] = positions[i].copy()
+
+            if objective < gbest_fitness:
+                gbest_fitness = objective
+                gbest_position = positions[i].copy()
+
+        if gbest_position is None:
+            break
+
+        r1 = rng.random(size=(PSO_SWARM_SIZE, dim))
+        r2 = rng.random(size=(PSO_SWARM_SIZE, dim))
+
+        velocities = (
+            PSO_INERTIA_W * velocities
+            + PSO_C1 * r1 * (pbest_positions - positions)
+            + PSO_C2 * r2 * (gbest_position - positions)
+        )
+        velocities = np.clip(velocities, PSO_VELOCITY_MIN, PSO_VELOCITY_MAX)
+
+        positions = positions + velocities
+        positions = np.clip(positions, bounds[:, 0], bounds[:, 1])
+
+        best_params = pso_position_to_lstm_params(gbest_position)
+        best_fitness = -float(gbest_fitness)
+        print(f"[pso-lstm] iter={iteration}/{PSO_MAX_ITER} best_fitness={best_fitness:.6f} params={best_params}")
+
+    if gbest_position is None:
+        params = dict(PSO_LSTM_DEFAULT_PARAMS)
+        best_fitness = -9999.0
+    else:
+        params = pso_position_to_lstm_params(gbest_position)
+        best_fitness = -float(gbest_fitness)
+
+    diagnostics = {
+        "swarm_size": PSO_SWARM_SIZE,
+        "max_iter": PSO_MAX_ITER,
+        "inertia_w": PSO_INERTIA_W,
+        "c1": PSO_C1,
+        "c2": PSO_C2,
+        "velocity_min": PSO_VELOCITY_MIN,
+        "velocity_max": PSO_VELOCITY_MAX,
+        "symbols": sorted(price_frame["symbol"].unique().tolist()) if "symbol" in price_frame.columns else [],
+        "rows": int(len(price_frame)),
+    }
+
+    save_pso_lstm_best_params(params, best_fitness, diagnostics)
+    _pso_lstm_event("pso_lstm_optimization_complete", {"fitness": best_fitness, "params": params, "diagnostics": diagnostics})
+
+    return {
+        "ok": True,
+        "best_fitness": best_fitness,
+        "best_params": params,
+        "diagnostics": diagnostics,
+    }
+
+
+def maybe_run_pso_lstm_optimization() -> None:
+    if not PSO_LSTM_ENABLED:
+        return
+
+    should_optimize = PSO_LSTM_OPTIMIZE_ON_START or not PSO_LSTM_BEST_PARAMS_PATH.exists()
+    if not should_optimize:
+        return
+
+    try:
+        print("[pso-lstm] optimizing LSTM hyperparameters")
+        run_pso_lstm_optimization()
+    except Exception as exc:
+        print(f"[pso-lstm] optimization skipped/error: {exc}")
+        _pso_lstm_event("pso_lstm_optimization_error", {"error": str(exc)})
+
+
+def apply_pso_params_to_forecast_row(row: dict[str, Any]) -> dict[str, Any]:
+    """
+    Attach PSO-optimized LSTM hyperparameters to forecast rows.
+
+    External LSTM/Attention-LSTM scripts can also read the same JSON directly.
+    """
+    if not PSO_LSTM_ENABLED or not PSO_LSTM_USE_IN_FORECAST:
+        return row
+
+    params = load_pso_lstm_best_params()
+    row["pso_lstm_hidden_neurons"] = params.get("hidden_neurons")
+    row["pso_lstm_epochs"] = params.get("epochs")
+    row["pso_lstm_lookback"] = params.get("lookback")
+    row["pso_lstm_layers"] = params.get("layers")
+    row["pso_lstm_learning_rate"] = params.get("learning_rate")
+    row["pso_lstm_batch_size"] = params.get("batch_size")
+    row["pso_lstm_fitness"] = params.get("fitness")
+    return row
+
+
+def maybe_refresh_forecast_ensemble_layer() -> None:
+    if not FORECAST_ENSEMBLE_ENABLED:
+        return
+    try:
+        refresh_forecast_ensemble_if_available()
+    except Exception as exc:
+        print(f"[forecast] refresh skipped/error: {exc}")
+        _forecast_write_event("forecast_refresh_error", {"error": str(exc)})
+
+
+
+# =============================================================================
+# EVOLUTION STRATEGY MAIN STRATEGY LAYER
+# =============================================================================
+#
+# This is a cleaned, no-argument implementation of the user's Evolution Strategy
+# agent. It trains automatically from available price history and emits long-only
+# BUY / HOLD / SELL timing signals that can be merged into the main order plan.
+#
+# Important changes from the notebook-style snippet:
+#   - no df_full dependency
+#   - no pkg_resources requirement printing
+#   - no close/global variable bug
+#   - long-only: no shorts
+#   - uses historical close data from daily/intraday bars already available
+#   - writes dated signal/model artifacts
+#   - can be called from run.py without command-line arguments
+
+ES_LAYER_ENABLED = os.getenv("ES_LAYER_ENABLED", "1").lower() in {"1", "true", "yes"}
+ES_TRAIN_ON_START = os.getenv("ES_TRAIN_ON_START", "0").lower() in {"1", "true", "yes"}
+ES_USE_AS_ORDER_SOURCE = os.getenv("ES_USE_AS_ORDER_SOURCE", "1").lower() in {"1", "true", "yes"}
+ES_LONG_ONLY = os.getenv("ES_LONG_ONLY", "1").lower() in {"1", "true", "yes"}
+
+ES_WINDOW_SIZE = int(os.getenv("ES_WINDOW_SIZE", "30"))
+ES_LAYER_SIZE = int(os.getenv("ES_LAYER_SIZE", "256"))
+ES_POPULATION_SIZE = int(os.getenv("ES_POPULATION_SIZE", "15"))
+ES_SIGMA = float(os.getenv("ES_SIGMA", "0.10"))
+ES_LEARNING_RATE = float(os.getenv("ES_LEARNING_RATE", "0.03"))
+ES_ITERATIONS = int(os.getenv("ES_ITERATIONS", "120"))
+ES_CHECKPOINT = int(os.getenv("ES_CHECKPOINT", "10"))
+ES_SKIP = int(os.getenv("ES_SKIP", "1"))
+ES_INITIAL_MONEY = float(os.getenv("ES_INITIAL_MONEY", "10000"))
+ES_MIN_SIGNAL_CONFIDENCE = float(os.getenv("ES_MIN_SIGNAL_CONFIDENCE", "0.34"))
+ES_MAX_ORDER_DOLLARS = float(os.getenv("ES_MAX_ORDER_DOLLARS", "1500"))
+ES_MIN_HISTORY_BARS = int(os.getenv("ES_MIN_HISTORY_BARS", "80"))
+ES_SYMBOL_LIMIT = int(os.getenv("ES_SYMBOL_LIMIT", "30"))
+
+ES_MODEL_PATH = OUT_DIR / f"{DATA_TAG}_evolution_strategy_models.json"
+ES_SIGNALS_PATH = OUT_DIR / f"{DATA_TAG}_evolution_strategy_signals.json"
+ES_SIGNALS_CSV_PATH = OUT_DIR / f"{DATA_TAG}_evolution_strategy_signals.csv"
+ES_METRICS_PATH = OUT_DIR / f"{DATA_TAG}_evolution_strategy_metrics.json"
+
+
+def _es_softmax(x: np.ndarray) -> np.ndarray:
+    z = x.astype(float)
+    z = z - np.max(z)
+    e = np.exp(z)
+    return e / max(float(e.sum()), 1e-12)
+
+
+class EvolutionStrategyOptimizer:
+    def __init__(
+        self,
+        weights: list[np.ndarray],
+        reward_function: Any,
+        population_size: int,
+        sigma: float,
+        learning_rate: float,
+    ):
+        self.weights = weights
+        self.reward_function = reward_function
+        self.population_size = int(population_size)
+        self.sigma = float(sigma)
+        self.learning_rate = float(learning_rate)
+
+    def _get_weight_from_population(self, weights: list[np.ndarray], population: list[np.ndarray]) -> list[np.ndarray]:
+        return [weights[idx] + self.sigma * noise for idx, noise in enumerate(population)]
+
+    def get_weights(self) -> list[np.ndarray]:
+        return self.weights
+
+    def train(self, epoch: int = 100, print_every: int = 10) -> list[float]:
+        rewards_history: list[float] = []
+        lasttime = time.time()
+
+        for i in range(int(epoch)):
+            population: list[list[np.ndarray]] = []
+            rewards = np.zeros(self.population_size, dtype=float)
+
+            for _ in range(self.population_size):
+                population.append([np.random.randn(*w.shape) for w in self.weights])
+
+            for k in range(self.population_size):
+                candidate_weights = self._get_weight_from_population(self.weights, population[k])
+                rewards[k] = self.reward_function(candidate_weights)
+
+            rewards_norm = (rewards - np.mean(rewards)) / (np.std(rewards) + 1e-7)
+
+            for index, w in enumerate(self.weights):
+                noise_matrix = np.array([p[index] for p in population])
+                self.weights[index] = (
+                    w
+                    + self.learning_rate
+                    / (self.population_size * self.sigma)
+                    * np.dot(noise_matrix.T, rewards_norm).T
+                )
+
+            current_reward = float(self.reward_function(self.weights))
+            rewards_history.append(current_reward)
+
+            if (i + 1) % max(1, int(print_every)) == 0:
+                print(f"[es-layer] iter={i + 1} reward={current_reward:.4f}")
+
+        print(f"[es-layer] training_time_seconds={time.time() - lasttime:.2f}")
+        return rewards_history
+
+
+class EvolutionStrategyModel:
+    def __init__(self, input_size: int, layer_size: int, output_size: int, weights: list[np.ndarray] | None = None):
+        if weights is not None:
+            self.weights = weights
+        else:
+            scale_1 = 1.0 / max(np.sqrt(input_size), 1.0)
+            scale_2 = 1.0 / max(np.sqrt(layer_size), 1.0)
+            self.weights = [
+                np.random.randn(input_size, layer_size) * scale_1,
+                np.random.randn(layer_size, output_size) * scale_2,
+                np.zeros((1, layer_size), dtype=float),
+            ]
+
+    def predict(self, inputs: np.ndarray) -> np.ndarray:
+        feed = np.tanh(np.dot(inputs, self.weights[0]) + self.weights[-1])
+        decision = np.dot(feed, self.weights[1])
+        return decision
+
+    def get_weights(self) -> list[np.ndarray]:
+        return self.weights
+
+    def set_weights(self, weights: list[np.ndarray]) -> None:
+        self.weights = weights
+
+
+class EvolutionStrategyAgent:
+    # Actions:
+    #   0 = HOLD
+    #   1 = BUY / ENTER_LONG
+    #   2 = SELL / EXIT_LONG
+    def __init__(
+        self,
+        model: EvolutionStrategyModel,
+        window_size: int,
+        trend: list[float],
+        skip: int,
+        initial_money: float,
+        population_size: int = ES_POPULATION_SIZE,
+        sigma: float = ES_SIGMA,
+        learning_rate: float = ES_LEARNING_RATE,
+    ):
+        self.model = model
+        self.window_size = int(window_size)
+        self.trend = [float(x) for x in trend if float(x) > 0]
+        self.skip = max(1, int(skip))
+        self.initial_money = float(initial_money)
+        self.population_size = int(population_size)
+        self.sigma = float(sigma)
+        self.learning_rate = float(learning_rate)
+        self.es = EvolutionStrategyOptimizer(
+            self.model.get_weights(),
+            self.get_reward,
+            self.population_size,
+            self.sigma,
+            self.learning_rate,
+        )
+
+    def act(self, sequence: np.ndarray) -> tuple[int, np.ndarray]:
+        decision = self.model.predict(np.array(sequence, dtype=float))
+        probs = _es_softmax(decision[0])
+        return int(np.argmax(probs)), probs
+
+    def get_state(self, t: int) -> np.ndarray:
+        window_size = self.window_size + 1
+        d = t - window_size + 1
+        if d >= 0:
+            block = self.trend[d:t + 1]
+        else:
+            block = [-d * [self.trend[0]][0]] * 0  # keeps lint quiet; replaced below
+            block = (-d) * [self.trend[0]] + self.trend[0:t + 1]
+
+        diffs = []
+        for i in range(window_size - 1):
+            prev_px = max(float(block[i]), 1e-9)
+            next_px = float(block[i + 1])
+            # Percent change is more stable across symbols than raw dollars.
+            diffs.append((next_px / prev_px) - 1.0)
+        return np.array([diffs], dtype=float)
+
+    def get_reward(self, weights: list[np.ndarray]) -> float:
+        if len(self.trend) < self.window_size + 5:
+            return -100.0
+
+        starting_cash = self.initial_money
+        cash = starting_cash
+        inventory: list[float] = []
+        state = self.get_state(0)
+
+        realized_pnl = 0.0
+        trade_count = 0
+        bad_trade_count = 0
+        max_equity = starting_cash
+        max_drawdown = 0.0
+
+        for t in range(0, len(self.trend) - 1, self.skip):
+            self.model.weights = weights
+            action, _ = self.act(state)
+            price = float(self.trend[t])
+            next_state = self.get_state(t + 1)
+
+            if action == 1 and cash >= price and not inventory:
+                inventory.append(price)
+                cash -= price
+                trade_count += 1
+
+            elif action == 2 and inventory:
+                bought_price = inventory.pop(0)
+                pnl = price - bought_price
+                realized_pnl += pnl
+                cash += price
+                trade_count += 1
+                if pnl <= 0:
+                    bad_trade_count += 1
+
+            mark_value = cash + (len(inventory) * price)
+            max_equity = max(max_equity, mark_value)
+            drawdown = (max_equity - mark_value) / max(max_equity, 1e-9)
+            max_drawdown = max(max_drawdown, drawdown)
+
+            state = next_state
+
+        if inventory:
+            final_price = float(self.trend[-1])
+            bought_price = inventory.pop(0)
+            realized_pnl += final_price - bought_price
+            cash += final_price
+
+        ret_pct = ((cash - starting_cash) / max(starting_cash, 1e-9)) * 100.0
+
+        # Reward profitable strategies, penalize drawdown, bad trades, and no-action policies.
+        reward = ret_pct
+        reward -= max_drawdown * 100.0 * 0.75
+        reward -= bad_trade_count * 0.15
+        if trade_count == 0:
+            reward -= 2.5
+        return float(reward)
+
+    def fit(self, iterations: int, checkpoint: int) -> list[float]:
+        return self.es.train(iterations, print_every=checkpoint)
+
+    def latest_signal(self) -> dict[str, Any]:
+        state = self.get_state(len(self.trend) - 1)
+        action, probs = self.act(state)
+        price = float(self.trend[-1])
+        action_name = {0: "HOLD", 1: "BUY", 2: "SELL"}.get(action, "HOLD")
+        confidence = float(np.max(probs))
+        return {
+            "action_id": int(action),
+            "action": action_name,
+            "confidence": confidence,
+            "prob_hold": float(probs[0]),
+            "prob_buy": float(probs[1]),
+            "prob_sell": float(probs[2]),
+            "price": price,
+        }
+
+    def backtest(self) -> dict[str, Any]:
+        cash = self.initial_money
+        starting_cash = cash
+        inventory: list[float] = []
+        buys: list[int] = []
+        sells: list[int] = []
+        state = self.get_state(0)
+
+        for t in range(0, len(self.trend) - 1, self.skip):
+            action, _ = self.act(state)
+            price = float(self.trend[t])
+            next_state = self.get_state(t + 1)
+
+            if action == 1 and cash >= price and not inventory:
+                inventory.append(price)
+                cash -= price
+                buys.append(t)
+
+            elif action == 2 and inventory:
+                inventory.pop(0)
+                cash += price
+                sells.append(t)
+
+            state = next_state
+
+        if inventory:
+            cash += float(self.trend[-1])
+
+        total_gains = cash - starting_cash
+        invest_pct = (total_gains / max(starting_cash, 1e-9)) * 100.0
+        return {
+            "states_buy": buys,
+            "states_sell": sells,
+            "total_gains": float(total_gains),
+            "invest_pct": float(invest_pct),
+            "buy_count": len(buys),
+            "sell_count": len(sells),
+        }
+
+
+def _es_weights_to_json(weights: list[np.ndarray]) -> list[Any]:
+    return [w.tolist() for w in weights]
+
+
+def _es_weights_from_json(payload: list[Any]) -> list[np.ndarray]:
+    return [np.array(w, dtype=float) for w in payload]
+
+
+def load_es_models() -> dict[str, Any]:
+    if not ES_MODEL_PATH.exists():
+        return {}
+    try:
+        return json.loads(ES_MODEL_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_es_models(payload: dict[str, Any]) -> None:
+    ES_MODEL_PATH.write_text(json.dumps(safe_json(payload), indent=2) + "\n", encoding="utf-8")
+
+
+def get_es_symbols_from_orders() -> list[str]:
+    symbols: set[str] = set()
+
+    candidate_paths = [
+        OUT_DIR / f"{DATA_TAG}_daily_walkforward_emulated_rebalance_orders.csv",
+        OUT_DIR / f"{DATA_TAG}_stream_confirmed_rebalance_orders.csv",
+        PROJECT_ROOT / f"{DATA_TAG}_locked_trading_universe.txt",
+        PROJECT_ROOT / "locked_trading_universe.txt",
+    ]
+
+    for path in candidate_paths:
+        if not path.exists():
+            continue
+        try:
+            if path.suffix.lower() == ".csv":
+                df = pd.read_csv(path)
+                if "symbol" in df.columns:
+                    symbols.update(df["symbol"].map(normalize_symbol).dropna().tolist())
+            else:
+                raw = path.read_text(encoding="utf-8")
+                symbols.update(normalize_symbol(x) for x in raw.replace("\n", ",").split(",") if normalize_symbol(x))
+        except Exception:
+            continue
+
+    return sorted(symbols)[:ES_SYMBOL_LIMIT]
+
+
+def load_es_price_history(symbols: list[str]) -> dict[str, list[float]]:
+    """
+    Load price history from local intraday/daily data first.
+    Falls back to any order-plan price if no history exists.
+    """
+    out: dict[str, list[float]] = {}
+
+    paths = [
+        OUT_DIR / f"{DATA_TAG}_intraday_bars_1m.csv",
+        OUT_DIR / f"{DATA_TAG}_daily_features.csv",
+        PROJECT_ROOT / "daily_system_outputs" / "daily_features.csv",
+    ]
+
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            df = pd.read_csv(path)
+            if "symbol" not in df.columns:
+                continue
+            close_col = "close" if "close" in df.columns else "Close" if "Close" in df.columns else None
+            if close_col is None:
+                continue
+            df["symbol"] = df["symbol"].map(normalize_symbol)
+            for symbol, g in df[df["symbol"].isin(symbols)].groupby("symbol", sort=False):
+                prices = pd.to_numeric(g[close_col], errors="coerce").dropna().astype(float).tolist()
+                prices = [p for p in prices if p > 0]
+                if len(prices) >= ES_MIN_HISTORY_BARS:
+                    out[symbol] = prices
+        except Exception:
+            continue
+
+    return out
+
+
+def train_evolution_strategy_layer(symbols: list[str] | None = None) -> dict[str, Any]:
+    if not ES_LAYER_ENABLED:
+        return {"ok": False, "reason": "disabled"}
+
+    symbols = symbols or get_es_symbols_from_orders()
+    price_map = load_es_price_history(symbols)
+    models = load_es_models()
+
+    metrics: dict[str, Any] = {
+        "ok": True,
+        "created_at_utc": now_utc_iso() if "now_utc_iso" in globals() else datetime.utcnow().isoformat(),
+        "symbols_requested": symbols,
+        "symbols_trained": [],
+        "symbols_skipped": [],
+    }
+
+    for symbol in symbols:
+        trend = price_map.get(symbol, [])
+        if len(trend) < max(ES_MIN_HISTORY_BARS, ES_WINDOW_SIZE + 5):
+            metrics["symbols_skipped"].append({"symbol": symbol, "reason": f"not_enough_history:{len(trend)}"})
+            continue
+
+        print(f"[es-layer] training symbol={symbol} bars={len(trend)}")
+
+        model = EvolutionStrategyModel(
+            input_size=ES_WINDOW_SIZE,
+            layer_size=ES_LAYER_SIZE,
+            output_size=3,
+        )
+        agent = EvolutionStrategyAgent(
+            model=model,
+            window_size=ES_WINDOW_SIZE,
+            trend=trend,
+            skip=ES_SKIP,
+            initial_money=ES_INITIAL_MONEY,
+        )
+        rewards = agent.fit(iterations=ES_ITERATIONS, checkpoint=ES_CHECKPOINT)
+        backtest = agent.backtest()
+
+        models[symbol] = {
+            "symbol": symbol,
+            "weights": _es_weights_to_json(agent.model.get_weights()),
+            "window_size": ES_WINDOW_SIZE,
+            "layer_size": ES_LAYER_SIZE,
+            "output_size": 3,
+            "trained_at_utc": metrics["created_at_utc"],
+            "bars": len(trend),
+            "last_reward": float(rewards[-1]) if rewards else None,
+            "backtest": backtest,
+        }
+        metrics["symbols_trained"].append({
+            "symbol": symbol,
+            "bars": len(trend),
+            "last_reward": float(rewards[-1]) if rewards else None,
+            **backtest,
+        })
+
+    save_es_models(models)
+    ES_METRICS_PATH.write_text(json.dumps(safe_json(metrics), indent=2) + "\n", encoding="utf-8")
+    print(f"[es-layer] saved models={ES_MODEL_PATH}")
+    print(f"[es-layer] saved metrics={ES_METRICS_PATH}")
+    return metrics
+
+
+def infer_evolution_strategy_signals(symbols: list[str] | None = None) -> list[dict[str, Any]]:
+    if not ES_LAYER_ENABLED:
+        return []
+
+    symbols = symbols or get_es_symbols_from_orders()
+    price_map = load_es_price_history(symbols)
+    models_payload = load_es_models()
+    signals: list[dict[str, Any]] = []
+
+    for symbol in symbols:
+        trend = price_map.get(symbol, [])
+        model_data = models_payload.get(symbol)
+
+        if not model_data or len(trend) < max(ES_MIN_HISTORY_BARS, ES_WINDOW_SIZE + 5):
+            continue
+
+        try:
+            weights = _es_weights_from_json(model_data["weights"])
+            model = EvolutionStrategyModel(
+                input_size=int(model_data.get("window_size", ES_WINDOW_SIZE)),
+                layer_size=int(model_data.get("layer_size", ES_LAYER_SIZE)),
+                output_size=3,
+                weights=weights,
+            )
+            agent = EvolutionStrategyAgent(
+                model=model,
+                window_size=int(model_data.get("window_size", ES_WINDOW_SIZE)),
+                trend=trend,
+                skip=ES_SKIP,
+                initial_money=ES_INITIAL_MONEY,
+            )
+            signal = agent.latest_signal()
+            action = signal["action"]
+
+            if ES_LONG_ONLY and action not in {"HOLD", "BUY", "SELL"}:
+                action = "HOLD"
+
+            # Low confidence actions are treated as HOLD.
+            if signal["confidence"] < ES_MIN_SIGNAL_CONFIDENCE:
+                action = "HOLD"
+
+            row = {
+                "symbol": symbol,
+                "action": action,
+                "raw_action": signal["action"],
+                "confidence": signal["confidence"],
+                "prob_hold": signal["prob_hold"],
+                "prob_buy": signal["prob_buy"],
+                "prob_sell": signal["prob_sell"],
+                "price": signal["price"],
+                "source": "evolution_strategy_layer",
+                "created_at_utc": now_utc_iso() if "now_utc_iso" in globals() else datetime.utcnow().isoformat(),
+            }
+            signals.append(row)
+        except Exception as exc:
+            print(f"[es-layer] inference failed symbol={symbol}: {exc}")
+
+    payload = {
+        "created_at_utc": now_utc_iso() if "now_utc_iso" in globals() else datetime.utcnow().isoformat(),
+        "signals": signals,
+    }
+    ES_SIGNALS_PATH.write_text(json.dumps(safe_json(payload), indent=2) + "\n", encoding="utf-8")
+    pd.DataFrame(signals).to_csv(ES_SIGNALS_CSV_PATH, index=False)
+
+    if signals:
+        print(f"[es-layer] saved signals={ES_SIGNALS_PATH} rows={len(signals)}")
+
+    return signals
+
+
+def load_evolution_strategy_orders() -> pd.DataFrame:
+    """
+    Convert ES BUY/SELL signals into executor-compatible order rows.
+    SELL rows are exits and should always be allowed.
+    BUY rows are small timing entries and still pass through the normal executor
+    caps, Kelly sizing, cash buffer, PDT controls, and direction gates.
+    """
+    if not ES_LAYER_ENABLED or not ES_USE_AS_ORDER_SOURCE:
+        return pd.DataFrame()
+
+    if not ES_SIGNALS_PATH.exists():
+        infer_evolution_strategy_signals()
+
+    try:
+        payload = json.loads(ES_SIGNALS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return pd.DataFrame()
+
+    signals = payload.get("signals", [])
+    rows = []
+
+    for sig in signals:
+        symbol = normalize_symbol(sig.get("symbol"))
+        action = str(sig.get("action", "HOLD")).upper()
+        confidence = float(sig.get("confidence", 0.0) or 0.0)
+        price = float(sig.get("price", 0.0) or 0.0)
+
+        if not symbol or price <= 0 or action not in {"BUY", "SELL"}:
+            continue
+
+        side = "buy" if action == "BUY" else "sell"
+        qty = max(1, int(ES_MAX_ORDER_DOLLARS // price)) if side == "buy" else 0
+
+        rows.append({
+            "symbol": symbol,
+            "side": side,
+            "order_qty": qty,
+            "price": price,
+            "abs_delta_dollars": qty * price if side == "buy" else 0.0,
+            "capped_dollars": min(qty * price, ES_MAX_ORDER_DOLLARS) if side == "buy" else 0.0,
+            "confidence_used": confidence,
+            "confidence_multiplier": 1.0 + confidence,
+            "reason": f"evolution_strategy_{action.lower()}:conf={confidence:.2f}:p_buy={sig.get('prob_buy', 0):.2f}:p_sell={sig.get('prob_sell', 0):.2f}",
+            "source": "evolution_strategy_layer",
+            "es_action": action,
+            "es_prob_hold": sig.get("prob_hold"),
+            "es_prob_buy": sig.get("prob_buy"),
+            "es_prob_sell": sig.get("prob_sell"),
+            "stream_confirmed": True if side == "buy" else False,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def merge_evolution_strategy_orders(plan: pd.DataFrame) -> pd.DataFrame:
+    es_orders = load_evolution_strategy_orders()
+    if es_orders.empty:
+        return plan
+
+    if plan is None or plan.empty:
+        print(f"[es-layer] merged rows={len(es_orders)}")
+        return es_orders.copy()
+
+    out = plan.copy()
+    for _, row in es_orders.iterrows():
+        symbol = normalize_symbol(row.get("symbol"))
+        side = str(row.get("side", "")).lower()
+
+        if not symbol:
+            continue
+
+        same_symbol = out["symbol"].map(normalize_symbol) == symbol if "symbol" in out.columns else pd.Series(False, index=out.index)
+
+        # Exits win. Entries do not duplicate existing rows.
+        if side == "sell":
+            out = out[~same_symbol].copy()
+            out = pd.concat([out, pd.DataFrame([row])], ignore_index=True)
+        elif side == "buy" and not same_symbol.any():
+            out = pd.concat([out, pd.DataFrame([row])], ignore_index=True)
+
+    print(f"[es-layer] merged rows={len(es_orders)} total_rows={len(out)}")
+    return out.reset_index(drop=True)
+
+
+def maybe_refresh_evolution_strategy_layer() -> None:
+    if not ES_LAYER_ENABLED:
+        return
+
+    should_train = ES_TRAIN_ON_START or not ES_MODEL_PATH.exists()
+    if should_train:
+        try:
+            print("[es-layer] training/refreshing strategy models")
+            train_evolution_strategy_layer()
+        except Exception as exc:
+            print(f"[es-layer] training skipped/error: {exc}")
+
+    try:
+        infer_evolution_strategy_signals()
+    except Exception as exc:
+        print(f"[es-layer] signal generation skipped/error: {exc}")
+
+
+
+# =============================================================================
+# SPX PRICE-ACTION / MULTIBAR RL LAYER INTEGRATION
+# =============================================================================
+
+SPX_PRICE_ACTION_LAYER_PATH = PROJECT_ROOT / "spx_price_action_layer.py"
+SPX_LAYER_SOURCE_CANDIDATES = [
+    PROJECT_ROOT / "spx_price_action_layer.py",
+    PROJECT_ROOT / "spx_price_action_layer_updated.py",
+    PROJECT_ROOT / "spx_price_action_layer_2.py",
+    PROJECT_ROOT / "spx_price_action_layer(2).py",
+]
+
+SPX_LAYER_ENABLED = os.getenv("SPX_LAYER_ENABLED", "1").lower() in {"1", "true", "yes"}
+SPX_LAYER_INTERNAL_SUBPROCESS = os.getenv("SPX_LAYER_INTERNAL_SUBPROCESS", "1").lower() in {"1", "true", "yes"}
+SPX_LAYER_MERGE_ORDERS = os.getenv("SPX_LAYER_MERGE_ORDERS", "1").lower() in {"1", "true", "yes"}
+SPX_LAYER_TRAIN_ON_START_FROM_RUN = os.getenv("SPX_LAYER_TRAIN_ON_START_FROM_RUN", "0").lower() in {"1", "true", "yes"}
+SPX_LAYER_EXECUTE_FROM_RUN = os.getenv("SPX_LAYER_EXECUTE_FROM_RUN", os.getenv("SPX_LAYER_EXECUTE", "0")).lower() in {"1", "true", "yes"}
+
+SPX_TRADE_SYMBOL_FROM_RUN = os.getenv("SPX_TRADE_SYMBOL", "SPY").upper().strip()
+SPX_CONFIRMED_ORDERS_PATH = OUT_DIR / f"{DATA_TAG}_spx_price_action_rebalance_orders.csv"
+SPX_SIGNAL_PATH = OUT_DIR / f"{DATA_TAG}_spx_price_action_signal.json"
+SPX_LAYER_LOG_PATH = LOG_DIR / f"{DATA_TAG}_spx_price_action_layer_from_run.log"
+
+# Tuned SPX multibar RL defaults from the latest Optuna run.
+SPX_RL_TUNED_ENV_DEFAULTS = {
+    "SPX_LAYER_RL_TRAIN_LOOKBACK_DAYS": "59",
+    "SPX_LAYER_RL_TIMESTEPS": "25000",
+    "SPX_LAYER_RL_MAX_EPISODE_BARS": "180",
+    "SPX_LAYER_RL_LEARNING_RATE": "0.0001465181270477539",
+    "SPX_LAYER_RL_GAMMA": "0.9886884381471769",
+    "SPX_LAYER_RL_N_STEPS": "1024",
+    "SPX_LAYER_RL_BATCH_SIZE": "128",
+    "SPX_LAYER_RL_ENT_COEF": "0.00793730366338695",
+    "SPX_LAYER_RL_REWARD_SCALE": "123.98760355121524",
+    "SPX_LAYER_RL_ENTRY_BONUS": "1.0736321062529641",
+    "SPX_LAYER_RL_BAD_ENTRY_PENALTY": "2.78478083560159",
+    "SPX_LAYER_RL_EARLY_MULTIBAR_BONUS_MULT": "201.93742669544676",
+    "SPX_LAYER_RL_HOLD_WINNER_MULT": "55.993219878576085",
+    "SPX_LAYER_RL_MFE_CAPTURE_MULT": "19.767240684961102",
+    "SPX_LAYER_RL_GIVEBACK_PENALTY_MULT": "25.565381568951203",
+    "SPX_LAYER_RL_MAE_PENALTY_MULT": "4.680926975116515",
+    "SPX_LAYER_RL_MIN_QUALITY_HOLD_BARS": "11",
+    "SPX_LAYER_RL_FLAT_HOLD_PENALTY": "0.0036799118887083098",
+    "SPX_LAYER_RL_MIN_ENTRY_CONFIDENCE": "0.7164247276618194",
+    "SPX_LAYER_RL_MIN_EXIT_CONFIDENCE": "0.4326416408435226",
+}
+
+
+
+def _spx_layer_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    env["RUN_DATA_DATE"] = DATA_TAG
+    env["SPX_LAYER_DATA_DATE"] = DATA_TAG
+    env["SPX_TRADE_SYMBOL"] = SPX_TRADE_SYMBOL_FROM_RUN
+    env["SPX_LOGICAL_SYMBOL"] = os.getenv("SPX_LOGICAL_SYMBOL", "SPX")
+    env["SPX_LAYER_EXECUTE"] = "1" if SPX_LAYER_EXECUTE_FROM_RUN else "0"
+    env["SPX_LAYER_RL_ENABLED"] = os.getenv("SPX_LAYER_RL_ENABLED", "1")
+    env["SPX_LAYER_RL_TRAIN_ON_START"] = (
+        "1" if SPX_LAYER_TRAIN_ON_START_FROM_RUN else os.getenv("SPX_LAYER_RL_TRAIN_ON_START", "0")
+    )
+
+    # Use tuned Optuna defaults unless the shell explicitly overrides them.
+    for key, value in SPX_RL_TUNED_ENV_DEFAULTS.items():
+        env[key] = os.getenv(key, value)
+
+    # Diagnostics for the updated SPX layer.
+    env["SPX_LAYER_RL_FEATURES"] = "1m,5m,15m,1h,4h,RSI,SMA5_cross_up_SMA20,SMA20_below_SMA5,ATR,MACD"
+    env["SPX_LAYER_ONE_TRADE_PER_SESSION"] = os.getenv("SPX_LAYER_ONE_TRADE_PER_SESSION", "1")
+    env["SPX_LAYER_LEARN_MAX_RETURN_TRADE"] = os.getenv("SPX_LAYER_LEARN_MAX_RETURN_TRADE", "1")
+    return env
+
+def ensure_spx_price_action_layer_module() -> Path | None:
+    """
+    Resolve the dedicated SPX price-action layer module.
+
+    Preferred project-root file:
+        spx_price_action_layer.py
+
+    Also supports:
+        spx_price_action_layer_updated.py
+
+    The updated layer owns:
+      - one max-return trade per session
+      - SPY proxy execution
+      - tuned Optuna RL defaults
+      - 1m/5m/15m/1h/4h RL multibar features
+      - RSI / SMA5-SMA20 / ATR / MACD feature columns
+      - SPX signal, state, candidate, model and metrics files
+    """
+    if not SPX_LAYER_ENABLED:
+        return None
+
+    for candidate in SPX_LAYER_SOURCE_CANDIDATES:
+        if candidate.exists():
+            print(f"[spx-layer] using module={candidate}")
+            return candidate
+
+    print("[spx-layer] module not found; expected spx_price_action_layer.py or spx_price_action_layer_updated.py in project root")
+    return None
+
+def start_spx_price_action_layer_background() -> None:
+    """
+    Launch the SPX layer as a separate process.
+
+    Keeping it in a separate process avoids name collisions with run.py globals
+    and prevents websocket / Alpaca polling failures from killing the main
+    executor.
+    """
+    if not SPX_LAYER_ENABLED or not SPX_LAYER_INTERNAL_SUBPROCESS:
+        return
+
+    script = ensure_spx_price_action_layer_module()
+    if script is None:
+        return
+
+    try:
+        import subprocess
+
+        args = [sys.executable, "-u", str(script)]
+
+        # Train once and exit if explicitly requested from run.py.
+        # Otherwise run live watcher loop.
+        if SPX_LAYER_TRAIN_ON_START_FROM_RUN:
+            args.extend(["--train-rl", "--once"])
+
+        log_fh = SPX_LAYER_LOG_PATH.open("a", encoding="utf-8")
+        proc = subprocess.Popen(
+            args,
+            cwd=str(PROJECT_ROOT),
+            env=_spx_layer_env(),
+            stdout=log_fh,
+            stderr=log_fh,
+            text=True,
+        )
+
+        print(
+            "[spx-layer] started "
+            f"pid={proc.pid} script={script} symbol={SPX_TRADE_SYMBOL_FROM_RUN} "
+            f"execute={SPX_LAYER_EXECUTE_FROM_RUN} log={SPX_LAYER_LOG_PATH}"
+        )
+        spx_env_snapshot = _spx_layer_env()
+        print(
+            "[spx-layer] tuned RL defaults "
+            f"timesteps={spx_env_snapshot.get('SPX_LAYER_RL_TIMESTEPS')} "
+            f"lr={spx_env_snapshot.get('SPX_LAYER_RL_LEARNING_RATE')} "
+            f"entry_conf={spx_env_snapshot.get('SPX_LAYER_RL_MIN_ENTRY_CONFIDENCE')} "
+            f"exit_conf={spx_env_snapshot.get('SPX_LAYER_RL_MIN_EXIT_CONFIDENCE')}"
+        )
+
+    except Exception as exc:
+        print(f"[spx-layer] start failed: {exc}")
+        try:
+            write_event("spx_layer_start_failed", {"error": str(exc), "script": str(script)})
+        except Exception:
+            pass
+
+
+def load_spx_layer_signal() -> dict[str, Any]:
+    """
+    Read the latest SPX layer signal if present.
+    """
+    path = OUT_DIR / f"{DATA_TAG}_spx_price_action_signal.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def load_spx_layer_orders() -> pd.DataFrame:
+    """
+    Convert the SPX layer's signal/output files into executor-compatible orders.
+
+    The uploaded layer can submit orders itself when SPX_LAYER_EXECUTE=1. In the
+    run.py integration, default SPX_LAYER_EXECUTE_FROM_RUN=0 means it only
+    signals, and run.py merges BUY/SELL decisions into its normal execution
+    path.
+    """
+    if not SPX_LAYER_ENABLED or not SPX_LAYER_MERGE_ORDERS:
+        return pd.DataFrame()
+
+    signal = load_spx_layer_signal()
+    if not signal:
+        return pd.DataFrame()
+
+    action = str(signal.get("action", "")).upper().strip()
+    symbol = str(signal.get("trade_symbol", SPX_TRADE_SYMBOL_FROM_RUN)).upper().strip()
+    qty = int(float(signal.get("qty", 0) or 0))
+    price = float(signal.get("price", 0.0) or 0.0)
+    notional = float(signal.get("notional", 0.0) or 0.0)
+
+    if symbol == "" or action not in {"BUY", "SELL"} or qty <= 0:
+        return pd.DataFrame()
+
+    side = "buy" if action == "BUY" else "sell"
+
+    row = {
+        "symbol": symbol,
+        "side": side,
+        "order_qty": qty,
+        "price": price,
+        "abs_delta_dollars": notional if notional > 0 else qty * price,
+        "capped_dollars": notional if notional > 0 else qty * price,
+        "confidence_used": float(signal.get("max_return_score", signal.get("setup_score", 0.0)) or 0.0),
+        "confidence_multiplier": 1.0 + float(signal.get("max_return_score", signal.get("setup_score", 0.0)) or 0.0),
+        "reason": "spx_price_action_layer:" + str(signal.get("reason", "")),
+        "source": "spx_price_action_layer",
+        "setup_type": signal.get("setup_type"),
+        "entry_price": price,
+        "stop_loss": signal.get("stop_loss"),
+        "take_profit": signal.get("take_profit"),
+        "trailing_stop_enabled": True,
+        "trail_percent": float(os.getenv("SPX_LAYER_TRAIL_PERCENT", "0.65")),
+        "stream_confirmed": True,
+        "spx_layer": True,
+        "logical_symbol": signal.get("logical_symbol", "SPX"),
+        "direction_score_1m": signal.get("direction_score_1m"),
+        "direction_score_5m": signal.get("direction_score_5m"),
+        "direction_score_15m": signal.get("direction_score_15m"),
+        "max_return_score": signal.get("max_return_score"),
+        "session_trade_used": signal.get("session_trade_used"),
+        "rl_signal_path": str(OUT_DIR / f"{DATA_TAG}_spx_multibar_gain_rl_signal.json"),
+        "rl_model_path": str(OUT_DIR / f"{DATA_TAG}_spx_multibar_gain_rl_model.zip"),
+    }
+
+    return pd.DataFrame([row])
+
+
+def merge_spx_layer_orders(rebalance: pd.DataFrame) -> pd.DataFrame:
+    """
+    Merge SPX layer orders into an existing rebalance order dataframe.
+
+    Existing symbol rows win unless SPX emits an explicit SELL, because exits
+    should always be allowed and should not be blocked by a same-symbol buy row.
+    """
+    spx_orders = load_spx_layer_orders()
+    if spx_orders.empty:
+        return rebalance
+
+    if rebalance is None or rebalance.empty:
+        print(f"[spx-layer] merged rows={len(spx_orders)}")
+        return spx_orders.copy()
+
+    out = rebalance.copy()
+    for _, row in spx_orders.iterrows():
+        symbol = str(row.get("symbol", "")).upper()
+        side = str(row.get("side", "")).lower()
+        if not symbol:
+            continue
+
+        same = out["symbol"].astype(str).str.upper() == symbol if "symbol" in out.columns else pd.Series(False, index=out.index)
+
+        if side == "sell":
+            out = out[~same].copy()
+            out = pd.concat([out, pd.DataFrame([row])], ignore_index=True)
+        elif not same.any():
+            out = pd.concat([out, pd.DataFrame([row])], ignore_index=True)
+
+    print(f"[spx-layer] merged rows={len(spx_orders)} total_rows={len(out)}")
+    return out.reset_index(drop=True)
+
+
+def spx_price_action_cycle(*args: Any, **kwargs: Any) -> None:
+    """
+    Compatibility wrapper for older run.py thread calls.
+
+    If a prior edit still calls spx_price_action_cycle(), route it to the
+    standalone module safely.
+    """
+    try:
+        module_path = ensure_spx_price_action_layer_module()
+        if module_path is None:
+            return
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("spx_price_action_layer", module_path)
+        if spec is None or spec.loader is None:
+            return
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        if hasattr(mod, "run_once"):
+            mod.run_once()
+    except Exception as exc:
+        print(f"[spx-layer] cycle error: {exc}")
+
+
+def spx_write_event(event: str, payload: dict[str, Any] | None = None) -> None:
+    try:
+        write_event(event, payload or {})
+    except Exception:
+        pass
+
+
+DEFAULT_REBALANCE_ORDERS = OUT_DIR / f"{DATA_TAG}_daily_walkforward_emulated_rebalance_orders.csv"
+DEFAULT_EXIT_ORDERS = OUT_DIR / f"{DATA_TAG}_daily_walkforward_emulated_exit_orders.csv"
+
+JOURNAL_PATH = LOG_DIR / f"{DATA_TAG}_executor_journal.csv"
+EQUITY_CURVE_PATH = LOG_DIR / f"{DATA_TAG}_executor_equity_curve.csv"
+EVENTS_JSONL = LOG_DIR / f"{DATA_TAG}_execution_events.jsonl"
+KILL_SWITCH_PATH = LOG_DIR / f"{DATA_TAG}_kill_switch_state.json"
+SCANNER_STATE_PATH = LOG_DIR / f"{DATA_TAG}_scanner_state.json"
+SCANNER_SCORES_PATH = OUT_DIR / f"{DATA_TAG}_latest_scanner_scores.csv"
+NO_REENTRY_STATE_PATH = LOG_DIR / f"{DATA_TAG}_no_reentry_state.json"
+POSITION_MONITOR_PATH = LOG_DIR / f"{DATA_TAG}_active_position_monitor.csv"
+
+LLM_SENTIMENT_UNIVERSE_PATH = OUT_DIR / f"{DATA_TAG}_latest_llm_sentiment_universe.json"
+LLM_SENTIMENT_DISCOVERY_PATH = OUT_DIR / f"{DATA_TAG}_latest_llm_candidate_discovery.json"
+LOCKED_UNIVERSE_PATH = PROJECT_ROOT / f"{DATA_TAG}_locked_trading_universe.txt"
 LLM_SENTIMENT_SELECTOR_PATH = PROJECT_ROOT / "llm_sentiment_universe_selector.py"
 MARKET_CONTEXT_BUILDER_PATH = PROJECT_ROOT / "market_context_builder.py"
 PREMARKET_TRADE_PLANNER_PATH = PROJECT_ROOT / "premarket_trade_planner.py"
@@ -128,38 +2125,62 @@ PRODUCTION_REGIME_SIZING_MODEL_PATH = PROJECT_ROOT / "production_regime_sizing_m
 RL_INTRADAY_STRUCTURE_TRAINER_PATH = PROJECT_ROOT / "rl_intraday_structure_trainer.py"
 OPTIONS_BOOSTER_PATH = PROJECT_ROOT / "options_booster.py"
 PREMARKET_DATA_COLLECTOR_PATH = PROJECT_ROOT / "premarket_data_collector.py"
+PORTFOLIO_REBALANCER_PATH = PROJECT_ROOT / "portfolio_rebalancer.py"
 
-MARKET_CONTEXT_PATH = OUT_DIR / "market_context.json"
-PREMARKET_TRADE_PLAN_PATH = OUT_DIR / "premarket_trade_plan.json"
-INTRADAY_STRUCTURE_MAP_PATH = OUT_DIR / "intraday_structure_map.json"
-INTRADAY_BARS_1M_PATH = OUT_DIR / "intraday_bars_1m.csv"
-INTRADAY_TRAINING_DATASET_PATH = OUT_DIR / "intraday_training_dataset.csv"
-EXIT_TRAINING_DATASET_PATH = OUT_DIR / "exit_training_dataset.csv"
-MULTITIMEFRAME_CONTEXT_PATH = OUT_DIR / "multitimeframe_context.json"
-FEATURE_STREAM_DIR = OUT_DIR / "feature_stream"
-TODAY_TAG = datetime.now(ZoneInfo("America/New_York")).strftime("%Y%m%d")
-FEATURE_STREAM_SYMBOL_STATE_PATH = FEATURE_STREAM_DIR / f"{TODAY_TAG}_symbol_state.json"
-FEATURE_STREAM_CSV_PATH = FEATURE_STREAM_DIR / f"{TODAY_TAG}_intraday_feature_stream.csv"
-FEATURE_STREAM_JSONL_PATH = FEATURE_STREAM_DIR / f"{TODAY_TAG}_intraday_feature_stream.jsonl"
-REGIME_POSITION_PLAN_PATH = OUT_DIR / "regime_position_plan.csv"
-REGIME_UNIVERSE_PATH = OUT_DIR / "regime_universe_30.csv"
-REGIME_ACTIONS_PATH = OUT_DIR / "regime_actions.csv"
-RL_MODEL_PATH = OUT_DIR / "rl_intraday_structure_model.zip"
-RL_METRICS_PATH = OUT_DIR / "rl_intraday_training_metrics.json"
-RL_SIGNAL_LOG_PATH = LOG_DIR / "rl_signal_log.csv"
-LIVE_EXPERIENCE_JSONL_PATH = LOG_DIR / "live_experience_replay.jsonl"
-LIVE_EXPERIENCE_CSV_PATH = LOG_DIR / "live_experience_replay.csv"
-LIVE_EXPERIENCE_PARQUET_PATH = LOG_DIR / "live_experience_replay.parquet"
-LIVE_EXPERIENCE_OUTCOME_PATH = LOG_DIR / "live_experience_outcomes.csv"
-SESSION_PREP_STATE_PATH = LOG_DIR / "session_planning_state.json"
-OPTION_BOOSTER_CANDIDATES_PATH = OUT_DIR / "latest_option_booster_candidates.csv"
-DATED_OUTPUT_DIR = OUT_DIR / "dated"
+MARKET_CONTEXT_PATH = OUT_DIR / f"{DATA_TAG}_market_context.json"
+PREMARKET_TRADE_PLAN_PATH = OUT_DIR / f"{DATA_TAG}_premarket_trade_plan.json"
+INTRADAY_STRUCTURE_MAP_PATH = OUT_DIR / f"{DATA_TAG}_intraday_structure_map.json"
+INTRADAY_BARS_1M_PATH = OUT_DIR / f"{DATA_TAG}_intraday_bars_1m.csv"
+INTRADAY_TRAINING_DATASET_PATH = OUT_DIR / f"{DATA_TAG}_intraday_training_dataset.csv"
+EXIT_TRAINING_DATASET_PATH = OUT_DIR / f"{DATA_TAG}_exit_training_dataset.csv"
+MULTITIMEFRAME_CONTEXT_PATH = OUT_DIR / f"{DATA_TAG}_multitimeframe_context.json"
+FEATURE_STREAM_DIR = OUT_DIR / f"{DATA_TAG}_feature_stream"
+FEATURE_STREAM_SYMBOL_STATE_PATH = FEATURE_STREAM_DIR / f"{DATA_TAG}_symbol_state.json"
+FEATURE_STREAM_CSV_PATH = FEATURE_STREAM_DIR / f"{DATA_TAG}_intraday_feature_stream.csv"
+FEATURE_STREAM_JSONL_PATH = FEATURE_STREAM_DIR / f"{DATA_TAG}_intraday_feature_stream.jsonl"
+REGIME_POSITION_PLAN_PATH = OUT_DIR / f"{DATA_TAG}_regime_position_plan.csv"
+REGIME_UNIVERSE_PATH = OUT_DIR / f"{DATA_TAG}_regime_universe_30.csv"
+REGIME_ACTIONS_PATH = OUT_DIR / f"{DATA_TAG}_regime_actions.csv"
+RL_MODEL_PATH = OUT_DIR / f"{DATA_TAG}_rl_intraday_structure_model.zip"
+RL_METRICS_PATH = OUT_DIR / f"{DATA_TAG}_rl_intraday_training_metrics.json"
+RL_SIGNAL_LOG_PATH = LOG_DIR / f"{DATA_TAG}_rl_signal_log.csv"
+RL_DIAGNOSTICS_PATH = OUT_DIR / f"{DATA_TAG}_rl_intraday_signal_diagnostics.csv"
+RL_SYMBOL_OVERLAP_PATH = OUT_DIR / f"{DATA_TAG}_rl_intraday_symbol_overlap.csv"
+LIVE_EXPERIENCE_JSONL_PATH = LOG_DIR / f"{DATA_TAG}_live_experience_replay.jsonl"
+LIVE_EXPERIENCE_CSV_PATH = LOG_DIR / f"{DATA_TAG}_live_experience_replay.csv"
+LIVE_EXPERIENCE_PARQUET_PATH = LOG_DIR / f"{DATA_TAG}_live_experience_replay.parquet"
+LIVE_EXPERIENCE_OUTCOME_PATH = LOG_DIR / f"{DATA_TAG}_live_experience_outcomes.csv"
+SESSION_PREP_STATE_PATH = LOG_DIR / f"{DATA_TAG}_session_planning_state.json"
+OPTION_BOOSTER_CANDIDATES_PATH = OUT_DIR / f"{DATA_TAG}_latest_option_booster_candidates.csv"
+DATED_OUTPUT_DIR = OUT_DIR / f"{DATA_TAG}_dated"
 DATED_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-DATA_VALIDATION_STATE_PATH = OUT_DIR / "data_validation_state.json"
+DATA_VALIDATION_STATE_PATH = OUT_DIR / f"{DATA_TAG}_data_validation_state.json"
 
 ET = ZoneInfo("America/New_York")
-EXECUTED_ORDERS_LOG = LOG_DIR / f"{TODAY_TAG}_executed_orders.csv"
-EXECUTED_ORDERS_JSONL = LOG_DIR / f"{TODAY_TAG}_executed_orders.jsonl"
+EXECUTED_ORDERS_LOG = LOG_DIR / f"{DATA_TAG}_executed_orders.csv"
+EXECUTED_ORDERS_JSONL = LOG_DIR / f"{DATA_TAG}_executed_orders.jsonl"
+
+SPX_PRICE_ACTION_SIGNAL_PATH = OUT_DIR / f"{DATA_TAG}_spx_price_action_signal.json"
+SPX_PRICE_ACTION_STATE_PATH = OUT_DIR / f"{DATA_TAG}_spx_price_action_state.json"
+SPX_PRICE_ACTION_EVENTS_JSONL = LOG_DIR / f"{DATA_TAG}_spx_price_action_events.jsonl"
+SPX_PRICE_ACTION_ORDERS_CSV = LOG_DIR / f"{DATA_TAG}_spx_price_action_orders.csv"
+SPX_RL_PLAN_PATH = PROJECT_ROOT / "system-data" / f"{DATA_TAG}_SPX" / f"{DATA_TAG}_spx_intraday_breakout_plan.json"
+
+# Stream-confirmed movement gate outputs.
+STREAM_CONFIRM_SCRIPT_PATH = PROJECT_ROOT / "stream_confirmed_movement_gate.py"
+PENDING_DIRECTION_WATCHLIST_PATH = LOG_DIR / "pending_direction_watchlist.csv"
+STREAM_CONFIRMED_ORDERS_PATH = OUT_DIR / f"{DATA_TAG}_stream_confirmed_rebalance_orders.csv"
+STREAM_CONFIRMED_TRADE_PLAN_CSV_PATH = OUT_DIR / f"{DATA_TAG}_stream_confirmed_trade_plan.csv"
+STREAM_CONFIRMED_TRADE_PLAN_JSON_PATH = OUT_DIR / f"{DATA_TAG}_stream_confirmed_trade_plan.json"
+STREAM_CONFIRM_STATE_PATH = LOG_DIR / "stream_confirmed_movement_state.json"
+STREAM_CONFIRM_EVENTS_JSONL = LOG_DIR / "stream_confirmed_movement_events.jsonl"
+
+# Support/resistance RL agent integration.
+SR_RL_AGENT_PATH = PROJECT_ROOT / "sr_rl_agent.py"
+SR_RL_MODEL_PATH = OUT_DIR / f"{DATA_TAG}_sr_rl_agent_ppo.zip"
+SR_RL_SIGNALS_PATH = OUT_DIR / f"{DATA_TAG}_sr_rl_live_signals.json"
+SR_RL_CONFIRMED_ORDERS_PATH = OUT_DIR / f"{DATA_TAG}_sr_rl_confirmed_rebalance_orders.csv"
+SR_RL_EVENTS_JSONL = LOG_DIR / f"{DATA_TAG}_sr_rl_agent_events.jsonl"
 
 
 # ======================================================================# Dynamic account-scaling defaults
@@ -243,6 +2264,15 @@ class ScannerConfig:
     max_universe_symbols: int = 30
     lookback_days: int = 260
     data_feed: str = "iex"
+    execution_alpha_min_score: float = 0.70
+
+    # Forecast ensemble gates: ARIMA + LSTM + Stacked-LSTM + Attention-LSTM.
+    forecast_ensemble_enabled: bool = True
+    forecast_ensemble_soft_gate: bool = True
+    forecast_min_ensemble_score: float = 0.62
+    forecast_min_attention_lstm_score: float = 0.58
+    forecast_min_expected_return: float = 0.0015
+    forecast_max_drawdown_probability: float = 0.42
 
     # Broad-market mode. If Wikipedia retrieval fails, falls back to DEFAULT_SCAN_UNIVERSE.
     # Capped to avoid very large one-shot Alpaca requests.
@@ -305,9 +2335,9 @@ class ScannerConfig:
 
     # Multi-timeframe feature stream + exit-learning layer.
     # These consume files produced by build_intraday_training_dataset.py:
-    #   daily_system_outputs/feature_stream/YYYYMMDD_intraday_feature_stream.csv
-    #   daily_system_outputs/feature_stream/YYYYMMDD_symbol_state.json
-    #   daily_system_outputs/YYYYMMDD_multitimeframe_context.json
+    #   system-data/feature_stream/YYYYMMDD_intraday_feature_stream.csv
+    #   system-data/feature_stream/YYYYMMDD_symbol_state.json
+    #   system-data/YYYYMMDD_multitimeframe_context.json
     feature_stream_enabled: bool = True
     feature_stream_max_age_minutes: int = 20
     use_mtf_buy_gate: bool = True
@@ -349,7 +2379,7 @@ class ScannerConfig:
     ml_next_bar_timeframe_minutes: int = 5
     ml_next_bar_lookback_days: int = 20
     ml_next_bar_min_train_rows: int = 120
-    ml_next_bar_min_buy_probability: float = 0.58
+    ml_next_bar_min_buy_probability: float = 0.50
     ml_next_bar_min_pyramid_probability: float = 0.62
     ml_next_bar_max_exit_probability: float = 0.42
 
@@ -421,6 +2451,8 @@ class ScannerConfig:
     use_rl_timing_gate: bool = True
     rl_min_enter_long_confidence: float = 0.65
     rl_min_exit_confidence: float = 0.55
+    rl_min_add_long_confidence: float = 0.60
+    rl_enable_add_long_gate: bool = True
     rl_min_enter_short_confidence: float = 0.70
     rl_gate_buys_only: bool = False
 
@@ -445,6 +2477,7 @@ class ScannerConfig:
     rl_block_buys_when_model_invalid: bool = False
 
 
+    live_experience_log_skips: bool = True
     live_experience_logging_enabled: bool = True
     live_experience_write_parquet: bool = True
     live_experience_flush_every_event: bool = True
@@ -497,6 +2530,76 @@ class ScannerConfig:
     options_booster_timeout_seconds: int = 180
 
 
+    # Dedicated SPX/SPY price-action execution layer.
+    # Runs independently from the main equity scanner and watches SPX-style
+    # price action through a tradable proxy, SPY by default.
+    spx_price_action_layer_enabled: bool = True
+    spx_price_action_trade_symbol: str = "SPY"
+    spx_price_action_logical_symbol: str = "SPX"
+    spx_price_action_execute_orders: bool = True
+    spx_price_action_scan_seconds: int = 10
+    spx_price_action_data_feed: str = "iex"
+    spx_price_action_lookback_days: int = 8
+    spx_price_action_sr_lookback_days: int = 20
+    spx_price_action_orb_minutes: int = 15
+    spx_price_action_min_setup_score: float = 0.68
+    spx_price_action_min_breakout_score: float = 0.72
+    spx_price_action_min_reclaim_score: float = 0.70
+    spx_price_action_min_buying_power: float = 250.0
+    spx_price_action_base_order_dollars: float = 1500.0
+    spx_price_action_max_position_dollars: float = 3500.0
+    spx_price_action_max_position_weight: float = 0.08
+    spx_price_action_min_order_dollars: float = 100.0
+    spx_price_action_stop_loss_pct: float = 0.006
+    spx_price_action_take_profit_r: float = 2.0
+    spx_price_action_trailing_giveback_pct: float = 0.0045
+    spx_price_action_min_trail_profit_pct: float = 0.004
+    spx_price_action_daily_loss_limit_pct: float = 0.012
+    spx_price_action_daily_loss_limit_dollars: float = 750.0
+    spx_price_action_avoid_first_minutes: int = 5
+    spx_price_action_avoid_last_minutes: int = 10
+    spx_price_action_allow_market_context_caution: bool = True
+    spx_price_action_use_rl_plan_confirmation: bool = True
+    spx_price_action_require_rl_for_entry: bool = False
+
+    # Stream-confirmed movement gate.
+    # If the final pretrade direction gate rejects a BUY, the symbol is not
+    # discarded. It is added to pending_direction_watchlist.csv. The stream
+    # confirmation layer watches all day symbols and writes confirmed trade
+    # plans/rebalance rows once early multibar movement is detected.
+    stream_confirmed_movement_enabled: bool = True
+    stream_confirmed_movement_script: str = "stream_confirmed_movement_gate.py"
+    stream_confirmed_use_polling: bool = True
+    stream_confirmed_execute_now: bool = False
+    stream_confirmed_reload_seconds: int = 10
+    stream_confirmed_merge_orders: bool = True
+    stream_confirmed_append_direction_rejects: bool = True
+    stream_confirmed_require_trade_plan: bool = False
+    stream_confirmed_trailing_stop_enabled: bool = True
+    stream_confirmed_submit_trailing_stop_after_fill: bool = True
+    stream_confirmed_trail_percent_default: float = 0.65
+    stream_confirmed_take_profit_r_default: float = 2.0
+
+    # Support/resistance RL agent.
+    # sr_rl_agent.py learns 1H/4H support and resistance zones, then emits
+    # live BUY/WAIT/SELL decisions into YYYYMMDD_sr_rl_live_signals.json.
+    # run.py consumes BUY decisions as additional long-only order candidates.
+    sr_rl_agent_enabled: bool = True
+    sr_rl_agent_script: str = "sr_rl_agent.py"
+    sr_rl_train_on_start: bool = False
+    sr_rl_live_enabled: bool = True
+    sr_rl_execute_now: bool = False
+    sr_rl_merge_signals: bool = True
+    sr_rl_require_model: bool = False
+    sr_rl_scan_seconds: int = 10
+    sr_rl_signal_max_age_seconds: int = 90
+    sr_rl_min_qty: int = 1
+    sr_rl_default_confidence: float = 0.66
+    sr_rl_max_order_dollars: float = 6500.0
+    sr_rl_submit_trailing_stop_after_fill: bool = True
+    sr_rl_trail_percent_default: float = 0.75
+
+
 @dataclass
 class ExecutorConfig:
     paper: bool = True
@@ -545,6 +2648,50 @@ class ExecutorConfig:
 
 # ======================================================================# Helpers
 # ======================================================================
+def seconds_until_market_open_plus_15() -> float:
+    """
+    Returns seconds until 9:45 AM ET.
+    """
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+
+    target = now_et.replace(
+        hour=9,
+        minute=45,
+        second=0,
+        microsecond=0,
+    )
+
+    # if already past 9:45 today, schedule tomorrow
+    if now_et >= target:
+        target = target.replace(day=target.day + 1)
+
+    return max((target - now_et).total_seconds(), 0.0)
+
+
+def launch_intraday_dataset_builder():
+    """
+    Wait until 15 minutes after market open,
+    then launch the training dataset builder.
+    """
+    wait_seconds = seconds_until_market_open_plus_15()
+
+    print(
+        f"[scheduler] build_intraday_training_dataset.py "
+        f"scheduled in {wait_seconds / 60:.2f} minutes"
+    )
+
+    time.sleep(wait_seconds)
+
+    print("[scheduler] starting intraday dataset builder...")
+
+    subprocess.Popen(
+        [
+            "python3",
+            "build_intraday_training_dataset.py",
+        ],
+        cwd=str(PROJECT_ROOT),
+    )
+    
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -781,7 +2928,7 @@ def dated_snapshot_name(path: Path, date_et: str | None = None) -> Path:
 
 
 def snapshot_data_file(path: Path, date_et: str | None = None) -> dict[str, Any]:
-    """Copy a latest data file into daily_system_outputs/dated/YYYY-MM-DD/ for audit/validation."""
+    """Copy a latest data file into system-data/dated/YYYY-MM-DD/ for audit/validation."""
     date_et = date_et or datetime.now(ET).date().isoformat()
     payload = {
         "path": str(path),
@@ -1294,7 +3441,12 @@ def validate_rl_intraday_structure_model(config: Optional[ScannerConfig] = None)
 
     model_exists = RL_MODEL_PATH.exists()
     metrics_exists = RL_METRICS_PATH.exists()
-    overlap_exists = (OUT_DIR / "rl_intraday_symbol_overlap.csv").exists()
+    overlap_candidates = [
+        RL_SYMBOL_OVERLAP_PATH,
+        OUT_DIR / "rl_intraday_symbol_overlap.csv",
+        OUT_DIR / f"{DATA_TAG}_rl_intraday_symbol_overlap.csv",
+    ]
+    overlap_exists = any(path.exists() for path in overlap_candidates)
 
     model_age_days: float | None = None
     metrics_age_days: float | None = None
@@ -1327,7 +3479,8 @@ def validate_rl_intraday_structure_model(config: Optional[ScannerConfig] = None)
     enter_short = to_int(diagnostics.get("enter_short_count", 0))
     exit_long = to_int(diagnostics.get("exit_long_count", diagnostics.get("sell_count", 0)))
     exit_short = to_int(diagnostics.get("exit_short_count", 0))
-    training_trades = enter_long + enter_short + exit_long + exit_short
+    add_long = to_int(diagnostics.get("add_long_count", trade_quality.get("add_long_count", 0)))
+    training_trades = enter_long + enter_short + exit_long + exit_short + add_long
 
     profit_factor = to_float(trade_quality.get("profit_factor", diagnostics.get("profit_factor", 0.0)), 0.0)
     win_rate = to_float(trade_quality.get("win_rate", diagnostics.get("win_rate", 0.0)), 0.0)
@@ -1355,6 +3508,7 @@ def validate_rl_intraday_structure_model(config: Optional[ScannerConfig] = None)
         "enter_short_count": int(enter_short),
         "exit_long_count": int(exit_long),
         "exit_short_count": int(exit_short),
+        "add_long_count": int(add_long),
         "profit_factor": float(profit_factor),
         "win_rate": float(win_rate),
         "issues": issues,
@@ -1383,7 +3537,17 @@ def refresh_rl_intraday_structure_model(timeout_seconds: int = 900, config: Opti
         )
         return payload
 
-    ok, output = run_python_script(RL_INTRADAY_STRUCTURE_TRAINER_PATH, timeout_seconds=timeout_seconds)
+    ok, output = run_python_script(
+        RL_INTRADAY_STRUCTURE_TRAINER_PATH,
+        timeout_seconds=timeout_seconds,
+        env_overrides={
+            "RL_DATA_DATE": DATA_TAG,
+            "RUN_DATA_DATE": DATA_TAG,
+            "RL_DISABLE_SHORTS": "1",
+            "RL_ALLOW_SHORTS": "0",
+            "RL_ADD_LONG_ENABLED": "1",
+        },
+    )
     if ok:
         print("[rl-trainer] refreshed via subprocess")
         if output:
@@ -2143,6 +4307,350 @@ class CsvJournal:
             csv.DictWriter(f, fieldnames=self.columns).writerow(safe_row)
 
 
+
+# ======================================================================# Stream-confirmed movement helpers
+# ======================================================================
+def append_pending_direction_watch_from_order(
+    order_row: dict[str, Any] | pd.Series,
+    reject_reason: str,
+    path: Path = PENDING_DIRECTION_WATCHLIST_PATH,
+) -> None:
+    """
+    Add a skipped BUY to the live confirmation watchlist.
+
+    This is called when run.py rejects an order for:
+        price_direction_not_confirmed:...
+    The stream confirmation layer can later promote the symbol into a confirmed
+    rebalance order with entry/stop/take-profit/trailing-stop fields.
+    """
+    try:
+        data = order_row.to_dict() if isinstance(order_row, pd.Series) else dict(order_row)
+        symbol = safe_symbol(data.get("symbol"))
+        side = str(data.get("side", "buy")).lower()
+        if not symbol or side != "buy":
+            return
+
+        row = {
+            "symbol": symbol,
+            "side": "buy",
+            "order_qty": to_int(data.get("order_qty", data.get("qty", 0))),
+            "price": to_float(data.get("price")),
+            "capped_dollars": to_float(data.get("capped_dollars", data.get("abs_delta_dollars", 0.0))),
+            "confidence_used": to_float(data.get("confidence_used", data.get("trade_confidence", 0.0))),
+            "reason": str(reject_reason),
+            "rejected_at_utc": now_utc().isoformat(),
+            "source": "run_py_direction_reject",
+        }
+
+        df = pd.DataFrame([row])
+        header = not path.exists()
+        df.to_csv(path, index=False, mode="a", header=header)
+        write_event("pending_direction_watch_added", row)
+        print(f"[stream-confirm] watchlist add {symbol}: {reject_reason}")
+    except Exception as exc:
+        print(f"[stream-confirm] failed to append watchlist row: {exc}")
+        write_event("pending_direction_watch_append_error", {"error": str(exc)})
+
+
+def load_stream_confirmed_orders() -> pd.DataFrame:
+    """
+    Load orders produced by stream_confirmed_movement_gate.py.
+
+    Expected columns include:
+        symbol, side, order_qty, price, entry_price, stop_loss, take_profit,
+        trailing_stop_enabled, trail_percent, trail_price, reason
+    """
+    if not STREAM_CONFIRMED_ORDERS_PATH.exists():
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_csv(STREAM_CONFIRMED_ORDERS_PATH)
+    except Exception as exc:
+        print(f"[stream-confirm] failed reading confirmed orders: {exc}")
+        return pd.DataFrame()
+
+    if df.empty or "symbol" not in df.columns:
+        return pd.DataFrame()
+
+    df = df.copy()
+    df["symbol"] = df["symbol"].map(safe_symbol)
+    if "side" in df.columns:
+        df["side"] = df["side"].astype(str).str.lower()
+    else:
+        df["side"] = "buy"
+    df = df[(df["symbol"] != "") & (df["side"] == "buy")].copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    if "order_qty" not in df.columns and "qty" in df.columns:
+        df["order_qty"] = df["qty"]
+    if "price" not in df.columns and "entry_price" in df.columns:
+        df["price"] = df["entry_price"]
+    if "capped_dollars" not in df.columns and "abs_delta_dollars" in df.columns:
+        df["capped_dollars"] = df["abs_delta_dollars"]
+    if "abs_delta_dollars" not in df.columns:
+        df["abs_delta_dollars"] = pd.to_numeric(df.get("order_qty", 0), errors="coerce").fillna(0) * pd.to_numeric(df.get("price", 0), errors="coerce").fillna(0)
+    if "confidence_used" not in df.columns:
+        df["confidence_used"] = pd.to_numeric(df.get("direction_score", 0.65), errors="coerce").fillna(0.65)
+    if "confidence_multiplier" not in df.columns:
+        df["confidence_multiplier"] = 1.0 + pd.to_numeric(df["confidence_used"], errors="coerce").fillna(0.65)
+    if "reason" not in df.columns:
+        df["reason"] = "stream_confirmed_movement"
+    if "stream_confirmed" not in df.columns:
+        df["stream_confirmed"] = True
+
+    # Keep one latest confirmed order per symbol.
+    sort_col = "stream_confirmed_at_utc" if "stream_confirmed_at_utc" in df.columns else None
+    if sort_col:
+        df = df.sort_values(sort_col)
+    df = df.drop_duplicates(subset=["symbol"], keep="last").reset_index(drop=True)
+    return df
+
+
+def merge_stream_confirmed_orders(base: pd.DataFrame) -> pd.DataFrame:
+    confirmed = load_stream_confirmed_orders()
+    if confirmed.empty:
+        return base if base is not None else pd.DataFrame()
+
+    base = base.copy() if base is not None else pd.DataFrame()
+    if not base.empty and "symbol" in base.columns:
+        base["symbol"] = base["symbol"].map(safe_symbol)
+        # Confirmed stream orders replace stale same-symbol buy rows.
+        confirmed_symbols = set(confirmed["symbol"].map(safe_symbol))
+        if "side" in base.columns:
+            base_side = base["side"].astype(str).str.lower()
+        else:
+            base_side = pd.Series(["buy"] * len(base), index=base.index)
+        base = base[~((base["symbol"].isin(confirmed_symbols)) & (base_side == "buy"))].copy()
+
+    merged = pd.concat([base, confirmed], ignore_index=True, sort=False)
+    print(f"[stream-confirm] merged confirmed_orders={len(confirmed)} total_rebalance_rows={len(merged)}")
+    write_event(
+        "stream_confirmed_orders_merged",
+        {
+            "confirmed_rows": int(len(confirmed)),
+            "merged_rows": int(len(merged)),
+            "path": str(STREAM_CONFIRMED_ORDERS_PATH),
+        },
+    )
+    return merged
+
+
+
+
+# ======================================================================# SR RL agent helpers
+# ======================================================================
+def sr_write_event(event: str, payload: dict[str, Any] | None = None) -> None:
+    row = {
+        "timestamp_utc": now_utc().isoformat(),
+        "event": event,
+        "payload": payload or {},
+    }
+    try:
+        with SR_RL_EVENTS_JSONL.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, default=json_default) + "\n")
+    except Exception:
+        pass
+    write_event(f"sr_rl_{event}", payload or {})
+
+
+def load_sr_rl_signals(max_age_seconds: int = 90) -> list[dict[str, Any]]:
+    """
+    Load sr_rl_agent.py's live decisions.
+
+    Expected file:
+        system-data/YYYYMMDD/YYYYMMDD_sr_rl_live_signals.json
+
+    Only fresh payloads are accepted. SELL decisions are treated as avoid/exit
+    signals by sr_rl_agent.py, but run.py keeps this layer long-only and only
+    promotes BUY decisions into the rebalance order set.
+    """
+    if not SR_RL_SIGNALS_PATH.exists():
+        return []
+
+    try:
+        mtime = datetime.fromtimestamp(SR_RL_SIGNALS_PATH.stat().st_mtime, tz=timezone.utc)
+        age = (now_utc() - mtime).total_seconds()
+        if age > max_age_seconds:
+            print(f"[sr-rl] stale signals age={age:.1f}s path={SR_RL_SIGNALS_PATH}")
+            return []
+        payload = json.loads(SR_RL_SIGNALS_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"[sr-rl] failed reading signals: {exc}")
+        sr_write_event("signals_read_error", {"error": str(exc), "path": str(SR_RL_SIGNALS_PATH)})
+        return []
+
+    decisions = payload.get("decisions", []) if isinstance(payload, dict) else []
+    return [d for d in decisions if isinstance(d, dict)]
+
+
+def load_sr_rl_orders(config: ScannerConfig | None = None) -> pd.DataFrame:
+    """
+    Convert SR-RL BUY decisions into executor-compatible rebalance rows.
+
+    Output columns intentionally include delta_shares and delta_dollars because
+    _build_order_plan normalizes from those fields.
+    """
+    cfg = config or ScannerConfig()
+    decisions = load_sr_rl_signals(cfg.sr_rl_signal_max_age_seconds)
+    if not decisions:
+        return pd.DataFrame()
+
+    rows: list[dict[str, Any]] = []
+    for d in decisions:
+        symbol = safe_symbol(d.get("symbol"))
+        action = str(d.get("action", "wait")).lower().strip()
+        if not symbol or action != "buy":
+            continue
+
+        price = to_float(d.get("price"), 0.0)
+        qty = to_int(d.get("qty"), 0)
+        if price <= 0 or qty < int(cfg.sr_rl_min_qty):
+            continue
+
+        notional = qty * price
+        if cfg.sr_rl_max_order_dollars > 0 and notional > cfg.sr_rl_max_order_dollars:
+            qty = int(cfg.sr_rl_max_order_dollars // price)
+            notional = qty * price
+        if qty < int(cfg.sr_rl_min_qty) or notional <= 0:
+            continue
+
+        stop_loss = to_float(d.get("stop_loss"), 0.0)
+        take_profit = to_float(d.get("take_profit"), 0.0)
+        confidence = float(np.clip(cfg.sr_rl_default_confidence, 0.0, 1.0))
+        reason = str(d.get("reason", "sr_rl_agent_buy"))
+
+        rows.append(
+            {
+                "symbol": symbol,
+                "side": "buy",
+                "delta_shares": qty,
+                "delta_dollars": notional,
+                "price": price,
+                "reason": f"sr_rl_agent:{reason}",
+                "trade_confidence": confidence,
+                "confidence": confidence,
+                "confidence_score": confidence,
+                "sr_rl_confirmed": True,
+                "sr_rl_nearest_support": d.get("nearest_support"),
+                "sr_rl_nearest_resistance": d.get("nearest_resistance"),
+                "sr_rl_distance_to_support_pct": d.get("distance_to_support_pct"),
+                "sr_rl_distance_to_resistance_pct": d.get("distance_to_resistance_pct"),
+                "entry_price": price,
+                "stop_loss": stop_loss if stop_loss > 0 else np.nan,
+                "take_profit": take_profit if take_profit > 0 else np.nan,
+                "trailing_stop_enabled": bool(cfg.sr_rl_submit_trailing_stop_after_fill),
+                "trail_percent": float(cfg.sr_rl_trail_percent_default),
+                "order_type": "sr_rl_market_entry_with_trailing_stop_exit",
+                "planned_at": now_utc().isoformat(),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame()
+
+    out = pd.DataFrame(rows)
+    out = out.drop_duplicates(subset=["symbol"], keep="last").reset_index(drop=True)
+    try:
+        out.to_csv(SR_RL_CONFIRMED_ORDERS_PATH, index=False)
+    except Exception:
+        pass
+    return out
+
+
+def merge_sr_rl_orders(base: pd.DataFrame, config: ScannerConfig | None = None) -> pd.DataFrame:
+    cfg = config or ScannerConfig()
+    if not cfg.sr_rl_merge_signals:
+        return base if base is not None else pd.DataFrame()
+
+    sr_orders = load_sr_rl_orders(cfg)
+    if sr_orders.empty:
+        return base if base is not None else pd.DataFrame()
+
+    base = base.copy() if base is not None else pd.DataFrame()
+    if not base.empty and "symbol" in base.columns:
+        base["symbol"] = base["symbol"].map(safe_symbol)
+        sr_symbols = set(sr_orders["symbol"].map(safe_symbol))
+        base_side = base["side"].astype(str).str.lower() if "side" in base.columns else pd.Series(["buy"] * len(base), index=base.index)
+        # SR-confirmed support entry replaces stale same-symbol buy rows.
+        base = base[~((base["symbol"].isin(sr_symbols)) & (base_side == "buy"))].copy()
+
+    merged = pd.concat([base, sr_orders], ignore_index=True, sort=False)
+    print(f"[sr-rl] merged sr_orders={len(sr_orders)} total_rebalance_rows={len(merged)}")
+    sr_write_event(
+        "orders_merged",
+        {
+            "sr_rows": int(len(sr_orders)),
+            "merged_rows": int(len(merged)),
+            "signals_path": str(SR_RL_SIGNALS_PATH),
+            "orders_path": str(SR_RL_CONFIRMED_ORDERS_PATH),
+        },
+    )
+    return merged
+
+def submit_trailing_stop_after_entry(
+    broker: "AlpacaBroker",
+    symbol: str,
+    qty: int,
+    row: pd.Series | dict[str, Any],
+) -> None:
+    """
+    Submit a protective trailing stop after a buy fill.
+
+    The stream-confirmed trade plan emits trailing_stop_enabled + trail_percent.
+    This function is best-effort and will not block the executor if Alpaca
+    rejects the trailing stop.
+    """
+    data = row.to_dict() if isinstance(row, pd.Series) else dict(row)
+    enabled_raw = data.get("trailing_stop_enabled", data.get("trailing_stop", False))
+    enabled = str(enabled_raw).lower() in {"1", "true", "yes"} or enabled_raw is True
+    if not enabled or qty <= 0:
+        return
+
+    if TrailingStopOrderRequest is None:
+        write_event("trailing_stop_unavailable", {"symbol": symbol, "reason": "TrailingStopOrderRequest missing"})
+        print(f"[trailing-stop] unavailable for {symbol}: TrailingStopOrderRequest missing")
+        return
+
+    trail_percent = to_float(data.get("trail_percent"), 0.0)
+    trail_price = to_float(data.get("trail_price"), 0.0)
+
+    try:
+        if trail_percent > 0:
+            req = TrailingStopOrderRequest(
+                symbol=safe_symbol(symbol),
+                qty=int(qty),
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.DAY,
+                trail_percent=str(round(trail_percent, 4)),
+            )
+        elif trail_price > 0:
+            req = TrailingStopOrderRequest(
+                symbol=safe_symbol(symbol),
+                qty=int(qty),
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.DAY,
+                trail_price=str(round(trail_price, 4)),
+            )
+        else:
+            return
+
+        order = broker.trading.submit_order(order_data=req)
+        payload = {
+            "symbol": symbol,
+            "qty": int(qty),
+            "trail_percent": trail_percent,
+            "trail_price": trail_price,
+            "order_id": str(getattr(order, "id", "")),
+            "status": str(getattr(order, "status", "")),
+        }
+        print(f"[trailing-stop] submitted {symbol} qty={qty} trail_percent={trail_percent} trail_price={trail_price}")
+        write_event("trailing_stop_submitted", payload)
+    except Exception as exc:
+        print(f"[trailing-stop] failed {symbol}: {exc}")
+        write_event("trailing_stop_error", {"symbol": symbol, "qty": int(qty), "error": str(exc)})
+
+
 # ======================================================================# Alpaca broker wrapper
 # ======================================================================
 class AlpacaBroker:
@@ -2318,7 +4826,56 @@ class MomentumSetupScanner:
 
         self.data = StockHistoricalDataClient(broker.api_key, broker.secret_key)
         self.llm_metadata_by_symbol: dict[str, dict[str, Any]] = {}
+    def _trigger_options_booster_if_needed(
+        self,
+        candidate_rows: pd.DataFrame,
+    ) -> None:
+        """
+        Optional options booster trigger.
+        Safe no-op if booster unavailable.
+        """
 
+        try:
+            if candidate_rows is None or candidate_rows.empty:
+                return
+
+            if not self.config.options_booster_enabled:
+                return
+
+            qualified = candidate_rows[
+                candidate_rows["trade_confidence"]
+                >= self.config.options_booster_confidence_threshold
+            ]
+
+            if qualified.empty:
+                return
+
+            symbols = (
+                qualified["symbol"]
+                .astype(str)
+                .unique()
+                .tolist()
+            )
+
+            print(
+                "[options-booster] triggering "
+                f"symbols={symbols}"
+            )
+
+            env = build_options_booster_env(
+                self.config,
+                candidate_symbols=symbols,
+            )
+
+            subprocess.Popen(
+                [sys.executable, str(OPTIONS_BOOSTER_PATH)],
+                cwd=str(PROJECT_ROOT),
+                env={**os.environ, **env},
+            )
+
+        except Exception as exc:
+            print(f"[options-booster] failed: {exc}")
+        
     def _load_state(self) -> dict[str, Any]:
         if not SCANNER_STATE_PATH.exists():
             return {"high_plpc": {}}
@@ -3471,7 +6028,21 @@ class MomentumSetupScanner:
             )
 
         rebalance = pd.DataFrame(rows)
+
+        # ------------------------------------------------------------------
+        # Execution-alpha gate:
+        #   1. Rank candidates cross-sectionally vs today's universe.
+        #   2. Confirm each symbol's own time-series direction.
+        #   3. Block weak BUY orders before pyramids/options.
+        #   4. Always leave exits untouched.
+        # ------------------------------------------------------------------
+        rebalance = self._add_execution_alpha_gate(rebalance, scores)
+
         rebalance = self._add_pyramid_orders(rebalance, scores, equity)
+
+        # Run the gate again after pyramid orders, because pyramids are also BUYs.
+        rebalance = self._add_execution_alpha_gate(rebalance, scores)
+
         self._trigger_options_booster_if_needed(rebalance)
         exits = self._update_high_water_and_exits(scores, equity)
 
@@ -3480,6 +6051,257 @@ class MomentumSetupScanner:
         print(f"[scanner] wrote rebalance_orders={DEFAULT_REBALANCE_ORDERS} rows={len(rebalance)}")
         print(f"[scanner] wrote exit_orders={DEFAULT_EXIT_ORDERS} rows={len(exits)}")
         return rebalance, exits, scores
+
+    def _rank_pct(self, series: pd.Series) -> pd.Series:
+        """Safe percentile rank used for cross-sectional execution ranking."""
+        try:
+            s = pd.to_numeric(series, errors="coerce").fillna(0.0)
+            if s.nunique(dropna=True) <= 1:
+                return pd.Series(0.5, index=series.index)
+            return s.rank(pct=True).fillna(0.0)
+        except Exception:
+            return pd.Series(0.0, index=series.index)
+
+    def _add_execution_alpha_gate(self, rebalance: pd.DataFrame, scores: pd.DataFrame) -> pd.DataFrame:
+        """
+        Gate BUY orders using:
+            - cross-sectional rank: is this symbol stronger than today's universe?
+            - time-series score: is its own direction confirmed?
+            - final execution_alpha_score
+
+        This materially reduces premature entries and forced same-day exits.
+        """
+        if rebalance is None or rebalance.empty:
+            return rebalance
+
+        if "side" not in rebalance.columns or "symbol" not in rebalance.columns:
+            return rebalance
+
+        df = rebalance.copy()
+        df["symbol"] = df["symbol"].map(normalize_symbol)
+        df["side"] = df["side"].astype(str).str.lower().str.strip()
+
+        if scores is None or scores.empty or "symbol" not in scores.columns:
+            df["cross_sectional_score"] = 0.50
+            df["time_series_score"] = 0.50
+            df["execution_alpha_score"] = 0.50
+            df["execution_alpha_pass"] = df["side"] != "buy"
+            blocked = df[(df["side"] == "buy") & (~df["execution_alpha_pass"])]
+            if not blocked.empty:
+                print(f"[execution-alpha] blocked {len(blocked)} BUY order(s): missing score context")
+            return df[df["execution_alpha_pass"]].reset_index(drop=True)
+
+        score_df = scores.copy()
+        score_df["symbol"] = score_df["symbol"].map(normalize_symbol)
+
+        for col in [
+            "ret_1d",
+            "ret_3d",
+            "ret_5d",
+            "momentum_score",
+            "positive_momentum_score",
+            "breakout_score",
+            "setup_score",
+            "trade_confidence",
+            "confidence_score",
+            "continuation_probability",
+            "ml_next_bar_probability",
+            "close",
+            "entry_price",
+            "vwap",
+            "rsi14",
+            "rsi_14",
+        ]:
+            if col not in score_df.columns:
+                score_df[col] = 0.0
+
+        # Cross-sectional score: relative strength vs the rest of today's universe.
+        score_df["cs_return_rank"] = (
+            0.25 * self._rank_pct(score_df["ret_1d"])
+            + 0.25 * self._rank_pct(score_df["ret_3d"])
+            + 0.20 * self._rank_pct(score_df["ret_5d"])
+            + 0.30 * self._rank_pct(
+                score_df["positive_momentum_score"].where(
+                    pd.to_numeric(score_df["positive_momentum_score"], errors="coerce").fillna(0.0) > 0,
+                    score_df["momentum_score"],
+                )
+            )
+        )
+
+        score_df["cs_quality_rank"] = (
+            0.30 * self._rank_pct(score_df["breakout_score"])
+            + 0.25 * self._rank_pct(score_df["trade_confidence"])
+            + 0.25 * self._rank_pct(score_df["setup_score"])
+            + 0.20 * self._rank_pct(score_df["continuation_probability"])
+        )
+
+        score_df["cross_sectional_score"] = (
+            0.55 * score_df["cs_return_rank"]
+            + 0.45 * score_df["cs_quality_rank"]
+        ).clip(0.0, 1.0)
+
+        def calc_time_series_score(row: pd.Series) -> float:
+            close = to_float(row.get("close"), to_float(row.get("entry_price"), 0.0))
+            entry = to_float(row.get("entry_price"), close)
+            vwap = to_float(row.get("vwap"), close)
+            rsi = to_float(row.get("rsi14"), to_float(row.get("rsi_14"), 50.0))
+
+            ret_1d = to_float(row.get("ret_1d"), 0.0)
+            ret_3d = to_float(row.get("ret_3d"), 0.0)
+            ret_5d = to_float(row.get("ret_5d"), 0.0)
+
+            momentum = to_float(
+                row.get("positive_momentum_score"),
+                to_float(row.get("momentum_score"), 0.0),
+            )
+            breakout = to_float(row.get("breakout_score"), 0.0)
+            confidence = to_float(row.get("trade_confidence"), 0.0)
+            continuation = to_float(row.get("continuation_probability"), confidence)
+            ml_prob = to_float(row.get("ml_next_bar_probability"), 0.50)
+
+            score = 0.0
+
+            if close > 0 and vwap > 0 and close >= vwap:
+                score += 0.16
+            if close > 0 and entry > 0 and close >= entry * 0.998:
+                score += 0.08
+            if ret_1d > 0:
+                score += 0.10
+            if ret_3d > 0:
+                score += 0.10
+            if ret_5d > 0:
+                score += 0.08
+            if momentum >= 0.55:
+                score += 0.15
+            if breakout >= 0.50:
+                score += 0.12
+            if confidence >= self.config.min_buy_confidence:
+                score += 0.10
+            if continuation >= self.config.min_buy_confidence:
+                score += 0.07
+            if ml_prob >= self.config.ml_next_bar_min_buy_probability:
+                score += 0.14
+            if 50 <= rsi <= self.config.max_overbought_rsi:
+                score += 0.10
+
+            return float(np.clip(score, 0.0, 1.0))
+
+        score_df["time_series_score"] = score_df.apply(calc_time_series_score, axis=1)
+
+        # Blend based on market regime. Trend markets favor time-series continuation.
+        regime_bias = ""
+        try:
+            market_context = load_json(MARKET_CONTEXT_PATH, default={})
+            regime_bias = str(
+                market_context.get("overall_market_bias")
+                or market_context.get("market_bias")
+                or market_context.get("regime")
+                or ""
+            ).lower()
+        except Exception:
+            market_context = {}
+
+        trend_on = regime_bias in {
+            "bullish",
+            "risk_on",
+            "trend_risk_on",
+            "uptrend",
+            "constructive",
+        }
+        risk_off = regime_bias in {
+            "bearish",
+            "risk_off",
+            "defensive",
+            "downtrend",
+        }
+
+        if trend_on:
+            cs_weight = 0.40
+            ts_weight = 0.60
+        else:
+            cs_weight = 0.55
+            ts_weight = 0.45
+
+        score_df["execution_alpha_score"] = (
+            cs_weight * score_df["cross_sectional_score"]
+            + ts_weight * score_df["time_series_score"]
+        ).clip(0.0, 1.0)
+
+        if risk_off:
+            score_df["execution_alpha_score"] = score_df["execution_alpha_score"] * 0.70
+
+        threshold = float(getattr(self.config, "execution_alpha_min_score", 0.70))
+
+        keep_cols = [
+            "symbol",
+            "cross_sectional_score",
+            "time_series_score",
+            "execution_alpha_score",
+        ]
+
+        df = df.merge(
+            score_df[keep_cols].drop_duplicates("symbol"),
+            on="symbol",
+            how="left",
+        )
+
+        df["cross_sectional_score"] = pd.to_numeric(
+            df["cross_sectional_score"], errors="coerce"
+        ).fillna(0.50)
+        df["time_series_score"] = pd.to_numeric(
+            df["time_series_score"], errors="coerce"
+        ).fillna(0.50)
+        df["execution_alpha_score"] = pd.to_numeric(
+            df["execution_alpha_score"], errors="coerce"
+        ).fillna(0.50)
+
+        # Sells/exits are always allowed. Only weak BUYs are blocked.
+        df["execution_alpha_pass"] = (
+            df["side"] != "buy"
+        ) | (
+            df["execution_alpha_score"] >= threshold
+        )
+
+        blocked = df[(df["side"] == "buy") & (~df["execution_alpha_pass"])].copy()
+        if not blocked.empty:
+            print(
+                f"[execution-alpha] blocked {len(blocked)} weak BUY order(s) "
+                f"threshold={threshold:.2f}"
+            )
+            show = [
+                "symbol",
+                "reason",
+                "execution_alpha_score",
+                "cross_sectional_score",
+                "time_series_score",
+                "trade_confidence",
+                "ml_next_bar_probability",
+                "delta_dollars",
+            ]
+            print(blocked[[c for c in show if c in blocked.columns]].to_string(index=False))
+
+            for _, row in blocked.iterrows():
+                write_event(
+                    "execution_alpha_buy_blocked",
+                    {
+                        "symbol": row.get("symbol"),
+                        "reason": row.get("reason"),
+                        "execution_alpha_score": to_float(row.get("execution_alpha_score")),
+                        "cross_sectional_score": to_float(row.get("cross_sectional_score")),
+                        "time_series_score": to_float(row.get("time_series_score")),
+                        "threshold": threshold,
+                    },
+                )
+
+        passed = df[df["execution_alpha_pass"]].copy().reset_index(drop=True)
+
+        buy_count = int((passed["side"] == "buy").sum()) if "side" in passed.columns else 0
+        print(
+            f"[execution-alpha] passed rows={len(passed)} buy_rows={buy_count} "
+            f"blocked={len(blocked)} threshold={threshold:.2f}"
+        )
+
+        return passed
 
     def _add_pyramid_orders(self, rebalance: pd.DataFrame, scores: pd.DataFrame, equity: float) -> pd.DataFrame:
         """Add incremental buy orders for existing winners that are still confirmed."""
@@ -3553,227 +6375,7 @@ class MomentumSetupScanner:
             return pd.concat([rebalance, pyramid_df], ignore_index=True)
 
         return rebalance
-
-    def _trigger_options_booster_if_needed(self, candidates: pd.DataFrame) -> None:
-        """Hand high-confidence candidates and profitable active holdings to options_booster.py.
-
-        Rule:
-            If an actively held stock is up at least +0.56%, request a long-call
-            booster around 30 DTE using bid-price limit intent.
-        """
-        if not self.config.options_booster_enabled:
-            return
-        if not OPTIONS_BOOSTER_PATH.exists():
-            print(f"[options] options_booster.py not found at {OPTIONS_BOOSTER_PATH}; skipping")
-            return
-
-        frames: list[pd.DataFrame] = []
-
-        if candidates is not None and not candidates.empty and "trade_confidence" in candidates.columns:
-            df = candidates.copy()
-            df["trade_confidence"] = pd.to_numeric(df["trade_confidence"], errors="coerce").fillna(0.0)
-            high = df[df["trade_confidence"] >= self.config.options_booster_confidence_threshold].copy()
-            if not high.empty:
-                high["booster_trigger"] = "high_stock_confidence"
-                frames.append(high)
-
-        position_rows: list[dict[str, Any]] = []
-        active_positions = self.broker.get_all_open_positions()
-        position_symbols_for_ta = [
-            normalize_symbol(p.symbol)
-            for p in active_positions
-            if p.symbol and p.qty > 0 and float(p.unrealized_plpc or 0.0) >= self.config.options_booster_min_position_plpc
-        ]
-        ta_by_symbol: dict[str, dict[str, Any]] = {}
-        if self.config.options_booster_require_technical_confirmation and position_symbols_for_ta:
-            ta_df = self.confirm_buy_direction(position_symbols_for_ta)
-            if not ta_df.empty:
-                ta_by_symbol = {safe_symbol(r["symbol"]): r.to_dict() for _, r in ta_df.iterrows()}
-
-        for pos in active_positions:
-            parsed = parse_occ_option_symbol(pos.symbol) if "parse_occ_option_symbol" in globals() else None
-            if parsed:
-                continue
-            symbol = normalize_symbol(pos.symbol)
-            if not symbol or pos.qty <= 0:
-                continue
-            if float(pos.unrealized_plpc or 0.0) < self.config.options_booster_min_position_plpc:
-                continue
-
-            ta = ta_by_symbol.get(symbol, {})
-            if self.config.options_booster_require_technical_confirmation:
-                direction_confirmed = bool(ta.get("direction_confirmed", False))
-                direction_score = to_float(ta.get("direction_score"), 0.0)
-                ml_prob = to_float(ta.get("ml_next_bar_probability"), 0.0)
-                if (
-                    not direction_confirmed
-                    or direction_score < self.config.options_booster_min_direction_score
-                    or ml_prob < self.config.options_booster_min_ml_next_bar_probability
-                ):
-                    print(
-                        f"[options] skip {symbol}: technical direction not confirmed "
-                        f"direction_score={direction_score:.2f} ml_next_bar={ml_prob:.2f} "
-                        f"reason={ta.get('direction_reject_reason', 'not_confirmed')}"
-                    )
-                    continue
-            else:
-                direction_score = 1.0
-                ml_prob = 1.0
-
-            technical_score = float(np.clip(
-                0.55 * direction_score
-                + 0.35 * ml_prob
-                + 0.10 * min(max(float(pos.unrealized_plpc or 0.0) / 0.03, 0.0), 1.0),
-                0,
-                1,
-            ))
-
-            position_rows.append(
-                {
-                    "symbol": symbol,
-                    "underlying_symbol": symbol,
-                    "close": float(pos.current_price or 0.0),
-                    "price": float(pos.current_price or 0.0),
-                    "trade_confidence": technical_score,
-                    "continuation_confidence": technical_score,
-                    "setup_score": technical_score,
-                    "momentum_score": direction_score,
-                    "setup_type": "momentum",
-                    "unrealized_plpc": float(pos.unrealized_plpc or 0.0),
-                    "position_qty": float(pos.qty),
-                    "booster_trigger": "position_up_0_56pct_with_ml_ta_confirmation",
-                    "target_dte": self.config.options_booster_target_dte,
-                    "min_dte": self.config.options_booster_min_dte,
-                    "max_dte": self.config.options_booster_max_dte,
-                    "limit_price_source": self.config.options_booster_limit_price_source,
-                    "desired_order_type": "ml_ranked_limit_buy_call_at_bid",
-                    "technical_direction_confirmed": True,
-                    "technical_direction_score": direction_score,
-                    "ml_next_bar_probability": ml_prob,
-                    "technical_score": technical_score,
-                    "use_ml_contract_selection": self.config.options_ml_contract_selection_enabled,
-                    "target_delta": self.config.options_target_delta,
-                    "min_delta": self.config.options_min_delta,
-                    "max_delta": self.config.options_max_delta,
-                    "max_spread_pct": self.config.options_max_spread_pct,
-                    "min_open_interest": self.config.options_min_open_interest,
-                    "min_volume": self.config.options_min_volume,
-                    "max_theta_abs": self.config.options_max_theta_abs,
-                    "min_gamma": self.config.options_min_gamma,
-                    "max_iv_rank": self.config.options_max_iv_rank,
-                    "greek_score_weight": self.config.options_greek_score_weight,
-                    "technical_score_weight": self.config.options_technical_score_weight,
-                    "liquidity_score_weight": self.config.options_liquidity_score_weight,
-                    "dte_score_weight": self.config.options_dte_score_weight,
-                }
-            )
-
-        if position_rows:
-            frames.append(pd.DataFrame(position_rows))
-
-        if not frames:
-            print(
-                f"[options] no confidence candidates and no active positions above "
-                f"+{self.config.options_booster_min_position_plpc:.2%}; booster not triggered"
-            )
-            return
-
-        high = pd.concat(frames, ignore_index=True)
-        high["symbol"] = high["symbol"].map(normalize_symbol)
-        high = high.drop_duplicates("symbol", keep="first").reset_index(drop=True)
-        high["continuation_confidence"] = pd.to_numeric(
-            high.get("continuation_confidence", high.get("trade_confidence", 1.0)),
-            errors="coerce",
-        ).fillna(high.get("trade_confidence", 1.0))
-        high["underlying_symbol"] = high["symbol"].map(normalize_symbol)
-        high["source"] = "run_py_position_profit_options_booster"
-        high["created_at_utc"] = now_utc().isoformat()
-        high["target_dte"] = self.config.options_booster_target_dte
-        high["min_dte"] = self.config.options_booster_min_dte
-        high["max_dte"] = self.config.options_booster_max_dte
-        high["limit_price_source"] = self.config.options_booster_limit_price_source
-        high["desired_order_type"] = "ml_ranked_limit_buy_call_at_bid"
-        high["use_ml_contract_selection"] = self.config.options_ml_contract_selection_enabled
-        high["target_delta"] = self.config.options_target_delta
-        high["min_delta"] = self.config.options_min_delta
-        high["max_delta"] = self.config.options_max_delta
-        high["max_spread_pct"] = self.config.options_max_spread_pct
-        high["min_open_interest"] = self.config.options_min_open_interest
-        high["min_volume"] = self.config.options_min_volume
-        high["max_theta_abs"] = self.config.options_max_theta_abs
-        high["min_gamma"] = self.config.options_min_gamma
-        high["max_iv_rank"] = self.config.options_max_iv_rank
-        high["greek_score_weight"] = self.config.options_greek_score_weight
-        high["technical_score_weight"] = self.config.options_technical_score_weight
-        high["liquidity_score_weight"] = self.config.options_liquidity_score_weight
-        high["dte_score_weight"] = self.config.options_dte_score_weight
-        high.to_csv(OPTION_BOOSTER_CANDIDATES_PATH, index=False)
-
-        print(
-            f"[options] triggering options_booster.py for {len(high)} candidate(s); "
-            f"position trigger=+{self.config.options_booster_min_position_plpc:.2%}, "
-            f"target_dte={self.config.options_booster_target_dte}, "
-            f"data_source={self.config.options_data_source.upper()}, "
-            f"contract_selection=ALPACA_OPTION_CHAIN_EV_FLOW_RANKER, "
-            f"limit_source={self.config.options_booster_limit_price_source}"
-        )
-        print(high[[c for c in ["symbol", "trade_confidence", "continuation_confidence", "unrealized_plpc", "technical_direction_score", "ml_next_bar_probability", "target_delta", "min_delta", "max_delta", "booster_trigger", "target_dte", "limit_price_source"] if c in high.columns]].to_string(index=False))
-
-        if self.config.options_alpaca_chain_preflight_enabled:
-            sample_symbol = normalize_symbol(high.iloc[0].get("symbol", "SPY")) if not high.empty else "SPY"
-            ok_chain, chain_msg = alpaca_options_data_available(sample_symbol)
-            print(f"[options] Alpaca option-chain preflight ok={ok_chain} {chain_msg}")
-            write_event("alpaca_options_chain_preflight", {"ok": ok_chain, "message": chain_msg, "sample_symbol": sample_symbol})
-            if self.config.options_require_alpaca_chain and not ok_chain:
-                print("[options] skipping options booster because Alpaca option-chain preflight failed")
-                write_event("options_booster_skipped_alpaca_chain_unavailable", {"message": chain_msg})
-                return
-
-        booster_env = build_options_booster_env(self.config, high["symbol"].dropna().astype(str).tolist())
-
-        args = [
-            "--once",
-            "--enable-options-booster",
-            "--disable-scanner",
-            "--option-min-confidence",
-            "0.0",
-            "--option-min-underlying-plpc",
-            str(self.config.options_booster_min_position_plpc),
-            "--option-min-dte",
-            str(self.config.options_booster_min_dte),
-            "--option-max-dte",
-            str(self.config.options_booster_max_dte),
-            "--option-target-delta",
-            str(self.config.options_target_delta),
-            "--option-min-delta",
-            str(self.config.options_min_delta),
-            "--option-max-delta",
-            str(self.config.options_max_delta),
-            "--option-max-spread-pct",
-            str(self.config.options_max_spread_pct),
-            "--option-min-open-interest",
-            str(self.config.options_min_open_interest),
-            "--option-min-volume",
-            str(self.config.options_min_volume),
-            "--option-limit-price-source",
-            self.config.options_booster_limit_price_source,
-        ]
-        ok, output = run_python_script(
-            OPTIONS_BOOSTER_PATH,
-            args=args,
-            timeout_seconds=self.config.options_booster_timeout_seconds,
-            env_overrides=booster_env,
-        )
-        if ok:
-            print("[options] options_booster.py completed")
-            if output:
-                print(output[-2000:])
-            write_event("options_booster_triggered", {"rows": len(high), "output_tail": output[-2000:]})
-        else:
-            print(f"[options] options_booster.py failed: {output}")
-            write_event("options_booster_failed", {"rows": len(high), "error": output})
-
-
+    
 # ======================================================================# Executor
 # ======================================================================
 class ProductionOrderExecutor:
@@ -4005,7 +6607,7 @@ class ProductionOrderExecutor:
     def _safe_read_order_csv(self, path: Path, required: bool = False) -> pd.DataFrame:
         if not path.exists():
             if required:
-                raise RuntimeError(f"Required order file not found: {path}")
+                raise RuntimeError(f"Required order file not found: {path}. portfolio_rebalancer.py should generate this file before execution.")
             return pd.DataFrame()
         try:
             if path.stat().st_size == 0:
@@ -4017,11 +6619,46 @@ class ProductionOrderExecutor:
         except pd.errors.EmptyDataError:
             return pd.DataFrame()
 
-    def _load_orders(self) -> tuple[pd.DataFrame, pd.DataFrame]:
-        return (
-            self._safe_read_order_csv(self.config.rebalance_orders_path, required=True),
-            self._safe_read_order_csv(self.config.exit_orders_path, required=False),
+    def _run_portfolio_rebalancer(self) -> None:
+        """Generate today's order CSVs through portfolio_rebalancer.py before file-based execution."""
+        if not PORTFOLIO_REBALANCER_PATH.exists():
+            raise RuntimeError(f"portfolio_rebalancer.py not found: {PORTFOLIO_REBALANCER_PATH}")
+
+        print(f"[rebalancer] generating rebalance/exit orders via {PORTFOLIO_REBALANCER_PATH}")
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        env["RUN_DATA_DATE"] = DATA_TAG
+        env["RL_DATA_DATE"] = DATA_TAG
+
+        proc = subprocess.run(
+            [sys.executable, str(PORTFOLIO_REBALANCER_PATH)],
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            text=True,
         )
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"portfolio_rebalancer.py failed with code {proc.returncode}")
+
+        if not self.config.rebalance_orders_path.exists():
+            raise RuntimeError(
+                f"Required order file not found after portfolio_rebalancer.py: "
+                f"{self.config.rebalance_orders_path}"
+            )
+
+    def _load_orders(self) -> tuple[pd.DataFrame, pd.DataFrame]:
+        if not self.config.rebalance_orders_path.exists():
+            self._run_portfolio_rebalancer()
+
+        rebalance = self._safe_read_order_csv(self.config.rebalance_orders_path, required=True)
+        exits = self._safe_read_order_csv(self.config.exit_orders_path, required=False)
+
+        if self.config.scanner and self.config.scanner.stream_confirmed_merge_orders:
+            rebalance = merge_stream_confirmed_orders(rebalance)
+        if self.config.scanner and self.config.scanner.sr_rl_merge_signals:
+            rebalance = merge_sr_rl_orders(rebalance, self.config.scanner)
+
+        return rebalance, exits
 
     def _normalize_order_frame(self, orders: Optional[pd.DataFrame], default_reason: str = "") -> pd.DataFrame:
         cols = [
@@ -4636,6 +7273,17 @@ class ProductionOrderExecutor:
                         skip_message = "buy_clipped_below_min_notional"
 
             if skip_message:
+                if (
+                    side == "buy"
+                    and self.config.scanner
+                    and self.config.scanner.stream_confirmed_append_direction_rejects
+                    and str(skip_message).startswith("price_direction_not_confirmed")
+                ):
+                    append_pending_direction_watch_from_order(
+                        {**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
+                        skip_message,
+                    )
+
                 print(f"[skip] {side.upper()} {qty} {symbol}: {skip_message}")
                 result = {
                     "timestamp_utc": now_utc().isoformat(),
@@ -4715,6 +7363,20 @@ class ProductionOrderExecutor:
                     fill_info,
                 )
                 write_event("order_submitted", result)
+
+                if (
+                    side == "buy"
+                    and self.config.scanner
+                    and self.config.scanner.stream_confirmed_submit_trailing_stop_after_fill
+                ):
+                    filled_qty_for_trail = to_int(fill_info.get("filled_qty", qty), qty)
+                    submit_trailing_stop_after_entry(
+                        self.broker,
+                        symbol,
+                        filled_qty_for_trail,
+                        {**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
+                    )
+
                 self._log_live_experience(
                     cycle_id=cycle_id,
                     stage="submitted",
@@ -4802,6 +7464,11 @@ class ProductionOrderExecutor:
             print("[orders] canceling open orders")
             self.broker.cancel_open_orders()
 
+        if self.config.scanner and self.config.scanner.stream_confirmed_merge_orders:
+            rebalance_orders = merge_stream_confirmed_orders(rebalance_orders)
+        if self.config.scanner and self.config.scanner.sr_rl_merge_signals:
+            rebalance_orders = merge_sr_rl_orders(rebalance_orders, self.config.scanner)
+
         exit_orders = self._augment_exit_orders_with_exit_learning(exit_orders if exit_orders is not None else pd.DataFrame())
         plan = self._build_order_plan(rebalance_orders, exit_orders, equity)
         plan = self._apply_mtf_buy_gate_to_plan(plan)
@@ -4827,8 +7494,14 @@ class ProductionOrderExecutor:
             self._write_account_equity_curve()
             return plan, pd.DataFrame(), self.broker.get_account_snapshot(), positions_before
 
+        plan = merge_evolution_strategy_orders(plan)
+
         print("\n===== ORDER PLAN =====")
-        display_cols = ["symbol", "side", "order_qty", "price", "abs_delta_dollars", "capped_dollars", "confidence_used", "confidence_multiplier", "reason"]
+        display_cols = [
+            "symbol", "side", "order_qty", "price", "abs_delta_dollars", "capped_dollars",
+            "ensemble_score", "up_probability", "expected_return", "drawdown_probability",
+            "attention_lstm_score", "confidence_used", "confidence_multiplier", "reason",
+        ]
         print(plan[[c for c in display_cols if c in plan.columns]].to_string(index=False))
         save_df(plan, LOG_DIR / f"order_plan_{cycle_id}.csv")
 
@@ -5035,6 +7708,8 @@ class ProductionOrderExecutor:
             blocked_reason = "position_aware_block_enter_short_already_short"
         elif side == 0 and action in {"EXIT_LONG", "EXIT_SHORT", "SELL", "COVER"}:
             blocked_reason = "position_aware_block_exit_when_flat"
+        elif side == 0 and action in {"ADD_LONG", "PYRAMID_LONG"}:
+            blocked_reason = "position_aware_block_add_long_when_flat"
         elif side == 1 and action == "EXIT_SHORT":
             blocked_reason = "position_aware_block_exit_short_while_long"
         elif side == -1 and action == "EXIT_LONG":
@@ -5187,7 +7862,15 @@ class ProductionOrderExecutor:
                 signals.append(signal)
                 action = str(signal.get("action", "HOLD")).upper()
                 confidence = to_float(signal.get("confidence"), 0.0)
-                allow = action == "ENTER_LONG" and confidence >= self.config.scanner.rl_min_enter_long_confidence
+                has_position = bool(positions_by_symbol.get(symbol) and to_float(positions_by_symbol[symbol].qty, 0.0) > 0)
+                if has_position and self.config.scanner.rl_enable_add_long_gate:
+                    allow = action in {"ADD_LONG", "PYRAMID_LONG"} and confidence >= self.config.scanner.rl_min_add_long_confidence
+                    required_action = "ADD_LONG"
+                    required_confidence = self.config.scanner.rl_min_add_long_confidence
+                else:
+                    allow = action in {"ENTER_LONG", "BUY"} and confidence >= self.config.scanner.rl_min_enter_long_confidence
+                    required_action = "ENTER_LONG"
+                    required_confidence = self.config.scanner.rl_min_enter_long_confidence
 
                 if self.config.scanner.rl_shadow_mode:
                     shadow = dict(signal)
@@ -5195,6 +7878,8 @@ class ProductionOrderExecutor:
                         "regime_or_scanner_wanted_buy": True,
                         "raw_buy_row_reason": str(row.get("reason", "")),
                         "would_pass_rl_gate": bool(allow),
+                        "required_action": required_action,
+                        "required_confidence": float(required_confidence),
                     })
                     write_event("rl_shadow_buy_decision", shadow)
 
@@ -5207,7 +7892,11 @@ class ProductionOrderExecutor:
 
                 keep_mask.append(bool(allow))
                 if not allow:
-                    print(f"[rl-gate] blocked BUY {symbol}: action={action} confidence={confidence:.2f} reason={signal.get('reason')} mask={signal.get('mask_reason')}")
+                    print(
+                        f"[rl-gate] blocked BUY {symbol}: action={action} confidence={confidence:.2f} "
+                        f"required={required_action}>={required_confidence:.2f} "
+                        f"reason={signal.get('reason')} mask={signal.get('mask_reason')}"
+                    )
                     write_event("rl_gate_blocked_buy", signal)
                 else:
                     gated_rebalance.loc[gated_rebalance.index[len(keep_mask) - 1], "reason"] = (
@@ -5215,6 +7904,11 @@ class ProductionOrderExecutor:
                     )
                     gated_rebalance.loc[gated_rebalance.index[len(keep_mask) - 1], "rl_action"] = action
                     gated_rebalance.loc[gated_rebalance.index[len(keep_mask) - 1], "rl_confidence"] = confidence
+                    gated_rebalance.loc[gated_rebalance.index[len(keep_mask) - 1], "rl_required_action"] = required_action
+                    if action in {"ADD_LONG", "PYRAMID_LONG"}:
+                        gated_rebalance.loc[gated_rebalance.index[len(keep_mask) - 1], "reason"] = (
+                            str(gated_rebalance.loc[gated_rebalance.index[len(keep_mask) - 1], "reason"]) + ":rl_add_long_confirmed"
+                        )
 
             gated_rebalance = gated_rebalance.loc[keep_mask].copy() if keep_mask else gated_rebalance.iloc[0:0].copy()
 
@@ -5367,6 +8061,7 @@ class ProductionOrderExecutor:
                 print(f"[scanner] cycle failed; falling back to existing order files: {exc}")
                 write_event("scanner_cycle_error", {"error": str(exc)})
 
+        self._run_portfolio_rebalancer()
         print(f"[executor] using rebalance_orders={self.config.rebalance_orders_path}")
         print(f"[executor] using exit_orders={self.config.exit_orders_path if self.config.exit_orders_path.exists() else 'NONE'}")
         rebalance, exits = self._load_orders()
@@ -5383,6 +8078,239 @@ class ProductionOrderExecutor:
             f"cash=${acct.cash:,.2f} | buying_power=${acct.buying_power:,.2f} | gross={gross:.2%}"
         )
         self.last_heartbeat_time = now_ts
+
+
+    def _start_spx_price_action_layer(self) -> None:
+        if not self.config.scanner or not self.config.scanner.spx_price_action_layer_enabled:
+            return
+        if getattr(self, "_spx_price_action_thread_started", False):
+            return
+
+        self._spx_price_action_thread_started = True
+        thread = threading.Thread(
+            target=self._spx_price_action_loop,
+            name="spx-price-action-layer",
+            daemon=True,
+        )
+        thread.start()
+        print(
+            "[spx-layer] internal layer started "
+            f"symbol={self.config.scanner.spx_price_action_trade_symbol} "
+            f"scan_seconds={self.config.scanner.spx_price_action_scan_seconds} "
+            f"execute={self.config.scanner.spx_price_action_execute_orders}"
+        )
+
+    def spx_write_event(self, event: str, payload: dict[str, Any] | None = None) -> None:
+        write_event(event, payload or {})
+
+    def spx_price_action_cycle(self) -> None:
+        try:
+            from spx_price_action_layer import run_once
+            run_once()
+        except ImportError as exc:
+            print(f"[spx-layer] module import failed: {exc}")
+            write_event("spx_layer_import_failed", {"error": str(exc)})
+        except Exception as exc:
+            print(f"[spx-layer] cycle error: {exc}")
+            write_event("spx_cycle_error", {"error": str(exc)})
+
+    def _spx_price_action_loop(self) -> None:
+        while True:
+            try:
+                if self.config.scanner and self.config.scanner.spx_price_action_layer_enabled:
+                    self.spx_price_action_cycle()
+            except Exception as exc:
+                print(f"[spx-layer] cycle error: {exc}")
+                self.spx_write_event("spx_cycle_error", {"error": str(exc)})
+            time.sleep(max(1, int(self.config.scanner.spx_price_action_scan_seconds if self.config.scanner else 10)))
+
+    def run_spx_price_action_once(self) -> Optional[dict[str, Any]]:
+        if not self.config.scanner:
+            return None
+        self.spx_price_action_cycle()
+        return read_json_file(SPX_PRICE_ACTION_SIGNAL_PATH, {})
+
+
+    def _start_sr_rl_agent(self) -> None:
+        if not self.config.scanner or not self.config.scanner.sr_rl_agent_enabled:
+            return
+        if getattr(self, "_sr_rl_thread_started", False):
+            return
+
+        self._sr_rl_thread_started = True
+        thread = threading.Thread(
+            target=self._sr_rl_agent_loop,
+            name="sr-rl-agent",
+            daemon=True,
+        )
+        thread.start()
+        print(
+            "[sr-rl] agent watcher started "
+            f"live={self.config.scanner.sr_rl_live_enabled} "
+            f"execute_now={self.config.scanner.sr_rl_execute_now} "
+            f"scan_seconds={self.config.scanner.sr_rl_scan_seconds}"
+        )
+
+    def _sr_rl_agent_loop(self) -> None:
+        script_name = self.config.scanner.sr_rl_agent_script if self.config.scanner else "sr_rl_agent.py"
+        script_path = PROJECT_ROOT / script_name
+        if not script_path.exists():
+            alt = PROJECT_ROOT / "sr_rl_agent.py"
+            script_path = alt if alt.exists() else script_path
+
+        if not script_path.exists():
+            print(f"[sr-rl] script missing: {script_path}")
+            sr_write_event("script_missing", {"path": str(script_path)})
+            return
+
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        env["RUN_DATA_DATE"] = DATA_TAG
+        env["RL_DATA_DATE"] = DATA_TAG
+        env["SR_RL_SCAN_SECONDS"] = str(self.config.scanner.sr_rl_scan_seconds)
+        env["SR_RL_EXECUTE"] = "1" if self.config.scanner.sr_rl_execute_now else "0"
+
+        if self.config.scanner.sr_rl_train_on_start:
+            train_cmd = [sys.executable, str(script_path), "--train"]
+            print(f"[sr-rl] training agent: {' '.join(train_cmd)}")
+            sr_write_event("train_started", {"cmd": train_cmd, "model_path": str(SR_RL_MODEL_PATH)})
+            proc = subprocess.Popen(
+                train_cmd,
+                cwd=str(PROJECT_ROOT),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                print(line.rstrip())
+            rc = proc.wait()
+            sr_write_event("train_completed", {"returncode": rc})
+            if rc != 0 and self.config.scanner.sr_rl_require_model:
+                print(f"[sr-rl] train failed returncode={rc}; live disabled")
+                return
+
+        if self.config.scanner.sr_rl_require_model and not SR_RL_MODEL_PATH.exists():
+            print(f"[sr-rl] model missing and required: {SR_RL_MODEL_PATH}")
+            sr_write_event("model_missing_required", {"model_path": str(SR_RL_MODEL_PATH)})
+            return
+
+        if not self.config.scanner.sr_rl_live_enabled:
+            return
+
+        cmd = [sys.executable, str(script_path), "--live"]
+        # Keep sr_rl_agent long-only signal-only by default. run.py executes
+        # merged rows after its own risk, direction, PDT, kill-switch and cash gates.
+        if self.config.scanner.sr_rl_execute_now:
+            cmd.append("--execute")
+
+        while True:
+            try:
+                print(f"[sr-rl] launching: {' '.join(cmd)}")
+                sr_write_event("live_started", {"cmd": cmd, "signals_path": str(SR_RL_SIGNALS_PATH)})
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(PROJECT_ROOT),
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    print(line.rstrip())
+                rc = proc.wait()
+                sr_write_event("live_exited", {"returncode": rc})
+                print(f"[sr-rl] exited returncode={rc}; restarting in 20s")
+                time.sleep(20)
+            except Exception as exc:
+                print(f"[sr-rl] loop error: {exc}")
+                sr_write_event("live_error", {"error": str(exc)})
+                time.sleep(20)
+
+    def _start_stream_confirmed_movement_gate(self) -> None:
+        if not self.config.scanner or not self.config.scanner.stream_confirmed_movement_enabled:
+            return
+        if getattr(self, "_stream_confirm_thread_started", False):
+            return
+
+        self._stream_confirm_thread_started = True
+        thread = threading.Thread(
+            target=self._stream_confirmed_movement_loop,
+            name="stream-confirmed-movement-gate",
+            daemon=True,
+        )
+        thread.start()
+        print(
+            "[stream-confirm] internal watcher started "
+            f"polling={self.config.scanner.stream_confirmed_use_polling} "
+            f"execute_now={self.config.scanner.stream_confirmed_execute_now} "
+            f"reload_seconds={self.config.scanner.stream_confirmed_reload_seconds}"
+        )
+
+    def _stream_confirmed_movement_loop(self) -> None:
+        """
+        Runs the stream-confirmation layer as a subprocess.
+
+        The watcher monitors the full day's symbol universe, writes:
+            - stream_confirmed_trade_plan.csv/json
+            - stream_confirmed_rebalance_orders.csv
+
+        run.py merges those confirmed orders into each execution cycle.
+        """
+        script_name = self.config.scanner.stream_confirmed_movement_script if self.config.scanner else "stream_confirmed_movement_gate.py"
+        script_path = PROJECT_ROOT / script_name
+
+        if not script_path.exists():
+            # fallback to the specific generated filename if user has not renamed it
+            alt = PROJECT_ROOT / "stream_confirmed_movement_gate_trade_plan_trailing.py"
+            script_path = alt if alt.exists() else script_path
+
+        if not script_path.exists():
+            print(f"[stream-confirm] script missing: {script_path}")
+            write_event("stream_confirm_script_missing", {"path": str(script_path)})
+            return
+
+        env = os.environ.copy()
+        env["RUN_DATA_DATE"] = DATA_TAG
+        env["STREAM_CONFIRM_DATA_DATE"] = DATA_TAG
+        env["STREAM_CONFIRM_EXECUTE"] = "1" if self.config.scanner.stream_confirmed_execute_now else "0"
+        env["STREAM_CONFIRM_USE_POLLING"] = "1" if self.config.scanner.stream_confirmed_use_polling else "0"
+        env["STREAM_CONFIRM_RELOAD_SECONDS"] = str(self.config.scanner.stream_confirmed_reload_seconds)
+        env["STREAM_CONFIRM_TRAILING_STOP_ENABLED"] = "1" if self.config.scanner.stream_confirmed_trailing_stop_enabled else "0"
+        env["PYTHONUNBUFFERED"] = "1"
+
+        cmd = [sys.executable, str(script_path)]
+        if self.config.scanner.stream_confirmed_use_polling:
+            cmd.append("--poll")
+
+        while True:
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(PROJECT_ROOT),
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                write_event("stream_confirm_watcher_started", {"cmd": cmd, "path": str(script_path)})
+                if proc.stdout is not None:
+                    for line in proc.stdout:
+                        print(line.rstrip())
+
+                returncode = proc.wait()
+                write_event("stream_confirm_watcher_exited", {"returncode": returncode})
+                print(f"[stream-confirm] watcher exited returncode={returncode}; restarting in 10s")
+                time.sleep(10)
+            except Exception as exc:
+                print(f"[stream-confirm] watcher error: {exc}; restarting in 10s")
+                write_event("stream_confirm_watcher_error", {"error": str(exc)})
+                time.sleep(10)
 
     def run(self) -> None:
         print("[executor] 13K account executor starting")
@@ -5401,6 +8329,9 @@ class ProductionOrderExecutor:
             print(f"[executor] session_planning_start={self.config.scanner.session_planning_start_hour_et:02d}:{self.config.scanner.session_planning_start_minute_et:02d} ET")
             print(f"[executor] regime_plan_enabled={self.config.scanner.use_regime_position_plan}")
             print(f"[executor] rl_timing_gate_enabled={self.config.scanner.use_rl_timing_gate}")
+            print(f"[executor] rl_model={RL_MODEL_PATH}")
+            print(f"[executor] rl_metrics={RL_METRICS_PATH}")
+            print(f"[executor] rl_add_long_gate={self.config.scanner.rl_enable_add_long_gate}")
             print(f"[executor] rl_training_from_run_py={self.config.scanner.allow_rl_training_from_run_py}")
             print(f"[executor] rl_shadow_mode={self.config.scanner.rl_shadow_mode}")
             print(f"[executor] live_experience_logging={self.config.scanner.live_experience_logging_enabled}")
@@ -5410,6 +8341,16 @@ class ProductionOrderExecutor:
             print(f"[executor] premarket_data_collector_path={PREMARKET_DATA_COLLECTOR_PATH}")
             print(f"[executor] dated_data_snapshots_enabled={self.config.scanner.dated_data_snapshots_enabled}")
             print(f"[executor] data_validation_state={DATA_VALIDATION_STATE_PATH}")
+            print(f"[executor] spx_price_action_layer_enabled={self.config.scanner.spx_price_action_layer_enabled}")
+            print(f"[executor] spx_price_action_trade_symbol={self.config.scanner.spx_price_action_trade_symbol}")
+            print(f"[executor] spx_price_action_execute_orders={self.config.scanner.spx_price_action_execute_orders}")
+            print(f"[executor] spx_price_action_signal={SPX_PRICE_ACTION_SIGNAL_PATH}")
+            print(f"[executor] stream_confirmed_movement_enabled={self.config.scanner.stream_confirmed_movement_enabled}")
+            print(f"[executor] stream_confirmed_orders={STREAM_CONFIRMED_ORDERS_PATH}")
+            print(f"[executor] stream_confirmed_trade_plan_csv={STREAM_CONFIRMED_TRADE_PLAN_CSV_PATH}")
+            print(f"[executor] sr_rl_agent_enabled={self.config.scanner.sr_rl_agent_enabled}")
+            print(f"[executor] sr_rl_signals={SR_RL_SIGNALS_PATH}")
+            print(f"[executor] sr_rl_model={SR_RL_MODEL_PATH}")
         try:
             acct = self.broker.get_account_snapshot()
             profile = self._risk_profile(acct.equity)
@@ -5477,8 +8418,13 @@ class ProductionOrderExecutor:
                 print(f"[session-prep] startup prep failed; executor will continue with fallbacks: {exc}")
                 write_event("session_planning_startup_error", {"error": str(exc)})
 
+        self._start_spx_price_action_layer()
+        self._start_sr_rl_agent()
+        self._start_stream_confirmed_movement_gate()
+
         if self.config.poll_once:
             self.run_cycle_from_files()
+            self.run_spx_price_action_once()
             return
 
         while True:
@@ -5649,7 +8595,31 @@ def build_default_config() -> ExecutorConfig:
 
 
 def main() -> None:
+    try:
+        maybe_run_pso_lstm_optimization()
+    except Exception as exc:
+        print(f"[pso-lstm] startup skipped: {exc}")
+
+    try:
+        maybe_refresh_forecast_ensemble_layer()
+    except Exception as exc:
+        print(f"[forecast] startup skipped: {exc}")
+
+    try:
+        maybe_refresh_evolution_strategy_layer()
+    except Exception as exc:
+        print(f"[es-layer] startup skipped: {exc}")
+
+    try:
+        start_spx_price_action_layer_background()
+    except Exception as exc:
+        print(f"[spx-layer] startup skipped: {exc}")
+
     config = build_default_config()
+    threading.Thread(
+    target=launch_intraday_dataset_builder,
+    daemon=True,
+).start()
     executor = ProductionOrderExecutor(config)
     executor.run()
 
@@ -5657,3 +8627,4 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
+"""ngrok http 5000"""

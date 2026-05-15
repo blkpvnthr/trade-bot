@@ -23,16 +23,16 @@ Why this exists:
     regular session with fresh planning data.
 
 Outputs refreshed by the child scripts include:
-    daily_system_outputs/latest_llm_sentiment_universe.json
+    system-data/latest_llm_sentiment_universe.json
     locked_trading_universe.txt
-    daily_system_outputs/market_context.json
-    daily_system_outputs/premarket_trade_plan.json
-    daily_system_outputs/intraday_structure_map.json
-    daily_system_outputs/intraday_bars_1m.csv
-    daily_system_outputs/latest_option_flow_candidates.csv
-    daily_system_outputs/latest_option_booster_candidates.csv
-    daily_system_outputs/latest_option_booster_ranked_contracts.csv
-    daily_system_outputs/premarket_collector_state.json
+    system-data/market_context.json
+    system-data/premarket_trade_plan.json
+    system-data/intraday_structure_map.json
+    system-data/intraday_bars_1m.csv
+    system-data/latest_option_flow_candidates.csv
+    system-data/latest_option_booster_candidates.csv
+    system-data/latest_option_booster_ranked_contracts.csv
+    system-data/premarket_collector_state.json
     logs/execution/premarket_collector_events.jsonl
 """
 
@@ -59,8 +59,8 @@ from market_context_builder import DAILY_OUTPUT_DIR, TODAY_TAG
 
 THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
-OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
-LOG_DIR = PROJECT_ROOT / "logs" / "execution"
+OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
+LOG_DIR = PROJECT_ROOT / "logs" / "execution" / f"{TODAY_TAG}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 

@@ -4,13 +4,13 @@ rl_intraday_structure_trainer.py
 
 Advanced reinforcement-learning trainer for intraday execution timing using:
 
-    daily_system_outputs/intraday_bars_1m.csv
-    daily_system_outputs/intraday_structure_map.json
+    system-data/intraday_bars_1m.csv
+    system-data/intraday_structure_map.json
 
 Default usage:
     python rl_intraday_structure_trainer.py
 
-This integrated version preserves the uploaded balanced long/short reward logic and adds the advanced policy stack.
+This integrated version is long-only and trains HOLD / ENTER_LONG / EXIT_LONG / ADD_LONG execution timing.
 
 This version supports:
     - Standard PPO MLP policy
@@ -18,10 +18,11 @@ This version supports:
     - Transformer-style sequence feature fusion
     - Hierarchical RL action gating
     - Multi-timeframe state fusion from 1m bars
-    - Long/short actions
+    - Long-only actions
     - Action confidence/entropy output for run.py
     - Trend-persistence rewards
     - Exit-quality penalties
+    - Peak-exit reward shaping to learn exits near local highs before giveback
 
 Install optional LSTM support:
     pip install sb3-contrib
@@ -33,14 +34,13 @@ Actions:
     0 = HOLD
     1 = ENTER_LONG
     2 = EXIT_LONG
-    3 = ENTER_SHORT
-    4 = EXIT_SHORT
+    3 = ADD_LONG
 
 Outputs:
-    daily_system_outputs/rl_intraday_structure_model.zip
-    daily_system_outputs/rl_intraday_training_metrics.json
-    daily_system_outputs/rl_intraday_signal_diagnostics.csv
-    daily_system_outputs/rl_intraday_symbol_overlap.csv
+    system-data/rl_intraday_structure_model.zip
+    system-data/rl_intraday_training_metrics.json
+    system-data/rl_intraday_signal_diagnostics.csv
+    system-data/rl_intraday_symbol_overlap.csv
 
 This file does NOT place trades.
 It trains a policy that run.py can use as a confirmation/timing layer.
@@ -54,11 +54,20 @@ import os
 import random
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
+from datetime import timedelta
+
 
 import numpy as np
 import pandas as pd
+
+
+ET = ZoneInfo("America/New_York")
+TODAY_TAG = datetime.now(ET).strftime("%Y%m%d")
+YESTERDAY_TAG = (datetime.now(ET) - timedelta(days=1)).strftime("%Y%m%d")
+DATA_TAG = os.getenv("RL_DATA_DATE", TODAY_TAG)
 
 try:
     import gymnasium as gym
@@ -77,7 +86,7 @@ except Exception as exc:
     ) from exc
 
 try:
-    from sb3_contrib import RecurrentPPO
+    from sb3_contrib import RecurrentPPO # type: ignore
 except Exception:
     RecurrentPPO = None
 
@@ -87,21 +96,21 @@ except Exception:
 # =============================================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
+OUT_DIR = PROJECT_ROOT / "system-data" / DATA_TAG
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_BARS_PATHS = [
-    OUT_DIR / "intraday_bars_1m.csv",
-    OUT_DIR / "intraday_bars.csv",
-    OUT_DIR / "latest_intraday_bars.csv",
+    OUT_DIR / f"{DATA_TAG}_intraday_bars_1m.csv",
+    OUT_DIR / f"{DATA_TAG}_intraday_bars.csv",
+    OUT_DIR / f"{DATA_TAG}_latest_intraday_bars.csv",
 ]
 
-STRUCTURE_MAP_PATH = OUT_DIR / "intraday_structure_map.json"
+STRUCTURE_MAP_PATH = OUT_DIR / f"{DATA_TAG}_intraday_structure_map.json"
 
-MODEL_PATH = OUT_DIR / "rl_intraday_structure_model.zip"
-METRICS_PATH = OUT_DIR / "rl_intraday_training_metrics.json"
-DIAGNOSTICS_PATH = OUT_DIR / "rl_intraday_signal_diagnostics.csv"
-OVERLAP_PATH = OUT_DIR / "rl_intraday_symbol_overlap.csv"
+MODEL_PATH = OUT_DIR / f"{DATA_TAG}_rl_intraday_structure_model.zip"
+METRICS_PATH = OUT_DIR / f"{DATA_TAG}_rl_intraday_training_metrics.json"
+DIAGNOSTICS_PATH = OUT_DIR / f"{DATA_TAG}_rl_intraday_signal_diagnostics.csv"
+OVERLAP_PATH = OUT_DIR / f"{DATA_TAG}_rl_intraday_symbol_overlap.csv"
 
 
 # =============================================================================
@@ -110,7 +119,7 @@ OVERLAP_PATH = OUT_DIR / "rl_intraday_symbol_overlap.csv"
 
 RANDOM_SEED = int(os.getenv("RL_INTRADAY_RANDOM_SEED", "42"))
 
-TRAIN_TIMESTEPS = int(os.getenv("RL_INTRADAY_TIMESTEPS", "300000"))
+TRAIN_TIMESTEPS = int(os.getenv("RL_INTRADAY_TIMESTEPS", "500000"))
 TRAIN_SYMBOL_LIMIT = int(os.getenv("RL_INTRADAY_SYMBOL_LIMIT", "30"))
 MAX_EPISODE_STEPS = int(os.getenv("RL_INTRADAY_MAX_EPISODE_STEPS", "390"))
 MIN_BARS_PER_EPISODE = int(os.getenv("RL_INTRADAY_MIN_BARS_PER_EPISODE", "30"))
@@ -127,10 +136,17 @@ MAX_HOLD_BARS = int(os.getenv("RL_INTRADAY_MAX_HOLD_BARS", "60"))
 MIN_QUALITY_HOLD_BARS = int(os.getenv("RL_MIN_QUALITY_HOLD_BARS", "3"))
 
 REWARD_SCALE = float(os.getenv("RL_INTRADAY_REWARD_SCALE", "100.0"))
-OVERTRADE_PENALTY = float(os.getenv("RL_INTRADAY_OVERTRADE_PENALTY", "0.002"))
+OVERTRADE_PENALTY = float(os.getenv("RL_INTRADAY_OVERTRADE_PENALTY", "0.0002"))
 DRAWDOWN_PENALTY = float(os.getenv("RL_INTRADAY_DRAWDOWN_PENALTY", "0.20"))
-BAD_ENTRY_PENALTY = float(os.getenv("RL_INTRADAY_BAD_ENTRY_PENALTY", "0.002"))
-GOOD_ENTRY_BONUS = float(os.getenv("RL_INTRADAY_GOOD_ENTRY_BONUS", "0.001"))
+BAD_ENTRY_PENALTY = float(os.getenv("RL_INTRADAY_BAD_ENTRY_PENALTY", "0.0001"))
+GOOD_ENTRY_BONUS = float(os.getenv("RL_INTRADAY_GOOD_ENTRY_BONUS", "0.010"))
+
+# Exploration / anti-inactivity shaping. These prevent PPO from learning that
+# staying flat forever is the safest optimal policy during training.
+FLAT_HOLD_INACTIVITY_PENALTY = float(os.getenv("RL_FLAT_HOLD_INACTIVITY_PENALTY", "0.003"))
+FLAT_HOLD_STRONG_SETUP_PENALTY = float(os.getenv("RL_FLAT_HOLD_STRONG_SETUP_PENALTY", "0.004"))
+VALID_ENTRY_EXPLORATION_BONUS = float(os.getenv("RL_VALID_ENTRY_EXPLORATION_BONUS", "0.006"))
+EARLY_TRAINING_GATE_RELAXATION = os.getenv("RL_EARLY_TRAINING_GATE_RELAXATION", "1").lower() in {"1", "true", "yes"}
 
 # Model mode:
 #   ppo          = standard MLP PPO
@@ -193,9 +209,9 @@ OVEREXTENDED_INTRADAY_CHANGE = float(os.getenv("RL_OVEREXTENDED_INTRADAY_CHANGE"
 OVEREXTENDED_DAILY_PENALTY = float(os.getenv("RL_OVEREXTENDED_DAILY_PENALTY", "0.30"))
 OVEREXTENDED_INTRADAY_PENALTY = float(os.getenv("RL_OVEREXTENDED_INTRADAY_PENALTY", "0.20"))
 
-POSITION_PNL_BONUS_MULT = float(os.getenv("RL_POSITION_PNL_BONUS_MULT", "25.0"))
+POSITION_PNL_BONUS_MULT = float(os.getenv("RL_POSITION_PNL_BONUS_MULT", "30.0"))
 POSITION_PNL_BONUS_CAP = float(os.getenv("RL_POSITION_PNL_BONUS_CAP", "1.25"))
-POSITION_PNL_NEG_MULT = float(os.getenv("RL_POSITION_PNL_NEG_MULT", "40.0"))
+POSITION_PNL_NEG_MULT = float(os.getenv("RL_POSITION_PNL_NEG_MULT", "45.0"))
 POSITION_PNL_NEG_CAP = float(os.getenv("RL_POSITION_PNL_NEG_CAP", "2.0"))
 FAST_PROFIT_THRESHOLD = float(os.getenv("RL_FAST_PROFIT_THRESHOLD", "0.003"))
 FAST_PROFIT_BARS = int(os.getenv("RL_FAST_PROFIT_BARS", "5"))
@@ -206,11 +222,11 @@ STAGNANT_POSITION_BARS = int(os.getenv("RL_STAGNANT_POSITION_BARS", "20"))
 STAGNANT_POSITION_THRESHOLD = float(os.getenv("RL_STAGNANT_POSITION_THRESHOLD", "0.001"))
 STAGNANT_POSITION_PENALTY = float(os.getenv("RL_STAGNANT_POSITION_PENALTY", "0.25"))
 
-REENTRY_SAME_SYMBOL_PENALTY = float(os.getenv("RL_REENTRY_SAME_SYMBOL_PENALTY", "1.0"))
+REENTRY_SAME_SYMBOL_PENALTY = float(os.getenv("RL_REENTRY_SAME_SYMBOL_PENALTY", "0.05"))
 REENTRY_RECENT_EXIT_BARS = int(os.getenv("RL_REENTRY_RECENT_EXIT_BARS", "30"))
-REENTRY_RECENT_EXIT_PENALTY = float(os.getenv("RL_REENTRY_RECENT_EXIT_PENALTY", "1.5"))
+REENTRY_RECENT_EXIT_PENALTY = float(os.getenv("RL_REENTRY_RECENT_EXIT_PENALTY", "0.05"))
 REENTRY_COUNT_TRIGGER = int(os.getenv("RL_REENTRY_COUNT_TRIGGER", "2"))
-REENTRY_COUNT_PENALTY = float(os.getenv("RL_REENTRY_COUNT_PENALTY", "2.0"))
+REENTRY_COUNT_PENALTY = float(os.getenv("RL_REENTRY_COUNT_PENALTY", "0.10"))
 
 EQUITY_NEG_1STEP_MULT = float(os.getenv("RL_EQUITY_NEG_1STEP_MULT", "50.0"))
 EQUITY_NEG_1STEP_CAP = float(os.getenv("RL_EQUITY_NEG_1STEP_CAP", "1.0"))
@@ -236,12 +252,12 @@ AVOID_BAD_TRADE_REWARD = float(os.getenv("RL_AVOID_BAD_TRADE_REWARD", "0.25"))
 AVOID_ADVERSE_TRADE_REWARD = float(os.getenv("RL_AVOID_ADVERSE_TRADE_REWARD", "0.50"))
 
 SCALP_TINY_MOVE_PENALTY = float(os.getenv("RL_SCALP_TINY_MOVE_PENALTY", "0.75"))
-SCALP_LOSER_PENALTY = float(os.getenv("RL_SCALP_LOSER_PENALTY", "1.25"))
+SCALP_LOSER_PENALTY = float(os.getenv("RL_SCALP_LOSER_PENALTY", "0.10"))
 CHOP_STAGNANT_PENALTY = float(os.getenv("RL_CHOP_STAGNANT_PENALTY", "1.00"))
 ENTRY_CROSS_PENALTY = float(os.getenv("RL_ENTRY_CROSS_PENALTY", "1.00"))
 VWAP_CROSS_PENALTY = float(os.getenv("RL_VWAP_CROSS_PENALTY", "1.25"))
-FAILED_BREAKOUT_PENALTY = float(os.getenv("RL_FAILED_BREAKOUT_PENALTY", "1.50"))
-GIVEBACK_AFTER_MFE_PENALTY = float(os.getenv("RL_GIVEBACK_AFTER_MFE_PENALTY", "1.50"))
+FAILED_BREAKOUT_PENALTY = float(os.getenv("RL_FAILED_BREAKOUT_PENALTY", "0.10"))
+GIVEBACK_AFTER_MFE_PENALTY = float(os.getenv("RL_GIVEBACK_AFTER_MFE_PENALTY", "2.25"))
 DUAL_TREND_FAILURE_PENALTY = float(os.getenv("RL_DUAL_TREND_FAILURE_PENALTY", "0.75"))
 
 REGIME_ALIGNED_REWARD = float(os.getenv("RL_REGIME_ALIGNED_REWARD", "0.004"))
@@ -259,10 +275,40 @@ LONG_POSITIVE_VOLUME_EXPANSION_BONUS = float(os.getenv("RL_LONG_POSITIVE_VOLUME_
 LONG_HIGHER_HIGH_BONUS = float(os.getenv("RL_LONG_HIGHER_HIGH_BONUS", "0.008"))
 LONG_HIGHER_LOW_BONUS = float(os.getenv("RL_LONG_HIGHER_LOW_BONUS", "0.008"))
 
-HOLD_TREND_PERSISTENCE_REWARD = float(os.getenv("RL_HOLD_TREND_PERSISTENCE_REWARD", "0.010"))
-HOLD_BREAKOUT_PERSISTENCE_REWARD = float(os.getenv("RL_HOLD_BREAKOUT_PERSISTENCE_REWARD", "0.015"))
-PREMATURE_EXIT_PENALTY = float(os.getenv("RL_PREMATURE_EXIT_PENALTY", "0.010"))
-STRONG_TREND_EXIT_PENALTY = float(os.getenv("RL_STRONG_TREND_EXIT_PENALTY", "0.020"))
+HOLD_TREND_PERSISTENCE_REWARD = float(os.getenv("RL_HOLD_TREND_PERSISTENCE_REWARD", "0.018"))
+HOLD_BREAKOUT_PERSISTENCE_REWARD = float(os.getenv("RL_HOLD_BREAKOUT_PERSISTENCE_REWARD", "0.022"))
+PREMATURE_EXIT_PENALTY = float(os.getenv("RL_PREMATURE_EXIT_PENALTY", "0.025"))
+STRONG_TREND_EXIT_PENALTY = float(os.getenv("RL_STRONG_TREND_EXIT_PENALTY", "0.035"))
+
+
+# Peak-exit / local-top reward shaping.
+# The agent is NOT given an exact top-tick target at inference. These forward
+# labels are used only during training to reward exits with high efficiency
+# relative to the next local high and penalize exits that leave substantial
+# near-term upside on the table.
+PEAK_EXIT_LOOKAHEAD_BARS = int(os.getenv("RL_PEAK_EXIT_LOOKAHEAD_BARS", "15"))
+PEAK_EXIT_MIN_MFE = float(os.getenv("RL_PEAK_EXIT_MIN_MFE", "0.006"))
+PEAK_EXIT_GIVEBACK_TRIGGER = float(os.getenv("RL_MAX_GIVEBACK_FROM_MFE", os.getenv("RL_PEAK_EXIT_GIVEBACK_TRIGGER", "0.006")))
+PEAK_EXIT_EFFICIENCY_BONUS = float(os.getenv("RL_PEAK_EXIT_EFFICIENCY_MULT", os.getenv("RL_PEAK_EXIT_EFFICIENCY_BONUS", "3.0")))
+PEAK_EXIT_NEAR_TOP_BONUS = float(os.getenv("RL_EXIT_NEAR_HIGH_BONUS", os.getenv("RL_PEAK_EXIT_NEAR_TOP_BONUS", "2.5")))
+PEAK_EXIT_MISSED_UPSIDE_PENALTY_MULT = float(os.getenv("RL_MISSED_UPSIDE_PENALTY", os.getenv("RL_PEAK_EXIT_MISSED_UPSIDE_PENALTY_MULT", "2.0")))
+PEAK_EXIT_MISSED_UPSIDE_CAP = float(os.getenv("RL_PEAK_EXIT_MISSED_UPSIDE_CAP", "2.0"))
+PEAK_EXIT_GIVEBACK_AVOID_BONUS_MULT = float(os.getenv("RL_PEAK_EXIT_GIVEBACK_AVOID_BONUS_MULT", "120.0"))
+PEAK_EXIT_GIVEBACK_AVOID_BONUS_CAP = float(os.getenv("RL_PEAK_EXIT_GIVEBACK_AVOID_BONUS_CAP", "3.0"))
+PEAK_EXIT_LATE_GIVEBACK_PENALTY_MULT = float(os.getenv("RL_PEAK_EXIT_LATE_GIVEBACK_PENALTY_MULT", "180.0"))
+PEAK_EXIT_LATE_GIVEBACK_PENALTY_CAP = float(os.getenv("RL_PEAK_EXIT_LATE_GIVEBACK_PENALTY_CAP", "3.0"))
+
+# Human-readable target metrics for comparing training runs. These are written
+# into the metrics JSON so you can quickly compare whether a run is improving
+# exit accuracy near local highs.
+TARGET_EXIT_EFFICIENCY = float(os.getenv("RL_TARGET_EXIT_EFFICIENCY", "0.985"))
+TARGET_MAX_MISSED_UPSIDE = float(os.getenv("RL_TARGET_MAX_MISSED_UPSIDE", "0.005"))
+TARGET_MAX_GIVEBACK_CAPTURED = float(os.getenv("RL_TARGET_MAX_GIVEBACK_CAPTURED", "0.006"))
+TARGET_MIN_AVG_HOLD_BARS = float(os.getenv("RL_TARGET_MIN_AVG_HOLD_BARS", "5"))
+
+HOLD_WHILE_CONTINUATION_REWARD = float(os.getenv("RL_HOLD_WHILE_CONTINUATION_REWARD", "0.35"))
+HOLD_THROUGH_GIVEBACK_PENALTY = float(os.getenv("RL_HOLD_THROUGH_GIVEBACK_PENALTY", "1.25"))
+FORCE_EXIT_ON_CONFIRMED_GIVEBACK = os.getenv("RL_FORCE_EXIT_ON_CONFIRMED_GIVEBACK", "0").lower() in {"1", "true", "yes"}
 
 # Balance penalties
 SHORT_BIAS_PENALTY = float(os.getenv("RL_SHORT_BIAS_PENALTY", "0.002"))
@@ -270,29 +316,29 @@ LONG_BIAS_PENALTY = float(os.getenv("RL_LONG_BIAS_PENALTY", "0.0015"))
 SHORT_BIAS_RATIO_TRIGGER = float(os.getenv("RL_SHORT_BIAS_RATIO_TRIGGER", "2.0"))
 LONG_BIAS_RATIO_TRIGGER = float(os.getenv("RL_LONG_BIAS_RATIO_TRIGGER", "3.0"))
 
-PPO_LEARNING_RATE = float(os.getenv("RL_INTRADAY_LEARNING_RATE", "0.0003"))
-PPO_N_STEPS = int(os.getenv("RL_INTRADAY_N_STEPS", "512"))
-PPO_BATCH_SIZE = int(os.getenv("RL_INTRADAY_BATCH_SIZE", "128"))
-PPO_GAMMA = float(os.getenv("RL_INTRADAY_GAMMA", "0.995"))
-PPO_ENT_COEF = float(os.getenv("RL_INTRADAY_ENT_COEF", "0.03"))
+PPO_LEARNING_RATE = float(os.getenv("RL_INTRADAY_LEARNING_RATE", "0.00015"))
+PPO_N_STEPS = int(os.getenv("RL_INTRADAY_N_STEPS", "1024"))
+PPO_BATCH_SIZE = int(os.getenv("RL_INTRADAY_BATCH_SIZE", "256"))
+PPO_GAMMA = float(os.getenv("RL_INTRADAY_GAMMA", "0.997"))
+PPO_ENT_COEF = float(os.getenv("RL_INTRADAY_ENT_COEF", "0.080"))
 
 ACTION_MASKING_ENABLED = os.getenv("RL_ACTION_MASKING_ENABLED", "1").lower() in {"1", "true", "yes"}
 REENTRY_COOLDOWN_BARS = int(os.getenv("RL_REENTRY_COOLDOWN_BARS", "3"))
 
-REQUIRE_LONG_ABOVE_VWAP = os.getenv("RL_REQUIRE_LONG_ABOVE_VWAP", os.getenv("RL_REQUIRE_BUY_ABOVE_VWAP", "1")).lower() in {"1", "true", "yes"}
-REQUIRE_LONG_ABOVE_ORB = os.getenv("RL_REQUIRE_LONG_ABOVE_ORB", os.getenv("RL_REQUIRE_BUY_ABOVE_ORB", "1")).lower() in {"1", "true", "yes"}
+REQUIRE_LONG_ABOVE_VWAP = os.getenv("RL_REQUIRE_LONG_ABOVE_VWAP", os.getenv("RL_REQUIRE_BUY_ABOVE_VWAP", "0")).lower() in {"1", "true", "yes"}
+REQUIRE_LONG_ABOVE_ORB = os.getenv("RL_REQUIRE_LONG_ABOVE_ORB", os.getenv("RL_REQUIRE_BUY_ABOVE_ORB", "0")).lower() in {"1", "true", "yes"}
 
-REQUIRE_SHORT_BELOW_VWAP = os.getenv("RL_REQUIRE_SHORT_BELOW_VWAP", "1").lower() in {"1", "true", "yes"}
-REQUIRE_SHORT_BELOW_TRIGGER = os.getenv("RL_REQUIRE_SHORT_BELOW_TRIGGER", "1").lower() in {"1", "true", "yes"}
+REQUIRE_SHORT_BELOW_VWAP = os.getenv("RL_REQUIRE_SHORT_BELOW_VWAP", "0").lower() in {"1", "true", "yes"}
+REQUIRE_SHORT_BELOW_TRIGGER = os.getenv("RL_REQUIRE_SHORT_BELOW_TRIGGER", "0").lower() in {"1", "true", "yes"}
 
 DISALLOW_EXIT_WHEN_FLAT = os.getenv("RL_DISALLOW_EXIT_WHEN_FLAT", os.getenv("RL_DISALLOW_SELL_WHEN_FLAT", "1")).lower() in {"1", "true", "yes"}
-DISALLOW_BEARISH_LONGS = os.getenv("RL_DISALLOW_BEARISH_LONGS", "1").lower() in {"1", "true", "yes"}
+DISALLOW_BEARISH_LONGS = os.getenv("RL_DISALLOW_BEARISH_LONGS", "0").lower() in {"1", "true", "yes"}
 DISALLOW_SHORTS_WHEN_NOT_ALLOWED = os.getenv("RL_DISALLOW_SHORTS_WHEN_NOT_ALLOWED", "0").lower() in {"1", "true", "yes"}
 
-SOFT_VWAP_TREND_THRESHOLD = float(os.getenv("RL_SOFT_VWAP_TREND_THRESHOLD", "0.70"))
-SOFT_ORB_BREAKOUT_THRESHOLD = float(os.getenv("RL_SOFT_ORB_BREAKOUT_THRESHOLD", "0.75"))
-SOFT_SHORT_TREND_THRESHOLD = float(os.getenv("RL_SOFT_SHORT_TREND_THRESHOLD", "0.65"))
-SOFT_BREAKDOWN_THRESHOLD = float(os.getenv("RL_SOFT_BREAKDOWN_THRESHOLD", "0.65"))
+SOFT_VWAP_TREND_THRESHOLD = float(os.getenv("RL_SOFT_VWAP_TREND_THRESHOLD", "0.52"))
+SOFT_ORB_BREAKOUT_THRESHOLD = float(os.getenv("RL_SOFT_ORB_BREAKOUT_THRESHOLD", "0.52"))
+SOFT_SHORT_TREND_THRESHOLD = float(os.getenv("RL_SOFT_SHORT_TREND_THRESHOLD", "0.52"))
+SOFT_BREAKDOWN_THRESHOLD = float(os.getenv("RL_SOFT_BREAKDOWN_THRESHOLD", "0.52"))
 
 DEBUG_MASKS = os.getenv("RL_DEBUG_MASKS", "0").lower() in {"1", "true", "yes"}
 
@@ -301,9 +347,99 @@ ACTION_NAMES = {
     0: "HOLD",
     1: "ENTER_LONG",
     2: "EXIT_LONG",
-    3: "ENTER_SHORT",
-    4: "EXIT_SHORT",
+    3: "ADD_LONG",
 }
+# =========================================================
+# FORCE EXPLORATION
+# =========================================================
+
+MIN_TRADES_PER_EPISODE = int(
+    os.getenv("RL_MIN_TRADES_PER_EPISODE", "2")
+)
+
+NO_TRADE_EPISODE_PENALTY = float(
+    os.getenv("RL_NO_TRADE_EPISODE_PENALTY", "15.0")
+)
+
+FLAT_HOLD_STEP_PENALTY = float(
+    os.getenv("RL_FLAT_HOLD_STEP_PENALTY", "0.003")
+)
+
+VALID_ENTRY_REWARD = float(
+    os.getenv("RL_VALID_ENTRY_REWARD", "1.25")
+)
+
+VALID_SHORT_REWARD = float(
+    os.getenv("RL_VALID_SHORT_REWARD", "1.25")
+)
+
+FIRST_TRADE_BONUS = float(
+    os.getenv("RL_FIRST_TRADE_BONUS", "2.0")
+)
+
+ACTION_DIVERSITY_BONUS = float(
+    os.getenv("RL_ACTION_DIVERSITY_BONUS", "0.25")
+)
+
+ENTRY_FUTURE_3BAR_MULT = float(
+    os.getenv("RL_ENTRY_FUTURE_3BAR_MULT", "500.0")
+)
+
+ENTRY_FUTURE_3BAR_CAP = float(
+    os.getenv("RL_ENTRY_FUTURE_3BAR_CAP", "3.0")
+)
+
+# =========================================================
+# MFE/MAE TRAJECTORY + CURRICULUM CONTROLS
+# =========================================================
+
+USE_FIXED_TAKE_PROFIT = os.getenv("RL_USE_FIXED_TAKE_PROFIT", "0").lower() in {"1", "true", "yes"}
+USE_DYNAMIC_GIVEBACK_EXIT = os.getenv("RL_USE_DYNAMIC_GIVEBACK_EXIT", "1").lower() in {"1", "true", "yes"}
+DYNAMIC_GIVEBACK_MIN_MFE = float(os.getenv("RL_DYNAMIC_GIVEBACK_MIN_MFE", "0.006"))
+DYNAMIC_GIVEBACK_FRACTION = float(os.getenv("RL_DYNAMIC_GIVEBACK_FRACTION", "0.45"))
+DYNAMIC_GIVEBACK_FLOOR = float(os.getenv("RL_DYNAMIC_GIVEBACK_FLOOR", "0.0025"))
+DYNAMIC_GIVEBACK_MIN_HOLD_BARS = int(os.getenv("RL_DYNAMIC_GIVEBACK_MIN_HOLD_BARS", "5"))
+
+MFE_CAPTURE_REWARD_MULT = float(os.getenv("RL_MFE_CAPTURE_REWARD_MULT", "10.0"))
+MFE_CAPTURE_REWARD_CAP = float(os.getenv("RL_MFE_CAPTURE_REWARD_CAP", "8.0"))
+MAE_PENALTY_MULT = float(os.getenv("RL_MAE_PENALTY_MULT", "8.0"))
+MAE_PENALTY_CAP = float(os.getenv("RL_MAE_PENALTY_CAP", "4.0"))
+GIVEBACK_CAPTURE_PENALTY_MULT = float(os.getenv("RL_GIVEBACK_CAPTURE_PENALTY_MULT", "8.0"))
+GIVEBACK_CAPTURE_PENALTY_CAP = float(os.getenv("RL_GIVEBACK_CAPTURE_PENALTY_CAP", "4.0"))
+LONG_HOLD_TARGET_BARS = float(os.getenv("RL_LONG_HOLD_TARGET_BARS", "6"))
+AVG_HOLD_REWARD_MULT = float(os.getenv("RL_AVG_HOLD_REWARD_MULT", "0.25"))
+SHORT_CHURN_PENALTY = float(os.getenv("RL_SHORT_CHURN_PENALTY", "0.15"))
+LONG_SHORT_BALANCE_PENALTY = float(os.getenv("RL_LONG_SHORT_BALANCE_PENALTY", "0.30"))
+
+FORCE_EXPLORATION_ACTIONS = os.getenv("RL_FORCE_EXPLORATION_ACTIONS", "1").lower() in {"1", "true", "yes"}
+FORCE_EXPLORATION_EPISODE_FRAC = float(os.getenv("RL_FORCE_EXPLORATION_EPISODE_FRAC", "0.30"))
+FORCE_EXPLORATION_PROB = float(os.getenv("RL_FORCE_EXPLORATION_PROB", "0.12"))
+
+# =========================================================
+# LONG-ONLY CONTINUATION / PYRAMIDING CONTROLS
+# =========================================================
+
+ADD_LONG_ENABLED = os.getenv("RL_ADD_LONG_ENABLED", "1").lower() in {"1", "true", "yes"}
+ADD_LONG_FRACTION = float(os.getenv("RL_ADD_LONG_FRACTION", "0.50"))
+ADD_LONG_MIN_UNREALIZED_PCT = float(os.getenv("RL_ADD_LONG_MIN_UNREALIZED_PCT", "0.0015"))
+ADD_LONG_MIN_HOLD_BARS = int(os.getenv("RL_ADD_LONG_MIN_HOLD_BARS", "3"))
+ADD_LONG_MAX_COUNT = int(os.getenv("RL_ADD_LONG_MAX_COUNT", "2"))
+ADD_LONG_REWARD = float(os.getenv("RL_ADD_LONG_REWARD", "8.0"))
+ADD_LONG_FUTURE_REWARD_MULT = float(os.getenv("RL_ADD_LONG_FUTURE_REWARD_MULT", os.getenv("RL_ADD_LONG_CONTINUATION_BONUS_MULT", "350.0")))
+ADD_LONG_FUTURE_REWARD_CAP = float(os.getenv("RL_ADD_LONG_FUTURE_REWARD_CAP", "4.0"))
+MAX_TOTAL_POSITION_FRACTION = float(os.getenv("RL_MAX_TOTAL_POSITION_FRACTION", "0.35"))
+BAD_ADD_LONG_PENALTY = float(os.getenv("RL_BAD_ADD_LONG_PENALTY", "2.0"))
+ADD_LONG_MIN_CONTINUATION_SCORE = float(os.getenv("RL_ADD_LONG_MIN_CONTINUATION_SCORE", "0.35"))
+ADD_LONG_MAX_ADVERSE_FUTURE = float(os.getenv("RL_ADD_LONG_MAX_ADVERSE_FUTURE", "-0.002"))
+
+EARLY_WINNER_EXIT_PENALTY = float(os.getenv("RL_EARLY_WINNER_EXIT_PENALTY", "1.50"))
+EARLY_WINNER_EXIT_BARS = int(os.getenv("RL_EARLY_WINNER_EXIT_BARS", "3"))
+QUALITY_WINNER_HOLD_BONUS = float(os.getenv("RL_QUALITY_WINNER_HOLD_BONUS", "3.00"))
+QUALITY_WINNER_MIN_HOLD_BARS = int(os.getenv("RL_QUALITY_WINNER_MIN_HOLD_BARS", "5"))
+UNREALIZED_WINNER_HOLD_MULT = float(os.getenv("RL_UNREALIZED_WINNER_HOLD_MULT", "25.0"))
+TREND_HOLD_TIME_MULT = float(os.getenv("RL_TREND_HOLD_TIME_MULT", "0.15"))
+CONTINUATION_HOLD_MULT = float(os.getenv("RL_CONTINUATION_HOLD_MULT", "120.0"))
+CONTINUATION_HOLD_CAP = float(os.getenv("RL_CONTINUATION_HOLD_CAP", "3.0"))
 
 
 # =============================================================================
@@ -361,6 +497,10 @@ class TradeEvent:
     reason: str
     hold_bars: int
     unrealized_pct: float
+    mfe_pct: float = 0.0
+    mae_pct: float = 0.0
+    giveback_from_mfe_pct: float = 0.0
+    capture_ratio: float = 0.0
 
 
 # =============================================================================
@@ -725,81 +865,195 @@ def flatten_structure(symbol_map: dict[str, Any]) -> dict[str, float]:
 # =============================================================================
 # Bar feature engineering
 # =============================================================================
-
 def add_bar_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy().sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    df = df.dropna(subset=["timestamp", "symbol"]).copy()
+
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
     grouped = df.groupby("symbol", group_keys=False)
 
+    # Returns
     df["ret_1"] = grouped["close"].pct_change().fillna(0.0)
     df["ret_3"] = grouped["close"].pct_change(3).fillna(0.0)
     df["ret_5"] = grouped["close"].pct_change(5).fillna(0.0)
     df["ret_10"] = grouped["close"].pct_change(10).fillna(0.0)
     df["ret_20"] = grouped["close"].pct_change(20).fillna(0.0)
 
-
-    # Forward labels used only inside the training environment reward. These let
-    # the execution policy learn whether the next bar / next few bars would have
-    # moved favorably immediately after an entry.
-    df["future_return_1"] = (grouped["close"].shift(-1) / df["close"].replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    df["future_return_3"] = (grouped["close"].shift(-3) / df["close"].replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    df["future_return_5"] = (grouped["close"].shift(-5) / df["close"].replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    df["future_return_15"] = (grouped["close"].shift(-15) / df["close"].replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
-    future_low_5 = grouped["low"].shift(-1).groupby(df["symbol"]).rolling(5).min().reset_index(level=0, drop=True).shift(-4)
-    df["future_min_return_5"] = (future_low_5 / df["close"].replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
-    # Daily/intraday momentum context. If previous-session data is unavailable
-    # inside the 1m file, daily_change_pct falls back to intraday_from_open_pct.
-    ts_et = df["timestamp"].dt.tz_convert("America/New_York") if getattr(df["timestamp"].dt, "tz", None) is not None else df["timestamp"].dt.tz_localize("UTC").dt.tz_convert("America/New_York")
-    df["session_date"] = ts_et.dt.date
-    grouped_session = df.groupby(["symbol", "session_date"], group_keys=False)
-    session_open = grouped_session["open"].transform("first")
-    day_high = grouped_session["high"].cummax()
-    day_low = grouped_session["low"].cummin()
-    df["session_open"] = session_open
-    df["day_high_so_far"] = day_high
-    df["day_low_so_far"] = day_low
-    df["intraday_from_open_pct"] = (df["close"] / session_open.replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    prev_session_close = grouped_session["close"].transform("last").groupby(df["symbol"]).shift(1)
-    df["daily_change_pct"] = (df["close"] / prev_session_close.replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan)
-    df["daily_change_pct"] = df["daily_change_pct"].fillna(df["intraday_from_open_pct"])
-    df["distance_from_day_high"] = (df["close"] / day_high.replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    df["distance_from_day_low"] = (df["close"] / day_low.replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
+    # EMA features
     df["ema_8"] = grouped["close"].transform(lambda s: s.ewm(span=8, adjust=False).mean())
     df["ema_21"] = grouped["close"].transform(lambda s: s.ewm(span=21, adjust=False).mean())
-    df["ema_spread"] = (df["ema_8"] / df["ema_21"].replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    df["ema_55"] = grouped["close"].transform(lambda s: s.ewm(span=55, adjust=False).mean())
 
-    df["volume_sma_20"] = grouped["volume"].rolling(20).mean().reset_index(level=0, drop=True)
-    df["volume_ratio_bar"] = df["volume"] / df["volume_sma_20"].replace(0, np.nan)
-    df["volume_ratio_bar"] = df["volume_ratio_bar"].replace([np.inf, -np.inf], np.nan).fillna(1.0)
+    df["ema_spread"] = (
+        (df["ema_8"] - df["ema_21"]) / df["close"].replace(0, np.nan)
+    ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
+    df["ema_trend_strength"] = (
+        (df["ema_8"] > df["ema_21"]).astype(float)
+        + (df["ema_21"] > df["ema_55"]).astype(float)
+    )
+
+    df["ema_spread_slope"] = grouped["ema_spread"].diff().fillna(0.0)
+    df["ema_acceleration"] = grouped["ema_spread_slope"].diff().fillna(0.0)
+
+    # Volume features
+    df["avg_volume_20"] = grouped["volume"].transform(
+        lambda s: s.rolling(20, min_periods=1).mean()
+    )
+    df["avg_volume_50"] = grouped["volume"].transform(
+        lambda s: s.rolling(50, min_periods=1).mean()
+    )
+
+    df["volume_ratio_bar"] = (
+        df["volume"] / df["avg_volume_20"].replace(0, np.nan)
+    ).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+
+    df["volume_momentum"] = grouped["volume_ratio_bar"].diff().fillna(0.0)
+    df["high_relative_volume"] = (df["volume_ratio_bar"] > 1.5).astype(float)
+
+    df["volume_expansion"] = (
+        df["volume_ratio_bar"] > grouped["volume_ratio_bar"].shift(3).fillna(1.0)
+    ).astype(float)
+
+    df["volume_contraction"] = (
+        df["volume_ratio_bar"] < grouped["volume_ratio_bar"].shift(3).fillna(1.0)
+    ).astype(float)
+
+    # VWAP
     typical = (df["high"] + df["low"] + df["close"]) / 3.0
     df["_pv"] = typical * df["volume"]
     df["_cum_pv"] = grouped["_pv"].cumsum()
-    df["_cum_vol"] = grouped["volume"].cumsum().replace(0, np.nan)
-    df["running_vwap"] = (df["_cum_pv"] / df["_cum_vol"]).replace([np.inf, -np.inf], np.nan)
+    df["_cum_vol"] = grouped["volume"].cumsum()
+
+    df["running_vwap"] = (
+        df["_cum_pv"] / df["_cum_vol"].replace(0, np.nan)
+    ).replace([np.inf, -np.inf], np.nan)
+
     df["running_vwap"] = df["running_vwap"].fillna(df["close"])
-    df["vwap_slope_5"] = grouped["running_vwap"].diff(5).fillna(0.0) / df["close"].replace(0, np.nan)
-    df["vwap_slope_5"] = df["vwap_slope_5"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-    df["range_pct"] = (df["high"] - df["low"]) / df["close"].replace(0, np.nan)
-    df["range_pct"] = df["range_pct"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    df["vwap_slope_5"] = (
+        grouped["running_vwap"].diff(5) / df["close"].replace(0, np.nan)
+    ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-    df["close_location"] = (df["close"] - df["low"]) / (df["high"] - df["low"]).replace(0, np.nan)
-    df["close_location"] = df["close_location"].clip(0, 1).fillna(0.5)
+    # Session context
+    ts_et = df["timestamp"].dt.tz_convert("America/New_York")
+    df["session_date"] = ts_et.dt.date
+    grouped_session = df.groupby(["symbol", "session_date"], group_keys=False)
 
-    df["rolling_high_20"] = grouped["high"].rolling(20).max().reset_index(level=0, drop=True)
-    df["rolling_low_20"] = grouped["low"].rolling(20).min().reset_index(level=0, drop=True)
-    df["dist_high_20"] = (df["close"] / df["rolling_high_20"].replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    df["dist_low_20"] = (df["close"] / df["rolling_low_20"].replace(0, np.nan) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    df["session_open"] = grouped_session["open"].transform("first")
+    df["day_high_so_far"] = grouped_session["high"].cummax()
+    df["day_low_so_far"] = grouped_session["low"].cummin()
 
-    # Inverse-symmetry / bullish continuation features.
-    df["breakout_persistence_score"] = (
-        ((df["close"] >= df["rolling_high_20"].shift(1)) | (df["dist_high_20"] > -0.003))
-        .astype(float)
-        .fillna(0.0)
+    df["intraday_from_open_pct"] = (
+        df["close"] / df["session_open"].replace(0, np.nan) - 1.0
+    ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    prev_session_close = (
+        grouped_session["close"]
+        .transform("last")
+        .groupby(df["symbol"])
+        .shift(1)
     )
+
+    df["daily_change_pct"] = (
+        df["close"] / prev_session_close.replace(0, np.nan) - 1.0
+    ).replace([np.inf, -np.inf], np.nan)
+
+    df["daily_change_pct"] = df["daily_change_pct"].fillna(df["intraday_from_open_pct"])
+
+    df["distance_from_day_high"] = (
+        df["close"] / df["day_high_so_far"].replace(0, np.nan) - 1.0
+    ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    df["distance_from_day_low"] = (
+        df["close"] / df["day_low_so_far"].replace(0, np.nan) - 1.0
+    ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    # Bar structure
+    df["range_pct"] = (
+        (df["high"] - df["low"]) / df["close"].replace(0, np.nan)
+    ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    df["close_location"] = (
+        (df["close"] - df["low"]) / (df["high"] - df["low"]).replace(0, np.nan)
+    ).clip(0, 1).fillna(0.5)
+
+    df["rolling_high_20"] = (
+        grouped["high"].rolling(20, min_periods=1).max().reset_index(level=0, drop=True)
+    )
+    df["rolling_low_20"] = (
+        grouped["low"].rolling(20, min_periods=1).min().reset_index(level=0, drop=True)
+    )
+
+    df["dist_high_20"] = (
+        df["close"] / df["rolling_high_20"].replace(0, np.nan) - 1.0
+    ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    df["dist_low_20"] = (
+        df["close"] / df["rolling_low_20"].replace(0, np.nan) - 1.0
+    ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    # Future labels for reward shaping only
+    for horizon in [1, 3, 5, 10, 15, 20, 30]:
+        df[f"future_return_{horizon}"] = (
+            grouped["close"].shift(-horizon) / df["close"].replace(0, np.nan) - 1.0
+        ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    def future_window_max(s: pd.Series, window: int) -> pd.Series:
+        return s.shift(-1).iloc[::-1].rolling(window, min_periods=1).max().iloc[::-1]
+
+    def future_window_min(s: pd.Series, window: int) -> pd.Series:
+        return s.shift(-1).iloc[::-1].rolling(window, min_periods=1).min().iloc[::-1]
+
+    for horizon in [5, 15, 30]:
+        future_high = grouped["high"].transform(lambda s, h=horizon: future_window_max(s, h))
+        future_low = grouped["low"].transform(lambda s, h=horizon: future_window_min(s, h))
+
+        df[f"future_max_return_{horizon}"] = (
+            future_high / df["close"].replace(0, np.nan) - 1.0
+        ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+        df[f"future_min_return_{horizon}"] = (
+            future_low / df["close"].replace(0, np.nan) - 1.0
+        ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    df["future_min_return_5"] = df["future_min_return_5"].fillna(0.0)
+
+    # Real-time exit/exhaustion features
+    df["ret_slope_3_10"] = (df["ret_3"] - df["ret_10"]).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    df["momentum_decay_score"] = (
+        (df["ret_1"] < 0).astype(float)
+        + (df["ret_3"] < df["ret_5"]).astype(float)
+        + (
+            df["ema_spread"]
+            < grouped["ema_spread"].shift(3).fillna(df["ema_spread"])
+        ).astype(float)
+    ) / 3.0
+
+    df["volume_fade_score"] = (
+        (
+            df["volume_ratio_bar"]
+            < grouped["volume_ratio_bar"].shift(3).fillna(df["volume_ratio_bar"])
+        ).astype(float)
+        + (df["volume_ratio_bar"] < 1.0).astype(float)
+    ) / 2.0
+
+    df["vwap_loss_score"] = (df["close"] < df["running_vwap"]).astype(float).fillna(0.0)
+    df["near_day_high_score"] = (df["distance_from_day_high"] > -0.003).astype(float).fillna(0.0)
+    df["giveback_from_day_high_pct"] = df["distance_from_day_high"].clip(upper=0.0).fillna(0.0)
+
+    # Bullish continuation features
+    df["breakout_persistence_score"] = (
+        (
+            df["close"] >= grouped["rolling_high_20"].shift(1).fillna(df["rolling_high_20"])
+        )
+        | (df["dist_high_20"] > -0.003)
+    ).astype(float).fillna(0.0)
 
     df["bullish_acceleration_score"] = (
         (df["ret_1"] > df["ret_3"] / 3.0).astype(float)
@@ -808,11 +1062,12 @@ def add_bar_features(df: pd.DataFrame) -> pd.DataFrame:
     ) / 3.0
 
     df["positive_volume_expansion_score"] = (
-        ((df["volume_ratio_bar"] > 1.25) & (df["ret_1"] > 0)).astype(float).fillna(0.0)
-    )
+        (df["volume_ratio_bar"] > 1.25) & (df["ret_1"] > 0)
+    ).astype(float).fillna(0.0)
 
-    prev_high_5 = grouped["high"].rolling(5).max().shift(1).reset_index(level=0, drop=True)
-    prev_low_5 = grouped["low"].rolling(5).min().shift(1).reset_index(level=0, drop=True)
+    prev_high_5 = grouped["high"].rolling(5, min_periods=1).max().shift(1).reset_index(level=0, drop=True)
+    prev_low_5 = grouped["low"].rolling(5, min_periods=1).min().shift(1).reset_index(level=0, drop=True)
+
     df["higher_high_score"] = (df["high"] > prev_high_5).astype(float).fillna(0.0)
     df["higher_low_score"] = (df["low"] > prev_low_5).astype(float).fillna(0.0)
 
@@ -824,11 +1079,13 @@ def add_bar_features(df: pd.DataFrame) -> pd.DataFrame:
         + df["higher_low_score"]
     ) / 5.0
 
+    # Bearish/inverse features
     df["breakdown_persistence_score"] = (
-        ((df["close"] <= df["rolling_low_20"].shift(1)) | (df["dist_low_20"] < 0.003))
-        .astype(float)
-        .fillna(0.0)
-    )
+        (
+            df["close"] <= grouped["rolling_low_20"].shift(1).fillna(df["rolling_low_20"])
+        )
+        | (df["dist_low_20"] < 0.003)
+    ).astype(float).fillna(0.0)
 
     df["bearish_acceleration_score"] = (
         (df["ret_1"] < df["ret_3"] / 3.0).astype(float)
@@ -836,38 +1093,64 @@ def add_bar_features(df: pd.DataFrame) -> pd.DataFrame:
         + (df["ret_5"] < 0).astype(float)
     ) / 3.0
 
-    prev_low_5_for_lower_low = grouped["low"].rolling(5).min().shift(1).reset_index(level=0, drop=True)
-    prev_high_5_for_lower_high = grouped["high"].rolling(5).max().shift(1).reset_index(level=0, drop=True)
+    prev_low_5_for_lower_low = grouped["low"].rolling(5, min_periods=1).min().shift(1).reset_index(level=0, drop=True)
+    prev_high_5_for_lower_high = grouped["high"].rolling(5, min_periods=1).max().shift(1).reset_index(level=0, drop=True)
+
     df["lower_low_score"] = (df["low"] < prev_low_5_for_lower_low).astype(float).fillna(0.0)
     df["lower_high_score"] = (df["high"] < prev_high_5_for_lower_high).astype(float).fillna(0.0)
 
+    # Transformer features
     if USE_TRANSFORMER_FEATURES:
         for window in SEQUENCE_WINDOWS:
-            df[f"seq_ret_mean_{window}"] = grouped["ret_1"].rolling(window).mean().reset_index(level=0, drop=True).fillna(0.0)
-            df[f"seq_ret_std_{window}"] = grouped["ret_1"].rolling(window).std().reset_index(level=0, drop=True).fillna(0.0)
-            df[f"seq_vol_mean_{window}"] = grouped["volume_ratio_bar"].rolling(window).mean().reset_index(level=0, drop=True).fillna(1.0)
+            df[f"seq_ret_mean_{window}"] = (
+                grouped["ret_1"].rolling(window, min_periods=1).mean().reset_index(level=0, drop=True).fillna(0.0)
+            )
+            df[f"seq_ret_std_{window}"] = (
+                grouped["ret_1"].rolling(window, min_periods=1).std().reset_index(level=0, drop=True).fillna(0.0)
+            )
+            df[f"seq_vol_mean_{window}"] = (
+                grouped["volume_ratio_bar"].rolling(window, min_periods=1).mean().reset_index(level=0, drop=True).fillna(1.0)
+            )
+            positive_ret = (df["ret_1"] > 0).astype(float)
+
             df[f"seq_trend_consistency_{window}"] = (
-                grouped["ret_1"].rolling(window).apply(lambda x: float((x > 0).mean()), raw=False).reset_index(level=0, drop=True).fillna(0.5)
+                positive_ret.groupby(df["symbol"])
+                .rolling(window, min_periods=1)
+                .mean()
+                .reset_index(level=0, drop=True)
+                .fillna(0.5)
             )
 
+    # Multi-timeframe fusion
     if USE_MULTI_TIMEFRAME_FUSION:
         for window in MTF_WINDOWS:
             df[f"mtf_ret_{window}"] = grouped["close"].pct_change(window).fillna(0.0)
+
             df[f"mtf_range_{window}"] = (
-                (grouped["high"].rolling(window).max().reset_index(level=0, drop=True)
-                - grouped["low"].rolling(window).min().reset_index(level=0, drop=True))
+                (
+                    grouped["high"].rolling(window, min_periods=1).max().reset_index(level=0, drop=True)
+                    - grouped["low"].rolling(window, min_periods=1).min().reset_index(level=0, drop=True)
+                )
                 / df["close"].replace(0, np.nan)
             ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
             df[f"mtf_volume_ratio_{window}"] = (
-                df["volume"] / grouped["volume"].rolling(window).mean().reset_index(level=0, drop=True).replace(0, np.nan)
+                df["volume"]
+                / grouped["volume"].rolling(window, min_periods=1).mean().reset_index(level=0, drop=True).replace(0, np.nan)
             ).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+
             df[f"mtf_vwap_dist_{window}"] = (
-                df["close"] / grouped["running_vwap"].rolling(window).mean().reset_index(level=0, drop=True).replace(0, np.nan) - 1.0
+                df["close"]
+                / grouped["running_vwap"].rolling(window, min_periods=1).mean().reset_index(level=0, drop=True).replace(0, np.nan)
+                - 1.0
             ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-    return df.drop(columns=["_pv", "_cum_pv", "_cum_vol", "session_date"], errors="ignore")
+    df = df.copy()
 
-
+    return df.drop(
+        columns=["_pv", "_cum_pv", "_cum_vol", "session_date"],
+        errors="ignore",
+    )
 # =============================================================================
 # Gym environment
 # =============================================================================
@@ -888,7 +1171,7 @@ class IntradayStructureEnv(gym.Env):
         self.bars_by_episode = bars_by_episode
         self.structure_by_symbol = structure_by_symbol
 
-        self.action_space = spaces.Discrete(5)
+        self.action_space = spaces.Discrete(4)
         self.feature_names = self._build_feature_names()
         self.observation_space = spaces.Box(
             low=-10.0,
@@ -917,6 +1200,7 @@ class IntradayStructureEnv(gym.Env):
         self.trade_events: list[TradeEvent] = []
         self.long_entry_count = 0
         self.short_entry_count = 0
+        self.add_long_count = 0
         self.entry_idx: int | None = None
         self.entry_was_breakout = False
         self.entry_cross_count = 0
@@ -1015,6 +1299,18 @@ class IntradayStructureEnv(gym.Env):
             "vwap_cross_count",
             "max_favorable_excursion",
             "max_adverse_excursion",
+            "current_giveback_from_mfe",
+            "ret_slope_3_10",
+            "momentum_decay_score",
+            "volume_fade_score",
+            "vwap_loss_score",
+            "near_day_high_score",
+            "giveback_from_day_high_pct",
+            "future_max_return_5",
+            "future_max_return_15",
+            "future_max_return_30",
+            "future_min_return_15",
+            "future_min_return_30",
         ])
 
         return names
@@ -1043,6 +1339,14 @@ class IntradayStructureEnv(gym.Env):
         self.trade_events = []
         self.long_entry_count = 0
         self.short_entry_count = 0
+        self.add_long_count = 0
+        self.entry_idx = None
+        self.entry_was_breakout = False
+        self.entry_cross_count = 0
+        self.vwap_cross_count = 0
+        self.max_favorable_excursion = 0.0
+        self.max_adverse_excursion = 0.0
+        self.previous_step_equity = STARTING_CASH
 
         return self._obs(), {}
 
@@ -1054,6 +1358,35 @@ class IntradayStructureEnv(gym.Env):
 
         forced_reason: str | None = None
 
+        # Curriculum exploration: in the early part of each episode, occasionally
+        # force an entry attempt so PPO sees real trade rewards instead of
+        # converging to a pure HOLD policy. Action masks still protect illegal
+        # state transitions.
+        episode_limit = max(1, min(len(self.episode_df) - 1, MAX_EPISODE_STEPS))
+        if (
+            FORCE_EXPLORATION_ACTIONS
+            and self.position_side == 0
+            and self.idx < int(episode_limit * FORCE_EXPLORATION_EPISODE_FRAC)
+            and random.random() < FORCE_EXPLORATION_PROB
+        ):
+            action = 1
+            forced_reason = "curriculum_forced_exploration_entry"
+
+        # Pyramiding curriculum: once the agent is already long, force occasional
+        # ADD_LONG attempts when the add mask says conditions are valid. Without
+        # this, PPO almost never samples the rare add action often enough to learn
+        # convex trend exploitation.
+        if (
+            FORCE_EXPLORATION_ACTIONS
+            and self.position_side == 1
+            and self.idx < int(episode_limit * FORCE_EXPLORATION_EPISODE_FRAC)
+            and random.random() < min(FORCE_EXPLORATION_PROB * 1.75, 0.35)
+        ):
+            add_allowed, _add_reason = self._add_long_allowed(price, row)
+            if add_allowed:
+                action = 3
+                forced_reason = "curriculum_forced_pyramid_add"
+
         if self.position_side != 0 and self.entry_price > 0:
             self.hold_bars += 1
 
@@ -1062,32 +1395,49 @@ class IntradayStructureEnv(gym.Env):
                 if unrealized_pct <= -STOP_LOSS_PCT:
                     action = 2
                     forced_reason = "long_stop_loss"
-                elif unrealized_pct >= TAKE_PROFIT_PCT:
+                elif USE_FIXED_TAKE_PROFIT and unrealized_pct >= TAKE_PROFIT_PCT:
                     action = 2
                     forced_reason = "long_take_profit"
-            elif self.position_side == -1:
-                unrealized_pct = self.entry_price / price - 1.0
-                if unrealized_pct <= -STOP_LOSS_PCT:
-                    action = 4
-                    forced_reason = "short_stop_loss"
-                elif unrealized_pct >= TAKE_PROFIT_PCT:
-                    action = 4
-                    forced_reason = "short_take_profit"
+            # Long-only: no short-side stop/take-profit branch.
 
             if self.hold_bars >= MAX_HOLD_BARS:
-                action = 2 if self.position_side == 1 else 4
+                action = 2
                 forced_reason = "max_hold_bars"
+
+            if USE_DYNAMIC_GIVEBACK_EXIT:
+                current_giveback = self._current_giveback_from_mfe(price)
+                adaptive_giveback = max(
+                    DYNAMIC_GIVEBACK_FLOOR,
+                    self.max_favorable_excursion * DYNAMIC_GIVEBACK_FRACTION,
+                )
+                if (
+                    self.hold_bars >= DYNAMIC_GIVEBACK_MIN_HOLD_BARS
+                    and self.max_favorable_excursion >= DYNAMIC_GIVEBACK_MIN_MFE
+                    and current_giveback >= adaptive_giveback
+                ):
+                    action = 2
+                    forced_reason = "dynamic_mfe_trailing_giveback_exit"
+
+            if FORCE_EXIT_ON_CONFIRMED_GIVEBACK:
+                current_giveback = max(0.0, self.max_favorable_excursion - self._unrealized_pct(price))
+                momentum_decay = to_float(row.get("momentum_decay_score"), 0.0)
+                vwap_loss = to_float(row.get("vwap_loss_score"), 0.0)
+                if (
+                    self.max_favorable_excursion >= PEAK_EXIT_MIN_MFE
+                    and current_giveback >= PEAK_EXIT_GIVEBACK_TRIGGER
+                    and (momentum_decay >= 0.67 or vwap_loss >= 1.0)
+                ):
+                    action = 2
+                    forced_reason = "confirmed_peak_giveback_exit"
 
         action, mask_reason = self._apply_action_mask(int(action), price, row)
 
         if action == 1:
-            reward = self._enter_long(price, row, reason=mask_reason or "agent_enter_long")
+            reward = self._enter_long(price, row, reason=forced_reason or mask_reason or "agent_enter_long")
         elif action == 2:
             reward = self._exit_long(price, row, reason=forced_reason or mask_reason or "agent_exit_long")
         elif action == 3:
-            reward = self._enter_short(price, row, reason=mask_reason or "agent_enter_short")
-        elif action == 4:
-            reward = self._exit_short(price, row, reason=forced_reason or mask_reason or "agent_exit_short")
+            reward = self._add_long(price, row, reason=forced_reason or mask_reason or "agent_add_long")
         else:
             reward = self._hold_reward(price, row, mask_reason=mask_reason)
 
@@ -1104,13 +1454,15 @@ class IntradayStructureEnv(gym.Env):
         self.idx += 1
         done = self.idx >= min(len(self.episode_df) - 1, MAX_EPISODE_STEPS)
 
-        if done and self.position_side != 0:
+        if done and self.position_side == 1:
             final_row = self.episode_df.iloc[min(self.idx, len(self.episode_df) - 1)]
             final_price = max(to_float(final_row["close"]), 0.01)
-            if self.position_side == 1:
-                reward += self._exit_long(final_price, final_row, reason="episode_end")
-            else:
-                reward += self._exit_short(final_price, final_row, reason="episode_end")
+            reward += self._exit_long(final_price, final_row, reason="episode_end")
+
+        if done:
+            trade_count = self.long_entry_count
+            if trade_count < MIN_TRADES_PER_EPISODE:
+                reward -= NO_TRADE_EPISODE_PENALTY * float(MIN_TRADES_PER_EPISODE - trade_count)
 
         return self._obs(), float(reward), done, False, {
             "symbol": self.symbol,
@@ -1154,8 +1506,6 @@ class IntradayStructureEnv(gym.Env):
     def _unrealized_pct(self, price: float) -> float:
         if self.position_side == 1 and self.entry_price > 0:
             return price / self.entry_price - 1.0
-        if self.position_side == -1 and self.entry_price > 0:
-            return self.entry_price / price - 1.0
         return 0.0
 
     def _reentry_cooldown_active(self) -> bool:
@@ -1199,8 +1549,10 @@ class IntradayStructureEnv(gym.Env):
         refs = self._market_refs(price, row)
         _, long_gate, _ = self._hierarchical_gates(price, row)
 
-        if USE_HIERARCHICAL_GATING and long_gate < 0.35:
+        if USE_HIERARCHICAL_GATING and not EARLY_TRAINING_GATE_RELAXATION and long_gate < 0.35:
             return False, "long_masked_hierarchical_gate"
+        if USE_HIERARCHICAL_GATING and EARLY_TRAINING_GATE_RELAXATION and long_gate < 0.20:
+            return False, "long_masked_hierarchical_gate_relaxed"
 
         if DISALLOW_BEARISH_LONGS:
             if to_float(structure.get("bearish_regime"), 0.0) >= 1.0:
@@ -1223,46 +1575,58 @@ class IntradayStructureEnv(gym.Env):
         return True, None
 
     def _short_allowed(self, price: float, row: pd.Series) -> tuple[bool, str | None]:
-        if self.position_side != 0:
-            return False, "short_masked_not_flat"
-
-        structure = self._structure()
-        refs = self._market_refs(price, row)
-        _, _, short_gate = self._hierarchical_gates(price, row)
-
-        if USE_HIERARCHICAL_GATING and short_gate < 0.35:
-            return False, "short_masked_hierarchical_gate"
-
-        if DISALLOW_SHORTS_WHEN_NOT_ALLOWED and to_float(structure.get("short_allowed"), 1.0) < 1.0:
-            return False, "short_masked_short_not_allowed"
-
-        if self._reentry_cooldown_active():
-            return False, "short_masked_reentry_cooldown"
-
-        trend_score = to_float(structure.get("trend_score"), 0.0)
-        breakdown_score = to_float(structure.get("breakdown_score"), 0.0)
-        bearish_regime = to_float(structure.get("bearish_regime"), 0.0) >= 1.0
-
-        above_vwap = price > refs["vwap"]
-        above_breakdown = price > refs["orb_low"]
-
-        if REQUIRE_SHORT_BELOW_VWAP and above_vwap and not bearish_regime and trend_score > -SOFT_SHORT_TREND_THRESHOLD:
-            return False, "short_masked_above_vwap"
-
-        if REQUIRE_SHORT_BELOW_TRIGGER and above_breakdown and breakdown_score < SOFT_BREAKDOWN_THRESHOLD:
-            return False, "short_masked_above_breakdown_trigger"
-
-        return True, None
+        return False, "shorting_disabled_long_only"
 
     def _exit_long_allowed(self) -> tuple[bool, str | None]:
         if DISALLOW_EXIT_WHEN_FLAT and self.position_side != 1:
             return False, "exit_long_masked_not_long"
         return True, None
 
-    def _exit_short_allowed(self) -> tuple[bool, str | None]:
-        if DISALLOW_EXIT_WHEN_FLAT and self.position_side != -1:
-            return False, "exit_short_masked_not_short"
+    def _add_long_allowed(self, price: float, row: pd.Series) -> tuple[bool, str | None]:
+        if not ADD_LONG_ENABLED:
+            return False, "add_long_disabled"
+        if self.position_side != 1 or self.position_qty <= 0 or self.entry_price <= 0:
+            return False, "add_long_masked_not_long"
+        if self.add_long_count >= ADD_LONG_MAX_COUNT:
+            return False, "add_long_masked_max_adds"
+        if self.hold_bars < ADD_LONG_MIN_HOLD_BARS:
+            return False, "add_long_masked_too_early"
+        if self._unrealized_pct(price) < ADD_LONG_MIN_UNREALIZED_PCT:
+            return False, "add_long_masked_not_profitable"
+        if self.cash <= 0:
+            return False, "add_long_masked_no_cash"
+
+        refs = self._market_refs(price, row)
+        future_10 = to_float(row.get("future_return_10"), 0.0)
+        future_20 = to_float(row.get("future_return_20"), future_10)
+        future_30 = to_float(row.get("future_return_30"), future_20)
+
+        continuation_score = (
+            to_float(row.get("breakout_persistence_score"), 0.0)
+            + to_float(row.get("bullish_acceleration_score"), 0.0)
+            + to_float(row.get("positive_volume_expansion_score"), 0.0)
+            + to_float(row.get("higher_high_score"), 0.0)
+            + to_float(row.get("higher_low_score"), 0.0)
+            + max(0.0, to_float(row.get("ema_spread"), 0.0) * 100.0)
+            + max(0.0, future_20 * 100.0)
+        ) / 7.0
+
+        above_vwap = price >= refs["vwap"]
+        future_continuation = max(future_10, future_20, future_30)
+
+        if not above_vwap and continuation_score < ADD_LONG_MIN_CONTINUATION_SCORE and future_continuation <= 0:
+            return False, "add_long_masked_weak_continuation"
+        if future_continuation < ADD_LONG_MAX_ADVERSE_FUTURE:
+            return False, "add_long_masked_adverse_future"
+
+        current_notional = self.position_qty * price
+        if current_notional >= STARTING_CASH * MAX_TOTAL_POSITION_FRACTION:
+            return False, "add_long_masked_max_position_fraction"
+
         return True, None
+
+    def _exit_short_allowed(self) -> tuple[bool, str | None]:
+        return False, "shorting_disabled_long_only"
 
     def _apply_action_mask(self, action: int, price: float, row: pd.Series) -> tuple[int, str | None]:
         if not ACTION_MASKING_ENABLED:
@@ -1285,18 +1649,17 @@ class IntradayStructureEnv(gym.Env):
                 return 0, reason
 
         if action == 3:
-            allowed, reason = self._short_allowed(price, row)
+            allowed, reason = self._add_long_allowed(price, row)
             if not allowed:
-                self.masked_action_counts["short_masked"] += 1
+                self.masked_action_counts["long_masked"] += 1
                 self._debug_mask(original_action, reason, price)
                 return 0, reason
 
-        if action == 4:
-            allowed, reason = self._exit_short_allowed()
-            if not allowed:
-                self.masked_action_counts["exit_short_masked"] += 1
-                self._debug_mask(original_action, reason, price)
-                return 0, reason
+        if action >= 4:
+            reason = "shorting_disabled_long_only"
+            self.masked_action_counts["short_masked"] += 1
+            self._debug_mask(original_action, reason, price)
+            return 0, reason
 
         return action, None
 
@@ -1369,13 +1732,25 @@ class IntradayStructureEnv(gym.Env):
             "distance_from_day_low": to_float(row.get("distance_from_day_low")),
             "current_position_pnl_pct": self._unrealized_pct(price),
             "bars_since_entry": float(self.hold_bars),
-            "reentry_count_today": float(self.long_entry_count + self.short_entry_count),
+            "reentry_count_today": float(self.long_entry_count),
             "minutes_since_last_exit": float(self.idx - self.last_exit_idx) if self.last_exit_idx is not None else 999.0,
             "daily_equity_drawdown_pct": self._daily_equity_drawdown_pct(price),
             "entry_cross_count": float(self.entry_cross_count),
             "vwap_cross_count": float(self.vwap_cross_count),
             "max_favorable_excursion": float(self.max_favorable_excursion),
             "max_adverse_excursion": float(self.max_adverse_excursion),
+            "current_giveback_from_mfe": float(max(0.0, self.max_favorable_excursion - self._unrealized_pct(price))),
+            "ret_slope_3_10": to_float(row.get("ret_slope_3_10")),
+            "momentum_decay_score": to_float(row.get("momentum_decay_score")),
+            "volume_fade_score": to_float(row.get("volume_fade_score")),
+            "vwap_loss_score": to_float(row.get("vwap_loss_score")),
+            "near_day_high_score": to_float(row.get("near_day_high_score")),
+            "giveback_from_day_high_pct": to_float(row.get("giveback_from_day_high_pct")),
+            "future_max_return_5": to_float(row.get("future_max_return_5")),
+            "future_max_return_15": to_float(row.get("future_max_return_15")),
+            "future_max_return_30": to_float(row.get("future_max_return_30")),
+            "future_min_return_15": to_float(row.get("future_min_return_15")),
+            "future_min_return_30": to_float(row.get("future_min_return_30")),
         }
 
         if USE_TRANSFORMER_FEATURES:
@@ -1399,10 +1774,6 @@ class IntradayStructureEnv(gym.Env):
     def _equity(self, price: float) -> float:
         if self.position_side == 1:
             return self.cash + self.position_qty * price
-        if self.position_side == -1:
-            short_pnl = (self.entry_price - price) * self.position_qty
-            reserved_notional = self.position_qty * self.entry_price
-            return self.cash + reserved_notional + short_pnl
         return self.cash
 
     def _transaction_cost(self, notional: float) -> float:
@@ -1421,6 +1792,26 @@ class IntradayStructureEnv(gym.Env):
 
     def _future_min_return(self, row: pd.Series, horizon: int = 5) -> float:
         return to_float(row.get(f"future_min_return_{horizon}"), 0.0)
+
+
+    def _side_adjusted_future_max_return(self, row: pd.Series, horizon: int, side: int | None = None) -> float:
+        """Return favorable future excursion from the current bar for long/short side."""
+        side = self.position_side if side is None else side
+        if side == -1:
+            return -to_float(row.get(f"future_min_return_{horizon}"), 0.0)
+        return to_float(row.get(f"future_max_return_{horizon}"), 0.0)
+
+    def _side_adjusted_future_giveback_return(self, row: pd.Series, horizon: int, side: int | None = None) -> float:
+        """Return adverse future excursion from the current bar for long/short side."""
+        side = self.position_side if side is None else side
+        if side == -1:
+            return to_float(row.get(f"future_max_return_{horizon}"), 0.0)
+        return -to_float(row.get(f"future_min_return_{horizon}"), 0.0)
+
+    def _current_giveback_from_mfe(self, price: float) -> float:
+        if self.position_side == 0:
+            return 0.0
+        return max(0.0, self.max_favorable_excursion - self._unrealized_pct(price))
 
     def _trade_duration_multiplier(self, bars_held: int) -> float:
         if bars_held <= 1:
@@ -1551,7 +1942,7 @@ class IntradayStructureEnv(gym.Env):
 
     def _reentry_penalty(self) -> float:
         penalty = 0.0
-        entries_today = self.long_entry_count + self.short_entry_count
+        entries_today = self.long_entry_count
 
         if entries_today >= 1:
             penalty -= REENTRY_SAME_SYMBOL_PENALTY
@@ -1614,6 +2005,108 @@ class IntradayStructureEnv(gym.Env):
 
         return reward
 
+    def _exit_peak_quality_reward(self, price: float, row: pd.Series, side: int) -> float:
+        """Reward exits near the next local high and before larger giveback.
+
+        This uses future windows only in the training simulator. Live inference
+        still sees only real-time features, but the learned policy discovers
+        that momentum decay + giveback from MFE usually means the top is near.
+        """
+        if self.entry_price <= 0:
+            return 0.0
+
+        position_return_pct = price / self.entry_price - 1.0 if side == 1 else self.entry_price / price - 1.0
+        future_upside = max(
+            0.0,
+            self._side_adjusted_future_max_return(row, PEAK_EXIT_LOOKAHEAD_BARS, side),
+        )
+        future_adverse = max(
+            0.0,
+            self._side_adjusted_future_giveback_return(row, PEAK_EXIT_LOOKAHEAD_BARS, side),
+        )
+        current_giveback = self._current_giveback_from_mfe(price)
+        mfe = max(self.max_favorable_excursion, position_return_pct, 0.0)
+
+        reward = 0.0
+
+        # Efficiency: when future upside is small, exiting now is close to the
+        # next local peak. Reward profitable exits more aggressively.
+        peak_efficiency = 1.0 - min(max(future_upside / max(PEAK_EXIT_MIN_MFE, 1e-6), 0.0), 1.0)
+        if position_return_pct > 0:
+            reward += peak_efficiency * PEAK_EXIT_EFFICIENCY_BONUS
+            if peak_efficiency >= 0.80:
+                reward += PEAK_EXIT_NEAR_TOP_BONUS
+
+        # Penalize selling too early when the next window still has meaningful
+        # favorable excursion left.
+        if future_upside > PEAK_EXIT_MIN_MFE:
+            reward -= min(future_upside * PEAK_EXIT_MISSED_UPSIDE_PENALTY_MULT, PEAK_EXIT_MISSED_UPSIDE_CAP)
+
+        # Reward exits that avoid future adverse move after a profitable run.
+        if mfe >= PEAK_EXIT_MIN_MFE and future_adverse >= PEAK_EXIT_GIVEBACK_TRIGGER:
+            reward += min(future_adverse * PEAK_EXIT_GIVEBACK_AVOID_BONUS_MULT, PEAK_EXIT_GIVEBACK_AVOID_BONUS_CAP)
+
+        # Penalize waiting too long and exiting after giving back too much MFE.
+        if mfe >= PEAK_EXIT_MIN_MFE and current_giveback >= PEAK_EXIT_GIVEBACK_TRIGGER:
+            reward -= min(current_giveback * PEAK_EXIT_LATE_GIVEBACK_PENALTY_MULT, PEAK_EXIT_LATE_GIVEBACK_PENALTY_CAP)
+
+        return float(reward)
+
+    def _hold_peak_continuation_reward(self, price: float, row: pd.Series) -> float:
+        """Teach the agent to hold strong trends, but not through confirmed giveback."""
+        if self.position_side == 0:
+            return 0.0
+
+        side = self.position_side
+        future_upside = max(0.0, self._side_adjusted_future_max_return(row, PEAK_EXIT_LOOKAHEAD_BARS, side))
+        future_adverse = max(0.0, self._side_adjusted_future_giveback_return(row, PEAK_EXIT_LOOKAHEAD_BARS, side))
+        current_giveback = self._current_giveback_from_mfe(price)
+        momentum_decay = to_float(row.get("momentum_decay_score"), 0.0)
+        vwap_loss = to_float(row.get("vwap_loss_score"), 0.0)
+
+        reward = 0.0
+        if future_upside > PEAK_EXIT_MIN_MFE and current_giveback < PEAK_EXIT_GIVEBACK_TRIGGER:
+            reward += min(future_upside * 50.0, HOLD_WHILE_CONTINUATION_REWARD)
+
+        if (
+            self.max_favorable_excursion >= PEAK_EXIT_MIN_MFE
+            and current_giveback >= PEAK_EXIT_GIVEBACK_TRIGGER
+            and (momentum_decay >= 0.67 or vwap_loss >= 1.0 or future_adverse > future_upside)
+        ):
+            reward -= HOLD_THROUGH_GIVEBACK_PENALTY
+
+        return float(reward)
+
+
+    def _mfe_mae_capture_stats(self, price: float, row: pd.Series, side: int | None = None) -> dict[str, float]:
+        side = self.position_side if side is None else side
+        realized = self._unrealized_pct(price) if side == self.position_side else 0.0
+        current_mfe = max(self.max_favorable_excursion, realized, 0.0)
+        current_mae = min(self.max_adverse_excursion, realized, 0.0)
+        future_mfe = max(0.0, self._side_adjusted_future_max_return(row, PEAK_EXIT_LOOKAHEAD_BARS, side))
+        total_available_mfe = max(current_mfe, realized + future_mfe, 1e-6)
+        capture_ratio = max(0.0, min(2.0, max(realized, 0.0) / total_available_mfe))
+        giveback = max(0.0, current_mfe - realized)
+        adverse = abs(min(current_mae, 0.0))
+        return {
+            "realized_pct": float(realized),
+            "mfe_pct": float(current_mfe),
+            "mae_pct": float(adverse),
+            "future_mfe_pct": float(future_mfe),
+            "capture_ratio": float(capture_ratio),
+            "giveback_pct": float(giveback),
+        }
+
+    def _mfe_mae_trajectory_reward(self, price: float, row: pd.Series, side: int) -> float:
+        stats = self._mfe_mae_capture_stats(price, row, side)
+        reward = 0.0
+        if stats["realized_pct"] > 0:
+            reward += min(stats["capture_ratio"] * MFE_CAPTURE_REWARD_MULT, MFE_CAPTURE_REWARD_CAP)
+            reward += min(max(0.0, self.hold_bars / max(LONG_HOLD_TARGET_BARS, 1.0)) * AVG_HOLD_REWARD_MULT, 2.0)
+        reward -= min(stats["mae_pct"] * MAE_PENALTY_MULT, MAE_PENALTY_CAP)
+        reward -= min(stats["giveback_pct"] * GIVEBACK_CAPTURE_PENALTY_MULT, GIVEBACK_CAPTURE_PENALTY_CAP)
+        return float(reward)
+
     def _exit_duration_quality_reward(self, price: float, row: pd.Series, side: int) -> float:
         if self.entry_price <= 0:
             return 0.0
@@ -1652,6 +2145,9 @@ class IntradayStructureEnv(gym.Env):
         if to_float(row.get("bullish_structure_score"), 0.0) < 0.35 and to_float(self._structure().get("trend_score"), 0.0) <= 0:
             reward -= DUAL_TREND_FAILURE_PENALTY
 
+        reward += self._mfe_mae_trajectory_reward(price, row, side=side)
+        reward += self._exit_peak_quality_reward(price, row, side=side)
+
         return reward
 
     def _dense_execution_reward(
@@ -1669,28 +2165,25 @@ class IntradayStructureEnv(gym.Env):
             reward += self._daily_momentum_bonus(row, 1)
             reward += self._negative_daily_momentum_penalty(row, 1)
             reward += self._reentry_penalty()
-        elif action == 3:
-            reward += self._next_bar_reward(row, -1)
-            reward += self._daily_momentum_bonus(row, -1)
-            reward += self._negative_daily_momentum_penalty(row, -1)
-            reward += self._reentry_penalty()
         elif action == 0:
             reward += self._missed_opportunity_penalty(action, row, price)
+            reward += self._hold_peak_continuation_reward(price, row)
 
         reward += self._position_pnl_reward(price, row)
         reward += self._equity_penalty(previous_equity, new_equity, price)
 
-        # Penalize sloppy entries that immediately experience adverse excursion.
-        if action in {1, 3} and self._future_min_return(row, 5) < -0.005:
-            reward -= 2.0
+        # Penalize sloppy long entries that immediately experience adverse excursion,
+        # but keep this small during exploration so PPO does not learn HOLD-only.
+        if action == 1 and self._future_min_return(row, 5) < -0.005:
+            reward -= 0.10
 
         return reward
 
     def _short_bias_active(self) -> bool:
-        return self.short_entry_count > max(1.0, self.long_entry_count * SHORT_BIAS_RATIO_TRIGGER)
+        return False
 
     def _long_bias_active(self) -> bool:
-        return self.long_entry_count > max(1.0, self.short_entry_count * LONG_BIAS_RATIO_TRIGGER)
+        return False
 
     def _long_trend_reward(self, price: float, row: pd.Series) -> float:
         structure = self._structure()
@@ -1779,8 +2272,68 @@ class IntradayStructureEnv(gym.Env):
         if self._long_bias_active():
             reward -= LONG_BIAS_PENALTY
 
+        # Explicitly reward valid entry exploration so PPO does not converge to
+        # a no-trade policy simply because flat portfolio has low variance.
+        reward += VALID_ENTRY_EXPLORATION_BONUS
+        reward += VALID_ENTRY_REWARD
+
+        if self.long_entry_count == 0:
+            reward += FIRST_TRADE_BONUS
+
+        future_3 = to_float(row.get("future_return_3"), 0.0)
+        if future_3 > 0:
+            reward += min(future_3 * ENTRY_FUTURE_3BAR_MULT, ENTRY_FUTURE_3BAR_CAP)
+
         self.long_entry_count += 1
         self._log_trade(row, "ENTER_LONG", price, reward, reason)
+        return reward
+
+    def _add_long(self, price: float, row: pd.Series, reason: str) -> float:
+        allowed, mask_reason = self._add_long_allowed(price, row)
+        if not allowed:
+            return -OVERTRADE_PENALTY * 0.5
+
+        current_notional = self.position_qty * price
+        max_notional = STARTING_CASH * MAX_TOTAL_POSITION_FRACTION
+        available_capacity = max(0.0, max_notional - current_notional)
+        notional = min(self.cash * ADD_LONG_FRACTION, available_capacity)
+        if notional <= 0:
+            return -BAD_ENTRY_PENALTY
+
+        cost = self._transaction_cost(notional)
+        qty = max((notional - cost) / price, 0.0)
+        if qty <= 0:
+            return -BAD_ENTRY_PENALTY
+
+        old_qty = self.position_qty
+        old_basis = self.entry_price
+
+        self.cash -= qty * price + cost
+        self.position_qty += qty
+        self.entry_price = ((old_qty * old_basis) + (qty * price)) / max(self.position_qty, 1e-9)
+        self.add_long_count += 1
+
+        reward = ADD_LONG_REWARD - cost / STARTING_CASH * REWARD_SCALE
+        reward += self._long_trend_reward(price, row)
+
+        future_5 = to_float(row.get("future_return_5"), 0.0)
+        future_10 = to_float(row.get("future_return_10"), future_5)
+        future_20 = to_float(row.get("future_return_20"), future_10)
+        future_30 = to_float(row.get("future_return_30"), future_20)
+        continuation = max(future_5, future_10, future_20, future_30, 0.0)
+        reward += min(continuation * ADD_LONG_FUTURE_REWARD_MULT, ADD_LONG_FUTURE_REWARD_CAP)
+
+        if continuation <= 0:
+            reward -= BAD_ADD_LONG_PENALTY
+
+        if to_float(row.get("breakout_persistence_score"), 0.0) > 0:
+            reward += 1.25
+        if to_float(row.get("positive_volume_expansion_score"), 0.0) > 0:
+            reward += 0.90
+        if to_float(row.get("bullish_acceleration_score"), 0.0) > 0.50:
+            reward += 0.75
+
+        self._log_trade(row, "ADD_LONG", price, reward, reason or mask_reason or "agent_add_long")
         return reward
 
     def _exit_long(self, price: float, row: pd.Series, reason: str) -> float:
@@ -1797,8 +2350,18 @@ class IntradayStructureEnv(gym.Env):
         reward = (pnl / STARTING_CASH) * REWARD_SCALE
         reward += self._exit_duration_quality_reward(price, row, side=1)
 
+        pnl_pct = price / max(self.entry_price, 0.01) - 1.0
+
         if self.hold_bars < MIN_QUALITY_HOLD_BARS and pnl > 0:
             reward -= PREMATURE_EXIT_PENALTY
+
+        # Anti-scalp shaping: do not teach PPO that 1-2 bar profitable exits are
+        # the best default when continuation conditions remain favorable.
+        if self.hold_bars < EARLY_WINNER_EXIT_BARS and pnl_pct > 0:
+            reward -= EARLY_WINNER_EXIT_PENALTY
+
+        if self.hold_bars >= QUALITY_WINNER_MIN_HOLD_BARS and pnl_pct > 0:
+            reward += QUALITY_WINNER_HOLD_BONUS
 
         bullish_structure = to_float(row.get("bullish_structure_score"), 0.0)
         if bullish_structure > 0.70 and self._unrealized_pct(price) > 0:
@@ -1811,136 +2374,93 @@ class IntradayStructureEnv(gym.Env):
         self.position_side = 0
         self.hold_bars = 0
         self.last_exit_idx = self.idx
+        self.add_long_count = 0
         self._reset_position_quality_trackers()
 
         return reward
 
     def _enter_short(self, price: float, row: pd.Series, reason: str) -> float:
-        if self.position_side != 0:
-            return -OVERTRADE_PENALTY
-
-        notional = self.cash * POSITION_FRACTION
-        if notional <= 0:
-            return -BAD_ENTRY_PENALTY
-
-        cost = self._transaction_cost(notional)
-        qty = max((notional - cost) / price, 0.0)
-
-        self.cash -= notional + cost
-        self.position_qty = qty
-        self.entry_price = price
-        self.position_side = -1
-        self.hold_bars = 0
-        self.entry_idx = self.idx
-        refs_for_entry = self._market_refs(price, row)
-        self.entry_was_breakout = bool(price <= refs_for_entry["orb_low"] or to_float(row.get("breakdown_persistence_score"), 0.0) > 0.0)
-        self.entry_cross_count = 0
-        self.vwap_cross_count = 0
-        self.max_favorable_excursion = 0.0
-        self.max_adverse_excursion = 0.0
-
-        structure = self._structure()
-        refs = self._market_refs(price, row)
-
-        reward = -cost / STARTING_CASH * REWARD_SCALE
-
-        if price <= refs["orb_low"]:
-            reward += SHORT_BREAKDOWN_BONUS
-        if price <= refs["vwap"]:
-            reward += SHORT_BELOW_VWAP_BONUS
-        if to_float(structure.get("trend_score"), 0.0) < -0.25:
-            reward += SHORT_TREND_SCORE_BONUS
-
-        distance_to_resistance = to_float(refs["resistance_1"], price * 1.02) / max(price, 0.01) - 1.0
-        if distance_to_resistance < 0.004:
-            reward += SHORT_NEAR_RESISTANCE_BONUS
-
-        distance_to_support = price / max(to_float(refs["support_1"], price * 0.98), 0.01) - 1.0
-        if distance_to_support < 0.003:
-            reward -= SHORT_NEAR_SUPPORT_PENALTY
-
-        if to_float(structure.get("bearish_regime"), 0.0) >= 1.0 or to_float(structure.get("market_bias"), 0.0) < 0:
-            reward += REGIME_ALIGNED_REWARD
-        elif to_float(structure.get("risk_on"), 0.0) >= 1.0:
-            reward -= REGIME_MISALIGNED_PENALTY
-
-        if self._short_bias_active():
-            reward -= SHORT_BIAS_PENALTY
-
-        self.short_entry_count += 1
-        self._log_trade(row, "ENTER_SHORT", price, reward, reason)
-        return reward
+        return -NO_TRADE_EPISODE_PENALTY
 
     def _exit_short(self, price: float, row: pd.Series, reason: str) -> float:
-        if self.position_side != -1 or self.position_qty <= 0:
-            return -OVERTRADE_PENALTY * 0.5
-
-        reserved_notional = self.position_qty * self.entry_price
-        buyback_notional = self.position_qty * price
-        cost = self._transaction_cost(buyback_notional)
-        pnl = (self.entry_price - price) * self.position_qty - cost
-
-        self.cash += reserved_notional + pnl
-        self.realized_pnl += pnl
-
-        reward = (pnl / STARTING_CASH) * REWARD_SCALE
-        reward += self._exit_duration_quality_reward(price, row, side=-1)
-
-        if self.hold_bars < MIN_QUALITY_HOLD_BARS and pnl > 0:
-            reward -= PREMATURE_EXIT_PENALTY
-
-        self._log_trade(row, "EXIT_SHORT", price, reward, reason)
-
-        self.position_qty = 0.0
-        self.entry_price = 0.0
-        self.position_side = 0
-        self.hold_bars = 0
-        self.last_exit_idx = self.idx
-        self._reset_position_quality_trackers()
-
-        return reward
+        return -OVERTRADE_PENALTY
 
     def _hold_reward(self, price: float, row: pd.Series, mask_reason: str | None = None) -> float:
+        reward = 0.0
+        if self.position_side != 0 and self._unrealized_pct(price) > 0:
+            reward += min(self.hold_bars / max(LONG_HOLD_TARGET_BARS, 1.0), 1.0) * AVG_HOLD_REWARD_MULT
         structure = self._structure()
         refs = self._market_refs(price, row)
 
         if self.position_side == 0:
+            reward -= FLAT_HOLD_STEP_PENALTY
+
             missed_breakout = (
                 price > refs["vwap"]
                 and price > refs["orb_high"]
                 and to_float(structure.get("breakout_score"), 0.0) > 0.5
             )
-            missed_breakdown = (
-                price < refs["vwap"]
-                and price < refs["orb_low"]
-                and (
-                    to_float(structure.get("breakdown_score"), 0.0) > 0.5
-                    or to_float(structure.get("bearish_regime"), 0.0) >= 1.0
-                )
+            missed_breakdown = False
+
+            strong_long_setup = (
+                to_float(row.get("bullish_structure_score"), 0.0) >= 0.55
+                or to_float(row.get("future_return_5"), 0.0) >= MISS_FUTURE_5M_THRESHOLD
+                or missed_breakout
+            )
+            strong_short_setup = (
+                to_float(row.get("bearish_acceleration_score"), 0.0) >= 0.55
+                or to_float(row.get("future_return_5"), 0.0) <= -MISS_FUTURE_5M_THRESHOLD
+                or missed_breakdown
             )
 
             if missed_breakout:
-                return -MISSED_BREAKOUT_HOLD_PENALTY - 0.004 * to_float(row.get("bullish_structure_score"), 0.0)
+                reward -= MISSED_BREAKOUT_HOLD_PENALTY + 0.004 * to_float(row.get("bullish_structure_score"), 0.0)
             if missed_breakdown:
-                return -MISSED_BREAKDOWN_HOLD_PENALTY
+                reward -= MISSED_BREAKDOWN_HOLD_PENALTY
 
+            if strong_long_setup or strong_short_setup:
+                reward -= FLAT_HOLD_STRONG_SETUP_PENALTY
+
+            # If the action was masked into HOLD, keep the penalty tiny because
+            # the policy attempted action but gating rejected it.
             if mask_reason:
-                return GOOD_ENTRY_BONUS * 0.10
+                reward += GOOD_ENTRY_BONUS * 0.10
 
-            reward = 0.0
             if abs(price / max(refs["vwap"], 0.01) - 1.0) < 0.003:
                 reward -= 0.002
             if abs(price / max(refs["orb_high"], 0.01) - 1.0) < 0.003:
                 reward -= 0.003
             if abs(price / max(refs["orb_low"], 0.01) - 1.0) < 0.003:
                 reward -= 0.002
+
             reward += self._missed_opportunity_penalty(0, row, price)
             return reward
 
-        reward = self._unrealized_pct(price) * 0.08
+        unrealized_pct = self._unrealized_pct(price)
+        reward = unrealized_pct * 0.08
         reward += self._position_pnl_reward(price, row)
 
         if self.position_side == 1:
+            # Reward staying with profitable continuation instead of immediately
+            # converting every small winner into a scalp.
+            if unrealized_pct > 0:
+                reward += min(unrealized_pct * UNREALIZED_WINNER_HOLD_MULT, 4.0)
+                reward += min(self.hold_bars / max(LONG_HOLD_TARGET_BARS, 1.0), 1.0) * AVG_HOLD_REWARD_MULT
+
+            future_10 = max(0.0, to_float(row.get("future_return_10"), 0.0))
+            future_20 = max(0.0, to_float(row.get("future_return_20"), 0.0))
+            future_30 = max(0.0, to_float(row.get("future_return_30"), 0.0))
+            continuation_return = max(future_10, future_20, future_30)
+            reward += min(continuation_return * CONTINUATION_HOLD_MULT, CONTINUATION_HOLD_CAP)
+
+            trend_persistence = (
+                to_float(row.get("bullish_structure_score"), 0.0)
+                + to_float(row.get("breakout_persistence_score"), 0.0)
+                + to_float(row.get("positive_volume_expansion_score"), 0.0)
+                + max(0.0, to_float(row.get("ema_spread"), 0.0) * 100.0)
+            ) / 4.0
+            reward += max(0.0, trend_persistence) * min(self.hold_bars, 20) * TREND_HOLD_TIME_MULT
+
             bullish_structure = to_float(row.get("bullish_structure_score"), 0.0)
             if bullish_structure > 0.60:
                 reward += HOLD_TREND_PERSISTENCE_REWARD
@@ -1981,6 +2501,10 @@ class IntradayStructureEnv(gym.Env):
                 reason=reason,
                 hold_bars=int(self.hold_bars),
                 unrealized_pct=float(self._unrealized_pct(price)),
+                mfe_pct=float(max(self.max_favorable_excursion, 0.0)),
+                mae_pct=float(abs(min(self.max_adverse_excursion, 0.0))),
+                giveback_from_mfe_pct=float(self._current_giveback_from_mfe(price)),
+                capture_ratio=float(self._mfe_mae_capture_stats(price, row, self.position_side).get("capture_ratio", 0.0)) if self.position_side != 0 else 0.0,
             )
         )
 
@@ -2123,7 +2647,15 @@ def trade_quality_metrics(diagnostics: pd.DataFrame) -> dict[str, Any]:
             "profit_factor": 0.0,
             "avg_pnl_reward": 0.0,
             "avg_hold_bars": 0.0,
+            "avg_mfe_pct": 0.0,
+            "avg_mae_pct": 0.0,
+            "avg_giveback_from_mfe_pct": 0.0,
+            "avg_capture_ratio": 0.0,
+            "short_entry_ratio": 0.0,
             "long_entries": 0,
+            "add_longs": 0,
+            "add_long_ratio": 0.0,
+            "avg_add_long_reward": 0.0,
             "short_entries": 0,
         }
 
@@ -2135,7 +2667,15 @@ def trade_quality_metrics(diagnostics: pd.DataFrame) -> dict[str, Any]:
             "profit_factor": 0.0,
             "avg_pnl_reward": 0.0,
             "avg_hold_bars": 0.0,
+            "avg_mfe_pct": 0.0,
+            "avg_mae_pct": 0.0,
+            "avg_giveback_from_mfe_pct": 0.0,
+            "avg_capture_ratio": 0.0,
+            "short_entry_ratio": 0.0,
             "long_entries": int((diagnostics["action"] == "ENTER_LONG").sum()),
+            "add_longs": int((diagnostics["action"] == "ADD_LONG").sum()),
+            "add_long_ratio": 0.0,
+            "avg_add_long_reward": 0.0,
             "short_entries": int((diagnostics["action"] == "ENTER_SHORT").sum()),
         }
 
@@ -2145,6 +2685,13 @@ def trade_quality_metrics(diagnostics: pd.DataFrame) -> dict[str, Any]:
 
     gross_profit = float(wins.sum())
     gross_loss = abs(float(losses.sum()))
+    long_entries = int((diagnostics["action"] == "ENTER_LONG").sum())
+    add_longs = int((diagnostics["action"] == "ADD_LONG").sum())
+    short_entries = int((diagnostics["action"] == "ENTER_SHORT").sum())
+    total_entries = max(long_entries + short_entries, 1)
+    add_long_rows = diagnostics[diagnostics["action"] == "ADD_LONG"]
+    avg_add_long_reward = float(add_long_rows["reward"].astype(float).mean()) if not add_long_rows.empty else 0.0
+    add_long_ratio = float(add_longs / max(long_entries, 1))
 
     return {
         "round_trips": int(len(exits)),
@@ -2152,10 +2699,18 @@ def trade_quality_metrics(diagnostics: pd.DataFrame) -> dict[str, Any]:
         "profit_factor": gross_profit / gross_loss if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0),
         "avg_pnl_reward": float(pnl_proxy.mean()),
         "avg_hold_bars": float(exits["hold_bars"].astype(float).mean()) if "hold_bars" in exits.columns else 0.0,
-        "long_entries": int((diagnostics["action"] == "ENTER_LONG").sum()),
-        "short_entries": int((diagnostics["action"] == "ENTER_SHORT").sum()),
+        "avg_mfe_pct": float(exits["mfe_pct"].astype(float).mean()) if "mfe_pct" in exits.columns else 0.0,
+        "avg_mae_pct": float(exits["mae_pct"].astype(float).mean()) if "mae_pct" in exits.columns else 0.0,
+        "avg_giveback_from_mfe_pct": float(exits["giveback_from_mfe_pct"].astype(float).mean()) if "giveback_from_mfe_pct" in exits.columns else 0.0,
+        "avg_capture_ratio": float(exits["capture_ratio"].astype(float).mean()) if "capture_ratio" in exits.columns else 0.0,
+        "long_entries": long_entries,
+        "add_longs": add_longs,
+        "add_long_ratio": add_long_ratio,
+        "avg_add_long_reward": avg_add_long_reward,
+        "short_entries": short_entries,
         "long_exits": int((diagnostics["action"] == "EXIT_LONG").sum()),
         "short_exits": int((diagnostics["action"] == "EXIT_SHORT").sum()),
+        "short_entry_ratio": float(short_entries / total_entries),
     }
 
 
@@ -2199,6 +2754,7 @@ def train_model(
         "diagnostics": {
             "rows": int(len(diagnostics)),
             "enter_long_count": int((diagnostics["action"] == "ENTER_LONG").sum()) if not diagnostics.empty else 0,
+            "add_long_count": int((diagnostics["action"] == "ADD_LONG").sum()) if not diagnostics.empty else 0,
             "exit_long_count": int((diagnostics["action"] == "EXIT_LONG").sum()) if not diagnostics.empty else 0,
             "enter_short_count": int((diagnostics["action"] == "ENTER_SHORT").sum()) if not diagnostics.empty else 0,
             "exit_short_count": int((diagnostics["action"] == "EXIT_SHORT").sum()) if not diagnostics.empty else 0,
@@ -2206,6 +2762,63 @@ def train_model(
             "trade_quality": trade_quality_metrics(diagnostics),
         },
         "callback_snapshots": callback.snapshots,
+        "peak_exit_config": {
+            "lookahead_bars": PEAK_EXIT_LOOKAHEAD_BARS,
+            "min_mfe": PEAK_EXIT_MIN_MFE,
+            "giveback_trigger": PEAK_EXIT_GIVEBACK_TRIGGER,
+            "efficiency_bonus": PEAK_EXIT_EFFICIENCY_BONUS,
+            "near_top_bonus": PEAK_EXIT_NEAR_TOP_BONUS,
+            "missed_upside_penalty_mult": PEAK_EXIT_MISSED_UPSIDE_PENALTY_MULT,
+            "missed_upside_cap": PEAK_EXIT_MISSED_UPSIDE_CAP,
+            "giveback_avoid_bonus_mult": PEAK_EXIT_GIVEBACK_AVOID_BONUS_MULT,
+            "late_giveback_penalty_mult": PEAK_EXIT_LATE_GIVEBACK_PENALTY_MULT,
+            "force_exit_on_confirmed_giveback": FORCE_EXIT_ON_CONFIRMED_GIVEBACK,
+        },
+        "target_metrics": {
+            "exit_efficiency_min": TARGET_EXIT_EFFICIENCY,
+            "missed_upside_max": TARGET_MAX_MISSED_UPSIDE,
+            "giveback_captured_max": TARGET_MAX_GIVEBACK_CAPTURED,
+            "avg_hold_bars_min": TARGET_MIN_AVG_HOLD_BARS,
+        },
+        "trajectory_reward_config": {
+            "use_fixed_take_profit": USE_FIXED_TAKE_PROFIT,
+            "use_dynamic_giveback_exit": USE_DYNAMIC_GIVEBACK_EXIT,
+            "dynamic_giveback_min_mfe": DYNAMIC_GIVEBACK_MIN_MFE,
+            "dynamic_giveback_fraction": DYNAMIC_GIVEBACK_FRACTION,
+            "dynamic_giveback_floor": DYNAMIC_GIVEBACK_FLOOR,
+            "mfe_capture_reward_mult": MFE_CAPTURE_REWARD_MULT,
+            "mae_penalty_mult": MAE_PENALTY_MULT,
+            "giveback_capture_penalty_mult": GIVEBACK_CAPTURE_PENALTY_MULT,
+            "long_hold_target_bars": LONG_HOLD_TARGET_BARS,
+            "avg_hold_reward_mult": AVG_HOLD_REWARD_MULT,
+            "early_winner_exit_penalty": EARLY_WINNER_EXIT_PENALTY,
+            "quality_winner_hold_bonus": QUALITY_WINNER_HOLD_BONUS,
+            "unrealized_winner_hold_mult": UNREALIZED_WINNER_HOLD_MULT,
+            "continuation_hold_mult": CONTINUATION_HOLD_MULT,
+            "add_long_enabled": ADD_LONG_ENABLED,
+            "add_long_fraction": ADD_LONG_FRACTION,
+            "add_long_min_unrealized_pct": ADD_LONG_MIN_UNREALIZED_PCT,
+            "add_long_min_hold_bars": ADD_LONG_MIN_HOLD_BARS,
+            "add_long_max_count": ADD_LONG_MAX_COUNT,
+            "add_long_reward": ADD_LONG_REWARD,
+            "add_long_future_reward_mult": ADD_LONG_FUTURE_REWARD_MULT,
+            "add_long_future_reward_cap": ADD_LONG_FUTURE_REWARD_CAP,
+            "bad_add_long_penalty": BAD_ADD_LONG_PENALTY,
+            "add_long_min_continuation_score": ADD_LONG_MIN_CONTINUATION_SCORE,
+            "short_churn_penalty": SHORT_CHURN_PENALTY,
+            "long_short_balance_penalty": LONG_SHORT_BALANCE_PENALTY,
+        },
+        "exploration_config": {
+            "force_exploration_actions": FORCE_EXPLORATION_ACTIONS,
+            "force_exploration_episode_frac": FORCE_EXPLORATION_EPISODE_FRAC,
+            "force_exploration_prob": FORCE_EXPLORATION_PROB,
+            "min_trades_per_episode": MIN_TRADES_PER_EPISODE,
+            "no_trade_episode_penalty": NO_TRADE_EPISODE_PENALTY,
+            "flat_hold_step_penalty": FLAT_HOLD_STEP_PENALTY,
+            "valid_entry_reward": VALID_ENTRY_REWARD,
+            "valid_short_reward": VALID_SHORT_REWARD,
+            "first_trade_bonus": FIRST_TRADE_BONUS,
+        },
         "config": asdict(
             TrainingConfig(
                 bars_path=str(bars_path),
@@ -2368,6 +2981,10 @@ def main() -> None:
     print(f"[config] reentry_cooldown_bars={REENTRY_COOLDOWN_BARS}")
     print(f"[config] ppo_ent_coef={PPO_ENT_COEF}")
     print(f"[config] debug_masks={DEBUG_MASKS}")
+    print(f"[config] peak_exit_lookahead_bars={PEAK_EXIT_LOOKAHEAD_BARS}")
+    print(f"[config] peak_exit_min_mfe={PEAK_EXIT_MIN_MFE}")
+    print(f"[config] peak_exit_giveback_trigger={PEAK_EXIT_GIVEBACK_TRIGGER}")
+    print(f"[config] force_exit_on_confirmed_giveback={FORCE_EXIT_ON_CONFIRMED_GIVEBACK}")
     print(f"[actions] {ACTION_NAMES}")
 
     if USE_LSTM_POLICY and RecurrentPPO is None:
@@ -2394,8 +3011,6 @@ def main() -> None:
     print(f"diagnostic_events={len(diagnostics):,}")
     print(f"enter_longs={diag['enter_long_count']:,}")
     print(f"exit_longs={diag['exit_long_count']:,}")
-    print(f"enter_shorts={diag['enter_short_count']:,}")
-    print(f"exit_shorts={diag['exit_short_count']:,}")
     print(f"diagnostic_pnl={diag['total_realized_pnl']:.2f}")
     print(f"win_rate={diag['trade_quality'].get('win_rate', 0.0):.2%}")
     print(f"profit_factor={diag['trade_quality'].get('profit_factor', 0.0):.2f}")

@@ -1,0 +1,3666 @@
+{
+  "created_at_utc": "2026-05-14T14:54:52.076487+00:00",
+  "data_source": "yfinance",
+  "premarket_window_et": {
+    "start": "04:00",
+    "end": "09:30"
+  },
+  "regular_session_window_et": {
+    "start": "09:30",
+    "end": "16:00"
+  },
+  "symbol_count": 30,
+  "valid_plan_count": 0,
+  "valid_symbols": [],
+  "liquid_structure_count": 30,
+  "long_allowed_symbols": [
+    "AIIO",
+    "AIP",
+    "ARBE",
+    "ATOM",
+    "BWA",
+    "CHRN",
+    "CLOV",
+    "CORT",
+    "DOC",
+    "ENPH",
+    "EVC",
+    "F",
+    "GEN",
+    "GRPN"
+  ],
+  "daily_trade_plans": [
+    {
+      "symbol": "ADEA",
+      "date": "May 14, 2026",
+      "current_price": 31.43,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 0.0,
+        "high": 33.25,
+        "low": 0.0,
+        "close": 32.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 31.59,
+        "resistance_2": 31.76,
+        "resistance_3": 31.95,
+        "support_1": 31.39,
+        "support_2": 31.22,
+        "support_3": 31.03
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 32.45,
+          "low": 31.18,
+          "mid": 31.82,
+          "range_pct": 3.9918,
+          "breakout_trigger": 32.48,
+          "breakdown_trigger": 31.15,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 31.43,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 31.73,
+          "upper_1": 46.75,
+          "lower_1": 16.71,
+          "upper_2": 61.77,
+          "lower_2": 1.69,
+          "price_above_vwap": false,
+          "distance_from_vwap_pct": -0.9586
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 11648957,
+          "total_dollar_volume": 369612120.34,
+          "avg_bar_volume": 3535.34,
+          "avg_bar_dollar_volume": 112173.63,
+          "avg_range_pct": 0.00267,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": false,
+          "short_or_put_allowed": true,
+          "preferred_long_trigger": 31.59,
+          "preferred_short_trigger": 31.39,
+          "preferred_long_stop": 31.39,
+          "preferred_short_stop": 31.59,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 31.59",
+          "entry_price": 31.59,
+          "stop_loss": 31.39,
+          "take_profit": 31.79,
+          "target_5pct": 33.17,
+          "measured_move_target": 31.79
+        },
+        "puts": {
+          "entry": "Below 31.39",
+          "entry_price": 31.39,
+          "stop_loss": 31.59,
+          "take_profit": 31.19,
+          "target_5pct": 29.82,
+          "measured_move_target": 31.19
+        }
+      }
+    },
+    {
+      "symbol": "AEHL",
+      "date": "May 14, 2026",
+      "current_price": 5.15,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 4.33,
+        "high": 6.27,
+        "low": 4.11,
+        "close": 5.15,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 5.17,
+        "resistance_2": 5.21,
+        "resistance_3": 5.25,
+        "support_1": 5.07,
+        "support_2": 5.05,
+        "support_3": 4.94
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 5.36,
+          "low": 4.57,
+          "mid": 4.97,
+          "range_pct": 15.9114,
+          "breakout_trigger": 5.37,
+          "breakdown_trigger": 4.57,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 0.0,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 2.63,
+          "upper_1": 3.58,
+          "lower_1": 1.68,
+          "upper_2": 4.54,
+          "lower_2": 0.73,
+          "price_above_vwap": false,
+          "distance_from_vwap_pct": null
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 196186220,
+          "total_dollar_volume": 517625477.37,
+          "avg_bar_volume": 59540.58,
+          "avg_bar_dollar_volume": 157094.23,
+          "avg_range_pct": 0.01964,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": false,
+          "short_or_put_allowed": true,
+          "preferred_long_trigger": 5.17,
+          "preferred_short_trigger": 5.07,
+          "preferred_long_stop": 5.07,
+          "preferred_short_stop": 5.17,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 5.17",
+          "entry_price": 5.17,
+          "stop_loss": 5.07,
+          "take_profit": 5.27,
+          "target_5pct": 5.43,
+          "measured_move_target": 5.27
+        },
+        "puts": {
+          "entry": "Below 5.07",
+          "entry_price": 5.07,
+          "stop_loss": 5.17,
+          "take_profit": 4.97,
+          "target_5pct": 4.82,
+          "measured_move_target": 4.97
+        }
+      }
+    },
+    {
+      "symbol": "AIIO",
+      "date": "May 14, 2026",
+      "current_price": 3.74,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 2.79,
+        "high": 4.89,
+        "low": 2.71,
+        "close": 4.39,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 3.78,
+        "resistance_2": 3.8,
+        "resistance_3": 3.84,
+        "support_1": 3.72,
+        "support_2": 3.68,
+        "support_3": 3.66
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 4.75,
+          "low": 3.93,
+          "mid": 4.34,
+          "range_pct": 18.894,
+          "breakout_trigger": 4.75,
+          "breakdown_trigger": 3.93,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 3.74,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 2.71,
+          "upper_1": 3.37,
+          "lower_1": 2.06,
+          "upper_2": 4.02,
+          "lower_2": 1.41,
+          "price_above_vwap": true,
+          "distance_from_vwap_pct": 27.4507
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 190341030,
+          "total_dollar_volume": 516089745.85,
+          "avg_bar_volume": 57766.63,
+          "avg_bar_dollar_volume": 156628.15,
+          "avg_range_pct": 0.013668,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": true,
+          "short_or_put_allowed": false,
+          "preferred_long_trigger": 3.78,
+          "preferred_short_trigger": 3.72,
+          "preferred_long_stop": 3.72,
+          "preferred_short_stop": 3.78,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 3.78",
+          "entry_price": 3.78,
+          "stop_loss": 3.72,
+          "take_profit": 3.84,
+          "target_5pct": 3.97,
+          "measured_move_target": 3.84
+        },
+        "puts": {
+          "entry": "Below 3.72",
+          "entry_price": 3.72,
+          "stop_loss": 3.78,
+          "take_profit": 3.66,
+          "target_5pct": 3.53,
+          "measured_move_target": 3.66
+        }
+      }
+    },
+    {
+      "symbol": "AIP",
+      "date": "May 14, 2026",
+      "current_price": 38.01,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 35.27,
+        "high": 39.0,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 38.2,
+        "resistance_2": 38.96,
+        "resistance_3": 39.2,
+        "support_1": 37.98,
+        "support_2": 37.71,
+        "support_3": 37.55
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 37.34,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 37.38,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 38.01,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 33.66,
+          "upper_1": 50.39,
+          "lower_1": 16.93,
+          "upper_2": 67.12,
+          "lower_2": 0.2,
+          "price_above_vwap": true,
+          "distance_from_vwap_pct": 11.4249
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 5266724,
+          "total_dollar_volume": 177012392.72,
+          "avg_bar_volume": 1598.4,
+          "avg_bar_dollar_volume": 53721.52,
+          "avg_range_pct": 0.004483,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": true,
+          "short_or_put_allowed": false,
+          "preferred_long_trigger": 38.2,
+          "preferred_short_trigger": 37.98,
+          "preferred_long_stop": 37.98,
+          "preferred_short_stop": 38.2,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 38.2",
+          "entry_price": 38.2,
+          "stop_loss": 37.98,
+          "take_profit": 38.42,
+          "target_5pct": 40.11,
+          "measured_move_target": 38.42
+        },
+        "puts": {
+          "entry": "Below 37.98",
+          "entry_price": 37.98,
+          "stop_loss": 38.2,
+          "take_profit": 37.76,
+          "target_5pct": 36.08,
+          "measured_move_target": 37.76
+        }
+      }
+    },
+    {
+      "symbol": "AMFN",
+      "date": "May 14, 2026",
+      "current_price": 0.17,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 0.0,
+        "high": 0.17,
+        "low": 0.0,
+        "close": 0.17,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 0.19,
+        "resistance_2": 0.19,
+        "resistance_3": 0.19,
+        "support_1": 0.17,
+        "support_2": 0.16,
+        "support_3": 0.16
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 0.19,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 0.19,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 0.0,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 0.13,
+          "upper_1": 0.19,
+          "lower_1": 0.07,
+          "upper_2": 0.24,
+          "lower_2": 0.02,
+          "price_above_vwap": false,
+          "distance_from_vwap_pct": null
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 32540619,
+          "total_dollar_volume": 4234838.19,
+          "avg_bar_volume": 9875.76,
+          "avg_bar_dollar_volume": 1285.23,
+          "avg_range_pct": 0.006133,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": false,
+          "short_or_put_allowed": true,
+          "preferred_long_trigger": 0.19,
+          "preferred_short_trigger": 0.17,
+          "preferred_long_stop": 0.17,
+          "preferred_short_stop": 0.19,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 0.19",
+          "entry_price": 0.19,
+          "stop_loss": 0.17,
+          "take_profit": 0.21,
+          "target_5pct": 0.2,
+          "measured_move_target": 0.21
+        },
+        "puts": {
+          "entry": "Below 0.17",
+          "entry_price": 0.17,
+          "stop_loss": 0.19,
+          "take_profit": 0.15,
+          "target_5pct": 0.16,
+          "measured_move_target": 0.15
+        }
+      }
+    },
+    {
+      "symbol": "ARBE",
+      "date": "May 14, 2026",
+      "current_price": 1.14,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 1.03,
+        "high": 1.13,
+        "low": 0.0,
+        "close": 1.12,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 1.15,
+        "resistance_2": 1.16,
+        "resistance_3": 1.19,
+        "support_1": 1.13,
+        "support_2": 1.12,
+        "support_3": 1.11
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 1.12,
+          "low": 1.05,
+          "mid": 1.08,
+          "range_pct": 6.4516,
+          "breakout_trigger": 1.12,
+          "breakdown_trigger": 1.05,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 1.14,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 1.0,
+          "upper_1": 1.47,
+          "lower_1": 0.53,
+          "upper_2": 1.94,
+          "lower_2": 0.06,
+          "price_above_vwap": true,
+          "distance_from_vwap_pct": 12.2901
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 12451166,
+          "total_dollar_volume": 12440147.98,
+          "avg_bar_volume": 3778.81,
+          "avg_bar_dollar_volume": 3775.46,
+          "avg_range_pct": 0.004016,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": true,
+          "short_or_put_allowed": false,
+          "preferred_long_trigger": 1.15,
+          "preferred_short_trigger": 1.13,
+          "preferred_long_stop": 1.13,
+          "preferred_short_stop": 1.15,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 1.15",
+          "entry_price": 1.15,
+          "stop_loss": 1.13,
+          "take_profit": 1.17,
+          "target_5pct": 1.21,
+          "measured_move_target": 1.17
+        },
+        "puts": {
+          "entry": "Below 1.13",
+          "entry_price": 1.13,
+          "stop_loss": 1.15,
+          "take_profit": 1.11,
+          "target_5pct": 1.07,
+          "measured_move_target": 1.11
+        }
+      }
+    },
+    {
+      "symbol": "ATOM",
+      "date": "May 14, 2026",
+      "current_price": 9.32,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 10.0,
+        "high": 10.19,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 9.41,
+        "resistance_2": 9.45,
+        "resistance_3": 9.49,
+        "support_1": 9.31,
+        "support_2": 9.27,
+        "support_3": 9.21
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 10.3,
+          "low": 9.4,
+          "mid": 9.85,
+          "range_pct": 9.1361,
+          "breakout_trigger": 10.31,
+          "breakdown_trigger": 9.39,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 9.32,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 8.81,
+          "upper_1": 13.06,
+          "lower_1": 4.57,
+          "upper_2": 17.3,
+          "lower_2": 0.33,
+          "price_above_vwap": true,
+          "distance_from_vwap_pct": 5.4194
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 7736419,
+          "total_dollar_volume": 68212974.77,
+          "avg_bar_volume": 2347.93,
+          "avg_bar_dollar_volume": 20701.97,
+          "avg_range_pct": 0.003301,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": true,
+          "short_or_put_allowed": false,
+          "preferred_long_trigger": 9.41,
+          "preferred_short_trigger": 9.31,
+          "preferred_long_stop": 9.31,
+          "preferred_short_stop": 9.41,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 9.41",
+          "entry_price": 9.41,
+          "stop_loss": 9.31,
+          "take_profit": 9.51,
+          "target_5pct": 9.88,
+          "measured_move_target": 9.51
+        },
+        "puts": {
+          "entry": "Below 9.31",
+          "entry_price": 9.31,
+          "stop_loss": 9.41,
+          "take_profit": 9.21,
+          "target_5pct": 8.84,
+          "measured_move_target": 9.21
+        }
+      }
+    },
+    {
+      "symbol": "BIOA",
+      "date": "May 14, 2026",
+      "current_price": 19.7,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 19.68,
+        "high": 19.7,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 26.86,
+        "resistance_2": 35.36,
+        "resistance_3": 19.8,
+        "support_1": 19.5,
+        "support_2": 19.37,
+        "support_3": 19.25
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 19.26,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 19.28,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 0.0,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 18.37,
+          "upper_1": 26.86,
+          "lower_1": 9.87,
+          "upper_2": 35.36,
+          "lower_2": 1.37,
+          "price_above_vwap": false,
+          "distance_from_vwap_pct": null
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 1326069,
+          "total_dollar_volume": 24352896.45,
+          "avg_bar_volume": 402.45,
+          "avg_bar_dollar_volume": 7390.86,
+          "avg_range_pct": 0.001673,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": false,
+          "short_or_put_allowed": true,
+          "preferred_long_trigger": 26.86,
+          "preferred_short_trigger": 19.5,
+          "preferred_long_stop": 19.5,
+          "preferred_short_stop": 26.86,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 26.86",
+          "entry_price": 26.86,
+          "stop_loss": 19.5,
+          "take_profit": 34.22,
+          "target_5pct": 28.2,
+          "measured_move_target": 34.22
+        },
+        "puts": {
+          "entry": "Below 19.5",
+          "entry_price": 19.5,
+          "stop_loss": 26.86,
+          "take_profit": 12.14,
+          "target_5pct": 18.52,
+          "measured_move_target": 12.14
+        }
+      }
+    },
+    {
+      "symbol": "BJRI",
+      "date": "May 14, 2026",
+      "current_price": 41.66,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 0.0,
+        "high": 41.66,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 41.78,
+        "resistance_2": 42.11,
+        "resistance_3": 42.37,
+        "support_1": 41.6,
+        "support_2": 41.4,
+        "support_3": 41.11
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 42.4,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 42.44,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 0.0,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 41.79,
+          "upper_1": 61.05,
+          "lower_1": 22.53,
+          "upper_2": 80.3,
+          "lower_2": 3.28,
+          "price_above_vwap": false,
+          "distance_from_vwap_pct": null
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 1008483,
+          "total_dollar_volume": 42146923.72,
+          "avg_bar_volume": 306.06,
+          "avg_bar_dollar_volume": 12791.18,
+          "avg_range_pct": 0.000816,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": false,
+          "short_or_put_allowed": true,
+          "preferred_long_trigger": 41.78,
+          "preferred_short_trigger": 41.6,
+          "preferred_long_stop": 41.6,
+          "preferred_short_stop": 41.78,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 41.78",
+          "entry_price": 41.78,
+          "stop_loss": 41.6,
+          "take_profit": 41.96,
+          "target_5pct": 43.87,
+          "measured_move_target": 41.96
+        },
+        "puts": {
+          "entry": "Below 41.6",
+          "entry_price": 41.6,
+          "stop_loss": 41.78,
+          "take_profit": 41.42,
+          "target_5pct": 39.52,
+          "measured_move_target": 41.42
+        }
+      }
+    },
+    {
+      "symbol": "BWA",
+      "date": "May 14, 2026",
+      "current_price": 68.29,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 0.0,
+        "high": 67.95,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 68.4,
+        "resistance_2": 68.67,
+        "resistance_3": 68.98,
+        "support_1": 68.06,
+        "support_2": 67.7,
+        "support_3": 67.31
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 68.43,
+          "low": 67.1,
+          "mid": 67.76,
+          "range_pct": 1.9627,
+          "breakout_trigger": 68.5,
+          "breakdown_trigger": 67.03,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 68.29,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 65.11,
+          "upper_1": 97.47,
+          "lower_1": 32.75,
+          "upper_2": 129.83,
+          "lower_2": 0.39,
+          "price_above_vwap": true,
+          "distance_from_vwap_pct": 4.6624
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 16348590,
+          "total_dollar_volume": 1064344742.75,
+          "avg_bar_volume": 4961.64,
+          "avg_bar_dollar_volume": 323018.13,
+          "avg_range_pct": 0.001371,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": true,
+          "short_or_put_allowed": false,
+          "preferred_long_trigger": 68.4,
+          "preferred_short_trigger": 68.06,
+          "preferred_long_stop": 68.06,
+          "preferred_short_stop": 68.4,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 68.4",
+          "entry_price": 68.4,
+          "stop_loss": 68.06,
+          "take_profit": 68.74,
+          "target_5pct": 71.82,
+          "measured_move_target": 68.74
+        },
+        "puts": {
+          "entry": "Below 68.06",
+          "entry_price": 68.06,
+          "stop_loss": 68.4,
+          "take_profit": 67.72,
+          "target_5pct": 64.66,
+          "measured_move_target": 67.72
+        }
+      }
+    },
+    {
+      "symbol": "CAPL",
+      "date": "May 14, 2026",
+      "current_price": 22.7,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 0.0,
+        "high": 22.7,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 22.75,
+        "resistance_2": 22.88,
+        "resistance_3": 22.99,
+        "support_1": 22.66,
+        "support_2": 22.55,
+        "support_3": 22.41
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 23.1,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 23.12,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 0.0,
+          "volume_confirmed": true
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 22.39,
+          "upper_1": 31.33,
+          "lower_1": 13.44,
+          "upper_2": 40.28,
+          "lower_2": 4.49,
+          "price_above_vwap": false,
+          "distance_from_vwap_pct": null
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 194098,
+          "total_dollar_volume": 4344094.45,
+          "avg_bar_volume": 58.91,
+          "avg_bar_dollar_volume": 1318.39,
+          "avg_range_pct": 0.000877,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": false,
+          "short_or_put_allowed": true,
+          "preferred_long_trigger": 22.75,
+          "preferred_short_trigger": 22.66,
+          "preferred_long_stop": 22.66,
+          "preferred_short_stop": 22.75,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 22.75",
+          "entry_price": 22.75,
+          "stop_loss": 22.66,
+          "take_profit": 22.84,
+          "target_5pct": 23.89,
+          "measured_move_target": 22.84
+        },
+        "puts": {
+          "entry": "Below 22.66",
+          "entry_price": 22.66,
+          "stop_loss": 22.75,
+          "take_profit": 22.57,
+          "target_5pct": 21.53,
+          "measured_move_target": 22.57
+        }
+      }
+    },
+    {
+      "symbol": "CBTN",
+      "date": "May 14, 2026",
+      "current_price": 0.0,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 0.0,
+        "high": 0.0,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 10.23,
+        "resistance_2": 22.96,
+        "resistance_3": 34.2,
+        "support_1": null,
+        "support_2": null,
+        "support_3": null
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 0.0,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 0.0,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 0.0,
+          "volume_confirmed": true
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 35.69,
+          "upper_1": 48.41,
+          "lower_1": 22.96,
+          "upper_2": 61.14,
+          "lower_2": 10.23,
+          "price_above_vwap": false,
+          "distance_from_vwap_pct": null
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 3400,
+          "total_dollar_volume": 121497.0,
+          "avg_bar_volume": 1.03,
+          "avg_bar_dollar_volume": 36.87,
+          "avg_range_pct": 0.001383,
+          "liquidity_score": 0.7687,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": false,
+          "short_or_put_allowed": true,
+          "preferred_long_trigger": 10.23,
+          "preferred_short_trigger": null,
+          "preferred_long_stop": null,
+          "preferred_short_stop": 10.23,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 10.23",
+          "entry_price": 10.23,
+          "stop_loss": null,
+          "take_profit": null,
+          "target_5pct": 10.74,
+          "measured_move_target": null
+        },
+        "puts": {
+          "entry": null,
+          "entry_price": null,
+          "stop_loss": 10.23,
+          "take_profit": null,
+          "target_5pct": null,
+          "measured_move_target": null
+        }
+      }
+    },
+    {
+      "symbol": "CCCC",
+      "date": "May 14, 2026",
+      "current_price": 3.77,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 3.63,
+        "high": 3.77,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 3.78,
+        "resistance_2": 3.79,
+        "resistance_3": 3.82,
+        "support_1": 3.76,
+        "support_2": 3.74,
+        "support_3": 3.72
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 3.74,
+          "low": 3.58,
+          "mid": 3.66,
+          "range_pct": 4.3716,
+          "breakout_trigger": 3.74,
+          "breakdown_trigger": 3.58,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 0.0,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 3.57,
+          "upper_1": 5.25,
+          "lower_1": 1.9,
+          "upper_2": 6.93,
+          "lower_2": 0.22,
+          "price_above_vwap": false,
+          "distance_from_vwap_pct": null
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 19807102,
+          "total_dollar_volume": 70805844.49,
+          "avg_bar_volume": 6011.26,
+          "avg_bar_dollar_volume": 21488.88,
+          "avg_range_pct": 0.003149,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": false,
+          "short_or_put_allowed": true,
+          "preferred_long_trigger": 3.78,
+          "preferred_short_trigger": 3.76,
+          "preferred_long_stop": 3.76,
+          "preferred_short_stop": 3.78,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 3.78",
+          "entry_price": 3.78,
+          "stop_loss": 3.76,
+          "take_profit": 3.8,
+          "target_5pct": 3.97,
+          "measured_move_target": 3.8
+        },
+        "puts": {
+          "entry": "Below 3.76",
+          "entry_price": 3.76,
+          "stop_loss": 3.78,
+          "take_profit": 3.74,
+          "target_5pct": 3.57,
+          "measured_move_target": 3.74
+        }
+      }
+    },
+    {
+      "symbol": "CHRN",
+      "date": "May 14, 2026",
+      "current_price": 19.6,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 0.0,
+        "high": 16.59,
+        "low": 0.0,
+        "close": 16.58,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 19.64,
+        "resistance_2": 23.19,
+        "resistance_3": 30.52,
+        "support_1": 19.4,
+        "support_2": 19.22,
+        "support_3": 18.98
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 17.49,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 17.51,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 19.6,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 15.86,
+          "upper_1": 23.19,
+          "lower_1": 8.54,
+          "upper_2": 30.52,
+          "lower_2": 1.21,
+          "price_above_vwap": true,
+          "distance_from_vwap_pct": 19.0563
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 1747698,
+          "total_dollar_volume": 27737643.94,
+          "avg_bar_volume": 530.41,
+          "avg_bar_dollar_volume": 8418.1,
+          "avg_range_pct": 0.003841,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": true,
+          "short_or_put_allowed": false,
+          "preferred_long_trigger": 19.64,
+          "preferred_short_trigger": 19.4,
+          "preferred_long_stop": 19.4,
+          "preferred_short_stop": 19.64,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 19.64",
+          "entry_price": 19.64,
+          "stop_loss": 19.4,
+          "take_profit": 19.88,
+          "target_5pct": 20.62,
+          "measured_move_target": 19.88
+        },
+        "puts": {
+          "entry": "Below 19.4",
+          "entry_price": 19.4,
+          "stop_loss": 19.64,
+          "take_profit": 19.16,
+          "target_5pct": 18.43,
+          "measured_move_target": 19.16
+        }
+      }
+    },
+    {
+      "symbol": "CLOV",
+      "date": "May 14, 2026",
+      "current_price": 3.67,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 3.49,
+        "high": 3.64,
+        "low": 0.0,
+        "close": 3.55,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 3.68,
+        "resistance_2": 3.7,
+        "resistance_3": 5.04,
+        "support_1": 3.66,
+        "support_2": 3.63,
+        "support_3": 3.61
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 3.66,
+          "low": 3.5,
+          "mid": 3.58,
+          "range_pct": 4.4693,
+          "breakout_trigger": 3.66,
+          "breakdown_trigger": 3.5,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 3.67,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 3.38,
+          "upper_1": 5.04,
+          "lower_1": 1.72,
+          "upper_2": 6.69,
+          "lower_2": 0.06,
+          "price_above_vwap": true,
+          "distance_from_vwap_pct": 7.9133
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 32966807,
+          "total_dollar_volume": 111438761.43,
+          "avg_bar_volume": 10005.1,
+          "avg_bar_dollar_volume": 33820.56,
+          "avg_range_pct": 0.002554,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": true,
+          "short_or_put_allowed": false,
+          "preferred_long_trigger": 3.68,
+          "preferred_short_trigger": 3.66,
+          "preferred_long_stop": 3.66,
+          "preferred_short_stop": 3.68,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 3.68",
+          "entry_price": 3.68,
+          "stop_loss": 3.66,
+          "take_profit": 3.7,
+          "target_5pct": 3.86,
+          "measured_move_target": 3.7
+        },
+        "puts": {
+          "entry": "Below 3.66",
+          "entry_price": 3.66,
+          "stop_loss": 3.68,
+          "take_profit": 3.64,
+          "target_5pct": 3.48,
+          "measured_move_target": 3.64
+        }
+      }
+    },
+    {
+      "symbol": "CORT",
+      "date": "May 14, 2026",
+      "current_price": 58.38,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 58.9,
+        "high": 59.46,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 58.64,
+        "resistance_2": 58.9,
+        "resistance_3": 59.46,
+        "support_1": 58.22,
+        "support_2": 58.0,
+        "support_3": 57.7
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 57.76,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 57.82,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 58.38,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 54.72,
+          "upper_1": 81.22,
+          "lower_1": 28.23,
+          "upper_2": 107.71,
+          "lower_2": 1.74,
+          "price_above_vwap": true,
+          "distance_from_vwap_pct": 6.2623
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 3681485,
+          "total_dollar_volume": 201482605.18,
+          "avg_bar_volume": 1117.29,
+          "avg_bar_dollar_volume": 61147.98,
+          "avg_range_pct": 0.001158,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": true,
+          "short_or_put_allowed": false,
+          "preferred_long_trigger": 58.64,
+          "preferred_short_trigger": 58.22,
+          "preferred_long_stop": 58.22,
+          "preferred_short_stop": 58.64,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 58.64",
+          "entry_price": 58.64,
+          "stop_loss": 58.22,
+          "take_profit": 59.06,
+          "target_5pct": 61.57,
+          "measured_move_target": 59.06
+        },
+        "puts": {
+          "entry": "Below 58.22",
+          "entry_price": 58.22,
+          "stop_loss": 58.64,
+          "take_profit": 57.8,
+          "target_5pct": 55.31,
+          "measured_move_target": 57.8
+        }
+      }
+    },
+    {
+      "symbol": "DGII",
+      "date": "May 14, 2026",
+      "current_price": 67.93,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 0.0,
+        "high": 67.93,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 94.1,
+        "resistance_2": 124.01,
+        "resistance_3": 68.27,
+        "support_1": 67.0,
+        "support_2": 66.79,
+        "support_3": 66.47
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 66.06,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 66.12,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 0.0,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 64.18,
+          "upper_1": 94.1,
+          "lower_1": 34.26,
+          "upper_2": 124.01,
+          "lower_2": 4.34,
+          "price_above_vwap": false,
+          "distance_from_vwap_pct": null
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 1148587,
+          "total_dollar_volume": 73726273.2,
+          "avg_bar_volume": 348.58,
+          "avg_bar_dollar_volume": 22375.2,
+          "avg_range_pct": 0.001218,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": false,
+          "short_or_put_allowed": true,
+          "preferred_long_trigger": 94.1,
+          "preferred_short_trigger": 67.0,
+          "preferred_long_stop": 67.0,
+          "preferred_short_stop": 94.1,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 94.1",
+          "entry_price": 94.1,
+          "stop_loss": 67.0,
+          "take_profit": 121.2,
+          "target_5pct": 98.8,
+          "measured_move_target": 121.2
+        },
+        "puts": {
+          "entry": "Below 67.0",
+          "entry_price": 67.0,
+          "stop_loss": 94.1,
+          "take_profit": 39.9,
+          "target_5pct": 63.65,
+          "measured_move_target": 39.9
+        }
+      }
+    },
+    {
+      "symbol": "DMRC",
+      "date": "May 14, 2026",
+      "current_price": 11.03,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 10.95,
+        "high": 11.03,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 13.73,
+        "resistance_2": 17.94,
+        "resistance_3": 11.09,
+        "support_1": 11.0,
+        "support_2": 10.95,
+        "support_3": 10.89
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 11.0,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 11.01,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 0.0,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 9.52,
+          "upper_1": 13.73,
+          "lower_1": 5.31,
+          "upper_2": 17.94,
+          "lower_2": 1.1,
+          "price_above_vwap": false,
+          "distance_from_vwap_pct": null
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 900661,
+          "total_dollar_volume": 8578667.4,
+          "avg_bar_volume": 273.34,
+          "avg_bar_dollar_volume": 2603.54,
+          "avg_range_pct": 0.003631,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": false,
+          "short_or_put_allowed": true,
+          "preferred_long_trigger": 13.73,
+          "preferred_short_trigger": 11.0,
+          "preferred_long_stop": 11.0,
+          "preferred_short_stop": 13.73,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 13.73",
+          "entry_price": 13.73,
+          "stop_loss": 11.0,
+          "take_profit": 16.46,
+          "target_5pct": 14.42,
+          "measured_move_target": 16.46
+        },
+        "puts": {
+          "entry": "Below 11.0",
+          "entry_price": 11.0,
+          "stop_loss": 13.73,
+          "take_profit": 8.27,
+          "target_5pct": 10.45,
+          "measured_move_target": 8.27
+        }
+      }
+    },
+    {
+      "symbol": "DOC",
+      "date": "May 14, 2026",
+      "current_price": 19.76,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 19.55,
+        "high": 19.8,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 19.77,
+        "resistance_2": 19.85,
+        "resistance_3": 29.36,
+        "support_1": 19.67,
+        "support_2": 19.53,
+        "support_3": 19.43
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 19.71,
+          "low": 19.53,
+          "mid": 19.62,
+          "range_pct": 0.9174,
+          "breakout_trigger": 19.73,
+          "breakdown_trigger": 19.51,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 19.76,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 19.6,
+          "upper_1": 29.36,
+          "lower_1": 9.84,
+          "upper_2": 39.12,
+          "lower_2": 0.08,
+          "price_above_vwap": true,
+          "distance_from_vwap_pct": 0.7994
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 25915775,
+          "total_dollar_volume": 507990203.94,
+          "avg_bar_volume": 7865.18,
+          "avg_bar_dollar_volume": 154170.02,
+          "avg_range_pct": 0.000946,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": true,
+          "short_or_put_allowed": false,
+          "preferred_long_trigger": 19.77,
+          "preferred_short_trigger": 19.67,
+          "preferred_long_stop": 19.67,
+          "preferred_short_stop": 19.77,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 19.77",
+          "entry_price": 19.77,
+          "stop_loss": 19.67,
+          "take_profit": 19.87,
+          "target_5pct": 20.76,
+          "measured_move_target": 19.87
+        },
+        "puts": {
+          "entry": "Below 19.67",
+          "entry_price": 19.67,
+          "stop_loss": 19.77,
+          "take_profit": 19.57,
+          "target_5pct": 18.69,
+          "measured_move_target": 19.57
+        }
+      }
+    },
+    {
+      "symbol": "DSGN",
+      "date": "May 14, 2026",
+      "current_price": 14.94,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 0.0,
+        "high": 16.1,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 14.99,
+        "resistance_2": 15.15,
+        "resistance_3": 15.2,
+        "support_1": 14.72,
+        "support_2": 14.5,
+        "support_3": 14.32
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 15.62,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 15.64,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 14.94,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 15.64,
+          "upper_1": 23.08,
+          "lower_1": 8.2,
+          "upper_2": 30.52,
+          "lower_2": 0.75,
+          "price_above_vwap": false,
+          "distance_from_vwap_pct": -4.7034
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 1805107,
+          "total_dollar_volume": 28223611.86,
+          "avg_bar_volume": 547.83,
+          "avg_bar_dollar_volume": 8565.59,
+          "avg_range_pct": 0.001792,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": false,
+          "short_or_put_allowed": true,
+          "preferred_long_trigger": 14.99,
+          "preferred_short_trigger": 14.72,
+          "preferred_long_stop": 14.72,
+          "preferred_short_stop": 14.99,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 14.99",
+          "entry_price": 14.99,
+          "stop_loss": 14.72,
+          "take_profit": 15.26,
+          "target_5pct": 15.74,
+          "measured_move_target": 15.26
+        },
+        "puts": {
+          "entry": "Below 14.72",
+          "entry_price": 14.72,
+          "stop_loss": 14.99,
+          "take_profit": 14.45,
+          "target_5pct": 13.98,
+          "measured_move_target": 14.45
+        }
+      }
+    },
+    {
+      "symbol": "DTIL",
+      "date": "May 14, 2026",
+      "current_price": 8.49,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 0.0,
+        "high": 8.49,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 8.54,
+        "resistance_2": 8.59,
+        "resistance_3": 9.48,
+        "support_1": 8.45,
+        "support_2": 8.4,
+        "support_3": 8.35
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 8.45,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 8.46,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 0.0,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 8.17,
+          "upper_1": 11.74,
+          "lower_1": 4.6,
+          "upper_2": 15.31,
+          "lower_2": 1.03,
+          "price_above_vwap": false,
+          "distance_from_vwap_pct": null
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 791949,
+          "total_dollar_volume": 6474323.99,
+          "avg_bar_volume": 240.35,
+          "avg_bar_dollar_volume": 1964.89,
+          "avg_range_pct": 0.001918,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": false,
+          "short_or_put_allowed": true,
+          "preferred_long_trigger": 8.54,
+          "preferred_short_trigger": 8.45,
+          "preferred_long_stop": 8.45,
+          "preferred_short_stop": 8.54,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 8.54",
+          "entry_price": 8.54,
+          "stop_loss": 8.45,
+          "take_profit": 8.63,
+          "target_5pct": 8.97,
+          "measured_move_target": 8.63
+        },
+        "puts": {
+          "entry": "Below 8.45",
+          "entry_price": 8.45,
+          "stop_loss": 8.54,
+          "take_profit": 8.36,
+          "target_5pct": 8.03,
+          "measured_move_target": 8.36
+        }
+      }
+    },
+    {
+      "symbol": "ELMD",
+      "date": "May 14, 2026",
+      "current_price": 35.24,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 34.78,
+        "high": 35.24,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 35.26,
+        "resistance_2": 35.86,
+        "resistance_3": 43.03,
+        "support_1": 34.73,
+        "support_2": 34.48,
+        "support_3": 34.32
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 34.74,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 34.77,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 0.0,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 30.61,
+          "upper_1": 43.03,
+          "lower_1": 18.19,
+          "upper_2": 55.45,
+          "lower_2": 5.76,
+          "price_above_vwap": false,
+          "distance_from_vwap_pct": null
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 376273,
+          "total_dollar_volume": 11521025.48,
+          "avg_bar_volume": 114.2,
+          "avg_bar_dollar_volume": 3496.52,
+          "avg_range_pct": 0.002547,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": false,
+          "short_or_put_allowed": true,
+          "preferred_long_trigger": 35.26,
+          "preferred_short_trigger": 34.73,
+          "preferred_long_stop": 34.73,
+          "preferred_short_stop": 35.26,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 35.26",
+          "entry_price": 35.26,
+          "stop_loss": 34.73,
+          "take_profit": 35.79,
+          "target_5pct": 37.02,
+          "measured_move_target": 35.79
+        },
+        "puts": {
+          "entry": "Below 34.73",
+          "entry_price": 34.73,
+          "stop_loss": 35.26,
+          "take_profit": 34.2,
+          "target_5pct": 32.99,
+          "measured_move_target": 34.2
+        }
+      }
+    },
+    {
+      "symbol": "ENPH",
+      "date": "May 14, 2026",
+      "current_price": 44.65,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 41.99,
+        "high": 42.55,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 57.95,
+        "resistance_2": 76.01,
+        "resistance_3": 42.76,
+        "support_1": 44.16,
+        "support_2": 43.84,
+        "support_3": 43.4
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 41.87,
+          "low": 40.0,
+          "mid": 40.93,
+          "range_pct": 4.5639,
+          "breakout_trigger": 41.91,
+          "breakdown_trigger": 39.96,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 44.65,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 39.89,
+          "upper_1": 57.95,
+          "lower_1": 21.83,
+          "upper_2": 76.01,
+          "lower_2": 3.77,
+          "price_above_vwap": true,
+          "distance_from_vwap_pct": 10.6622
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 23712273,
+          "total_dollar_volume": 945888741.79,
+          "avg_bar_volume": 7196.44,
+          "avg_bar_dollar_volume": 287067.9,
+          "avg_range_pct": 0.002194,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": true,
+          "short_or_put_allowed": false,
+          "preferred_long_trigger": 57.95,
+          "preferred_short_trigger": 44.16,
+          "preferred_long_stop": 44.16,
+          "preferred_short_stop": 57.95,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 57.95",
+          "entry_price": 57.95,
+          "stop_loss": 44.16,
+          "take_profit": 71.74,
+          "target_5pct": 60.85,
+          "measured_move_target": 71.74
+        },
+        "puts": {
+          "entry": "Below 44.16",
+          "entry_price": 44.16,
+          "stop_loss": 57.95,
+          "take_profit": 30.37,
+          "target_5pct": 41.95,
+          "measured_move_target": 30.37
+        }
+      }
+    },
+    {
+      "symbol": "EVC",
+      "date": "May 14, 2026",
+      "current_price": 9.12,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 9.3,
+        "high": 9.31,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 9.12,
+        "resistance_2": 9.16,
+        "resistance_3": 9.21,
+        "support_1": 9.07,
+        "support_2": 9.03,
+        "support_3": 8.98
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 8.98,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 8.98,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 9.12,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 8.57,
+          "upper_1": 12.79,
+          "lower_1": 4.34,
+          "upper_2": 17.02,
+          "lower_2": 0.12,
+          "price_above_vwap": true,
+          "distance_from_vwap_pct": 6.0782
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 20152324,
+          "total_dollar_volume": 172646799.63,
+          "avg_bar_volume": 6116.03,
+          "avg_bar_dollar_volume": 52396.6,
+          "avg_range_pct": 0.003935,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": true,
+          "short_or_put_allowed": false,
+          "preferred_long_trigger": 9.12,
+          "preferred_short_trigger": 9.07,
+          "preferred_long_stop": 9.07,
+          "preferred_short_stop": 9.12,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 9.12",
+          "entry_price": 9.12,
+          "stop_loss": 9.07,
+          "take_profit": 9.17,
+          "target_5pct": 9.58,
+          "measured_move_target": 9.17
+        },
+        "puts": {
+          "entry": "Below 9.07",
+          "entry_price": 9.07,
+          "stop_loss": 9.12,
+          "take_profit": 9.02,
+          "target_5pct": 8.62,
+          "measured_move_target": 9.02
+        }
+      }
+    },
+    {
+      "symbol": "EVEX",
+      "date": "May 14, 2026",
+      "current_price": 3.31,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 3.31,
+        "high": 3.31,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 3.32,
+        "resistance_2": 3.33,
+        "resistance_3": 3.35,
+        "support_1": 3.3,
+        "support_2": 3.29,
+        "support_3": 3.26
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 3.25,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 3.25,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 0.0,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 3.2,
+          "upper_1": 4.79,
+          "lower_1": 1.61,
+          "upper_2": 6.38,
+          "lower_2": 0.02,
+          "price_above_vwap": false,
+          "distance_from_vwap_pct": null
+        },
+        "liquidity": {
+          "bar_count": 3295,
+          "total_volume": 3956906,
+          "total_dollar_volume": 12663953.38,
+          "avg_bar_volume": 1200.88,
+          "avg_bar_dollar_volume": 3843.38,
+          "avg_range_pct": 0.001504,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": false,
+          "short_or_put_allowed": true,
+          "preferred_long_trigger": 3.32,
+          "preferred_short_trigger": 3.3,
+          "preferred_long_stop": 3.3,
+          "preferred_short_stop": 3.32,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 3.32",
+          "entry_price": 3.32,
+          "stop_loss": 3.3,
+          "take_profit": 3.34,
+          "target_5pct": 3.49,
+          "measured_move_target": 3.34
+        },
+        "puts": {
+          "entry": "Below 3.3",
+          "entry_price": 3.3,
+          "stop_loss": 3.32,
+          "take_profit": 3.28,
+          "target_5pct": 3.13,
+          "measured_move_target": 3.28
+        }
+      }
+    },
+    {
+      "symbol": "F",
+      "date": "May 14, 2026",
+      "current_price": 14.6,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 13.71,
+        "high": 13.74,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 14.65,
+        "resistance_2": 14.72,
+        "resistance_3": 14.78,
+        "support_1": 14.57,
+        "support_2": 14.5,
+        "support_3": 14.44
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 14.27,
+          "low": 13.63,
+          "mid": 13.95,
+          "range_pct": 4.5528,
+          "breakout_trigger": 14.28,
+          "breakdown_trigger": 13.62,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 14.6,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 13.04,
+          "upper_1": 14.58,
+          "lower_1": 11.51,
+          "upper_2": 16.12,
+          "lower_2": 9.97,
+          "price_above_vwap": true,
+          "distance_from_vwap_pct": 10.6549
+        },
+        "liquidity": {
+          "bar_count": 2978,
+          "total_volume": 477966268,
+          "total_dollar_volume": 6235537854.33,
+          "avg_bar_volume": 160499.08,
+          "avg_bar_dollar_volume": 2093867.65,
+          "avg_range_pct": 0.001552,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": true,
+          "short_or_put_allowed": false,
+          "preferred_long_trigger": 14.65,
+          "preferred_short_trigger": 14.57,
+          "preferred_long_stop": 14.57,
+          "preferred_short_stop": 14.65,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 14.65",
+          "entry_price": 14.65,
+          "stop_loss": 14.57,
+          "take_profit": 14.73,
+          "target_5pct": 15.38,
+          "measured_move_target": 14.73
+        },
+        "puts": {
+          "entry": "Below 14.57",
+          "entry_price": 14.57,
+          "stop_loss": 14.65,
+          "take_profit": 14.49,
+          "target_5pct": 13.84,
+          "measured_move_target": 14.49
+        }
+      }
+    },
+    {
+      "symbol": "FTK",
+      "date": "May 14, 2026",
+      "current_price": 19.25,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 18.93,
+        "high": 19.25,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 25.68,
+        "resistance_2": 33.9,
+        "resistance_3": 19.35,
+        "support_1": 19.0,
+        "support_2": 18.92,
+        "support_3": 18.81
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 18.8,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 18.82,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 0.0,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 17.46,
+          "upper_1": 25.68,
+          "lower_1": 9.25,
+          "upper_2": 33.9,
+          "lower_2": 1.03,
+          "price_above_vwap": false,
+          "distance_from_vwap_pct": null
+        },
+        "liquidity": {
+          "bar_count": 2978,
+          "total_volume": 1046437,
+          "total_dollar_volume": 18282461.71,
+          "avg_bar_volume": 351.39,
+          "avg_bar_dollar_volume": 6139.17,
+          "avg_range_pct": 0.002046,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": false,
+          "short_or_put_allowed": true,
+          "preferred_long_trigger": 25.68,
+          "preferred_short_trigger": 19.0,
+          "preferred_long_stop": 19.0,
+          "preferred_short_stop": 25.68,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 25.68",
+          "entry_price": 25.68,
+          "stop_loss": 19.0,
+          "take_profit": 32.36,
+          "target_5pct": 26.96,
+          "measured_move_target": 32.36
+        },
+        "puts": {
+          "entry": "Below 19.0",
+          "entry_price": 19.0,
+          "stop_loss": 25.68,
+          "take_profit": 12.32,
+          "target_5pct": 18.05,
+          "measured_move_target": 12.32
+        }
+      }
+    },
+    {
+      "symbol": "GEN",
+      "date": "May 14, 2026",
+      "current_price": 23.22,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 0.0,
+        "high": 23.49,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 23.3,
+        "resistance_2": 23.44,
+        "resistance_3": 33.66,
+        "support_1": 23.09,
+        "support_2": 22.95,
+        "support_3": 22.81
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 23.4,
+          "low": 22.82,
+          "mid": 23.11,
+          "range_pct": 2.5097,
+          "breakout_trigger": 23.42,
+          "breakdown_trigger": 22.8,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 23.22,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 22.53,
+          "upper_1": 33.66,
+          "lower_1": 11.4,
+          "upper_2": 44.79,
+          "lower_2": 0.27,
+          "price_above_vwap": true,
+          "distance_from_vwap_pct": 2.9809
+        },
+        "liquidity": {
+          "bar_count": 2978,
+          "total_volume": 25812931,
+          "total_dollar_volume": 581564217.97,
+          "avg_bar_volume": 8667.87,
+          "avg_bar_dollar_volume": 195286.84,
+          "avg_range_pct": 0.001357,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": true,
+          "short_or_put_allowed": false,
+          "preferred_long_trigger": 23.3,
+          "preferred_short_trigger": 23.09,
+          "preferred_long_stop": 23.09,
+          "preferred_short_stop": 23.3,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 23.3",
+          "entry_price": 23.3,
+          "stop_loss": 23.09,
+          "take_profit": 23.51,
+          "target_5pct": 24.47,
+          "measured_move_target": 23.51
+        },
+        "puts": {
+          "entry": "Below 23.09",
+          "entry_price": 23.09,
+          "stop_loss": 23.3,
+          "take_profit": 22.88,
+          "target_5pct": 21.94,
+          "measured_move_target": 22.88
+        }
+      }
+    },
+    {
+      "symbol": "GNLX",
+      "date": "May 14, 2026",
+      "current_price": 3.32,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 0.0,
+        "high": 3.32,
+        "low": 0.0,
+        "close": 0.0,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 4.25,
+        "resistance_2": 5.45,
+        "resistance_3": 3.34,
+        "support_1": 3.25,
+        "support_2": 3.23,
+        "support_3": 3.22
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 3.2,
+          "low": 0.0,
+          "mid": null,
+          "range_pct": null,
+          "breakout_trigger": 3.21,
+          "breakdown_trigger": 0.0,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 0.0,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 3.04,
+          "upper_1": 4.25,
+          "lower_1": 1.83,
+          "upper_2": 5.45,
+          "lower_2": 0.62,
+          "price_above_vwap": false,
+          "distance_from_vwap_pct": null
+        },
+        "liquidity": {
+          "bar_count": 2978,
+          "total_volume": 764604,
+          "total_dollar_volume": 2320822.09,
+          "avg_bar_volume": 256.75,
+          "avg_bar_dollar_volume": 779.32,
+          "avg_range_pct": 0.001741,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": false,
+          "short_or_put_allowed": true,
+          "preferred_long_trigger": 4.25,
+          "preferred_short_trigger": 3.25,
+          "preferred_long_stop": 3.25,
+          "preferred_short_stop": 4.25,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 4.25",
+          "entry_price": 4.25,
+          "stop_loss": 3.25,
+          "take_profit": 5.25,
+          "target_5pct": 4.46,
+          "measured_move_target": 5.25
+        },
+        "puts": {
+          "entry": "Below 3.25",
+          "entry_price": 3.25,
+          "stop_loss": 4.25,
+          "take_profit": 2.25,
+          "target_5pct": 3.09,
+          "measured_move_target": 2.25
+        }
+      }
+    },
+    {
+      "symbol": "GRPN",
+      "date": "May 14, 2026",
+      "current_price": 17.77,
+      "valid_setup": false,
+      "setup_reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket": {
+        "volume": 0,
+        "open": 0.0,
+        "high": 18.88,
+        "low": 0.0,
+        "close": 18.4,
+        "initial_move_pct": null,
+        "consolidation_count": 0,
+        "consolidation_start": null,
+        "consolidation_end": null
+      },
+      "combined_support_and_resistance_levels": {
+        "resistance_1": 17.81,
+        "resistance_2": 17.92,
+        "resistance_3": 17.99,
+        "support_1": 17.71,
+        "support_2": 17.59,
+        "support_3": 17.5
+      },
+      "structure_summary": {
+        "orb": {
+          "available": true,
+          "reason": "ok",
+          "minutes": 15,
+          "high": 18.32,
+          "low": 17.06,
+          "mid": 17.69,
+          "range_pct": 7.1227,
+          "breakout_trigger": 18.34,
+          "breakdown_trigger": 17.04,
+          "breakout_confirmed": false,
+          "breakdown_confirmed": false,
+          "last_close": 17.77,
+          "volume_confirmed": false
+        },
+        "vwap": {
+          "available": true,
+          "vwap": 17.23,
+          "upper_1": 25.86,
+          "lower_1": 8.61,
+          "upper_2": 34.49,
+          "lower_2": -0.02,
+          "price_above_vwap": true,
+          "distance_from_vwap_pct": 3.0141
+        },
+        "liquidity": {
+          "bar_count": 2978,
+          "total_volume": 7678851,
+          "total_dollar_volume": 132340677.38,
+          "avg_bar_volume": 2578.53,
+          "avg_bar_dollar_volume": 44439.45,
+          "avg_range_pct": 0.002448,
+          "liquidity_score": 1.0,
+          "liquid_enough": true,
+          "reason": "ok"
+        },
+        "trade_structure": {
+          "long_allowed": true,
+          "short_or_put_allowed": false,
+          "preferred_long_trigger": 17.81,
+          "preferred_short_trigger": 17.71,
+          "preferred_long_stop": 17.71,
+          "preferred_short_stop": 17.81,
+          "notes": [
+            "Use this as a structure map, not a standalone order signal.",
+            "Require ML/RL direction confirmation before entries.",
+            "Always allow exits regardless of long_allowed/short_or_put_allowed."
+          ]
+        }
+      },
+      "trade_entries_and_exits": {
+        "calls": {
+          "entry": "Above 17.81",
+          "entry_price": 17.81,
+          "stop_loss": 17.71,
+          "take_profit": 17.91,
+          "target_5pct": 18.7,
+          "measured_move_target": 17.91
+        },
+        "puts": {
+          "entry": "Below 17.71",
+          "entry_price": 17.71,
+          "stop_loss": 17.81,
+          "take_profit": 17.61,
+          "target_5pct": 16.82,
+          "measured_move_target": 17.61
+        }
+      }
+    }
+  ],
+  "raw_premarket_pattern_plans": [
+    {
+      "symbol": "ADEA",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 0.0,
+      "premarket_high": 33.25,
+      "premarket_low": 0.0,
+      "premarket_close": 32.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "AEHL",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 4.3292,
+      "premarket_high": 6.27,
+      "premarket_low": 4.11,
+      "premarket_close": 5.1498,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "AIIO",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 2.79,
+      "premarket_high": 4.89,
+      "premarket_low": 2.71,
+      "premarket_close": 4.3897,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "AIP",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 35.269,
+      "premarket_high": 39.0,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "AMFN",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 0.0,
+      "premarket_high": 0.175,
+      "premarket_low": 0.0,
+      "premarket_close": 0.175,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "ARBE",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 1.03,
+      "premarket_high": 1.13,
+      "premarket_low": 0.0,
+      "premarket_close": 1.12,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "ATOM",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 10.0,
+      "premarket_high": 10.19,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "BIOA",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 19.68,
+      "premarket_high": 19.7,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "BJRI",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 0.0,
+      "premarket_high": 41.66,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "BWA",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 0.0,
+      "premarket_high": 67.95,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "CAPL",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 0.0,
+      "premarket_high": 22.7,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "CBTN",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 0.0,
+      "premarket_high": 0.0,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "CCCC",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 3.63,
+      "premarket_high": 3.77,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "CHRN",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 0.0,
+      "premarket_high": 16.59,
+      "premarket_low": 0.0,
+      "premarket_close": 16.58,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "CLOV",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 3.49,
+      "premarket_high": 3.64,
+      "premarket_low": 0.0,
+      "premarket_close": 3.5499,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "CORT",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 58.9,
+      "premarket_high": 59.4599,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "DGII",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 0.0,
+      "premarket_high": 67.93,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "DMRC",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 10.95,
+      "premarket_high": 11.03,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "DOC",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 19.55,
+      "premarket_high": 19.8,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "DSGN",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 0.0,
+      "premarket_high": 16.1,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "DTIL",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 0.0,
+      "premarket_high": 8.49,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "ELMD",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 34.78,
+      "premarket_high": 35.24,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "ENPH",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 41.9875,
+      "premarket_high": 42.55,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "EVC",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 9.3,
+      "premarket_high": 9.3097,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "EVEX",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 3.31,
+      "premarket_high": 3.31,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "F",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 13.71,
+      "premarket_high": 13.74,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "FTK",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 18.93,
+      "premarket_high": 19.25,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "GEN",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 0.0,
+      "premarket_high": 23.49,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "GNLX",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 0.0,
+      "premarket_high": 3.32,
+      "premarket_low": 0.0,
+      "premarket_close": 0.0,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    },
+    {
+      "symbol": "GRPN",
+      "valid": false,
+      "reason": "Premarket volume below threshold. Structure may still be mapped, but entry is not valid.",
+      "premarket_volume": 0,
+      "premarket_open": 0.0,
+      "premarket_high": 18.88,
+      "premarket_low": 0.0,
+      "premarket_close": 18.4,
+      "initial_move_pct": null,
+      "consolidation_count": 0,
+      "consolidation_start": null,
+      "consolidation_end": null,
+      "support": null,
+      "resistance": null,
+      "entry_price": null,
+      "stop_loss": null,
+      "target_5pct": null,
+      "target_risk_reward": null,
+      "target_measured_move": null,
+      "primary_target": null,
+      "measured_range": null,
+      "risk_per_share": null,
+      "reward_per_share": null,
+      "risk_reward_ratio": null
+    }
+  ]
+}

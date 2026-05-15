@@ -72,7 +72,7 @@ THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 
 INPUT_PATH = PROJECT_ROOT / "daily_system_outputs" / f"{TODAY_TAG}_daily_features.csv"
-OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
+OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 OUT_PREDICTIONS = OUT_DIR / f"{TODAY_TAG}_regime_predictions.csv"
@@ -154,8 +154,9 @@ MAX_OPEN_LONGS = 8
 
 # Regime routing.
 REGIME_SYMBOLS = {"SPY", "QQQ", "IWM", "VIXY"}
-CORE_SYMBOLS = {"SPY", "QQQ", "DIA", "IWM", "VIXY", "IBIT", "TLT"}
+CORE_SYMBOLS = pd.read_csv("data/bullish_2026-05-13.csv")["Symbol"].to_list()
 INVERSE_HEDGE_SYMBOLS = {"SQQQ", "SH", "PSQ", "DOG", "VIXY"}
+
 
 DROP_MACRO_DOMINANT_FEATURES = {
     "spy_return_1d",
@@ -1449,6 +1450,7 @@ def save_outputs(
     universe.to_csv(OUT_POSITION_PLAN, index=False)
     threshold_table.to_csv(OUT_THRESHOLD_TABLE, index=False)
     importance.to_csv(OUT_IMPORTANCE, index=False)
+    print(F"[saved] predictions: {OUT_UNIVERSE_TXT}")
 
     with open(OUT_UNIVERSE_TXT, "w", encoding="utf-8") as f:
         f.write("TRADING_UNIVERSE = [\n")
@@ -1702,6 +1704,7 @@ def main() -> None:
     print(f"entry_threshold={entry_threshold:.2f}")
     print(f"latest_date={predictions['timestamp'].max()}")
     print(f"universe_size={len(universe)}")
+    print(f"universe_symbols={universe['symbol'].tolist()}")
 
     if not universe.empty and "market_regime" in universe.columns:
         print(f"latest_regime={universe['market_regime'].iloc[0]}")
