@@ -1,18 +1,18 @@
 ===== DAILY WALK-FORWARD-EMULATED SYSTEM SUMMARY =====
-timestamp_utc              : 2026-05-14T23:30:48.045666+00:00
+timestamp_utc              : 2026-05-15T06:11:50.768301+00:00
 execute_requested           : False
 
-account_equity              : $100,468.25
+account_equity              : $98,659.32
 account_cash                : $43,977.66
 
-analysis_symbols            : 321
-bar_symbols                 : 326
-feature_rows                : 114,647
-training_rows               : 4,612
-prediction_rows             : 320
+analysis_symbols            : 324
+bar_symbols                 : 329
+feature_rows                : 115,267
+training_rows               : 4,636
+prediction_rows             : 323
 ranked_candidates           : 3
 portfolio_targets           : 3
-validation_auc              : 0.4762783301025366
+validation_auc              : 0.485282443142883
 
 outputs_dir                 : /home/runner/workspace/daily_system_outputs
 symbols_file                : /home/runner/workspace/daily_system_outputs/latest_walkforward_emulated_trade_universe.txt
