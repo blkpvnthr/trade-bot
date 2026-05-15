@@ -19,6 +19,12 @@ It only outputs:
 Expected input:
     daily_system_outputs/daily_features.csv
 
+Automatic trading-context inputs:
+    daily_system_outputs/market_context.json
+    daily_system_outputs/premarket_trade_plan.json
+
+These files are loaded automatically when present. No command-line arguments are required.
+
 Outputs:
     daily_system_outputs/regime_predictions.csv
     daily_system_outputs/regime_actions.csv
@@ -32,9 +38,12 @@ Outputs:
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import os
 
 import numpy as np
 import pandas as pd
+from typing import Any
 
 from sklearn.ensemble import (
     HistGradientBoostingClassifier,
@@ -52,6 +61,8 @@ from sklearn.metrics import (
 )
 from sklearn.pipeline import Pipeline
 
+from market_context_builder import TODAY_TAG
+
 
 # =============================================================================
 # Paths
@@ -60,17 +71,26 @@ from sklearn.pipeline import Pipeline
 THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 
-INPUT_PATH = PROJECT_ROOT / "daily_system_outputs" / "daily_features.csv"
+INPUT_PATH = PROJECT_ROOT / "daily_system_outputs" / f"{TODAY_TAG}_daily_features.csv"
 OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-OUT_PREDICTIONS = OUT_DIR / "regime_predictions.csv"
-OUT_ACTIONS = OUT_DIR / "regime_actions.csv"
-OUT_UNIVERSE_CSV = OUT_DIR / "regime_universe_30.csv"
-OUT_UNIVERSE_TXT = OUT_DIR / "regime_universe_30.txt"
-OUT_POSITION_PLAN = OUT_DIR / "regime_position_plan.csv"
-OUT_IMPORTANCE = OUT_DIR / "regime_feature_importance.csv"
-OUT_THRESHOLD_TABLE = OUT_DIR / "regime_threshold_table.csv"
+OUT_PREDICTIONS = OUT_DIR / f"{TODAY_TAG}_regime_predictions.csv"
+OUT_ACTIONS = OUT_DIR / f"{TODAY_TAG}_regime_actions.csv"
+OUT_UNIVERSE_CSV = OUT_DIR / f"{TODAY_TAG}_regime_universe_30.csv"
+OUT_UNIVERSE_TXT = OUT_DIR / f"{TODAY_TAG}_regime_universe_30.txt"
+OUT_POSITION_PLAN = OUT_DIR / f"{TODAY_TAG}_regime_position_plan.csv"
+OUT_IMPORTANCE = OUT_DIR / f"{TODAY_TAG}_regime_feature_importance.csv"
+OUT_THRESHOLD_TABLE = OUT_DIR / f"{TODAY_TAG}_regime_threshold_table.csv"
+
+DEFAULT_MARKET_CONTEXT_PATH = OUT_DIR / f"{TODAY_TAG}_market_context.json"
+DEFAULT_PREMARKET_TRADE_PLAN_PATH = OUT_DIR / f"{TODAY_TAG}_premarket_trade_plan.json"
+
+# Runtime-loaded optional context. These are intentionally globals so the
+# sizing/action functions can remain simple while main() controls the inputs.
+ACTIVE_MARKET_CONTEXT: dict[str, Any] = {}
+ACTIVE_PREMARKET_TRADE_PLAN: dict[str, Any] = {}
+ACTIVE_REQUIRE_PREMARKET_VALID_SETUP = os.getenv("MODEL_REQUIRE_PREMARKET_VALID_SETUP", "1").lower() not in {"0", "false", "no"}
 
 
 # =============================================================================
@@ -111,7 +131,16 @@ MIN_TRADE_COUNT = 40
 MIN_ENTRY_PROBABILITY = 0.55
 
 # Position sizing / portfolio risk.
-ACCOUNT_EQUITY = 100_000.00
+# Dynamically set this with ACCOUNT_EQUITY or TRADING_ACCOUNT_EQUITY.
+# Example: ACCOUNT_EQUITY=13500 python model.py
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except Exception:
+        return default
+
+
+ACCOUNT_EQUITY = env_float("ACCOUNT_EQUITY", env_float("TRADING_ACCOUNT_EQUITY", 100_000.00))
 MAX_TOTAL_GROSS_EXPOSURE = 0.60
 MAX_SINGLE_POSITION_WEIGHT = 0.08
 MIN_POSITION_WEIGHT = 0.005
@@ -182,9 +211,260 @@ ID_COLUMNS = {
 }
 
 
+
+# =============================================================================
+# External market / premarket context helpers
+# =============================================================================
+
+def read_optional_json(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    try:
+        path = Path(path)
+        if not path.exists():
+            print(f"[context] optional JSON not found: {path}")
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception as exc:
+        print(f"[context] failed to read {path}: {exc}")
+        return {}
+
+
+def pct_to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        value = float(value)
+        if np.isnan(value) or np.isinf(value):
+            return default
+        return value
+    except Exception:
+        return default
+
+
+def extract_index_change_pct(market_context: dict[str, Any], symbol: str) -> float:
+    """Return decimal change, e.g. -0.006 for -0.60%."""
+    if not isinstance(market_context, dict):
+        return 0.0
+
+    for section in ["key_etf_risk_signals", "previous_session"]:
+        block = market_context.get(section, {})
+        if isinstance(block, dict):
+            data = block.get(symbol, {})
+            if isinstance(data, dict):
+                for key in ["prev_close_change_pct", "day_change_pct", "change_pct"]:
+                    if key in data:
+                        return pct_to_float(data.get(key), 0.0)
+    return 0.0
+
+
+def market_context_trade_permission(market_context: dict[str, Any]) -> dict[str, Any]:
+    """
+    Converts market_context.json into model-level risk controls.
+
+    market_context_builder.py emits fields such as:
+      - overall_market_bias: bullish | bearish | mixed | risk_off | risk_on
+      - trade_permission: normal | cautious | halt_new_buys
+      - risk_level: low | medium | high
+
+    This helper turns that into a deterministic gate for model position sizing.
+    """
+    if not isinstance(market_context, dict) or not market_context:
+        return {
+            "has_market_context": False,
+            "market_context_bias": "unknown",
+            "market_context_permission": "unknown",
+            "market_context_risk_level": "unknown",
+            "halt_new_longs": False,
+            "target_weight_multiplier": 1.0,
+            "reason": "No market_context.json supplied.",
+        }
+
+    bias = str(market_context.get("overall_market_bias", "mixed")).lower().strip()
+    permission = str(market_context.get("trade_permission", "cautious")).lower().strip()
+    risk_level = str(market_context.get("risk_level", "medium")).lower().strip()
+
+    spy_change = extract_index_change_pct(market_context, "SPY")
+    qqq_change = extract_index_change_pct(market_context, "QQQ")
+    broad_market_down = min(spy_change, qqq_change) <= -0.005
+
+    halt_new_longs = permission in {"halt_new_buys", "halt", "risk_off"} or bias in {"risk_off", "bearish"}
+
+    # Extra protection requested in the trading system: when broad market is down
+    # more than -0.5%, do not open fresh longs unless the context classifier has
+    # explicitly allowed normal/risk-on trading.
+    if broad_market_down and permission != "normal" and bias not in {"bullish", "risk_on"}:
+        halt_new_longs = True
+
+    if halt_new_longs:
+        multiplier = 0.0
+    elif permission == "cautious" or risk_level == "high" or bias == "mixed":
+        multiplier = 0.50
+    elif risk_level == "medium":
+        multiplier = 0.75
+    else:
+        multiplier = 1.0
+
+    return {
+        "has_market_context": True,
+        "market_context_bias": bias,
+        "market_context_permission": permission,
+        "market_context_risk_level": risk_level,
+        "market_context_spy_change_pct": spy_change,
+        "market_context_qqq_change_pct": qqq_change,
+        "halt_new_longs": halt_new_longs,
+        "target_weight_multiplier": multiplier,
+        "reason": str(market_context.get("summary", ""))[:700],
+    }
+
+
+def extract_premarket_symbol_map(premarket_plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Normalize premarket_trade_plan.json into per-symbol records."""
+    out: dict[str, dict[str, Any]] = {}
+    if not isinstance(premarket_plan, dict) or not premarket_plan:
+        return out
+
+    for item in premarket_plan.get("daily_trade_plans", []) or []:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol", "")).upper().strip().replace(".", "-")
+        if not symbol:
+            continue
+
+        levels = item.get("combined_support_and_resistance_levels", {}) or {}
+        entries = item.get("trade_entries_and_exits", {}) or {}
+        calls = entries.get("calls", {}) or {}
+        puts = entries.get("puts", {}) or {}
+
+        out[symbol] = {
+            "premarket_valid_setup": bool(item.get("valid_setup", False)),
+            "premarket_setup_reason": str(item.get("setup_reason", ""))[:700],
+            "premarket_current_price": item.get("current_price"),
+            "premarket_call_entry_price": calls.get("entry_price"),
+            "premarket_call_stop_loss": calls.get("stop_loss"),
+            "premarket_call_take_profit": calls.get("take_profit"),
+            "premarket_put_entry_price": puts.get("entry_price"),
+            "premarket_put_stop_loss": puts.get("stop_loss"),
+            "premarket_put_take_profit": puts.get("take_profit"),
+            "premarket_resistance_1": levels.get("resistance_1"),
+            "premarket_resistance_2": levels.get("resistance_2"),
+            "premarket_resistance_3": levels.get("resistance_3"),
+            "premarket_support_1": levels.get("support_1"),
+            "premarket_support_2": levels.get("support_2"),
+            "premarket_support_3": levels.get("support_3"),
+        }
+
+    # Fallback to raw pattern plans if daily_trade_plans is absent.
+    if not out:
+        for item in premarket_plan.get("raw_premarket_pattern_plans", []) or []:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol", "")).upper().strip().replace(".", "-")
+            if not symbol:
+                continue
+            out[symbol] = {
+                "premarket_valid_setup": bool(item.get("valid", False)),
+                "premarket_setup_reason": str(item.get("reason", ""))[:700],
+                "premarket_current_price": item.get("premarket_close"),
+                "premarket_call_entry_price": item.get("entry_price"),
+                "premarket_call_stop_loss": item.get("stop_loss"),
+                "premarket_call_take_profit": item.get("primary_target"),
+                "premarket_resistance_1": item.get("resistance"),
+                "premarket_support_1": item.get("support"),
+            }
+
+    return out
+
+
+def apply_external_trading_context(
+    predictions: pd.DataFrame,
+    market_context: dict[str, Any],
+    premarket_plan: dict[str, Any],
+    require_premarket_valid_setup: bool = True,
+) -> pd.DataFrame:
+    """Gate/annotate model predictions with market_context.json and premarket_trade_plan.json."""
+    df = predictions.copy()
+
+    permission = market_context_trade_permission(market_context)
+    premarket_by_symbol = extract_premarket_symbol_map(premarket_plan)
+    valid_premarket_symbols = {s for s, rec in premarket_by_symbol.items() if rec.get("premarket_valid_setup")}
+
+    df["has_market_context"] = permission["has_market_context"]
+    df["market_context_bias"] = permission["market_context_bias"]
+    df["market_context_permission"] = permission["market_context_permission"]
+    df["market_context_risk_level"] = permission["market_context_risk_level"]
+    df["market_context_spy_change_pct"] = permission.get("market_context_spy_change_pct", 0.0)
+    df["market_context_qqq_change_pct"] = permission.get("market_context_qqq_change_pct", 0.0)
+    df["market_context_halt_new_longs"] = bool(permission["halt_new_longs"])
+    df["market_context_weight_multiplier"] = float(permission["target_weight_multiplier"])
+    df["market_context_reason"] = permission["reason"]
+
+    df["has_premarket_trade_plan"] = bool(premarket_by_symbol)
+    df["premarket_valid_setup"] = df["symbol"].astype(str).str.upper().map(
+        lambda s: bool(premarket_by_symbol.get(s, {}).get("premarket_valid_setup", False))
+    )
+
+    for col in [
+        "premarket_setup_reason",
+        "premarket_current_price",
+        "premarket_call_entry_price",
+        "premarket_call_stop_loss",
+        "premarket_call_take_profit",
+        "premarket_put_entry_price",
+        "premarket_put_stop_loss",
+        "premarket_put_take_profit",
+        "premarket_resistance_1",
+        "premarket_resistance_2",
+        "premarket_resistance_3",
+        "premarket_support_1",
+        "premarket_support_2",
+        "premarket_support_3",
+    ]:
+        df[col] = df["symbol"].astype(str).str.upper().map(lambda s, c=col: premarket_by_symbol.get(s, {}).get(c))
+
+    long_actions = df["trade_action"].isin(["OPEN_LONG", "HOLD_LONG", "CONTINUE_HOLD_WAIT_CONFIRMATION"])
+    open_long = df["trade_action"].eq("OPEN_LONG")
+
+    if permission["halt_new_longs"]:
+        df.loc[open_long, "trade_action"] = "WATCH_MARKET_CONTEXT_HALTED"
+        df.loc[open_long, "entry_signal"] = 0
+
+    if require_premarket_valid_setup and premarket_by_symbol:
+        lacks_valid_premarket = ~df["symbol"].astype(str).str.upper().isin(valid_premarket_symbols)
+        downgrade = open_long & lacks_valid_premarket
+        df.loc[downgrade, "trade_action"] = "WATCH_NO_VALID_PREMARKET_SETUP"
+        df.loc[downgrade, "entry_signal"] = 0
+
+    # Never block LIQUIDATE. Existing hold sizing can be reduced by market context,
+    # but exits remain fully available to the downstream executor.
+    if "target_weight" in df.columns:
+        df.loc[long_actions, "target_weight"] = df.loc[long_actions, "target_weight"] * float(permission["target_weight_multiplier"])
+
+    return df
+
+
 # =============================================================================
 # Data helpers
 # =============================================================================
+
+def run_regime_model_if_available() -> bool:
+    if not REGIME_MODEL_SCRIPT_PATH.exists():
+        print(f"[model] {REGIME_MODEL_SCRIPT_PATH} not found; skipping")
+        return False
+
+    try:
+        print("[model] running regime-aware continuation model")
+        code = os.system(f"{os.sys.executable} {REGIME_MODEL_SCRIPT_PATH}")
+        if code != 0:
+            print(f"[model] model.py exited with code={code}")
+            return False
+
+        return REGIME_POSITION_PLAN_PATH.exists()
+
+    except Exception as exc:
+        print(f"[model] failed to run model.py: {exc}")
+        return False
 
 def load_data(path: Path) -> pd.DataFrame:
     if not path.exists():
@@ -1067,6 +1347,13 @@ def apply_position_sizing(universe: pd.DataFrame) -> pd.DataFrame:
         if total_weight > params["gross_exposure"]:
             df["target_weight"] *= params["gross_exposure"] / total_weight
 
+    # Optional market-context risk downshift. This is populated when main() is
+    # called with --market-context-json. It can shrink or zero new long sizing,
+    # while still allowing LIQUIDATE actions to pass through.
+    if "market_context_weight_multiplier" in df.columns:
+        multiplier = pd.to_numeric(df["market_context_weight_multiplier"], errors="coerce").fillna(1.0).clip(0.0, 1.0)
+        df["target_weight"] = df["target_weight"] * multiplier
+
     df["target_dollars"] = ACCOUNT_EQUITY * df["target_weight"]
     df["recommended_shares"] = np.floor(
         df["target_dollars"] / numeric_series(df, "close").replace(0, np.nan)
@@ -1107,6 +1394,8 @@ def build_latest_universe(predictions: pd.DataFrame) -> pd.DataFrame:
         "HOLD_LONG": 1,
         "CONTINUE_HOLD_WAIT_CONFIRMATION": 2,
         "WATCH_3_BARS": 3,
+        "WATCH_MARKET_CONTEXT_HALTED": 3,
+        "WATCH_NO_VALID_PREMARKET_SETUP": 3,
         "NO_TRADE": 4,
         "LIQUIDATE": 9,
     }
@@ -1186,6 +1475,13 @@ def save_outputs(
         "entry_threshold",
         "explosion_setup_score",
         "risk_on_score",
+        "market_context_bias",
+        "market_context_permission",
+        "market_context_risk_level",
+        "premarket_valid_setup",
+        "premarket_call_entry_price",
+        "premarket_call_stop_loss",
+        "premarket_call_take_profit",
         "momentum_favorable",
         "momentum_steady",
         "momentum_negative",
@@ -1214,8 +1510,43 @@ def save_outputs(
 # =============================================================================
 # Main
 # =============================================================================
+# =============================================================================
+# Main
+# =============================================================================
+
+def env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() not in {"0", "false", "no", "off", "disable", "disabled"}
+
+
+def load_runtime_trading_context() -> None:
+    """
+    Automatically load model trading context from standard daily_system_outputs files.
+
+    No command-line arguments are required. Optional env toggles:
+      MODEL_USE_MARKET_CONTEXT=0 disables market_context.json
+      MODEL_USE_PREMARKET_PLAN=0 disables premarket_trade_plan.json
+      MODEL_REQUIRE_PREMARKET_VALID_SETUP=0 allows OPEN_LONG without valid premarket setup
+    """
+    global ACTIVE_MARKET_CONTEXT, ACTIVE_PREMARKET_TRADE_PLAN, ACTIVE_REQUIRE_PREMARKET_VALID_SETUP
+
+    use_market_context = env_bool("MODEL_USE_MARKET_CONTEXT", True)
+    use_premarket_plan = env_bool("MODEL_USE_PREMARKET_PLAN", True)
+
+    ACTIVE_MARKET_CONTEXT = read_optional_json(DEFAULT_MARKET_CONTEXT_PATH) if use_market_context else {}
+    ACTIVE_PREMARKET_TRADE_PLAN = read_optional_json(DEFAULT_PREMARKET_TRADE_PLAN_PATH) if use_premarket_plan else {}
+    ACTIVE_REQUIRE_PREMARKET_VALID_SETUP = env_bool("MODEL_REQUIRE_PREMARKET_VALID_SETUP", True)
+
+    print(f"[context] market_context={bool(ACTIVE_MARKET_CONTEXT)} path={DEFAULT_MARKET_CONTEXT_PATH if use_market_context else 'disabled'}")
+    print(f"[context] premarket_trade_plan={bool(ACTIVE_PREMARKET_TRADE_PLAN)} path={DEFAULT_PREMARKET_TRADE_PLAN_PATH if use_premarket_plan else 'disabled'}")
+    print(f"[context] require_valid_premarket_setup={ACTIVE_REQUIRE_PREMARKET_VALID_SETUP}")
+
 
 def main() -> None:
+    load_runtime_trading_context()
+
     print("===== REGIME-AWARE PRODUCTION CONTINUATION MODEL =====")
     print(f"[load] {INPUT_PATH}")
 
@@ -1334,6 +1665,13 @@ def main() -> None:
 
     predictions = assign_trade_actions(predictions)
 
+    predictions = apply_external_trading_context(
+        predictions=predictions,
+        market_context=ACTIVE_MARKET_CONTEXT,
+        premarket_plan=ACTIVE_PREMARKET_TRADE_PLAN,
+        require_premarket_valid_setup=ACTIVE_REQUIRE_PREMARKET_VALID_SETUP,
+    )
+
     predictions = predictions.sort_values(
         ["timestamp", "explosive_continuation_probability"],
         ascending=[True, False],
@@ -1364,6 +1702,7 @@ def main() -> None:
     print(f"entry_threshold={entry_threshold:.2f}")
     print(f"latest_date={predictions['timestamp'].max()}")
     print(f"universe_size={len(universe)}")
+
     if not universe.empty and "market_regime" in universe.columns:
         print(f"latest_regime={universe['market_regime'].iloc[0]}")
         print(f"latest_route={universe['route'].iloc[0]}")

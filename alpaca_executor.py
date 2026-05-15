@@ -87,8 +87,11 @@ class ExecutorConfig:
     cash_buffer_pct: float = 0.08
     min_cash_dollars: float = 500.0
     min_trade_dollars: float = 100.0
+    # max_order_dollars is dynamically overwritten from account equity unless
+    # dynamic_account_scaling=False.
     max_order_dollars: float = 15_000.0
     max_single_order_qty: int = 10_000
+    dynamic_account_scaling: bool = True
 
     # Execution behavior.
     sell_first: bool = True
@@ -152,6 +155,47 @@ class AccountSnapshot:
     buying_power: float
     portfolio_value: float
     timestamp: str
+
+
+def scale_executor_config_for_account(
+    account: AccountSnapshot | float,
+    config: ExecutorConfig | None = None,
+) -> ExecutorConfig:
+    """
+    Scale execution risk controls from actual account equity.
+
+    This keeps one order, one daily loss, or one cash-buffer rule from being
+    accidentally sized for a $100K account when the broker account is smaller.
+    """
+    cfg = config or ExecutorConfig()
+    equity = float(account.equity if isinstance(account, AccountSnapshot) else account)
+    equity = max(equity, 1.0)
+
+    if not cfg.dynamic_account_scaling:
+        return cfg
+
+    if equity < 15_000:
+        max_order_weight = 0.15
+        cfg.cash_buffer_pct = max(cfg.cash_buffer_pct, 0.12)
+    elif equity < 25_000:
+        max_order_weight = 0.18
+        cfg.cash_buffer_pct = max(cfg.cash_buffer_pct, 0.10)
+    elif equity < 50_000:
+        max_order_weight = 0.20
+        cfg.cash_buffer_pct = max(cfg.cash_buffer_pct, 0.09)
+    else:
+        max_order_weight = 0.25
+        cfg.cash_buffer_pct = max(cfg.cash_buffer_pct, 0.08)
+
+    cfg.min_cash_dollars = max(150.0, min(1_000.0, equity * 0.025))
+    cfg.min_trade_dollars = max(50.0, min(250.0, equity * 0.0075))
+    cfg.max_order_dollars = min(cfg.max_order_dollars, equity * max_order_weight)
+    cfg.max_daily_loss_dollars = min(
+        abs(cfg.max_daily_loss_dollars),
+        equity * abs(cfg.max_daily_loss_pct),
+    )
+
+    return cfg
 
 
 # =============================================================================
@@ -1230,6 +1274,7 @@ def run_execution(
     client = get_trading_client(config)
 
     account_before = get_account_snapshot(client)
+    config = scale_executor_config_for_account(account_before, config)
     positions_before = get_positions_df(client)
 
     print("===== ALPACA EXECUTOR =====")
@@ -1372,8 +1417,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--live", action="store_true")
 
     parser.add_argument("--cash-buffer", type=float, default=0.08)
-    parser.add_argument("--min-trade-dollars", type=float, default=100.0)
+    parser.add_argument("--min-trade-dollars", type=float, default=None)
     parser.add_argument("--max-order-dollars", type=float, default=15_000.0)
+    parser.add_argument("--disable-account-scaling", action="store_true")
     parser.add_argument("--cancel-open-orders-first", action="store_true")
 
     parser.add_argument("--allow-closed-market", action="store_true")
@@ -1432,8 +1478,9 @@ def main() -> None:
     config = ExecutorConfig(
         paper=not args.live,
         cash_buffer_pct=args.cash_buffer,
-        min_trade_dollars=args.min_trade_dollars,
+        min_trade_dollars=args.min_trade_dollars if args.min_trade_dollars is not None else ExecutorConfig().min_trade_dollars,
         max_order_dollars=args.max_order_dollars,
+        dynamic_account_scaling=not args.disable_account_scaling,
         cancel_open_orders_first=args.cancel_open_orders_first,
         require_market_open=not args.allow_closed_market,
         wait_for_market_open=args.wait_for_open,

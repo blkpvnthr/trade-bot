@@ -894,7 +894,11 @@ def rank_candidates(latest: pd.DataFrame, model: Pipeline) -> pd.DataFrame:
 
     if latest.empty:
         return latest
+    if "signal_confidence" not in latest.columns:
+        latest["signal_confidence"] = latest.get("trade_confidence", 0.50)
 
+    if "trade_confidence" not in latest.columns:
+        latest["trade_confidence"] = latest["signal_confidence"]
     latest["model_continuation_prob"] = model.predict_proba(latest[FEATURES])[:, 1]
     
     latest["rank_score"] = (

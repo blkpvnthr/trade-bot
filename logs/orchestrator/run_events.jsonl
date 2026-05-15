@@ -1,0 +1,206 @@
+{"timestamp_utc": "2026-05-12T15:45:08.379164+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T15:45:14.900284+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "PACS", "ZBRA", "RAL", "SE", "VG", "ARMK", "CUK", "INTR", "INSM", "NOVT", "HALO", "SGHC", "BTI", "MDB", "TIGO", "NFLX", "FLUT", "SPOT", "ALHC", "DKNG", "RBLX", "PLNT", "MLCO", "LEGN", "OSCR", "QGEN", "VIST", "HAWK", "ALKS"]}}
+{"timestamp_utc": "2026-05-12T15:45:14.900369+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T15:45:16.624621+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:45:23.158692+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:45:53.941843+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 1, "ok": false}}
+{"timestamp_utc": "2026-05-12T15:45:54.116107+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:45:54.123143+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T15:45:54.123221+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'poll_once'"}}
+{"timestamp_utc": "2026-05-12T15:46:54.196280+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T15:46:58.402898+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "PACS", "ZBRA", "RAL", "SE", "VG", "ARMK", "CUK", "INTR", "INSM", "NOVT", "HALO", "SGHC", "MDB", "BTI", "TIGO", "NFLX", "FLUT", "SPOT", "ALHC", "PLNT", "DKNG", "MLCO", "LEGN", "SHAK", "QGEN", "OSCR", "VIST", "ALKS", "LTH"]}}
+{"timestamp_utc": "2026-05-12T15:46:58.403083+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T15:46:59.983799+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:47:04.900486+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:47:30.698913+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 1, "ok": false}}
+{"timestamp_utc": "2026-05-12T15:47:30.923455+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:47:30.928232+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T15:47:30.928297+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'poll_once'"}}
+{"timestamp_utc": "2026-05-12T15:48:30.993782+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T15:48:35.002621+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "PACS", "ZBRA", "RAL", "SE", "VG", "ARMK", "CUK", "INTR", "NOVT", "INSM", "HALO", "SGHC", "MDB", "BTI", "TIGO", "NFLX", "SPOT", "FLUT", "ALHC", "DKNG", "PLNT", "MLCO", "LEGN", "SHAK", "QGEN", "VIST", "LTH", "ALKS", "HAWK"]}}
+{"timestamp_utc": "2026-05-12T15:48:35.002824+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T15:48:36.908349+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:48:41.549931+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:49:07.188018+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:49:07.413137+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:49:07.418566+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T15:49:07.418629+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'poll_once'"}}
+{"timestamp_utc": "2026-05-12T15:50:03.523686+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T15:50:10.056469+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "PACS", "ZBRA", "RAL", "SE", "VG", "ARMK", "CUK", "INTR", "NOVT", "INSM", "HALO", "SGHC", "BTI", "MDB", "TIGO", "NFLX", "FLUT", "SPOT", "PSN", "ALHC", "PLNT", "DKNG", "MLCO", "SHAK", "QGEN", "OSCR", "VIST", "LTH", "ALKS"]}}
+{"timestamp_utc": "2026-05-12T15:50:10.056549+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T15:50:11.731306+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:50:16.049837+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:50:41.856912+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:50:42.030122+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:50:42.036848+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T15:50:42.036916+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T15:51:42.095994+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T15:51:46.963313+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "PACS", "ZBRA", "RAL", "SE", "VG", "ARMK", "CUK", "INTR", "INSM", "NOVT", "HALO", "SGHC", "BTI", "MDB", "NFLX", "TIGO", "VRTX", "FLUT", "NATL", "SPOT", "ALHC", "PSN", "PLNT", "DKNG", "MLCO", "SHAK", "VIST", "QGEN", "LTH"]}}
+{"timestamp_utc": "2026-05-12T15:51:46.963607+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T15:51:48.586877+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:51:52.976859+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:52:20.765441+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:52:20.981444+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:52:20.987354+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T15:52:20.987438+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T15:53:20.982239+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T15:53:25.369887+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "PACS", "ZBRA", "RAL", "SE", "VG", "ARMK", "CUK", "INTR", "INSM", "NOVT", "HALO", "SGHC", "BTI", "MDB", "NFLX", "VRTX", "PM", "PLNT", "NATL", "FLUT", "ALHC", "PSN", "SPOT", "DKNG", "MLCO", "VIST", "ALKS", "LTH", "HAWK"]}}
+{"timestamp_utc": "2026-05-12T15:53:25.369987+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T15:53:26.877279+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:53:32.048467+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:53:57.728130+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:53:57.973019+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:53:57.977815+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T15:53:57.977884+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T15:54:58.036000+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T15:55:02.453546+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "PACS", "ZBRA", "RAL", "SE", "ARMK", "VG", "CUK", "INTR", "NOVT", "INSM", "HALO", "SGHC", "BTI", "MDB", "NFLX", "PM", "VRTX", "FLUT", "PSN", "PLNT", "NATL", "ALHC", "DKNG", "MWH", "MLCO", "OSCR", "VIST", "ALKS", "LTH"]}}
+{"timestamp_utc": "2026-05-12T15:55:02.453648+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T15:55:05.435030+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:55:10.043332+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:55:35.287502+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:55:35.530769+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:55:35.536620+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T15:55:35.536697+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T15:56:35.605077+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T15:56:40.479340+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "PACS", "ZBRA", "RAL", "SE", "ARMK", "VG", "CUK", "INTR", "NOVT", "INSM", "HALO", "BTI", "MDB", "SGHC", "NFLX", "PM", "FLUT", "VRTX", "PLNT", "PSN", "SPOT", "ALHC", "NATL", "GMAB", "DKNG", "MLCO", "VIST", "ALKS", "LTH"]}}
+{"timestamp_utc": "2026-05-12T15:56:40.479433+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T15:56:42.160788+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:56:47.273698+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:57:17.340008+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:57:17.582530+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:57:17.587853+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T15:57:17.587926+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T15:58:08.427156+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T15:58:14.647022+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "PACS", "ZBRA", "RAL", "SE", "ARMK", "VG", "CUK", "INTR", "INSM", "HALO", "NOVT", "BTI", "MDB", "SGHC", "NFLX", "FLUT", "VRTX", "PM", "ALHC", "SPOT", "PLNT", "PSN", "ABBV", "DKNG", "MLCO", "ZBH", "VIST", "ALKS", "LTH"]}}
+{"timestamp_utc": "2026-05-12T15:58:14.647100+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T15:58:16.230992+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:58:20.889473+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:58:46.706337+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:58:46.868908+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:58:46.877470+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T15:58:46.877550+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T15:59:46.948104+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T15:59:51.751294+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "PACS", "ZBRA", "RAL", "SE", "ARMK", "VG", "CUK", "INSM", "INTR", "HALO", "NOVT", "BTI", "MDB", "SGHC", "NFLX", "VRTX", "FLUT", "PM", "ALHC", "SPOT", "NATL", "PLNT", "PSN", "ABBV", "ZBH", "LEGN", "MLCO", "VIST", "LTH"]}}
+{"timestamp_utc": "2026-05-12T15:59:51.751509+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T15:59:53.300427+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T15:59:57.484188+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:00:38.982688+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:00:39.222308+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:00:39.227336+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T16:00:39.227399+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T16:01:39.300412+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T16:01:43.364755+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "PACS", "ZBRA", "RAL", "SE", "ARMK", "VG", "CUK", "INTR", "INSM", "HALO", "NOVT", "SGHC", "BTI", "MDB", "NFLX", "VRTX", "PM", "FLUT", "PSN", "ALHC", "SPOT", "NATL", "PLNT", "LEGN", "ZBH", "MLCO", "VIST", "ALKS", "LTH"]}}
+{"timestamp_utc": "2026-05-12T16:01:43.364853+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T16:01:44.990263+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:01:50.146272+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:02:19.762478+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:02:20.010552+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:02:20.016820+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T16:02:20.016892+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T16:03:20.091756+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T16:03:24.199551+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "PACS", "ZBRA", "RAL", "SE", "VG", "ARMK", "CUK", "INTR", "INSM", "HALO", "NOVT", "SONY", "BTI", "SGHC", "MDB", "NFLX", "VRTX", "PLNT", "PM", "ALHC", "FLUT", "PSN", "NATL", "SPOT", "LEGN", "ZBH", "MLCO", "ALKS", "VIST"]}}
+{"timestamp_utc": "2026-05-12T16:03:24.199679+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T16:03:25.843588+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:03:30.616867+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:03:58.321282+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:03:58.559915+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:03:58.565577+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T16:03:58.565653+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T16:04:58.627836+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T16:05:03.910560+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "PACS", "ZBRA", "RAL", "SE", "VG", "ARMK", "CUK", "INSM", "INTR", "HALO", "NOVT", "SONY", "BTI", "MDB", "SGHC", "PLNT", "NFLX", "VRTX", "ALHC", "PM", "FLUT", "PSN", "LEGN", "ZBH", "FIGR", "MLCO", "AMTM", "ALKS", "OSCR"]}}
+{"timestamp_utc": "2026-05-12T16:05:03.910777+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T16:05:05.514993+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:05:10.412338+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:05:42.318049+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:05:42.487754+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:05:42.492346+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T16:05:42.492409+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T16:06:42.543640+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T16:06:46.918867+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "PACS", "ZBRA", "RAL", "SE", "VG", "ARMK", "INSM", "CUK", "INTR", "HALO", "NOVT", "SONY", "BTI", "MDB", "SGHC", "VRTX", "NFLX", "ALHC", "PLNT", "PSN", "FLUT", "NATL", "SPOT", "FIGR", "LEGN", "ZBH", "MLCO", "AMTM", "ALKS"]}}
+{"timestamp_utc": "2026-05-12T16:06:46.918984+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T16:06:48.409547+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:06:52.877993+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:07:19.481803+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:07:19.726259+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:07:19.731183+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T16:07:19.731252+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T16:08:19.794487+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T16:08:24.398601+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "ZBRA", "PACS", "RAL", "SE", "VG", "ARMK", "INSM", "CUK", "HALO", "INTR", "NOVT", "BTI", "MDB", "NFLX", "ALHC", "VRTX", "PLNT", "SGHC", "PSN", "FLUT", "NATL", "LEGN", "FIGR", "HUM", "ZBH", "MLCO", "ALKS", "AMTM", "OSCR"]}}
+{"timestamp_utc": "2026-05-12T16:08:24.398709+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T16:08:25.974950+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:08:31.084691+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:08:56.974474+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:08:57.153702+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:08:57.161819+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T16:08:57.161893+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T16:09:57.210263+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T16:10:02.552320+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "ZBRA", "PACS", "RAL", "SE", "VG", "ARMK", "INSM", "CUK", "HALO", "INTR", "NOVT", "BTI", "MDB", "NFLX", "ALHC", "VRTX", "PLNT", "PM", "SGHC", "PSN", "NATL", "FLUT", "FIGR", "LEGN", "ZBH", "HUM", "MLCO", "ALKS", "AMTM"]}}
+{"timestamp_utc": "2026-05-12T16:10:02.552423+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T16:10:04.127319+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:10:08.589843+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:10:36.884288+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:10:37.119578+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:10:37.124600+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T16:10:37.124672+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T16:11:37.180426+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T16:11:41.844131+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "ZBRA", "PACS", "RAL", "SE", "VG", "ARMK", "INSM", "CUK", "INTR", "HALO", "NOVT", "BTI", "MDB", "NFLX", "ALHC", "VRTX", "SGHC", "PLNT", "FIGR", "PSN", "SPOT", "NATL", "LEGN", "FLUT", "ZBH", "HUM", "MLCO", "ALKS", "AMTM"]}}
+{"timestamp_utc": "2026-05-12T16:11:41.844221+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T16:11:44.017944+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:11:48.500666+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:12:13.131264+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:12:13.300591+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:12:13.305217+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T16:12:13.305288+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T16:13:13.381360+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T16:13:17.945255+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "ZBRA", "PACS", "RAL", "SE", "VG", "ARMK", "INSM", "CUK", "HALO", "INTR", "NOVT", "BTI", "MDB", "SGHC", "NFLX", "ALHC", "VRTX", "PLNT", "PM", "PSN", "SPOT", "LEGN", "FLUT", "FIGR", "HUM", "ZBH", "MLCO", "ALKS", "AMTM"]}}
+{"timestamp_utc": "2026-05-12T16:13:17.945491+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T16:13:19.414782+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:13:23.432600+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:13:48.461527+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:13:48.625800+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:13:48.629709+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T16:13:48.629789+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T16:14:48.699829+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T16:14:53.325708+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "ZBRA", "PACS", "RAL", "SE", "VG", "ARMK", "INSM", "INTR", "CUK", "HALO", "NOVT", "BTI", "MDB", "PSN", "ALHC", "NFLX", "SGHC", "LEGN", "VRTX", "PM", "PLNT", "SPOT", "FLUT", "FIGR", "HUM", "ALKS", "PTRN", "ZBH", "MLCO"]}}
+{"timestamp_utc": "2026-05-12T16:14:53.325927+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T16:14:54.771566+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:14:58.539668+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:15:30.817498+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:15:30.977658+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:15:30.982085+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T16:15:30.982177+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T16:16:31.054544+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T16:16:35.833011+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "ZBRA", "PACS", "RAL", "SE", "VG", "ARMK", "INSM", "INTR", "CUK", "HALO", "NOVT", "SONY", "BTI", "MDB", "ALHC", "NFLX", "VRTX", "PSN", "PLNT", "LEGN", "SPOT", "FLUT", "HUM", "ZBH", "ALKS", "FIGR", "FLY", "MLCO", "LTH"]}}
+{"timestamp_utc": "2026-05-12T16:16:35.833210+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T16:16:37.337400+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:16:41.310479+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:17:06.655651+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:17:06.818940+00:00", "event": "script_finished", "payload": {"script": "portfolio_optimizer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:17:06.822797+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 15, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T16:17:06.822857+00:00", "event": "orchestration_error", "payload": {"error": "ExecutorConfig.__init__() got an unexpected keyword argument 'rebalance_orders_path'"}}
+{"timestamp_utc": "2026-05-12T16:19:43.998922+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T16:19:52.655989+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "PACS", "ZBRA", "RAL", "SE", "VG", "ARMK", "INSM", "INTR", "CUK", "HALO", "NOVT", "SONY", "BTI", "MDB", "ALHC", "NFLX", "VRTX", "PSN", "LEGN", "PLNT", "FIGR", "FLUT", "HUM", "AMTM", "ALKS", "ZBH", "PTRN", "FLY", "MLCO"]}}
+{"timestamp_utc": "2026-05-12T16:19:52.656061+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T16:19:55.011824+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:19:59.213742+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:20:29.543266+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:20:29.897456+00:00", "event": "script_finished", "payload": {"script": "portfolio_rebalancer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:20:29.903886+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 12, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T16:21:07.970058+00:00", "event": "cycle_finished", "payload": {"rebalance_rows": 0, "exit_rows": 12}}
+{"timestamp_utc": "2026-05-12T16:22:08.056807+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": false}}
+{"timestamp_utc": "2026-05-12T16:22:08.057515+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T16:22:10.027544+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:22:13.626796+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:22:41.867827+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:22:42.323501+00:00", "event": "script_finished", "payload": {"script": "portfolio_rebalancer.py", "returncode": 1, "ok": false}}
+{"timestamp_utc": "2026-05-12T16:22:42.328750+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 12, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T16:22:42.372624+00:00", "event": "orchestration_error", "payload": {"error": "1 validation error for TradeAccount\nstatus\n  Input should be 'ACCOUNT_CLOSED', 'ACCOUNT_UPDATED', 'ACTION_REQUIRED', 'ACTIVE', 'AML_REVIEW', 'APPROVAL_PENDING', 'APPROVED', 'DISABLED', 'DISABLE_PENDING', 'EDITED', 'INACTIVE', 'KYC_SUBMITTED', 'LIMITED', 'ONBOARDING', 'PAPER_ONLY', 'REAPPROVAL_PENDING', 'REJECTED', 'RESUBMITTED', 'SIGNED_UP', 'SUBMISSION_FAILED' or 'SUBMITTED' [type=enum, input_value='ACCOUNT_CLOSED_PENDING', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.12/v/enum"}}
+{"timestamp_utc": "2026-05-12T16:24:06.191025+00:00", "event": "cycle_started", "payload": {"refresh_universe_now": true}}
+{"timestamp_utc": "2026-05-12T16:24:13.140453+00:00", "event": "llm_universe_refreshed", "payload": {"market_tone": "mixed", "summary": "LLM unavailable; using Yahoo Finance day-gainers ranked by price move, liquidity, and financial details.", "symbols": ["QUBT", "PACS", "ZBRA", "RAL", "SE", "VG", "ARMK", "INSM", "HLIO", "HALO", "CUK", "INTR", "NOVT", "BTI", "MDB", "ALHC", "NFLX", "FIGR", "VRTX", "PSN", "PLNT", "FLUT", "LEGN", "PTRN", "ZBH", "ALKS", "AMTM", "HUM", "PAYP", "MLCO"]}}
+{"timestamp_utc": "2026-05-12T16:24:13.140525+00:00", "event": "script_missing", "payload": {"script": "sentiment_engine.py"}}
+{"timestamp_utc": "2026-05-12T16:24:14.637606+00:00", "event": "script_finished", "payload": {"script": "features.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:24:19.154358+00:00", "event": "script_finished", "payload": {"script": "walkforward.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:24:44.331599+00:00", "event": "script_finished", "payload": {"script": "scanner.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:24:44.761142+00:00", "event": "script_finished", "payload": {"script": "portfolio_rebalancer.py", "returncode": 0, "ok": true}}
+{"timestamp_utc": "2026-05-12T16:24:44.766935+00:00", "event": "orders_filtered", "payload": {"rebalance_rows": 0, "exit_rows": 0, "locked_symbols": 30, "scanner_symbols": 29, "leadership_rows": 29}}
+{"timestamp_utc": "2026-05-12T16:24:44.847839+00:00", "event": "cycle_finished", "payload": {"rebalance_rows": 0, "exit_rows": 0}}

@@ -1,1 +1,1 @@
-"ASTS", "BITO", "CSCO"
+"APLD", "AG", "BTI"

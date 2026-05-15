@@ -1,0 +1,642 @@
+{
+  "created_at_utc": "2026-05-13T08:08:09.687112+00:00",
+  "market_context_date_et": "2026-05-13",
+  "universe_symbol_count": 30,
+  "previous_session": {
+    "SPY": {
+      "open": 736.87,
+      "close": 738.19,
+      "high": 738.84,
+      "low": 731.83,
+      "volume": 1517551,
+      "change_pct": 0.0017913607556285793,
+      "source": "alpaca"
+    },
+    "QQQ": {
+      "open": 708.19,
+      "close": 707.22,
+      "high": 710.08,
+      "low": 696.64,
+      "volume": 979524,
+      "change_pct": -0.001369688925288437,
+      "source": "alpaca"
+    },
+    "DIA": {
+      "open": 496.71,
+      "close": 497.88,
+      "high": 498.35,
+      "low": 493.25,
+      "volume": 118371,
+      "change_pct": 0.002355499184634846,
+      "source": "alpaca"
+    },
+    "IWM": {
+      "open": 283.97,
+      "close": 282.57,
+      "high": 284.04,
+      "low": 278.28,
+      "volume": 1455809,
+      "change_pct": -0.0049300982498152734,
+      "source": "alpaca"
+    }
+  },
+  "overnight_futures": {
+    "ES": {
+      "symbol": "ES=F",
+      "midnight_price": 7434.75,
+      "latest_price": 7444.5,
+      "high": 7446.5,
+      "low": 7433.0,
+      "change_pct": 0.0013114092605668315,
+      "source": "yfinance_5m_midnight_to_930_et"
+    },
+    "NQ": {
+      "symbol": "NQ=F",
+      "midnight_price": 29261.75,
+      "latest_price": 29367.75,
+      "high": 29371.5,
+      "low": 29255.5,
+      "change_pct": 0.0036224764410877075,
+      "source": "yfinance_5m_midnight_to_930_et"
+    },
+    "YM": {
+      "symbol": "YM=F",
+      "midnight_price": 49868.0,
+      "latest_price": 49858.0,
+      "high": 49894.0,
+      "low": 49828.0,
+      "change_pct": -0.00020052939760972777,
+      "source": "yfinance_5m_midnight_to_930_et"
+    },
+    "RTY": {
+      "symbol": "RTY=F",
+      "midnight_price": 2855.5,
+      "latest_price": 2857.10009765625,
+      "high": 2858.89990234375,
+      "low": 2852.300048828125,
+      "change_pct": 0.0005603563846086068,
+      "source": "yfinance_5m_midnight_to_930_et"
+    },
+    "VIX": {
+      "symbol": "^VIX",
+      "midnight_price": 17.979999542236328,
+      "latest_price": 17.90999984741211,
+      "high": 17.989999771118164,
+      "low": 17.899999618530273,
+      "change_pct": -0.0038931978090313013,
+      "source": "yfinance_5m_midnight_to_930_et"
+    },
+    "CRUDE": {
+      "symbol": "CL=F",
+      "midnight_price": 101.05000305175781,
+      "latest_price": 101.20999908447266,
+      "high": 101.3499984741211,
+      "low": 100.55999755859375,
+      "change_pct": 0.0015833352586134275,
+      "source": "yfinance_5m_midnight_to_930_et"
+    }
+  },
+  "sector_strength": {
+    "ranked_sectors": [
+      {
+        "sector": "Healthcare",
+        "etf": "XLV",
+        "change_pct": 0.019644945115187218,
+        "close": 145.85000610351562,
+        "volume": 11895400,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Consumer Staples",
+        "etf": "XLP",
+        "change_pct": 0.012834348801410878,
+        "close": 84.44000244140625,
+        "volume": 16103800,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Financials",
+        "etf": "XLF",
+        "change_pct": 0.00781558271773708,
+        "close": 51.58000183105469,
+        "volume": 44190700,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Energy",
+        "etf": "XLE",
+        "change_pct": 0.006996703492920364,
+        "close": 57.56999969482422,
+        "volume": 36802300,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Communication Services",
+        "etf": "XLC",
+        "change_pct": 0.002422553857596821,
+        "close": 115.86000061035156,
+        "volume": 5336300,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Utilities",
+        "etf": "XLU",
+        "change_pct": 0.0011076481554408435,
+        "close": 45.189998626708984,
+        "volume": 28230700,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Real Estate",
+        "etf": "XLRE",
+        "change_pct": 0.0002244140969027697,
+        "close": 44.58000183105469,
+        "volume": 5022400,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Materials",
+        "etf": "XLB",
+        "change_pct": -0.0022961908866981906,
+        "close": 52.13999938964844,
+        "volume": 11592400,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Industrials",
+        "etf": "XLI",
+        "change_pct": -0.0039418830500598245,
+        "close": 174.35000610351562,
+        "volume": 7468700,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Consumer Discretionary",
+        "etf": "XLY",
+        "change_pct": -0.009047514502847798,
+        "close": 118.29000091552734,
+        "volume": 6621400,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Technology",
+        "etf": "XLK",
+        "change_pct": -0.015066381049044342,
+        "close": 175.1999969482422,
+        "volume": 15942100,
+        "source": "yfinance_daily"
+      }
+    ],
+    "leading_sectors": [
+      {
+        "sector": "Healthcare",
+        "etf": "XLV",
+        "change_pct": 0.019644945115187218,
+        "close": 145.85000610351562,
+        "volume": 11895400,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Consumer Staples",
+        "etf": "XLP",
+        "change_pct": 0.012834348801410878,
+        "close": 84.44000244140625,
+        "volume": 16103800,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Financials",
+        "etf": "XLF",
+        "change_pct": 0.00781558271773708,
+        "close": 51.58000183105469,
+        "volume": 44190700,
+        "source": "yfinance_daily"
+      }
+    ],
+    "lagging_sectors": [
+      {
+        "sector": "Industrials",
+        "etf": "XLI",
+        "change_pct": -0.0039418830500598245,
+        "close": 174.35000610351562,
+        "volume": 7468700,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Consumer Discretionary",
+        "etf": "XLY",
+        "change_pct": -0.009047514502847798,
+        "close": 118.29000091552734,
+        "volume": 6621400,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Technology",
+        "etf": "XLK",
+        "change_pct": -0.015066381049044342,
+        "close": 175.1999969482422,
+        "volume": 15942100,
+        "source": "yfinance_daily"
+      }
+    ],
+    "average_sector_change_pct": 0.0018812933407768926,
+    "sector_rotation_bias": "defensive"
+  },
+  "key_etf_risk_signals": {
+    "etfs": {
+      "SPY": {
+        "open": 736.8900146484375,
+        "close": 738.1799926757812,
+        "previous_close": 739.2999877929688,
+        "day_change_pct": 0.0017505706437874746,
+        "prev_close_change_pct": -0.0015149399914519135,
+        "volume": 54087300,
+        "source": "yfinance_daily"
+      },
+      "QQQ": {
+        "open": 708.219970703125,
+        "close": 707.239990234375,
+        "previous_close": 713.2899780273438,
+        "day_change_pct": -0.001383723291193073,
+        "prev_close_change_pct": -0.00848180680976407,
+        "volume": 45600700,
+        "source": "yfinance_daily"
+      },
+      "VXX": {
+        "open": 28.65999984741211,
+        "close": 27.780000686645508,
+        "previous_close": 28.469999313354492,
+        "day_change_pct": -0.030704785954353775,
+        "prev_close_change_pct": -0.024235990282772013,
+        "volume": 10561700,
+        "source": "yfinance_daily"
+      },
+      "TLT": {
+        "open": 85.19000244140625,
+        "close": 84.98999786376953,
+        "previous_close": 85.55999755859375,
+        "day_change_pct": -0.0023477470583979088,
+        "prev_close_change_pct": -0.006661988208144454,
+        "volume": 27641700,
+        "source": "yfinance_daily"
+      },
+      "UUP": {
+        "open": 27.479999542236328,
+        "close": 27.450000762939453,
+        "previous_close": 27.350000381469727,
+        "day_change_pct": -0.0010916586534424066,
+        "prev_close_change_pct": 0.0036563210265063706,
+        "volume": 2007800,
+        "source": "yfinance_daily"
+      }
+    },
+    "risk_flags": [
+      "QQQ weak"
+    ],
+    "risk_signal_bias": "mixed",
+    "interpretation": {
+      "SPY": "broad_market_direction",
+      "QQQ": "growth_tech_direction",
+      "VXX": "volatility_risk",
+      "TLT": "bond_rate_risk",
+      "UUP": "dollar_liquidity_risk"
+    }
+  },
+  "serpapi_context": {
+    "date": "2026-05-13",
+    "queries": {
+      "previous_day_market_news": "stock market news yesterday S&P 500 Nasdaq Dow 2026-05-13",
+      "fed_events_today": "Federal Reserve FOMC Powell Fed speaker today 2026-05-13",
+      "jobs_report_today": "jobs report unemployment nonfarm payrolls jobless claims today 2026-05-13",
+      "inflation_report_today": "CPI PPI inflation report today 2026-05-13",
+      "pce_report_today": "PCE price index report today 2026-05-13",
+      "opec_events_today": "OPEC meeting oil production decision today 2026-05-13",
+      "presidential_trade_speech_today": "President trade tariff speech today markets 2026-05-13",
+      "earnings_today": "earnings calendar today major companies 2026-05-13",
+      "economic_calendar_today": "economic calendar today CPI PCE Fed jobs report 2026-05-13"
+    },
+    "results": {
+      "previous_day_market_news": [],
+      "fed_events_today": [],
+      "jobs_report_today": [],
+      "inflation_report_today": [],
+      "pce_report_today": [],
+      "opec_events_today": [],
+      "presidential_trade_speech_today": [],
+      "earnings_today": [],
+      "economic_calendar_today": []
+    },
+    "source": "not_configured"
+  },
+  "options_context": {
+    "put_call_ratio_market": null,
+    "options_bias_market": "unknown",
+    "symbols": {
+      "SPY": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "QQQ": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "DIA": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "IWM": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "QUBT": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "PACS": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "RAL": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "SE": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "ZBRA": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "NOVT": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "INSM": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "HLIO": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "ARMK": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "INTR": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "VG": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "WOLF": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "LEGN": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "HALO": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "ALHC": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "ERO": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "LQDA": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "HUM": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "HBM": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "BTI": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "EQPT": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "CUK": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "OSCR": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "ALKS": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "HII": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "CNC": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "MDB": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "PSN": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "ASH": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      },
+      "QS": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "not_configured"
+      }
+    },
+    "source": "not_configured"
+  },
+  "calendar_context": {
+    "date": "2026-05-13",
+    "weekday": "Wednesday",
+    "is_friday": false
+  },
+  "data_sources": {
+    "alpaca": true,
+    "yfinance": true,
+    "serpapi": false,
+    "openai": true,
+    "tradier": false
+  },
+  "overall_market_bias": "mixed",
+  "trade_permission": "cautious",
+  "risk_level": "medium",
+  "summary": "Market shows mixed signals with defensive sector leadership and weak growth/tech sectors. Futures are slightly positive but QQQ is weak and volatility is low. No major macro events confirmed today, but caution is advised due to mixed ETF risk signals and lack of options data.",
+  "decision_reasons": [
+    "Leading sectors are defensive (Healthcare, Consumer Staples, Financials) indicating risk aversion.",
+    "Growth and technology sectors are lagging, with QQQ showing weakness.",
+    "Futures are slightly positive but not strongly bullish; VIX and VXX are stable or declining, indicating low volatility.",
+    "No confirmed Fed, jobs, inflation, PCE, OPEC, or presidential trade events today to justify aggressive positioning.",
+    "ETF risk signals are mixed with QQQ weak but VXX declining, suggesting no strong risk-off panic but some caution.",
+    "Lack of options put/call data increases uncertainty and warrants cautious trading."
+  ],
+  "event_evidence": {
+    "fed_events_today": [],
+    "jobs_report_today": [],
+    "inflation_report_today": [],
+    "pce_report_today": [],
+    "opec_events_today": [],
+    "presidential_trade_speech_today": []
+  },
+  "event_flags": {
+    "fed_events_today": false,
+    "opec_events_today": false,
+    "jobs_report_today": false,
+    "inflation_report_today": false,
+    "pce_report_today": false,
+    "presidential_trade_speech_today": false,
+    "major_earnings_today": false
+  },
+  "sector_context_summary": {
+    "leading_sectors": [
+      "Healthcare",
+      "Consumer Staples",
+      "Financials"
+    ],
+    "lagging_sectors": [
+      "Industrials",
+      "Consumer Discretionary",
+      "Technology"
+    ],
+    "sector_rotation_bias": "defensive"
+  },
+  "key_etf_context_summary": {
+    "risk_signal_bias": "mixed",
+    "risk_flags": [
+      "QQQ weak"
+    ]
+  },
+  "news_context_summary": {
+    "previous_day_market_news": [],
+    "scheduled_market_events_today": [],
+    "earnings_today": []
+  },
+  "classifier_model": "gpt-4.1-mini"
+}

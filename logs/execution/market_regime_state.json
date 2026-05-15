@@ -1,0 +1,19 @@
+{
+  "state": "TREND_RISK_ON",
+  "risk_state": "RISK_ON",
+  "max_gross_exposure": 0.92,
+  "max_position_weight": 0.18,
+  "setup_score_adjustment": 0.04,
+  "allow_long_stocks": true,
+  "allow_inverse_etfs": true,
+  "inverse_only": false,
+  "allow_options_booster": true,
+  "spy_ret_5d": 0.021403600889859264,
+  "spy_ret_20d": 0.06457745261823833,
+  "qqq_ret_5d": 0.04671841298255397,
+  "qqq_ret_20d": 0.1348913423907856,
+  "vix_ret_5d": -0.008135960947387555,
+  "vix_ret_20d": -0.027132470296151845,
+  "realized_vol_20d": 0.15572803870504376,
+  "details": "SPY/QQQ trend positive and volatility contained"
+}
