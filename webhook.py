@@ -31,6 +31,7 @@ logger = logging.getLogger("tradingview-webhook")
 MONITOR_INTERVAL_SECONDS = float(os.getenv("MONITOR_INTERVAL_SECONDS", "10"))
 TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", "3.0"))
 STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", "-1.5"))
+MIN_CASH_FLOOR = float(os.getenv("MIN_CASH_FLOOR", "0"))
 
 # =============================================================================
 # Flask App
@@ -45,6 +46,7 @@ app = Flask(__name__)
 SECRET = os.getenv("TRADINGVIEW_WEBHOOK_SECRET")
 ALPACA_KEY = os.getenv("APCA_API_KEY_ID")
 ALPACA_SECRET = os.getenv("APCA_API_SECRET_KEY")
+ALPACA_PAPER = os.getenv("APCA_PAPER", "true").lower() in ["true", "1", "yes"]
 
 if not SECRET:
     raise RuntimeError("Missing TRADINGVIEW_WEBHOOK_SECRET")
@@ -59,7 +61,7 @@ if not ALPACA_KEY or not ALPACA_SECRET:
 client = TradingClient(
     api_key=ALPACA_KEY,
     secret_key=ALPACA_SECRET,
-    paper=True,
+    paper=ALPACA_PAPER,
 )
 
 # =============================================================================
@@ -90,6 +92,43 @@ def normalize_side(side_raw: str) -> OrderSide:
     raise ValueError(f"Unsupported side/action: {side_raw}")
 
 
+def parse_float(value, default=None):
+    if value is None:
+        return default
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def get_account_cash() -> float:
+    account = client.get_account()
+    return float(account.cash)
+
+
+def validate_cash_for_buy(symbol: str, qty: float, price: float):
+    if price is None or price <= 0:
+        raise ValueError(
+            "Missing or invalid price field for cash check. "
+            "Send price from TradingView using \"price\": \"{{close}}\"."
+        )
+
+    cash = get_account_cash()
+    estimated_notional = qty * price
+    projected_cash = cash - estimated_notional
+
+    if projected_cash < MIN_CASH_FLOOR:
+        raise ValueError(
+            f"Cash guard rejected BUY: symbol={symbol}, "
+            f"cash={cash:.2f}, required={estimated_notional:.2f}, "
+            f"projected_cash={projected_cash:.2f}, "
+            f"min_cash_floor={MIN_CASH_FLOOR:.2f}"
+        )
+
+    return cash, estimated_notional, projected_cash
+
+
 def submit_market_order(symbol: str, side: OrderSide, qty: float):
     order = MarketOrderRequest(
         symbol=symbol,
@@ -110,11 +149,20 @@ def monitor_open_positions():
         f"Position monitor started | "
         f"interval={MONITOR_INTERVAL_SECONDS}s "
         f"take_profit={TAKE_PROFIT_PCT}% "
-        f"stop_loss={STOP_LOSS_PCT}%"
+        f"stop_loss={STOP_LOSS_PCT}% "
+        f"min_cash_floor={MIN_CASH_FLOOR}"
     )
 
     while True:
         try:
+            account_cash = get_account_cash()
+
+            if account_cash < MIN_CASH_FLOOR:
+                logger.critical(
+                    f"Cash floor breached | cash={account_cash:.2f} "
+                    f"min_cash_floor={MIN_CASH_FLOOR:.2f}"
+                )
+
             positions = client.get_all_positions()
 
             for position in positions:
@@ -124,7 +172,8 @@ def monitor_open_positions():
 
                 logger.info(
                     f"Monitor | symbol={symbol} qty={qty} "
-                    f"unrealized_plpc={unrealized_plpc:.2f}%"
+                    f"unrealized_plpc={unrealized_plpc:.2f}% "
+                    f"cash={account_cash:.2f}"
                 )
 
                 if qty <= 0:
@@ -171,13 +220,21 @@ def monitor_open_positions():
 
 @app.get("/")
 def health():
+    try:
+        cash = get_account_cash()
+    except Exception:
+        cash = None
+
     return jsonify({
         "ok": True,
         "service": "tradingview-webhook",
+        "paper": ALPACA_PAPER,
+        "cash": cash,
         "monitor": {
             "interval_seconds": MONITOR_INTERVAL_SECONDS,
             "take_profit_pct": TAKE_PROFIT_PCT,
             "stop_loss_pct": STOP_LOSS_PCT,
+            "min_cash_floor": MIN_CASH_FLOOR,
         },
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
@@ -229,9 +286,9 @@ def webhook():
 
         side = normalize_side(side_value)
 
-        try:
-            qty = float(data.get("qty", 1))
-        except (TypeError, ValueError):
+        qty = parse_float(data.get("qty"), default=1)
+
+        if qty is None:
             return jsonify({
                 "ok": False,
                 "error": "Invalid qty",
@@ -244,6 +301,22 @@ def webhook():
                 "error": "qty must be > 0",
                 "received_qty": qty,
             }), 400
+
+        price = parse_float(data.get("price"), default=None)
+
+        if side == OrderSide.BUY:
+            cash, estimated_notional, projected_cash = validate_cash_for_buy(
+                symbol=symbol,
+                qty=qty,
+                price=price,
+            )
+
+            logger.info(
+                f"Cash check passed | symbol={symbol} qty={qty} "
+                f"price={price:.4f} cash={cash:.2f} "
+                f"estimated_notional={estimated_notional:.2f} "
+                f"projected_cash={projected_cash:.2f}"
+            )
 
         submitted = submit_market_order(
             symbol=symbol,
