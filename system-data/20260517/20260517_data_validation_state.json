@@ -1,0 +1,208 @@
+{
+  "stage": "after_session_planning",
+  "date_et": "2026-05-17",
+  "created_at_utc": "2026-05-18T03:57:40.739629+00:00",
+  "max_age_minutes": 180,
+  "validations": [
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_latest_llm_sentiment_universe.json",
+      "exists": true,
+      "mtime_utc": "2026-05-18T03:49:22.235827+00:00",
+      "age_minutes": 8.308,
+      "date_et": "2026-05-17",
+      "ok": true,
+      "reason": "fresh_today",
+      "mtime_et": "2026-05-17T23:49:22.235827-04:00"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_latest_llm_candidate_discovery.json",
+      "exists": true,
+      "mtime_utc": "2026-05-18T03:49:18.879660+00:00",
+      "age_minutes": 8.364,
+      "date_et": "2026-05-17",
+      "ok": true,
+      "reason": "fresh_today",
+      "mtime_et": "2026-05-17T23:49:18.879660-04:00"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_market_context.json",
+      "exists": true,
+      "mtime_utc": "2026-05-18T03:53:54.430197+00:00",
+      "age_minutes": 3.772,
+      "date_et": "2026-05-17",
+      "ok": true,
+      "reason": "fresh_today",
+      "mtime_et": "2026-05-17T23:53:54.430197-04:00"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_premarket_trade_plan.json",
+      "exists": true,
+      "mtime_utc": "2026-05-18T03:54:03.146815+00:00",
+      "age_minutes": 3.627,
+      "date_et": "2026-05-17",
+      "ok": true,
+      "reason": "fresh_today",
+      "mtime_et": "2026-05-17T23:54:03.146815-04:00"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_intraday_structure_map.json",
+      "exists": true,
+      "mtime_utc": "2026-05-18T03:54:03.151214+00:00",
+      "age_minutes": 3.626,
+      "date_et": "2026-05-17",
+      "ok": true,
+      "reason": "fresh_today",
+      "mtime_et": "2026-05-17T23:54:03.151214-04:00"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_intraday_bars_1m.csv",
+      "exists": false,
+      "mtime_utc": "",
+      "age_minutes": null,
+      "date_et": "2026-05-17",
+      "ok": false,
+      "reason": "missing"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_regime_position_plan.csv",
+      "exists": false,
+      "mtime_utc": "",
+      "age_minutes": null,
+      "date_et": "2026-05-17",
+      "ok": false,
+      "reason": "missing"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_regime_universe_30.csv",
+      "exists": false,
+      "mtime_utc": "",
+      "age_minutes": null,
+      "date_et": "2026-05-17",
+      "ok": false,
+      "reason": "missing"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_regime_actions.csv",
+      "exists": false,
+      "mtime_utc": "",
+      "age_minutes": null,
+      "date_et": "2026-05-17",
+      "ok": false,
+      "reason": "missing"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_latest_option_booster_candidates.csv",
+      "exists": false,
+      "mtime_utc": "",
+      "age_minutes": null,
+      "date_et": "2026-05-17",
+      "ok": false,
+      "reason": "missing"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/latest_option_flow_candidates.csv",
+      "exists": false,
+      "mtime_utc": "",
+      "age_minutes": null,
+      "date_et": "2026-05-17",
+      "ok": false,
+      "reason": "missing"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/latest_option_booster_ranked_contracts.csv",
+      "exists": false,
+      "mtime_utc": "",
+      "age_minutes": null,
+      "date_et": "2026-05-17",
+      "ok": false,
+      "reason": "missing"
+    }
+  ],
+  "snapshots": [
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_latest_llm_sentiment_universe.json",
+      "exists": true,
+      "snapshot_path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_dated/2026-05-17/20260517_latest_llm_sentiment_universe_2026-05-17.json",
+      "ok": true,
+      "reason": "snapshotted"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_latest_llm_candidate_discovery.json",
+      "exists": true,
+      "snapshot_path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_dated/2026-05-17/20260517_latest_llm_candidate_discovery_2026-05-17.json",
+      "ok": true,
+      "reason": "snapshotted"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_market_context.json",
+      "exists": true,
+      "snapshot_path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_dated/2026-05-17/20260517_market_context_2026-05-17.json",
+      "ok": true,
+      "reason": "snapshotted"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_premarket_trade_plan.json",
+      "exists": true,
+      "snapshot_path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_dated/2026-05-17/20260517_premarket_trade_plan_2026-05-17.json",
+      "ok": true,
+      "reason": "snapshotted"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_intraday_structure_map.json",
+      "exists": true,
+      "snapshot_path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_dated/2026-05-17/20260517_intraday_structure_map_2026-05-17.json",
+      "ok": true,
+      "reason": "snapshotted"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_intraday_bars_1m.csv",
+      "exists": false,
+      "snapshot_path": "",
+      "ok": false,
+      "reason": "missing"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_regime_position_plan.csv",
+      "exists": false,
+      "snapshot_path": "",
+      "ok": false,
+      "reason": "missing"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_regime_universe_30.csv",
+      "exists": false,
+      "snapshot_path": "",
+      "ok": false,
+      "reason": "missing"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_regime_actions.csv",
+      "exists": false,
+      "snapshot_path": "",
+      "ok": false,
+      "reason": "missing"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_latest_option_booster_candidates.csv",
+      "exists": false,
+      "snapshot_path": "",
+      "ok": false,
+      "reason": "missing"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/latest_option_flow_candidates.csv",
+      "exists": false,
+      "snapshot_path": "",
+      "ok": false,
+      "reason": "missing"
+    },
+    {
+      "path": "/Users/blkpvnthr/Desktop/trader/system-data/20260517/latest_option_booster_ranked_contracts.csv",
+      "exists": false,
+      "snapshot_path": "",
+      "ok": false,
+      "reason": "missing"
+    }
+  ],
+  "all_required_fresh": true
+}

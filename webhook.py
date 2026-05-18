@@ -1,6 +1,8 @@
 from flask import Flask, request, jsonify
 import os
 import logging
+import threading
+import time
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -23,6 +25,14 @@ logging.basicConfig(
 logger = logging.getLogger("tradingview-webhook")
 
 # =============================================================================
+# Config
+# =============================================================================
+
+MONITOR_INTERVAL_SECONDS = float(os.getenv("MONITOR_INTERVAL_SECONDS", "10"))
+TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", "3.0"))
+STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", "-1.5"))
+
+# =============================================================================
 # Flask App
 # =============================================================================
 
@@ -33,7 +43,6 @@ app = Flask(__name__)
 # =============================================================================
 
 SECRET = os.getenv("TRADINGVIEW_WEBHOOK_SECRET")
-
 ALPACA_KEY = os.getenv("APCA_API_KEY_ID")
 ALPACA_SECRET = os.getenv("APCA_API_SECRET_KEY")
 
@@ -50,7 +59,7 @@ if not ALPACA_KEY or not ALPACA_SECRET:
 client = TradingClient(
     api_key=ALPACA_KEY,
     secret_key=ALPACA_SECRET,
-    paper=True,  # Change to False for live trading
+    paper=True,
 )
 
 # =============================================================================
@@ -59,7 +68,8 @@ client = TradingClient(
 
 def normalize_symbol(symbol: str) -> str:
     return (
-        symbol.upper()
+        str(symbol)
+        .upper()
         .replace("NASDAQ:", "")
         .replace("NYSE:", "")
         .replace("AMEX:", "")
@@ -69,15 +79,90 @@ def normalize_symbol(symbol: str) -> str:
 
 
 def normalize_side(side_raw: str) -> OrderSide:
-    side_raw = side_raw.lower().strip()
+    side_raw = str(side_raw).lower().strip()
 
     if side_raw in ["buy", "long"]:
         return OrderSide.BUY
 
-    if side_raw in ["sell", "short", "close"]:
+    if side_raw in ["sell", "short", "close", "exit"]:
         return OrderSide.SELL
 
-    raise ValueError(f"Unsupported side: {side_raw}")
+    raise ValueError(f"Unsupported side/action: {side_raw}")
+
+
+def submit_market_order(symbol: str, side: OrderSide, qty: float):
+    order = MarketOrderRequest(
+        symbol=symbol,
+        qty=qty,
+        side=side,
+        time_in_force=TimeInForce.DAY,
+    )
+
+    return client.submit_order(order)
+
+
+# =============================================================================
+# Position Monitor
+# =============================================================================
+
+def monitor_open_positions():
+    logger.info(
+        f"Position monitor started | "
+        f"interval={MONITOR_INTERVAL_SECONDS}s "
+        f"take_profit={TAKE_PROFIT_PCT}% "
+        f"stop_loss={STOP_LOSS_PCT}%"
+    )
+
+    while True:
+        try:
+            positions = client.get_all_positions()
+
+            for position in positions:
+                symbol = position.symbol
+                qty = float(position.qty)
+                unrealized_plpc = float(position.unrealized_plpc) * 100
+
+                logger.info(
+                    f"Monitor | symbol={symbol} qty={qty} "
+                    f"unrealized_plpc={unrealized_plpc:.2f}%"
+                )
+
+                if qty <= 0:
+                    continue
+
+                should_exit = False
+                reason = None
+
+                if unrealized_plpc >= TAKE_PROFIT_PCT:
+                    should_exit = True
+                    reason = f"take_profit_{TAKE_PROFIT_PCT}%"
+
+                elif unrealized_plpc <= STOP_LOSS_PCT:
+                    should_exit = True
+                    reason = f"stop_loss_{STOP_LOSS_PCT}%"
+
+                if not should_exit:
+                    continue
+
+                logger.warning(
+                    f"Exit triggered | symbol={symbol} qty={qty} reason={reason}"
+                )
+
+                submitted = submit_market_order(
+                    symbol=symbol,
+                    side=OrderSide.SELL,
+                    qty=abs(qty),
+                )
+
+                logger.warning(
+                    f"Exit order submitted | symbol={symbol} qty={abs(qty)} "
+                    f"reason={reason} order_id={submitted.id}"
+                )
+
+        except Exception as e:
+            logger.exception(f"Position monitor failed: {e}")
+
+        time.sleep(MONITOR_INTERVAL_SECONDS)
 
 
 # =============================================================================
@@ -89,6 +174,11 @@ def health():
     return jsonify({
         "ok": True,
         "service": "tradingview-webhook",
+        "monitor": {
+            "interval_seconds": MONITOR_INTERVAL_SECONDS,
+            "take_profit_pct": TAKE_PROFIT_PCT,
+            "stop_loss_pct": STOP_LOSS_PCT,
+        },
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
 
@@ -102,25 +192,31 @@ def webhook():
     try:
         data = request.get_json(force=True)
 
-        logger.info(f"Incoming webhook: {data}")
+        if not isinstance(data, dict):
+            return jsonify({
+                "ok": False,
+                "error": "Invalid JSON payload",
+            }), 400
 
-        # ---------------------------------------------------------------------
-        # Validate Secret
-        # ---------------------------------------------------------------------
+        logger.info(f"Incoming webhook: {data}")
 
         if data.get("secret") != SECRET:
             logger.warning("Unauthorized webhook attempt")
-
             return jsonify({
                 "ok": False,
                 "error": "unauthorized",
             }), 401
 
-        # ---------------------------------------------------------------------
-        # Parse Fields
-        # ---------------------------------------------------------------------
+        raw_symbol = data.get("symbol")
 
-        symbol = normalize_symbol(data["symbol"])
+        if not raw_symbol:
+            return jsonify({
+                "ok": False,
+                "error": "Missing symbol field",
+                "received": data,
+            }), 400
+
+        symbol = normalize_symbol(raw_symbol)
 
         side_value = data.get("side") or data.get("action")
 
@@ -133,27 +229,31 @@ def webhook():
 
         side = normalize_side(side_value)
 
-        qty = float(data.get("qty", 1))
+        try:
+            qty = float(data.get("qty", 1))
+        except (TypeError, ValueError):
+            return jsonify({
+                "ok": False,
+                "error": "Invalid qty",
+                "received_qty": data.get("qty"),
+            }), 400
 
-        # ---------------------------------------------------------------------
-        # Submit Alpaca Order
-        # ---------------------------------------------------------------------
+        if qty <= 0:
+            return jsonify({
+                "ok": False,
+                "error": "qty must be > 0",
+                "received_qty": qty,
+            }), 400
 
-        order = MarketOrderRequest(
+        submitted = submit_market_order(
             symbol=symbol,
-            qty=qty,
             side=side,
-            time_in_force=TimeInForce.DAY,
+            qty=qty,
         )
 
-        submitted = client.submit_order(order)
-
         logger.info(
-            f"Order submitted | "
-            f"symbol={symbol} "
-            f"side={side.value} "
-            f"qty={qty} "
-            f"order_id={submitted.id}"
+            f"Order submitted | symbol={symbol} side={side.value} "
+            f"qty={qty} order_id={submitted.id}"
         )
 
         return jsonify({
@@ -166,7 +266,6 @@ def webhook():
 
     except Exception as e:
         logger.exception("Webhook processing failed")
-
         return jsonify({
             "ok": False,
             "error": str(e),
@@ -178,6 +277,12 @@ def webhook():
 # =============================================================================
 
 if __name__ == "__main__":
+    monitor_thread = threading.Thread(
+        target=monitor_open_positions,
+        daemon=True,
+    )
+    monitor_thread.start()
+
     logger.info("Starting TradingView webhook server on port 5000")
 
     app.run(

@@ -1,0 +1,124 @@
+{
+  "premarket_bars": {
+    "label": "premarket_bars",
+    "source": "yfinance",
+    "window_et": {
+      "start": "2026-05-17T04:00:00-04:00",
+      "end": "2026-05-17T09:30:00-04:00"
+    },
+    "period": "5d",
+    "interval": "1m",
+    "prepost": true,
+    "batches": [
+      {
+        "symbols": [
+          "AIP",
+          "AVAH",
+          "CGON",
+          "CSCO",
+          "F",
+          "FENC",
+          "HYLN",
+          "IPWR",
+          "KLAR",
+          "MRAM",
+          "ONDS",
+          "PCT",
+          "RDW",
+          "RILY",
+          "SLQT",
+          "STAA",
+          "UMAC",
+          "VICR",
+          "VLN"
+        ],
+        "row_count": 0,
+        "counts": {},
+        "error": null
+      }
+    ],
+    "final_rows": 0,
+    "symbols_with_bars": []
+  },
+  "intraday_bars": {
+    "label": "intraday_bars",
+    "source": "yfinance",
+    "window_et": {
+      "start": "2026-05-12T09:30:00-04:00",
+      "end": "2026-05-17T16:00:00-04:00"
+    },
+    "period": "5d",
+    "interval": "1m",
+    "prepost": true,
+    "batches": [
+      {
+        "symbols": [
+          "AIP",
+          "AVAH",
+          "CGON",
+          "CSCO",
+          "F",
+          "FENC",
+          "HYLN",
+          "IPWR",
+          "KLAR",
+          "MRAM",
+          "ONDS",
+          "PCT",
+          "RDW",
+          "RILY",
+          "SLQT",
+          "STAA",
+          "UMAC",
+          "VICR",
+          "VLN"
+        ],
+        "row_count": 66709,
+        "counts": {
+          "AIP": 3511,
+          "AVAH": 3511,
+          "CGON": 3511,
+          "CSCO": 3511,
+          "F": 3511,
+          "FENC": 3511,
+          "HYLN": 3511,
+          "IPWR": 3511,
+          "KLAR": 3511,
+          "MRAM": 3511,
+          "ONDS": 3511,
+          "PCT": 3511,
+          "RDW": 3511,
+          "RILY": 3511,
+          "SLQT": 3511,
+          "STAA": 3511,
+          "UMAC": 3511,
+          "VICR": 3511,
+          "VLN": 3511
+        },
+        "error": null
+      }
+    ],
+    "final_rows": 66709,
+    "symbols_with_bars": [
+      "AIP",
+      "AVAH",
+      "CGON",
+      "CSCO",
+      "F",
+      "FENC",
+      "HYLN",
+      "IPWR",
+      "KLAR",
+      "MRAM",
+      "ONDS",
+      "PCT",
+      "RDW",
+      "RILY",
+      "SLQT",
+      "STAA",
+      "UMAC",
+      "VICR",
+      "VLN"
+    ]
+  }
+}

@@ -1,0 +1,1209 @@
+{
+  "created_at_utc": "2026-05-18T03:53:40.598179+00:00",
+  "market_context_date_et": "2026-05-17",
+  "universe_symbol_count": 19,
+  "previous_session": {
+    "SPY": {
+      "open": 741.7899780273438,
+      "close": 739.1699829101562,
+      "high": 743.4600219726562,
+      "low": 737.9600219726562,
+      "volume": 60290000,
+      "change_pct": -0.003531990448502609,
+      "source": "yfinance"
+    },
+    "QQQ": {
+      "open": 710.1400146484375,
+      "close": 708.9299926757812,
+      "high": 715.1300048828125,
+      "low": 705.5499877929688,
+      "volume": 51687900,
+      "change_pct": -0.0017039202800807063,
+      "source": "yfinance"
+    },
+    "DIA": {
+      "open": 497.32000732421875,
+      "close": 495.3699951171875,
+      "high": 497.739990234375,
+      "low": 495.0799865722656,
+      "volume": 5291900,
+      "change_pct": -0.003921041137120329,
+      "source": "yfinance"
+    },
+    "IWM": {
+      "open": 280.29998779296875,
+      "close": 277.6000061035156,
+      "high": 280.3299865722656,
+      "low": 277.239990234375,
+      "volume": 35384700,
+      "change_pct": -0.009632471662636477,
+      "source": "yfinance"
+    }
+  },
+  "overnight_futures": {
+    "ES": {
+      "symbol": "ES=F",
+      "error": "no_overnight_window"
+    },
+    "NQ": {
+      "symbol": "NQ=F",
+      "error": "no_overnight_window"
+    },
+    "YM": {
+      "symbol": "YM=F",
+      "error": "no_overnight_window"
+    },
+    "RTY": {
+      "symbol": "RTY=F",
+      "error": "no_overnight_window"
+    },
+    "VIX": {
+      "symbol": "^VIX",
+      "error": "no_overnight_window"
+    },
+    "CRUDE": {
+      "symbol": "CL=F",
+      "error": "no_overnight_window"
+    }
+  },
+  "sector_strength": {
+    "ranked_sectors": [
+      {
+        "sector": "Energy",
+        "etf": "XLE",
+        "change_pct": 0.02359219802108714,
+        "close": 59.439998626708984,
+        "volume": 33551600,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Financials",
+        "etf": "XLF",
+        "change_pct": -0.0037044733479177916,
+        "close": 51.099998474121094,
+        "volume": 29776700,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Consumer Staples",
+        "etf": "XLP",
+        "change_pct": -0.004000987924854149,
+        "close": 84.63999938964844,
+        "volume": 12229600,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Communication Services",
+        "etf": "XLC",
+        "change_pct": -0.008795139389708329,
+        "close": 116.08000183105469,
+        "volume": 4292400,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Healthcare",
+        "etf": "XLV",
+        "change_pct": -0.010434418115989663,
+        "close": 145.10000610351562,
+        "volume": 9034300,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Real Estate",
+        "etf": "XLRE",
+        "change_pct": -0.015486228821197767,
+        "close": 43.22999954223633,
+        "volume": 4936600,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Industrials",
+        "etf": "XLI",
+        "change_pct": -0.01782133234913219,
+        "close": 171.39999389648438,
+        "volume": 7823400,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Consumer Discretionary",
+        "etf": "XLY",
+        "change_pct": -0.018033196449550926,
+        "close": 116.52999877929688,
+        "volume": 10453900,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Technology",
+        "etf": "XLK",
+        "change_pct": -0.018050169878351285,
+        "close": 176.25999450683594,
+        "volume": 14514400,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Utilities",
+        "etf": "XLU",
+        "change_pct": -0.02293992336281947,
+        "close": 43.869998931884766,
+        "volume": 21854800,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Materials",
+        "etf": "XLB",
+        "change_pct": -0.026514398692356833,
+        "close": 50.29999923706055,
+        "volume": 11192800,
+        "source": "yfinance_daily"
+      }
+    ],
+    "leading_sectors": [
+      {
+        "sector": "Energy",
+        "etf": "XLE",
+        "change_pct": 0.02359219802108714,
+        "close": 59.439998626708984,
+        "volume": 33551600,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Financials",
+        "etf": "XLF",
+        "change_pct": -0.0037044733479177916,
+        "close": 51.099998474121094,
+        "volume": 29776700,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Consumer Staples",
+        "etf": "XLP",
+        "change_pct": -0.004000987924854149,
+        "close": 84.63999938964844,
+        "volume": 12229600,
+        "source": "yfinance_daily"
+      }
+    ],
+    "lagging_sectors": [
+      {
+        "sector": "Technology",
+        "etf": "XLK",
+        "change_pct": -0.018050169878351285,
+        "close": 176.25999450683594,
+        "volume": 14514400,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Utilities",
+        "etf": "XLU",
+        "change_pct": -0.02293992336281947,
+        "close": 43.869998931884766,
+        "volume": 21854800,
+        "source": "yfinance_daily"
+      },
+      {
+        "sector": "Materials",
+        "etf": "XLB",
+        "change_pct": -0.026514398692356833,
+        "close": 50.29999923706055,
+        "volume": 11192800,
+        "source": "yfinance_daily"
+      }
+    ],
+    "average_sector_change_pct": -0.011108006391890114,
+    "sector_rotation_bias": "defensive"
+  },
+  "key_etf_risk_signals": {
+    "etfs": {
+      "SPY": {
+        "open": 741.7899780273438,
+        "close": 739.1699829101562,
+        "previous_close": 748.1699829101562,
+        "day_change_pct": -0.003531990448502609,
+        "prev_close_change_pct": -0.012029351892724582,
+        "volume": 60290000,
+        "source": "yfinance_daily"
+      },
+      "QQQ": {
+        "open": 710.1400146484375,
+        "close": 708.9299926757812,
+        "previous_close": 719.7899780273438,
+        "day_change_pct": -0.0017039202800807063,
+        "prev_close_change_pct": -0.015087714031981059,
+        "volume": 51687900,
+        "source": "yfinance_daily"
+      },
+      "VXX": {
+        "open": 28.579999923706055,
+        "close": 27.8700008392334,
+        "previous_close": 27.649999618530273,
+        "day_change_pct": -0.02484251526829917,
+        "prev_close_change_pct": 0.007956644619831588,
+        "volume": 12597200,
+        "source": "yfinance_daily"
+      },
+      "TLT": {
+        "open": 83.87000274658203,
+        "close": 83.66000366210938,
+        "previous_close": 84.91999816894531,
+        "day_change_pct": -0.0025038640466863438,
+        "prev_close_change_pct": -0.014837429745691022,
+        "volume": 50726700,
+        "source": "yfinance_daily"
+      },
+      "UUP": {
+        "open": 27.719999313354492,
+        "close": 27.770000457763672,
+        "previous_close": 27.6200008392334,
+        "day_change_pct": 0.0018037931330354695,
+        "prev_close_change_pct": 0.005430833235790633,
+        "volume": 1851100,
+        "source": "yfinance_daily"
+      }
+    },
+    "risk_flags": [
+      "SPY weak",
+      "QQQ weak",
+      "TLT falling/rates pressure",
+      "UUP rising/dollar pressure"
+    ],
+    "risk_signal_bias": "risk_off",
+    "interpretation": {
+      "SPY": "broad_market_direction",
+      "QQQ": "growth_tech_direction",
+      "VXX": "volatility_risk",
+      "TLT": "bond_rate_risk",
+      "UUP": "dollar_liquidity_risk"
+    }
+  },
+  "serpapi_context": {
+    "date": "2026-05-17",
+    "queries": {
+      "previous_day_market_news": "stock market news yesterday S&P 500 Nasdaq Dow 2026-05-17",
+      "fed_events_today": "Federal Reserve FOMC Powell Fed speaker today 2026-05-17",
+      "jobs_report_today": "jobs report unemployment nonfarm payrolls jobless claims today 2026-05-17",
+      "inflation_report_today": "CPI PPI inflation report today 2026-05-17",
+      "pce_report_today": "PCE price index report today 2026-05-17",
+      "opec_events_today": "OPEC meeting oil production decision today 2026-05-17",
+      "presidential_trade_speech_today": "President trade tariff speech today markets 2026-05-17",
+      "earnings_today": "earnings calendar today major companies 2026-05-17",
+      "economic_calendar_today": "economic calendar today CPI PCE Fed jobs report 2026-05-17"
+    },
+    "results": {
+      "previous_day_market_news": [
+        {
+          "title": "Stock futures fall after record-setting week for Wall Street; traders await Nvidia and retail earnings: Live updates",
+          "source": "CNBC",
+          "date": "6 hours ago",
+          "snippet": "Nvidia is set to report earnings Wednesday along with Target, while Walmart is due to post results Thursday.",
+          "link": "https://www.cnbc.com/amp/2026/05/17/stock-market-today-live-updates.html",
+          "query": "stock market news yesterday S&P 500 Nasdaq Dow 2026-05-17",
+          "type": "news"
+        },
+        {
+          "title": "Trump\u2019s Stock Market Performance: Gains, Volatility, and Crash Risk by Mid-2026",
+          "source": "IndexBox",
+          "date": "1 day ago",
+          "snippet": "According to a report published on 2026-05-17, President Donald Trump's tenure has been statistically favorable for Wall Street. During his first term,...",
+          "link": "https://www.indexbox.io/blog/trumps-stock-market-performance-gains-volatility-and-crash-risk-by-mid-2026/",
+          "query": "stock market news yesterday S&P 500 Nasdaq Dow 2026-05-17",
+          "type": "news"
+        },
+        {
+          "title": "Stock Market Today: S&P 500 & Dow Jones Pull Back as Rising Yields Pressure Wall Street",
+          "source": "Coinpaper",
+          "date": "2 days ago",
+          "snippet": "U.S. stocks fell as rising yields pressured the S&P 500 and Dow Jones after a strong week for Wall Street.",
+          "link": "https://coinpaper.com/17071/stock-market-today-s-and-p-500-and-dow-jones-pull-back-as-rising-yields-pressure-wall-street",
+          "query": "stock market news yesterday S&P 500 Nasdaq Dow 2026-05-17",
+          "type": "news"
+        },
+        {
+          "title": "Wall Street indexes hit record highs as oil falls with Strait of Hormuz declared open",
+          "source": "Reuters",
+          "date": "1 month ago",
+          "snippet": "The benchmark S&P 500 and the tech-heavy Nasdaq \u200beach rallied to their third record close in a row on Friday, while the blue-chip Dow marked...",
+          "link": "https://www.reuters.com/business/wall-st-futures-climb-middle-east-peace-hopes-investors-eye-strong-finish-week-2026-04-17/",
+          "query": "stock market news yesterday S&P 500 Nasdaq Dow 2026-05-17",
+          "type": "news"
+        },
+        {
+          "title": "US Stock Market Today: Dow, S&P 500, Nasdaq Futures Slide as Oil Rebound Sours Mood",
+          "source": "TechStock\u00b2",
+          "date": "1 month ago",
+          "snippet": "U.S. stock futures fell early Thursday, with S&P 500 and Nasdaq-100 futures down 0.4% and Dow futures off 0.3% as Brent crude rose above...",
+          "link": "https://ts2.tech/en/us-stock-market-today-dow-sp-500-nasdaq-futures-slide-as-oil-rebound-sours-mood/",
+          "query": "stock market news yesterday S&P 500 Nasdaq Dow 2026-05-17",
+          "type": "news"
+        },
+        {
+          "title": "US Stock Market Today: S&P 500, Nasdaq Hit Records as Oil Slides on Hormuz Reopening",
+          "source": "TechStock\u00b2",
+          "date": "1 month ago",
+          "snippet": "NEW YORK, April 17, 2026, 01:11 PM EDT. Stocks pushed higher Friday, with both the S&P 500 and Nasdaq Composite touching new intraday peaks. The Dow Jones...",
+          "link": "https://ts2.tech/en/us-stock-market-today-sp-500-nasdaq-hit-records-as-oil-slides-on-hormuz-reopening/",
+          "query": "stock market news yesterday S&P 500 Nasdaq Dow 2026-05-17",
+          "type": "news"
+        },
+        {
+          "title": "U.S. stocks climb to their best day since the Iran war began after oil prices ease",
+          "source": "\u671d\u65e5\u65b0\u805e",
+          "date": "Mar 17, 2026",
+          "snippet": "NEW YORK--A drop in oil prices on Monday helped send the U.S. stock market to its best day since the war in Iran began. The S&P 500 climbed...",
+          "link": "https://www.asahi.com/ajw/articles/16427445",
+          "query": "stock market news yesterday S&P 500 Nasdaq Dow 2026-05-17",
+          "type": "news"
+        },
+        {
+          "title": "S&P 500 and Nasdaq notch records as AI chip stocks surge",
+          "source": "Reuters",
+          "date": "2 weeks ago",
+          "snippet": "The S&P 500 and Nasdaq notched record high closes on Tuesday, lifted by Intel \u200band other AI-related stocks, as a U.S.-Iran ceasefire held...",
+          "link": "https://www.reuters.com/business/us-stock-futures-rise-oil-dips-middle-east-tensions-linger-2026-05-05/",
+          "query": "stock market news yesterday S&P 500 Nasdaq Dow 2026-05-17",
+          "type": "news"
+        }
+      ],
+      "fed_events_today": [
+        {
+          "title": "Federal Reserve Board - 2026 Speeches",
+          "source": "Federal Reserve (.gov)",
+          "date": "4 days ago",
+          "snippet": "At the Global Perspectives Speaker Series, Federal Reserve Bank of Dallas, Dallas, Texas. 3/26/2026. Prospects for Shrinking the Fed's Balance ...",
+          "link": "https://www.federalreserve.gov/newsevents/2026-speeches.htm",
+          "query": "Federal Reserve FOMC Powell Fed speaker today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "The Fed - Live Video",
+          "source": "Federal Reserve Board (.gov)",
+          "date": null,
+          "snippet": "FOMC Press Conference. April 29, 2026. FOMC Press Conference April 29, 2026. Video Player is loading. Play Video. Play Skip Backward Skip Forward.",
+          "link": "https://www.federalreserve.gov/live-broadcast.htm",
+          "query": "Federal Reserve FOMC Powell Fed speaker today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Federal Reserve Board - Calendar",
+          "source": "Federal Reserve (.gov)",
+          "date": null,
+          "snippet": "Fed Financial Statements \u00b7 Financial Innovation \u00b7 News & Events \u00b7 Press Releases \u00b7 Speeches & Testimony \u00b7 Calendar \u00b7 Videos \u00b7 Photo Gallery \u00b7 Conferences.",
+          "link": "https://www.federalreserve.gov/newsevents/calendar.htm",
+          "query": "Federal Reserve FOMC Powell Fed speaker today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Federal Reserve Board - News & Events",
+          "source": "Federal Reserve (.gov)",
+          "date": "3 days ago",
+          "snippet": "FOMC Press Conference. April 29, 2026. Related Materials. FOMC Statement \u00b7 Opening Statement (PDF). The Fed ... Powell as chair pro tempore; ...",
+          "link": "https://www.federalreserve.gov/newsevents.htm",
+          "query": "Federal Reserve FOMC Powell Fed speaker today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Chair Powell answers reporters' questions at the FOMC ...",
+          "source": "Facebook \u00b7 Board of Governors of the Federal Reserve System",
+          "date": null,
+          "snippet": "Chair Powell answers reporters' questions at the FOMC press conference on April 29, 2026. https://www. federalreserve.gov/monetarypolicy/ ...",
+          "link": "https://www.facebook.com/federalreserve/posts/chair-powell-answers-reporters-questions-at-the-fomc-press-conference-on-april-2/1388732859950703/",
+          "query": "Federal Reserve FOMC Powell Fed speaker today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Five Takeaways from the Fed's May Meeting, as Chairman ...",
+          "source": "Cox Automotive Inc.",
+          "date": "Apr 30, 2026",
+          "snippet": "On Wednesday, April 29, 2026, Jerome Powell hosted what is widely considered to be his last meeting as Chairman of the Federal Reserve.",
+          "link": "https://www.coxautoinc.com/insights/five-takeaways-from-the-feds-may-meeting-2026/",
+          "query": "Federal Reserve FOMC Powell Fed speaker today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Watch Fed Chair Jerome Powell's April 2026 FOMC Meeting ...",
+          "source": "Barron&#39;s",
+          "date": null,
+          "snippet": "Federal Reserve chairman Jerome Powell will hold a press conference at the conclusion of the April Federal Open Markets Committee meeting.",
+          "link": "https://www.barrons.com/video/watch-fed-chair-jerome-powell-april-2026-fomc-meeting-speech/2510408E-1C74-4594-A409-EC05F86058A5",
+          "query": "Federal Reserve FOMC Powell Fed speaker today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Fed meeting today live updates: Powell, Kevin Warsh in focus",
+          "source": "CNBC",
+          "date": "Apr 29, 2026",
+          "snippet": "Federal Reserve policymakers made their latest decision on interest rates, opting to keep the benchmark at a range of 3.5% to 3.75%.",
+          "link": "https://www.cnbc.com/2026/04/29/fed-meeting-today-live-updates-warsh-powell.html",
+          "query": "Federal Reserve FOMC Powell Fed speaker today 2026-05-17",
+          "type": "organic"
+        }
+      ],
+      "jobs_report_today": [
+        {
+          "title": "Employment Situation Summary - 2026 M04 Results",
+          "source": "Bureau of Labor Statistics (.gov)",
+          "date": "May 8, 2026",
+          "snippet": "Establishment Survey Data Total nonfarm payroll employment edged up by 115,000 in April, after showing little net change over the prior 12 ...",
+          "link": "https://www.bls.gov/news.release/empsit.nr0.htm/",
+          "query": "jobs report unemployment nonfarm payrolls jobless claims today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "United States Initial Jobless Claims",
+          "source": "Trading Economics",
+          "date": null,
+          "snippet": "Initial Jobless Claims in the United States increased to 211 thousand in the week ending May 9 of 2026 from 199 thousand in the previous week.",
+          "link": "https://tradingeconomics.com/united-states/jobless-claims",
+          "query": "jobs report unemployment nonfarm payrolls jobless claims today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "US weekly jobless claims increase moderately, labor ...",
+          "source": "Reuters",
+          "date": "4 days ago",
+          "snippet": "Initial claims for state unemployment benefits rose 12,000 \u200bto a seasonally adjusted 211,000 for the \u200bweek ended May 9, the Labor Department \u2060 ...",
+          "link": "https://www.reuters.com/business/us-weekly-jobless-claims-increase-moderately-labor-market-remains-stable-2026-05-14/",
+          "query": "jobs report unemployment nonfarm payrolls jobless claims today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Schedule of Selected Releases 2026",
+          "source": "Bureau of Labor Statistics (.gov)",
+          "date": null,
+          "snippet": "Job Openings and Labor Turnover Survey for November 2025. Wednesday, January 7, 2026. 10:00 AM. State Employment and Unemployment (Monthly) for November 2025.",
+          "link": "https://www.bls.gov/schedule/news_release/current_year.asp",
+          "query": "jobs report unemployment nonfarm payrolls jobless claims today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Unemployment Rate (UNRATE) | FRED | St. Louis Fed",
+          "source": "Federal Reserve Economic Data | FRED | St. Louis Fed",
+          "date": null,
+          "snippet": "View data of the unemployment rate, or the number of people 16 and over actively searching for a job as a percentage of the total labor force.",
+          "link": "https://fred.stlouisfed.org/series/UNRATE",
+          "query": "jobs report unemployment nonfarm payrolls jobless claims today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "News Release",
+          "source": "U.S. Department of Labor (.gov)",
+          "date": "Apr 18, 2014",
+          "snippet": "This news release presents the weekly unemployment insurance (UI) claims reported by each state's unemployment insurance program offices.",
+          "link": "https://www.dol.gov/ui/data.pdf",
+          "query": "jobs report unemployment nonfarm payrolls jobless claims today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Jobs report April 2026",
+          "source": "CNBC",
+          "date": "May 8, 2026",
+          "snippet": "Nonfarm payrolls rose by a seasonally adjusted 115,000 in April, down from the 185,000 created in an unusually strong March, but better than ...",
+          "link": "https://www.cnbc.com/2026/05/08/jobs-report-april-2026.html",
+          "query": "jobs report unemployment nonfarm payrolls jobless claims today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "United States Initial Jobless Claims",
+          "source": "FXStreet",
+          "date": null,
+          "snippet": "The Initial Jobless Claims released by the US Department of Labor is a measure of the number of people filing first-time claims for state unemployment ...",
+          "link": "https://www.fxstreet.com/economic-calendar/event/9c689bbf-af2a-4f65-81a8-c5f5e2b78d70",
+          "query": "jobs report unemployment nonfarm payrolls jobless claims today 2026-05-17",
+          "type": "organic"
+        }
+      ],
+      "inflation_report_today": [
+        {
+          "title": "PPI inflation report April 2026:",
+          "source": "CNBC",
+          "date": "5 days ago",
+          "snippet": "Excluding food, energy and trade services, the PPI rose 0.6 %. Energy was at the root of the unexpectedly high gain in producer prices, as it ...",
+          "link": "https://www.cnbc.com/2026/05/13/ppi-inflation-report-april-2026-.html",
+          "query": "CPI PPI inflation report today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Producer Price Index Home",
+          "source": "Bureau of Labor Statistics (.gov)",
+          "date": null,
+          "snippet": "The Producer Price Index for final demand increased 1.4 percent in April. Prices for final demand services advanced 1.2 percent, and the index for final demand ...",
+          "link": "https://www.bls.gov/ppi/",
+          "query": "CPI PPI inflation report today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Producer Price Indexes - April 2026",
+          "source": "Bureau of Labor Statistics (.gov)",
+          "date": "5 days ago",
+          "snippet": "The Producer Price Index for final demand increased 1.4 percent in April, seasonally adjusted, the U.S.. Bureau of Labor Statistics reported ...",
+          "link": "https://www.bls.gov/news.release/pdf/ppi.pdf",
+          "query": "CPI PPI inflation report today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "LIVE: CPI DATA INFLATION REPORT MAY 2026",
+          "source": "YouTube \u00b7 Ricky Gutierrez",
+          "date": null,
+          "snippet": "The Consumer Price Index (CPI) is a measure of the average change over time in the prices paid by urban consumers for a market basket of ...",
+          "link": "https://www.youtube.com/watch?v=qF3p8SVa9O4",
+          "query": "CPI PPI inflation report today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "US producer prices surprise with largest increase in four ...",
+          "source": "Reuters",
+          "date": "4 days ago",
+          "snippet": "With the PPI \u200band CPI data in hand, economists estimated core PCE inflation could rise by as much as 0.4% in April after gaining 0.3% \u200bin March.",
+          "link": "https://www.reuters.com/business/us-producer-prices-post-biggest-gain-four-years-april-2026-05-13/",
+          "query": "CPI PPI inflation report today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Producer Price Index News Release summary",
+          "source": "Bureau of Labor Statistics (.gov)",
+          "date": "5 days ago",
+          "snippet": "Prices for final demand goods moved up 2.0 percent. The index for final demand less foods, energy, and trade services increased 0.6 percent in ...",
+          "link": "https://www.bls.gov/news.release/ppi.nr0.htm",
+          "query": "CPI PPI inflation report today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Market Perspective for May 17, 2026",
+          "source": "Mutual Fund Investor Guide",
+          "date": "13 hours ago",
+          "snippet": "Overall PPI was up 1.4 percent compared to an expected increase of 0.5 percent. March figures were revised upward to 0.2 percent and 0.7 percent ...",
+          "link": "https://www.mutualfundinvestorguide.com/market-perspective-for-may-17-2026/",
+          "query": "CPI PPI inflation report today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Inflation Nowcasting",
+          "source": "Federal Reserve Bank of Cleveland",
+          "date": null,
+          "snippet": "The Cleveland Fed produces nowcasts of the current period's rate of inflation\u2014inflation in a given month or quarter\u2014before the official CPI or PCE inflation ...",
+          "link": "https://www.clevelandfed.org/indicators-and-data/inflation-nowcasting",
+          "query": "CPI PPI inflation report today 2026-05-17",
+          "type": "organic"
+        }
+      ],
+      "pce_report_today": [
+        {
+          "title": "Personal Consumption Expenditures Price Index",
+          "source": "Bureau of Economic Analysis (BEA) (.gov)",
+          "date": null,
+          "snippet": "Personal Consumption Expenditures Price Index ; March 2026, +3.5% ; February 2026, +2.8% ; January 2026, +2.9% ; December 2025, +2.9% ...",
+          "link": "https://www.bea.gov/data/personal-consumption-expenditures-price-index",
+          "query": "PCE price index report today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "United States PCE Price Index Annual Change",
+          "source": "Trading Economics",
+          "date": null,
+          "snippet": "The US PCE price index rose 3.5% year-on-year in March 2026, the highest since May 2023, in line with market expectations. PCE Price Index Annual Change in ...",
+          "link": "https://tradingeconomics.com/united-states/pce-price-index-annual-change",
+          "query": "PCE price index report today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Personal Consumption Expenditures Price Index, ...",
+          "source": "Bureau of Economic Analysis (BEA) (.gov)",
+          "date": null,
+          "snippet": "Personal Consumption Expenditures Price Index, Excluding Food and Energy ; March 2026, +3.2% ; February 2026, +3.0% ; January 2026, +3.1% ; December 2025, +3.0% ...",
+          "link": "https://www.bea.gov/data/personal-consumption-expenditures-price-index-excluding-food-and-energy",
+          "query": "PCE price index report today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "United States PCE Price index YoY",
+          "source": "Investing.com",
+          "date": null,
+          "snippet": "Get the PCE Price index (YoY) results in real time as they're announced and see the immediate global market impact.",
+          "link": "https://www.investing.com/economic-calendar/pce-price-index-906",
+          "query": "PCE price index report today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Personal Consumption Expenditures: Chain-type Price Index",
+          "source": "Federal Reserve Economic Data | FRED | St. Louis Fed",
+          "date": null,
+          "snippet": "Personal Consumption Expenditures: Chain-type Price Index (PCEPI) ; Mar 2026: 130.344 ; Feb 2026: 129.484 ; Jan 2026: 129.000 ; Dec 2025: 128.576 ; Nov 2025: 128.152.",
+          "link": "https://fred.stlouisfed.org/series/PCEPI",
+          "query": "PCE price index report today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Inflation Nowcasting",
+          "source": "Federal Reserve Bank of Cleveland",
+          "date": null,
+          "snippet": "Description: We provide daily nowcasts of inflation for two popular price indexes, the price index for personal consumption expenditures (PCE) and the Consumer ...",
+          "link": "https://www.clevelandfed.org/indicators-and-data/inflation-nowcasting",
+          "query": "PCE price index report today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "US producer prices surprise with largest increase in four ...",
+          "source": "Reuters",
+          "date": "4 days ago",
+          "snippet": "Producer Price Index increases 1.4% in April, largest gain since March 2022 \u00b7 Increase in producer inflation is across services and goods ...",
+          "link": "https://www.reuters.com/business/us-producer-prices-post-biggest-gain-four-years-april-2026-05-13/",
+          "query": "PCE price index report today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Expenditures Update",
+          "source": "U.S. Congress Joint Economic Committee (.gov)",
+          "date": null,
+          "snippet": "From February 2026 to March 2026: Headline PCE price index inflation was 0.66 percent. Core PCE price index inflation was 0.29 percent.",
+          "link": "https://www.jec.senate.gov/public/index.cfm/republicans/expenditures-update",
+          "query": "PCE price index report today 2026-05-17",
+          "type": "organic"
+        }
+      ],
+      "opec_events_today": [
+        {
+          "title": "Press Releases",
+          "source": "Organization of the Petroleum Exporting Countries",
+          "date": "May 3, 2026",
+          "snippet": "2026 \u00b7 Saudi Arabia, Russia, Iraq, Kuwait, Kazakhstan, Algeria, and Oman adjust production and reaffirm commitment to market stability.",
+          "link": "https://www.opec.org/pr-detail/602-3-may-2026.html",
+          "query": "OPEC meeting oil production decision today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "OPEC+ set for another oil output quota hike despite ...",
+          "source": "Reuters",
+          "date": "May 2, 2026",
+          "snippet": "OPEC+ meets on Sunday, has agreement in principle, sources say \u00b7 OPEC+ to raise June output quotas by 188,000 bpd, source says \u00b7 Most members can' ...",
+          "link": "https://www.reuters.com/business/energy/opec-agrees-principle-small-oil-output-quota-hike-without-uae-sources-say-2026-05-02/",
+          "query": "OPEC meeting oil production decision today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "OPEC+ announces 188000 barrels-per-day output increase",
+          "source": "CNBC",
+          "date": "May 3, 2026",
+          "snippet": "OPEC+ has agreed an increase in oil output of 188,000 barrels per day, the cartel said on Sunday, as it pushes on with production in the first ...",
+          "link": "https://www.cnbc.com/2026/05/03/opec-announces-188000-barrels-per-day-output-increase-.html",
+          "query": "OPEC meeting oil production decision today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "OPEC Plus, in Symbolic Gesture, to Increase Oil Production",
+          "source": "The New York Times",
+          "date": "May 3, 2026",
+          "snippet": "The oil cartel known as OPEC Plus agreed on Sunday to step up output next month by a modest 188,000 barrels a day, in a move meant to send a ...",
+          "link": "https://www.nytimes.com/2026/05/03/business/opec-plus-oil-production-united-arab-emirates.html",
+          "query": "OPEC meeting oil production decision today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "OPEC+ countries agree boost oil production",
+          "source": "Los Angeles Times",
+          "date": "May 3, 2026",
+          "snippet": "Seven OPEC+ nations, including Saudi Arabia and Russia, agreed to increase oil production by 188,000 barrels daily starting in June, ...",
+          "link": "https://www.latimes.com/world-nation/story/2026-05-03/opec-countries-agree-boost-oil-production",
+          "query": "OPEC meeting oil production decision today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "OPEC+ announces symbolic oil output rise during Strait of ...",
+          "source": "Al Jazeera",
+          "date": "May 3, 2026",
+          "snippet": "Seven major producers will add 188000 barrels per day to their total production quota for June, OPEC+ says.",
+          "link": "https://www.aljazeera.com/news/2026/5/3/opec-announces-symbolic-oil-output-rise-during-strait-of-hormuz-closure",
+          "query": "OPEC meeting oil production decision today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "OPEC+ to make first post-UAE production decision",
+          "source": "The Economic Times",
+          "date": "May 3, 2026",
+          "snippet": "Seven OPEC+ nations are meeting to set oil production quotas -- the first decision since the UAE left the cartel. The war in the Middle East ...",
+          "link": "https://m.economictimes.com/news/international/business/opec-to-make-first-post-uae-production-decision/articleshow/130727091.cms",
+          "query": "OPEC meeting oil production decision today 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "OPEC Agrees to Adjust Oil Production by 188000 Barrels Per ...",
+          "source": "YouTube \u00b7 SUCH News Pakistan",
+          "date": null,
+          "snippet": "OPEC Agrees to Adjust Oil Production by 188,000 Barrels Per Day | Global Oil Market | Such News. Auto-dubbed. 33 views \u00b7 12 days ago.",
+          "link": "https://www.youtube.com/watch?v=J4NPTM3m4io",
+          "query": "OPEC meeting oil production decision today 2026-05-17",
+          "type": "organic"
+        }
+      ],
+      "presidential_trade_speech_today": [
+        {
+          "title": "Transcript: U.S. Trade Representative Jamieson Greer on \" ...",
+          "source": "CBS News",
+          "date": "15 hours ago",
+          "snippet": "The president said to reporters he did not discuss tariffs with Xi Jinping at all. Are we in an indefinite trade truce, or were you- are you ...",
+          "link": "https://www.cbsnews.com/news/jamieson-greer-us-trade-representative-face-the-nation-transcript-05-17-2026/",
+          "query": "President trade tariff speech today markets 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "'This Week' Transcript 5-17-26: U.S. Trade Rep. Jamieson ...",
+          "source": "ABC News - Breaking News, Latest News and Videos",
+          "date": "14 hours ago",
+          "snippet": "The United States, under President Trump, has had high tariffs on China for quite some time. We are looking at a -- we are establishing what we ...",
+          "link": "https://abcnews.com/Politics/week-transcript-5-17-26-us-trade-rep/story?id=133039637",
+          "query": "President trade tariff speech today markets 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Opinion | Here's the Trade Deal That Trump and Xi Should ...",
+          "source": "The New York Times",
+          "date": "18 hours ago",
+          "snippet": "The U.S. trade representative, Jamieson Greer, has proposed a \u201cBoard of Trade\u201d to manage trade relations with China by reducing tariffs on ...",
+          "link": "https://www.nytimes.com/2026/05/17/opinion/trump-china-xi-trade.html",
+          "query": "President trade tariff speech today markets 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "China signals tariff cuts, advances in farm market access ...",
+          "source": "Facebook \u00b7 Hiru News English",
+          "date": null,
+          "snippet": "Donald Trump has urged China to abolish tariffs on agricultural products imported from the United States \u2013 adding that trade talks between the ...",
+          "link": "https://www.facebook.com/photo.php?fbid=1599856225479523&set=a.731302985668189&type=3",
+          "query": "President trade tariff speech today markets 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Trump Calls Trip to China a \"Historic Moment\"",
+          "source": "YouTube \u00b7 Bloomberg Television",
+          "date": null,
+          "snippet": "Tensions between the US and China have deepened since the last time a US president traveled to Beijing for a summit, in 2017.",
+          "link": "https://www.youtube.com/watch?v=Rb73b354mgk",
+          "query": "President trade tariff speech today markets 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Trump, Xi to weigh tariff cuts on $30 billion of imports in ...",
+          "source": "Reuters",
+          "date": "5 days ago",
+          "snippet": "Trump, Xi to weigh tariff cuts on $30 billion of imports in managed trade push. By David Lawder. May 13, 202612:03 PM UTCUpdated May 13, 2026.",
+          "link": "https://www.reuters.com/business/autos-transportation/trump-xi-weigh-tariff-cuts-30-billion-imports-managed-trade-push-2026-05-13/",
+          "query": "President trade tariff speech today markets 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "After SCOTUS dismantled Trump\u2019s trade tariffs, companies are ...",
+          "source": "Facebook \u00b7 Reuters",
+          "date": null,
+          "snippet": "After SCOTUS dismantled Trump's trade tariffs, companies are now gearing up for legal battles to claw back billions they've already paid.",
+          "link": "https://www.facebook.com/Reuters/videos/market-talk-tariff-refunds-arent-too-difficult/1695775041803407/",
+          "query": "President trade tariff speech today markets 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "How the Trump-Xi Relationship Has Changed",
+          "source": "YouTube \u00b7 Bloomberg Television",
+          "date": null,
+          "snippet": "Donald Trump is expecting economic deals and a \u201cwild\u201d welcome this week in China. In reality, he'll arrive facing an emboldened Xi Jinping, ...",
+          "link": "https://www.youtube.com/watch?v=K0ABYXIjUvc",
+          "query": "President trade tariff speech today markets 2026-05-17",
+          "type": "organic"
+        }
+      ],
+      "earnings_today": [
+        {
+          "title": "Company Earnings Calendar - Yahoo Finance",
+          "source": "Yahoo Finance",
+          "date": "1 day ago",
+          "snippet": "Earnings Calendar for: May 17, 2026 - May 23, 2026. Tip: Try a valid symbol or a specific company name for relevant results. Trending Tickers.",
+          "link": "https://finance.yahoo.com/calendar/earnings?day=2026-05-17",
+          "query": "earnings calendar today major companies 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Company Earnings Calendar - Yahoo Finance",
+          "source": "Yahoo Finance",
+          "date": "21 hours ago",
+          "snippet": "Find earnings, economic, stock splits and IPO calendars to track upcoming financial events from Yahoo Finance.",
+          "link": "https://finance.yahoo.com/calendar/earnings?from=2026-05-17&to=2026-05-21&day=2026-05-19",
+          "query": "earnings calendar today major companies 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Earnings Calendar",
+          "source": "Nasdaq",
+          "date": null,
+          "snippet": "Access detailed earnings reports for companies listed on the Nasdaq. Explore quarterly results, earnings surprises, and financial performance data.",
+          "link": "https://www.nasdaq.com/market-activity/earnings",
+          "query": "earnings calendar today major companies 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Company Earnings Calendar - Yahoo Finance",
+          "source": "Yahoo Finance",
+          "date": "4 hours ago",
+          "snippet": "Find earnings, economic, stock splits and IPO calendars to track upcoming financial events from Yahoo Finance.",
+          "link": "https://finance.yahoo.com/calendar/earnings?from=2026-05-17&to=2026-05-23&day=2026-05-22",
+          "query": "earnings calendar today major companies 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Earnings Calendar",
+          "source": "Investing.com",
+          "date": null,
+          "snippet": "Use our Earnings Calendar to track forecasts for quarterly and annual earnings reports as well as actual outcomes from companies worldwide.",
+          "link": "https://www.investing.com/earnings-calendar",
+          "query": "earnings calendar today major companies 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Earnings Calendar 2026 | Daily Earnings Reports",
+          "source": "MarketBeat",
+          "date": null,
+          "snippet": "View publicly traded companies that are issuing their quarterly earnings reports today with MarketBeat's free earnings reports calendar and screening tool.",
+          "link": "https://www.marketbeat.com/earnings/latest/",
+          "query": "earnings calendar today major companies 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Financial Calendars - Earnings and Economic Events",
+          "source": "GuruFocus",
+          "date": "15 hours ago",
+          "snippet": "Stay informed with GuruFocus' Financial Calendars for Earnings, Dividends, Stock Splits, and Economic Events to make informed investment ...",
+          "link": "https://www.gurufocus.com/calendar?date=2026-05-17&loc=earning-events",
+          "query": "earnings calendar today major companies 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Earnings Calendar",
+          "source": "Seeking Alpha",
+          "date": null,
+          "snippet": "See the companies with upcoming earnings announcements. View our earnings calendar to learn when quarterly and annual earnings are planned to be reported.",
+          "link": "https://seekingalpha.com/earnings/earnings-calendar",
+          "query": "earnings calendar today major companies 2026-05-17",
+          "type": "organic"
+        }
+      ],
+      "economic_calendar_today": [
+        {
+          "title": "U.S. Economic Calendar",
+          "source": "MarketWatch",
+          "date": null,
+          "snippet": "Next Week's Major U.S. Economic Reports & Fed Speakers ; 8:30 am, Personal spending, April ; 8:30 am, PCE index, April ; 8:30 am, PCE (year-over-year) ; 8:30 am ...",
+          "link": "https://www.marketwatch.com/economy-politics/calendar",
+          "query": "economic calendar today CPI PCE Fed jobs report 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Schedule of Selected Releases 2026",
+          "source": "Bureau of Labor Statistics (.gov)",
+          "date": null,
+          "snippet": "Friday, January 9, 2026. 08:30 AM. Employment Situation for December 2025 ; Tuesday, January 13, 2026. 08:30 AM. Consumer Price Index for December 2025 ; Tuesday, ...",
+          "link": "https://www.bls.gov/schedule/news_release/current_year.asp",
+          "query": "economic calendar today CPI PCE Fed jobs report 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "2026 Economic Calendar",
+          "source": "Econoday",
+          "date": null,
+          "snippet": "Economic Calendar - Track economic announcements with forecast, actuals and revised with commentary. Learn about these economic statistics.",
+          "link": "https://us.econoday.com/",
+          "query": "economic calendar today CPI PCE Fed jobs report 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Economic Calendar",
+          "source": "Trading Economics",
+          "date": null,
+          "snippet": "This page displays a table with actual values, consensus figures, forecasts, statistics and historical data charts for - Economic Calendar.",
+          "link": "https://tradingeconomics.com/calendar",
+          "query": "economic calendar today CPI PCE Fed jobs report 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Economic Calendar",
+          "source": "Investing.com",
+          "date": null,
+          "snippet": "The Economic Calendar is a real-time, streaming schedule of economic events and data releases that can move financial markets. It tracks indicators such as GDP, ...",
+          "link": "https://www.investing.com/economic-calendar",
+          "query": "economic calendar today CPI PCE Fed jobs report 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Weekly Macro Report, May 17 2026",
+          "source": "LongtermTrends",
+          "date": null,
+          "snippet": "1. Economic Growth & Outlook. The S&P 500 is up 14.87% year-over-year to 6,939.03 as of May 2026, signaling strong momentum.",
+          "link": "https://www.longtermtrends.com/weekly-macro-report/",
+          "query": "economic calendar today CPI PCE Fed jobs report 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Economic Indicators Calendar | New York Fed",
+          "source": "Federal Reserve Bank of New York",
+          "date": null,
+          "snippet": "Provides the date and time of key economic data releases (all Eastern Time). New York Fed content is available at or shortly after the scheduled times ...",
+          "link": "https://www.newyorkfed.org/research/calendars/nationalecon_cal",
+          "query": "economic calendar today CPI PCE Fed jobs report 2026-05-17",
+          "type": "organic"
+        },
+        {
+          "title": "Economic Release Calendar | FRED | St. Louis Fed",
+          "source": "Federal Reserve Economic Data | FRED | St. Louis Fed",
+          "date": null,
+          "snippet": "Release Calendar. All Releases, ADP National Employment Report, Advance Economic Indicators, Advance Monthly Sales for Retail and Food Services ...",
+          "link": "https://fred.stlouisfed.org/releases/calendar",
+          "query": "economic calendar today CPI PCE Fed jobs report 2026-05-17",
+          "type": "organic"
+        }
+      ]
+    },
+    "source": "serpapi"
+  },
+  "options_context": {
+    "put_call_ratio_market": null,
+    "call_put_premium_ratio_market": null,
+    "aggregate_call_put_premium_ratio": null,
+    "options_bias_market": "unknown",
+    "total_call_volume": 0,
+    "total_put_volume": 0,
+    "total_call_premium_flow": 0.0,
+    "total_put_premium_flow": 0.0,
+    "symbols": {
+      "SPY": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "QQQ": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "DIA": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "IWM": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "CSCO": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "F": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "VICR": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "AIP": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "AVAH": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "CGON": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "KLAR": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "ONDS": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "PCT": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "RDW": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "STAA": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "FENC": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "HYLN": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "MRAM": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "RILY": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "SLQT": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "UMAC": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "VLN": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      },
+      "IPWR": {
+        "put_volume": null,
+        "call_volume": null,
+        "put_call_ratio": null,
+        "options_bias": "unknown",
+        "source": "alpaca_options_no_data"
+      }
+    },
+    "source": "alpaca_options_chain"
+  },
+  "calendar_context": {
+    "date": "2026-05-17",
+    "weekday": "Sunday",
+    "is_friday": false
+  },
+  "data_sources": {
+    "alpaca": true,
+    "yfinance": true,
+    "serpapi": true,
+    "openai": true,
+    "alpaca_options": true
+  },
+  "overall_market_bias": "bearish",
+  "trade_permission": "cautious",
+  "risk_level": "medium",
+  "summary": "Market shows bearish bias with weak SPY and QQQ, falling TLT indicating rate pressure, and rising UUP signaling dollar strength. Energy sector leads while technology and defensive sectors lag. No confirmed major macro events today, but caution advised due to mixed signals and missing overnight futures data.",
+  "decision_reasons": [
+    "SPY and QQQ closed weaker with notable declines from previous closes indicating broad and tech weakness.",
+    "TLT is falling, suggesting bond yields are rising and adding pressure to rates-sensitive assets.",
+    "UUP is rising, indicating dollar strength and potential liquidity pressure.",
+    "Energy sector is leading, but overall sector rotation bias is defensive with many sectors lagging including technology and materials.",
+    "VXX is slightly down intraday but previous close showed minor rise, indicating no strong volatility spike but risk remains.",
+    "No confirmed Fed, jobs, inflation, PCE, OPEC, or presidential trade speech events today based on explicit evidence, but missing overnight futures data increases caution.",
+    "Options data is unavailable, increasing uncertainty in market sentiment assessment."
+  ],
+  "event_evidence": {
+    "fed_events_today": [],
+    "jobs_report_today": [],
+    "inflation_report_today": [],
+    "pce_report_today": [],
+    "opec_events_today": [],
+    "presidential_trade_speech_today": []
+  },
+  "event_flags": {
+    "fed_events_today": false,
+    "opec_events_today": false,
+    "jobs_report_today": false,
+    "inflation_report_today": false,
+    "pce_report_today": false,
+    "presidential_trade_speech_today": false,
+    "major_earnings_today": false
+  },
+  "sector_context_summary": {
+    "leading_sectors": [
+      "Energy",
+      "Financials",
+      "Consumer Staples"
+    ],
+    "lagging_sectors": [
+      "Technology",
+      "Utilities",
+      "Materials"
+    ],
+    "sector_rotation_bias": "defensive"
+  },
+  "key_etf_context_summary": {
+    "risk_signal_bias": "risk_off",
+    "risk_flags": [
+      "SPY weak",
+      "QQQ weak",
+      "TLT falling/rates pressure",
+      "UUP rising/dollar pressure"
+    ]
+  },
+  "news_context_summary": {
+    "previous_day_market_news": [
+      "Stock futures fall after record-setting week for Wall Street; traders await Nvidia and retail earnings: Live updates - CNBC",
+      "Trump\u2019s Stock Market Performance: Gains, Volatility, and Crash Risk by Mid-2026 - IndexBox",
+      "Stock Market Today: S&P 500 & Dow Jones Pull Back as Rising Yields Pressure Wall Street - Coinpaper"
+    ],
+    "scheduled_market_events_today": [],
+    "earnings_today": []
+  },
+  "classifier_model": "gpt-4.1-mini"
+}

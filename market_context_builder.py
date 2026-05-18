@@ -40,7 +40,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 
 ET = ZoneInfo("America/New_York")
-TODAY_TAG = datetime.now().strftime("%Y%m%d")
+TODAY_TAG = datetime.now(ET).strftime("%Y%m%d")
 
 OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
 
@@ -61,6 +61,10 @@ EXECUTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
 # =============================================================================
 
 OPENAI_MODEL = os.getenv("OPENAI_MARKET_CONTEXT_MODEL", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"))
+OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_MARKET_CONTEXT_TIMEOUT_SECONDS", "30"))
+OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MARKET_CONTEXT_MAX_RETRIES", "1"))
+MARKET_CONTEXT_DISABLE_OPENAI = os.getenv("MARKET_CONTEXT_DISABLE_OPENAI", "0").lower() in {"1", "true", "yes"}
+MARKET_CONTEXT_FAIL_OPENAI_CLOSED = os.getenv("MARKET_CONTEXT_FAIL_OPENAI_CLOSED", "0").lower() in {"1", "true", "yes"}
 SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
 ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower().strip()
 ALPACA_OPTIONS_MAX_CHAIN_CONTRACTS = int(os.getenv("ALPACA_OPTIONS_MAX_CHAIN_CONTRACTS", "800"))
@@ -180,11 +184,9 @@ def load_universe() -> list[str]:
             pass
 
     if LOCKED_UNIVERSE_PATH.exists():
-        return [
-            normalize_symbol(x)
-            for x in LOCKED_UNIVERSE_PATH.read_text(encoding="utf-8").splitlines()
-            if normalize_symbol(x)
-        ]
+        raw = LOCKED_UNIVERSE_PATH.read_text(encoding="utf-8")
+        tokens = re.split(r"[\s,]+", raw.replace("\"", "").replace("'", ""))
+        return [normalize_symbol(x) for x in tokens if normalize_symbol(x)]
 
     return []
 
@@ -907,7 +909,14 @@ def classify_with_openai(raw_context: dict[str, Any]) -> dict[str, Any]:
     if not api_key:
         return fallback_classification(raw_context, "OPENAI_API_KEY missing")
 
-    client = OpenAI(api_key=api_key)
+    if MARKET_CONTEXT_DISABLE_OPENAI:
+        return fallback_classification(raw_context, "MARKET_CONTEXT_DISABLE_OPENAI enabled")
+
+    client = OpenAI(
+        api_key=api_key,
+        timeout=OPENAI_TIMEOUT_SECONDS,
+        max_retries=OPENAI_MAX_RETRIES,
+    )
 
     prompt = f"""
 You are a strict market context classifier for an automated trading system.
@@ -1003,7 +1012,11 @@ Raw context:
         return validate_event_flags(parsed)
 
     except Exception as exc:
-        return fallback_classification(raw_context, f"OpenAI classification failed: {exc}")
+        msg = f"OpenAI classification failed: {exc}"
+        print(f"[market-context] {msg}; using fallback classification")
+        if MARKET_CONTEXT_FAIL_OPENAI_CLOSED:
+            raise RuntimeError(msg) from exc
+        return fallback_classification(raw_context, msg)
 
 
 def fallback_classification(raw_context: dict[str, Any], reason: str) -> dict[str, Any]:
@@ -1126,7 +1139,11 @@ def build_market_context() -> dict[str, Any]:
         },
     }
 
-    classification = validate_event_flags(classify_with_openai(raw_context))
+    try:
+        classification = validate_event_flags(classify_with_openai(raw_context))
+    except Exception as exc:
+        print(f"[market-context] classifier failed hard; using fallback: {exc}")
+        classification = validate_event_flags(fallback_classification(raw_context, f"classifier hard failure: {exc}"))
 
     payload = {
         **raw_context,

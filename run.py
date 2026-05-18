@@ -2756,6 +2756,93 @@ def json_default(value: Any) -> Any:
     return str(value)
 
 
+def safe_json(value: Any, default: Any = None) -> Any:
+    """Return a JSON-serializable version of value.
+
+    This is used by the ES/forecast layers before json.dumps(). It prevents
+    failures from numpy, pandas, dataclasses, Path, datetime, enums, and other
+    non-standard objects.
+    """
+    if default is None:
+        default = {}
+    try:
+        if value is None:
+            return default
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return [safe_json(x, default=None) for x in value.tolist()]
+        if isinstance(value, pd.Timestamp):
+            return value.isoformat()
+        if isinstance(value, pd.Series):
+            return {str(k): safe_json(v, default=None) for k, v in value.to_dict().items()}
+        if isinstance(value, pd.DataFrame):
+            return [safe_json(row, default=None) for row in value.to_dict(orient="records")]
+        if isinstance(value, dict):
+            return {str(k): safe_json(v, default=None) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [safe_json(v, default=None) for v in value]
+        if hasattr(value, "value"):
+            return safe_json(value.value, default=default)
+        if hasattr(value, "to_dict"):
+            return safe_json(value.to_dict(), default=default)
+        if hasattr(value, "__dict__"):
+            return safe_json(vars(value), default=default)
+        return str(value)
+    except Exception:
+        return default
+
+
+def is_auth_error(exc: Any) -> bool:
+    msg = str(exc).lower()
+    return (
+        "unauthorized" in msg
+        or "401" in msg
+        or "forbidden" in msg
+        or "invalid api key" in msg
+        or "authentication" in msg
+    )
+
+
+def alpaca_auth_help_message(paper: bool = True) -> str:
+    mode = "paper" if paper else "live"
+    base_url = os.getenv("APCA_API_BASE_URL") or os.getenv("ALPACA_BASE_URL") or ""
+    key = os.getenv("APCA_API_KEY_ID") or ""
+    return (
+        f"Alpaca auth failed for {mode} trading. Check .env: "
+        f"APCA_API_KEY_ID/APCA_API_SECRET_KEY must be a matching {mode} key pair; "
+        f"paper={paper}; APCA_API_BASE_URL={base_url or 'not_set'}; "
+        f"key_prefix={key[:4] + '...' if key else 'missing'}"
+    )
+
+
+def fallback_market_context(reason: str = "market_context_unavailable") -> dict[str, Any]:
+    """Conservative context used when market_context_builder/OpenAI/Alpaca fails."""
+    payload = {
+        "created_at_utc": now_utc().isoformat() if "now_utc" in globals() else datetime.now(timezone.utc).isoformat(),
+        "overall_market_bias": "mixed",
+        "trade_permission": "cautious",
+        "risk_level": "medium",
+        "market_context_source": "run_py_fallback",
+        "reason": str(reason),
+        "notes": [
+            "Fallback market context was used because the normal builder failed or timed out.",
+            "Do not block exits. Keep new entries conservative until market context refresh succeeds.",
+        ],
+    }
+    try:
+        MARKET_CONTEXT_PATH.write_text(json.dumps(payload, indent=2, default=json_default) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+    return payload
+
+
 def build_account_risk_profile(equity: float) -> AccountRiskProfile:
     """Scale risk controls from a small account to roughly $1M automatically."""
     equity = max(float(equity), 1.0)
@@ -3251,40 +3338,50 @@ def refresh_llm_sentiment_universe(timeout_seconds: int = 180) -> None:
 
 
 def refresh_market_context(timeout_seconds: int = 240) -> dict[str, Any]:
-    """Build daily market_context.json using market_context_builder.py."""
-    try:
-        from market_context_builder import build_market_context
+    """Build daily market_context.json using market_context_builder.py.
 
-        payload = build_market_context()
-        print(
-            "[market-context] refreshed via import "
-            f"bias={payload.get('overall_market_bias')} "
-            f"permission={payload.get('trade_permission')} "
-            f"risk={payload.get('risk_level')}"
-        )
-        write_event(
-            "market_context_refreshed",
-            {
-                "overall_market_bias": payload.get("overall_market_bias"),
-                "trade_permission": payload.get("trade_permission"),
-                "risk_level": payload.get("risk_level"),
-            },
-        )
-        return payload
-    except Exception as exc:
-        print(f"[market-context] import refresh failed; trying subprocess: {exc}")
+    The previous import path could hang inside OpenAI/httpx and block startup.
+    This version runs the builder as a subprocess so timeout_seconds is enforced.
+    If Alpaca/OpenAI fails, it writes and returns a conservative fallback context.
+    """
+    timeout_seconds = max(15, int(timeout_seconds or 240))
 
-    ok, output = run_python_script(MARKET_CONTEXT_BUILDER_PATH, timeout_seconds=timeout_seconds)
+    env_overrides = {
+        "OPENAI_TIMEOUT_SECONDS": os.getenv("OPENAI_TIMEOUT_SECONDS", "30"),
+        "OPENAI_MAX_RETRIES": os.getenv("OPENAI_MAX_RETRIES", "1"),
+        "MARKET_CONTEXT_FALLBACK_ON_ERROR": "1",
+        "RUN_DATA_DATE": DATA_TAG,
+    }
+
+    ok, output = run_python_script(
+        MARKET_CONTEXT_BUILDER_PATH,
+        timeout_seconds=timeout_seconds,
+        env_overrides=env_overrides,
+    )
+
     if ok:
         print("[market-context] refreshed via subprocess")
         if output:
             print(output[-2000:])
-        write_event("market_context_refreshed_subprocess", {"output_tail": output[-2000:]})
-    else:
-        print(f"[market-context] refresh failed: {output}")
-        write_event("market_context_refresh_failed", {"error": output})
+        payload = read_json_file(MARKET_CONTEXT_PATH, {})
+        write_event(
+            "market_context_refreshed_subprocess",
+            {
+                "overall_market_bias": payload.get("overall_market_bias"),
+                "trade_permission": payload.get("trade_permission"),
+                "risk_level": payload.get("risk_level"),
+                "output_tail": output[-2000:] if output else "",
+            },
+        )
+        return payload or fallback_market_context("market_context_builder_returned_no_payload")
 
-    return read_json_file(MARKET_CONTEXT_PATH, {})
+    reason = output or "market_context_builder_failed"
+    if is_auth_error(reason):
+        reason = f"{reason} | {alpaca_auth_help_message(paper=True)}"
+
+    print(f"[market-context] refresh failed; using fallback: {reason}")
+    write_event("market_context_refresh_failed_using_fallback", {"error": reason})
+    return fallback_market_context(reason)
 
 
 def refresh_premarket_trade_plan(timeout_seconds: int = 240) -> dict[str, Any]:
@@ -4655,9 +4752,10 @@ def submit_trailing_stop_after_entry(
 # ======================================================================
 class AlpacaBroker:
     def __init__(self, env_path: Path, paper: bool = True):
-        load_dotenv(env_path)
-        self.api_key = os.getenv("APCA_API_KEY_ID")
-        self.secret_key = os.getenv("APCA_API_SECRET_KEY")
+        load_dotenv(env_path, override=True)
+        self.paper = bool(paper)
+        self.api_key = os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY_ID")
+        self.secret_key = os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_API_SECRET_KEY")
 
         if not self.api_key or not self.secret_key:
             raise RuntimeError(f"Missing APCA_API_KEY_ID / APCA_API_SECRET_KEY in {env_path}")
@@ -4665,11 +4763,16 @@ class AlpacaBroker:
         self.trading = TradingClient(
             api_key=self.api_key,
             secret_key=self.secret_key,
-            paper=paper,
+            paper=self.paper,
         )
 
     def get_account_snapshot(self) -> AccountSnapshot:
-        acct = self.trading.get_account()
+        try:
+            acct = self.trading.get_account()
+        except Exception as exc:
+            if is_auth_error(exc):
+                raise RuntimeError(alpaca_auth_help_message(self.paper)) from exc
+            raise
         return AccountSnapshot(
             buying_power=to_float(getattr(acct, "buying_power", 0.0)),
             equity=to_float(getattr(acct, "equity", 0.0)),
@@ -8448,7 +8551,12 @@ def get_trading_client(config: Optional[ExecutorConfig] = None) -> TradingClient
 
 
 def get_account_snapshot(client: TradingClient) -> AccountSnapshot:
-    acct = client.get_account()
+    try:
+        acct = client.get_account()
+    except Exception as exc:
+        if is_auth_error(exc):
+            raise RuntimeError(alpaca_auth_help_message(True)) from exc
+        raise
     return AccountSnapshot(
         buying_power=to_float(getattr(acct, "buying_power", 0.0)),
         equity=to_float(getattr(acct, "equity", 0.0)),
