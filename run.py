@@ -52,6 +52,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import re
 import inspect
@@ -84,6 +85,30 @@ from sklearn.pipeline import Pipeline
 from dotenv import load_dotenv
 
 from execution_alpha_gate import add_execution_alpha_scores
+
+try:
+    from system_self_awareness import (
+        run_self_assessment,
+        load_self_assessment,
+        self_assessment_size_multiplier,
+        self_assessment_mode,
+        self_assessment_raises_confidence,
+    )
+    _SA_AVAILABLE = True
+except Exception:
+    _SA_AVAILABLE = False
+    def run_self_assessment(*_a, **_kw) -> dict:  # type: ignore[misc]
+        return {}
+    def load_self_assessment(*_a, **_kw) -> dict:  # type: ignore[misc]
+        return {"execution_mode_recommendation": "NORMAL", "recommended_size_multiplier": 1.0,
+                "disable_options": False, "disable_pyramiding": False,
+                "raise_confidence_threshold_by": 0.0, "reasons": ["sa_unavailable"]}
+    def self_assessment_size_multiplier(*_a, **_kw) -> float:  # type: ignore[misc]
+        return 1.0
+    def self_assessment_mode(*_a, **_kw) -> str:  # type: ignore[misc]
+        return "NORMAL"
+    def self_assessment_raises_confidence(*_a, **_kw) -> float:  # type: ignore[misc]
+        return 0.0
 
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
@@ -128,6 +153,25 @@ LOG_DIR = PROJECT_ROOT / "logs" / "execution" / DATA_TAG
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
+USE_TRADINGVIEW_SCREENER = os.getenv("USE_TRADINGVIEW_SCREENER", "1").lower() in {"1", "true", "yes"}
+
+TRADINGVIEW_REQUIRE_RVOL = float(
+    os.getenv("TRADINGVIEW_REQUIRE_RVOL", "1.2")
+)
+
+TRADINGVIEW_MAX_PLANNER_SYMBOLS = int(
+    os.getenv("TRADINGVIEW_MAX_PLANNER_SYMBOLS", "20")
+)
+MAX_PLAN_AGE_MINUTES = int(os.getenv("MAX_PLAN_AGE_MINUTES", "15"))
+REQUIRE_FRESH_PREMARKET_PLAN_FOR_BUYS = os.getenv("REQUIRE_FRESH_PREMARKET_PLAN_FOR_BUYS", "1").lower() in {"1", "true", "yes"}
+REQUIRE_STRUCTURE_LONG_ALLOWED_FOR_BUYS = os.getenv("REQUIRE_STRUCTURE_LONG_ALLOWED_FOR_BUYS", "1").lower() in {"1", "true", "yes"}
+SAFE_MODE_ON_PLANNER_FAILURE = os.getenv("SAFE_MODE_ON_PLANNER_FAILURE", "1").lower() in {"1", "true", "yes"}
+SAFE_MODE_BUY_SIZE_MULTIPLIER = float(os.getenv("SAFE_MODE_BUY_SIZE_MULTIPLIER", "0.50"))
+CAUTIOUS_MARKET_BUY_SIZE_MULTIPLIER = float(os.getenv("CAUTIOUS_MARKET_BUY_SIZE_MULTIPLIER", "0.50"))
+CAUTIOUS_MARKET_CONFIDENCE_ADDON = float(os.getenv("CAUTIOUS_MARKET_CONFIDENCE_ADDON", "0.10"))
+BEARISH_MARKET_DISABLE_NEW_LONGS = os.getenv("BEARISH_MARKET_DISABLE_NEW_LONGS", "1").lower() in {"1", "true", "yes"}
+BEARISH_MARKET_MIN_RL_CONFIDENCE = float(os.getenv("BEARISH_MARKET_MIN_RL_CONFIDENCE", "0.85"))
+MIXED_MARKET_BUY_SIZE_MULTIPLIER = float(os.getenv("MIXED_MARKET_BUY_SIZE_MULTIPLIER", "0.80"))
 
 # =============================================================================
 # FORECAST ENSEMBLE LAYER: ARIMA + LSTM + STACKED-LSTM + ATTENTION-LSTM
@@ -168,6 +212,15 @@ FORECAST_WEIGHTS = {
     "deeplob": float(os.getenv("FORECAST_WEIGHT_DEEPLOB", "0.10")),
     "rl": float(os.getenv("FORECAST_WEIGHT_RL", "0.10")),
 }
+
+# forecast_engine.py config — passed as env overrides when FORECAST_ENSEMBLE_REFRESH_ON_START=1.
+FORECAST_ENGINE_ENABLED = os.getenv("FORECAST_ENGINE_ENABLED", "1")
+FORECAST_ENGINE_TRAIN_ON_START = os.getenv("FORECAST_ENGINE_TRAIN_ON_START", "1")
+FORECAST_ENGINE_MIN_ROWS = os.getenv("FORECAST_ENGINE_MIN_ROWS", "300")
+FORECAST_ENGINE_EPOCHS = os.getenv("FORECAST_ENGINE_EPOCHS", "20")
+FORECAST_ENGINE_LOOKBACK = os.getenv("FORECAST_ENGINE_LOOKBACK", "60")
+FORECAST_ENGINE_MODEL_DIR = os.getenv("FORECAST_ENGINE_MODEL_DIR", str(PROJECT_ROOT / "models" / "forecast"))
+FORECAST_ENGINE_USE_GPU = os.getenv("FORECAST_ENGINE_USE_GPU", "1")
 
 
 # DWT preprocessing for forecasting.
@@ -328,6 +381,14 @@ def refresh_forecast_ensemble_if_available() -> None:
             "DWT_FORECAST_ENABLED": "1" if DWT_FORECAST_ENABLED else "0",
             "DWT_WAVELET": DWT_WAVELET,
             "DWT_LEVEL": str(DWT_LEVEL),
+            # forecast_engine.py config forwarded from this process's env or defaults above.
+            "FORECAST_ENGINE_ENABLED": FORECAST_ENGINE_ENABLED,
+            "FORECAST_ENGINE_TRAIN_ON_START": FORECAST_ENGINE_TRAIN_ON_START,
+            "FORECAST_ENGINE_MIN_ROWS": FORECAST_ENGINE_MIN_ROWS,
+            "FORECAST_ENGINE_EPOCHS": FORECAST_ENGINE_EPOCHS,
+            "FORECAST_ENGINE_LOOKBACK": FORECAST_ENGINE_LOOKBACK,
+            "FORECAST_ENGINE_MODEL_DIR": FORECAST_ENGINE_MODEL_DIR,
+            "FORECAST_ENGINE_USE_GPU": FORECAST_ENGINE_USE_GPU,
             **{f"PSO_LSTM_{k.upper()}": str(v) for k, v in load_pso_lstm_best_params().items() if v is not None},
         },
     )
@@ -2264,7 +2325,9 @@ class ScannerConfig:
     max_universe_symbols: int = 30
     lookback_days: int = 260
     data_feed: str = "iex"
-    execution_alpha_min_score: float = 0.70
+    execution_alpha_min_score: float = float(os.getenv("EXECUTION_ALPHA_MIN_SCORE", "0.64"))
+    execution_alpha_risk_off_size_mult: float = float(os.getenv("EXECUTION_ALPHA_RISK_OFF_SIZE_MULT", "0.50"))
+    execution_alpha_risk_off_threshold_add: float = float(os.getenv("EXECUTION_ALPHA_RISK_OFF_THRESHOLD_ADD", "0.05"))
 
     # Forecast ensemble gates: ARIMA + LSTM + Stacked-LSTM + Attention-LSTM.
     forecast_ensemble_enabled: bool = True
@@ -2288,6 +2351,10 @@ class ScannerConfig:
     base_target_weight: float = 0.03
     max_target_weight: float = 0.10
     reversal_target_weight_mult: float = 0.75
+    # Composite position-sizing weights: setup quality, entry confidence, liquidity.
+    position_setup_score_weight: float = float(os.getenv("POSITION_SETUP_SCORE_WEIGHT", "0.50"))
+    position_confidence_weight: float = float(os.getenv("POSITION_CONFIDENCE_WEIGHT", "0.35"))
+    position_liquidity_weight: float = float(os.getenv("POSITION_LIQUIDITY_WEIGHT", "0.15"))
 
     stop_loss_pct: float = -0.025
     stale_position_score_exit: float = 0.45
@@ -2295,6 +2362,9 @@ class ScannerConfig:
     profit_giveback_pct: float = 0.015
 
     require_positive_daily_move: bool = True
+    require_positive_daily_move_for_breakouts: bool = os.getenv("REQUIRE_POSITIVE_DAILY_MOVE_FOR_BREAKOUTS", "1").lower() in {"1", "true", "yes"}
+    allow_negative_daily_move_reversals: bool = os.getenv("ALLOW_NEGATIVE_DAILY_MOVE_REVERSALS", "1").lower() in {"1", "true", "yes"}
+    reversal_min_reclaim_score: float = float(os.getenv("REVERSAL_MIN_RECLAIM_SCORE", "0.60"))
     avoid_bearish_regime_for_longs: bool = True
     allow_relaxed_fallback: bool = True
     fallback_min_setup_score: float = 0.52
@@ -2318,6 +2388,49 @@ class ScannerConfig:
     entry_breakout_buffer_pct: float = 0.002
     max_entry_chase_pct: float = 0.018
 
+    # Pivot-point buying strategy.
+    # This is the preferred intraday entry model: buy validated support pivots/zones
+    # after price pulls into the zone and 1m/5m momentum confirms reversal.
+    pivot_buy_enabled: bool = os.getenv("PIVOT_BUY_ENABLED", "1").lower() in {"1", "true", "yes"}
+    pivot_scan_lookback_days: int = int(os.getenv("PIVOT_SCAN_LOOKBACK_DAYS", "3"))
+    pivot_zone_tolerance_pct: float = float(os.getenv("PIVOT_ZONE_TOLERANCE_PCT", "0.003"))
+    pivot_buy_zone_pct: float = float(os.getenv("PIVOT_BUY_ZONE_PCT", "0.004"))
+    pivot_stop_buffer_pct: float = float(os.getenv("PIVOT_STOP_BUFFER_PCT", "0.004"))
+    pivot_min_weight: float = float(os.getenv("PIVOT_MIN_WEIGHT", "5.0"))
+    pivot_min_touch_count: int = int(os.getenv("PIVOT_MIN_TOUCH_COUNT", "2"))
+    pivot_min_reversal_score: float = float(os.getenv("PIVOT_MIN_REVERSAL_SCORE", "0.60"))
+    pivot_min_rel_volume: float = float(os.getenv("PIVOT_MIN_REL_VOLUME", "1.05"))
+    pivot_min_rr: float = float(os.getenv("PIVOT_MIN_RR", "1.65"))
+    pivot_target_rr: float = float(os.getenv("PIVOT_TARGET_RR", "2.0"))
+    pivot_base_target_weight: float = float(os.getenv("PIVOT_BASE_TARGET_WEIGHT", "0.03"))
+    pivot_max_target_weight: float = float(os.getenv("PIVOT_MAX_TARGET_WEIGHT", "0.07"))
+    pivot_allow_market_entry_when_confirmed: bool = os.getenv("PIVOT_ALLOW_MARKET_ENTRY_WHEN_CONFIRMED", "1").lower() in {"1", "true", "yes"}
+    pivot_block_bearish_regime: bool = os.getenv("PIVOT_BLOCK_BEARISH_REGIME", "1").lower() in {"1", "true", "yes"}
+
+    # 8am 1H ORB / liquidity-sweep strategy.
+    # Uses the 8:00-8:59 ET candle as the daily dealing range.
+    # Long setup: sweep below 8am low -> reject/reclaim inside range -> bullish FVG -> enter pullback/retest.
+    # Short setup: sweep above 8am high -> reject/back inside range -> bearish FVG -> optional short/exit.
+    orb_8am_enabled: bool = os.getenv("ORB_8AM_ENABLED", "0").lower() in {"1", "true", "yes"}
+    orb_8am_hour_et: int = int(os.getenv("ORB_8AM_HOUR_ET", "8"))
+    orb_scan_lookback_days: int = int(os.getenv("ORB_SCAN_LOOKBACK_DAYS", "2"))
+    orb_min_range_pct: float = float(os.getenv("ORB_MIN_RANGE_PCT", "0.0025"))
+    orb_max_range_pct: float = float(os.getenv("ORB_MAX_RANGE_PCT", "0.14"))
+    orb_sweep_buffer_pct: float = float(os.getenv("ORB_SWEEP_BUFFER_PCT", "0.0005"))
+    orb_reclaim_buffer_pct: float = float(os.getenv("ORB_RECLAIM_BUFFER_PCT", "0.0002"))
+    orb_fvg_min_gap_pct: float = float(os.getenv("ORB_FVG_MIN_GAP_PCT", "0.0004"))
+    orb_retest_tolerance_pct: float = float(os.getenv("ORB_RETEST_TOLERANCE_PCT", "0.003"))
+    orb_entry_max_age_minutes: int = int(os.getenv("ORB_ENTRY_MAX_AGE_MINUTES", "90"))
+    orb_min_rr: float = float(os.getenv("ORB_MIN_RR", "2.0"))
+    orb_target_rr: float = float(os.getenv("ORB_TARGET_RR", "2.0"))
+    orb_base_target_weight: float = float(os.getenv("ORB_BASE_TARGET_WEIGHT", "0.025"))
+    orb_max_target_weight: float = float(os.getenv("ORB_MAX_TARGET_WEIGHT", "0.06"))
+    orb_allow_long_entries: bool = os.getenv("ORB_ALLOW_LONG_ENTRIES", "1").lower() in {"1", "true", "yes"}
+    orb_allow_short_entries: bool = os.getenv("ORB_ALLOW_SHORT_ENTRIES", "0").lower() in {"1", "true", "yes"}
+    orb_exit_longs_on_bearish_sweep: bool = os.getenv("ORB_EXIT_LONGS_ON_BEARISH_SWEEP", "1").lower() in {"1", "true", "yes"}
+    orb_require_fvg_retest: bool = os.getenv("ORB_REQUIRE_FVG_RETEST", "1").lower() in {"1", "true", "yes"}
+    orb_min_volume_rvol: float = float(os.getenv("ORB_MIN_VOLUME_RVOL", "1.05"))
+
     # Active-position monitoring. Every cycle, held symbols are checked on
     # 1m/5m/15m bars to ensure they are still moving in the right direction.
     active_position_monitor_enabled: bool = True
@@ -2339,7 +2452,7 @@ class ScannerConfig:
     #   system-data/feature_stream/YYYYMMDD_symbol_state.json
     #   system-data/YYYYMMDD_multitimeframe_context.json
     feature_stream_enabled: bool = True
-    feature_stream_max_age_minutes: int = 20
+    feature_stream_max_age_minutes: int = int(os.getenv("FEATURE_STREAM_MAX_AGE_MINUTES", "5"))
     use_mtf_buy_gate: bool = True
     mtf_require_5m_or_15m_trend: bool = True
     mtf_require_price_above_vwap: bool = True
@@ -2414,6 +2527,19 @@ class ScannerConfig:
     refresh_premarket_trade_plan: bool = True
     require_valid_premarket_plan_for_buys: bool = False
     prefer_premarket_valid_symbols: bool = True
+    max_plan_age_minutes: int = MAX_PLAN_AGE_MINUTES
+    require_fresh_premarket_plan_for_buys: bool = REQUIRE_FRESH_PREMARKET_PLAN_FOR_BUYS
+    require_structure_long_allowed_for_buys: bool = REQUIRE_STRUCTURE_LONG_ALLOWED_FOR_BUYS
+    safe_mode_on_planner_failure: bool = SAFE_MODE_ON_PLANNER_FAILURE
+    safe_mode_buy_size_multiplier: float = SAFE_MODE_BUY_SIZE_MULTIPLIER
+    cautious_market_buy_size_multiplier: float = CAUTIOUS_MARKET_BUY_SIZE_MULTIPLIER
+    cautious_market_confidence_addon: float = CAUTIOUS_MARKET_CONFIDENCE_ADDON
+    mixed_market_buy_size_multiplier: float = MIXED_MARKET_BUY_SIZE_MULTIPLIER
+    bearish_market_disable_new_longs: bool = BEARISH_MARKET_DISABLE_NEW_LONGS
+    bearish_market_min_rl_confidence: float = BEARISH_MARKET_MIN_RL_CONFIDENCE
+    use_tradingview_screener: bool = USE_TRADINGVIEW_SCREENER
+    tradingview_require_rvol: float = TRADINGVIEW_REQUIRE_RVOL
+    tradingview_max_planner_symbols: int = TRADINGVIEW_MAX_PLANNER_SYMBOLS
 
     # 4:00 AM continuous data collection + final session-planning pipeline.
     session_planning_enabled: bool = True
@@ -3429,6 +3555,114 @@ def load_premarket_trade_plan(refresh: bool = False) -> dict[str, Any]:
     if refresh or not PREMARKET_TRADE_PLAN_PATH.exists():
         return refresh_premarket_trade_plan()
     return read_json_file(PREMARKET_TRADE_PLAN_PATH, {})
+
+
+def load_intraday_structure_map() -> dict[str, Any]:
+    return read_json_file(INTRADAY_STRUCTURE_MAP_PATH, {})
+
+
+def parse_payload_time_utc(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        s = str(value).strip()
+        if not s:
+            return None
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def payload_age_minutes(payload: dict[str, Any], path: Path | None = None) -> float | None:
+    dt = parse_payload_time_utc(payload.get("created_at_utc") or payload.get("generated_at_utc") or payload.get("timestamp_utc"))
+    if dt is not None:
+        return max(0.0, (now_utc() - dt).total_seconds() / 60.0)
+    if path is not None and path.exists():
+        try:
+            return max(0.0, (time.time() - path.stat().st_mtime) / 60.0)
+        except Exception:
+            return None
+    return None
+
+
+def structure_map_by_symbol(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    rows = payload.get("structures") or payload.get("symbols") or []
+    if isinstance(rows, dict):
+        rows = list(rows.values())
+    out: dict[str, dict[str, Any]] = {}
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            symbol = safe_symbol(row.get("symbol"))
+            if symbol:
+                out[symbol] = row
+    return out
+
+
+def planner_health_snapshot(config: ScannerConfig | None = None) -> dict[str, Any]:
+    cfg = config or ScannerConfig()
+    plan_payload = read_json_file(PREMARKET_TRADE_PLAN_PATH, {})
+    structure_payload = read_json_file(INTRADAY_STRUCTURE_MAP_PATH, {})
+    plan_age = payload_age_minutes(plan_payload, PREMARKET_TRADE_PLAN_PATH)
+    structure_age = payload_age_minutes(structure_payload, INTRADAY_STRUCTURE_MAP_PATH)
+
+    status = str(plan_payload.get("status") or plan_payload.get("planner_status") or ("ok" if plan_payload else "missing")).lower()
+    if status not in {"ok", "normal", "success"} and plan_payload:
+        status = "degraded"
+
+    long_allowed = set()
+    raw_long = structure_payload.get("long_allowed_symbols") or plan_payload.get("long_allowed_symbols") or []
+    if isinstance(raw_long, list):
+        long_allowed = {safe_symbol(x) for x in raw_long if safe_symbol(x)}
+    if not long_allowed:
+        for symbol, row in structure_map_by_symbol(structure_payload).items():
+            trade_structure = row.get("trade_structure", {}) if isinstance(row, dict) else {}
+            if bool(trade_structure.get("long_allowed")):
+                long_allowed.add(symbol)
+
+    valid_symbols = set()
+    raw_valid = plan_payload.get("valid_symbols") or []
+    if isinstance(raw_valid, list):
+        valid_symbols = {safe_symbol(x) for x in raw_valid if safe_symbol(x)}
+
+    issues: list[str] = []
+    if not plan_payload:
+        issues.append("missing_premarket_trade_plan")
+    if not structure_payload:
+        issues.append("missing_intraday_structure_map")
+    if plan_age is None:
+        issues.append("unknown_plan_age")
+    elif plan_age > cfg.max_plan_age_minutes:
+        issues.append(f"stale_plan:{plan_age:.1f}m>{cfg.max_plan_age_minutes}m")
+    if structure_age is None:
+        issues.append("unknown_structure_age")
+    elif structure_age > cfg.max_plan_age_minutes:
+        issues.append(f"stale_structure:{structure_age:.1f}m>{cfg.max_plan_age_minutes}m")
+    if status not in {"ok", "normal", "success"}:
+        issues.append(f"planner_status:{status}")
+
+    healthy = len(issues) == 0
+    execution_mode = "NORMAL" if healthy else ("SAFE" if cfg.safe_mode_on_planner_failure else "BLOCK_NEW_BUYS")
+
+    return {
+        "healthy": healthy,
+        "execution_mode": execution_mode,
+        "issues": issues,
+        "plan_status": status,
+        "plan_age_minutes": plan_age,
+        "structure_age_minutes": structure_age,
+        "long_allowed_symbols": sorted(long_allowed),
+        "valid_symbols": sorted(valid_symbols),
+        "plan_payload": plan_payload,
+        "structure_payload": structure_payload,
+        "structure_by_symbol": structure_map_by_symbol(structure_payload),
+    }
 
 
 
@@ -5325,6 +5559,736 @@ class MomentumSetupScanner:
             print(out[[c for c in show if c in out.columns]].to_string(index=False))
         return out
 
+
+    def _weighted_pivot_zones(self, df: pd.DataFrame, kind: str = "support") -> list[dict[str, Any]]:
+        """Create weighted pivot zones from intraday bars.
+
+        kind="support" clusters pivot lows. kind="resistance" clusters pivot highs.
+        Weight is intentionally simple and transparent: pivot touches + nearby wick/body
+        interactions + volume confirmation. The strategy buys support pivots, not exact
+        prices, so every level is treated as a zone using pivot_zone_tolerance_pct.
+        """
+        if df is None or df.empty or len(df) < 20:
+            return []
+
+        g = df.copy()
+        g["timestamp"] = pd.to_datetime(g.get("timestamp"), errors="coerce", utc=True)
+        for col in ["open", "high", "low", "close", "volume"]:
+            if col not in g.columns:
+                g[col] = 0.0
+            g[col] = pd.to_numeric(g[col], errors="coerce")
+        g = g.dropna(subset=["timestamp", "open", "high", "low", "close"]).sort_values("timestamp").reset_index(drop=True)
+        if len(g) < 20:
+            return []
+
+        support, resistance = self._pivot_levels(g)
+        raw_levels = support if kind == "support" else resistance
+        raw_levels = [float(x) for x in raw_levels if np.isfinite(x) and x > 0]
+        if not raw_levels:
+            return []
+
+        tol = float(self.config.pivot_zone_tolerance_pct)
+        clustered = self._cluster_price_levels(raw_levels, tolerance_pct=tol)
+        if not clustered:
+            return []
+
+        vol = pd.to_numeric(g["volume"], errors="coerce").fillna(0.0)
+        vol20 = vol.rolling(20).mean().replace(0, np.nan)
+        zones: list[dict[str, Any]] = []
+        for level in clustered:
+            if kind == "support":
+                wick_touches = (pd.to_numeric(g["low"], errors="coerce") - level).abs() / max(level, 1e-9) <= tol
+                body_touches = (pd.to_numeric(g["close"], errors="coerce") - level).abs() / max(level, 1e-9) <= tol
+            else:
+                wick_touches = (pd.to_numeric(g["high"], errors="coerce") - level).abs() / max(level, 1e-9) <= tol
+                body_touches = (pd.to_numeric(g["close"], errors="coerce") - level).abs() / max(level, 1e-9) <= tol
+            touch_count = int(wick_touches.sum())
+            body_count = int(body_touches.sum())
+            touch_volume = float(vol[wick_touches | body_touches].sum())
+            avg_bar_volume = float(vol.tail(100).mean()) if len(vol) else 0.0
+            volume_bonus = min(5.0, touch_volume / max(avg_bar_volume * 10.0, 1.0)) if avg_bar_volume > 0 else 0.0
+            recent_bonus = 0.0
+            recent_slice = g.tail(60)
+            if not recent_slice.empty:
+                if kind == "support":
+                    recent_touch = ((pd.to_numeric(recent_slice["low"], errors="coerce") - level).abs() / max(level, 1e-9) <= tol).any()
+                else:
+                    recent_touch = ((pd.to_numeric(recent_slice["high"], errors="coerce") - level).abs() / max(level, 1e-9) <= tol).any()
+                recent_bonus = 2.0 if bool(recent_touch) else 0.0
+            weight = float(touch_count * 1.5 + body_count * 0.75 + volume_bonus + recent_bonus)
+            zones.append({
+                "price": float(level),
+                "zone_low": float(level * (1.0 - tol)),
+                "zone_high": float(level * (1.0 + tol)),
+                "touch_count": touch_count,
+                "body_count": body_count,
+                "weight": weight,
+                "kind": kind,
+            })
+
+        zones = [z for z in zones if z["touch_count"] >= self.config.pivot_min_touch_count]
+        return sorted(zones, key=lambda z: (z["price"], z["weight"]))
+
+    def _pivot_reversal_metrics(self, frame_1m: pd.DataFrame, frame_5m: pd.DataFrame, support_zone: dict[str, Any]) -> dict[str, Any]:
+        """Score whether price has reversed upward from a support pivot zone."""
+        if frame_1m is None or frame_1m.empty:
+            return {"reversal_score": 0.0, "reason": "no_1m_frame"}
+
+        g1 = frame_1m.copy().sort_values("timestamp")
+        for col in ["open", "high", "low", "close", "volume"]:
+            g1[col] = pd.to_numeric(g1.get(col), errors="coerce")
+        g1 = g1.dropna(subset=["open", "high", "low", "close"])
+        if len(g1) < 20:
+            return {"reversal_score": 0.0, "reason": "not_enough_1m_bars"}
+
+        close = g1["close"]
+        high = g1["high"]
+        low = g1["low"]
+        vol = g1["volume"].fillna(0.0)
+        current = float(close.iloc[-1])
+        prev_close = float(close.iloc[-2]) if len(close) >= 2 else current
+        zone_price = float(support_zone.get("price", 0.0))
+        zone_low = float(support_zone.get("zone_low", zone_price))
+        zone_high = float(support_zone.get("zone_high", zone_price))
+        buy_zone_high = zone_price * (1.0 + float(self.config.pivot_buy_zone_pct))
+        buy_zone_low = zone_price * (1.0 - float(self.config.pivot_buy_zone_pct))
+
+        typical = ((high + low + close) / 3.0).astype(float)
+        vwap = float((typical * vol).tail(60).sum() / max(vol.tail(60).sum(), 1.0)) if float(vol.tail(60).sum()) > 0 else float(close.tail(20).mean())
+        rel_volume = float(vol.iloc[-1] / max(vol.tail(20).mean(), 1.0)) if len(vol) >= 20 else 1.0
+        ema_fast = close.ewm(span=8, adjust=False).mean()
+        ema_slow = close.ewm(span=21, adjust=False).mean()
+        macd_hist = float((ema_fast - ema_slow).iloc[-1] - (ema_fast - ema_slow).ewm(span=9, adjust=False).mean().iloc[-1])
+        delta = close.diff()
+        gain = delta.clip(lower=0).rolling(14).mean()
+        loss = (-delta.clip(upper=0)).rolling(14).mean()
+        rs = gain / loss.replace(0, np.nan)
+        rsi = float((100.0 - (100.0 / (1.0 + rs))).fillna(50.0).iloc[-1])
+
+        recent = g1.tail(20)
+        swept_or_tagged = bool((pd.to_numeric(recent["low"], errors="coerce") <= zone_high).any())
+        reclaimed = bool(current > zone_price and current > prev_close)
+        near_zone = bool(buy_zone_low <= current <= buy_zone_high)
+        above_vwap = bool(current >= vwap)
+        ema_turn = bool(ema_fast.iloc[-1] >= ema_slow.iloc[-1] or ema_fast.iloc[-1] > ema_fast.iloc[-2])
+        bullish_candle = bool(close.iloc[-1] > g1["open"].iloc[-1] and close.iloc[-1] > prev_close)
+        volume_ok = bool(rel_volume >= float(self.config.pivot_min_rel_volume))
+        rsi_ok = bool(rsi >= 48.0)
+        macd_ok = bool(macd_hist >= 0.0)
+
+        score = 0.0
+        score += 0.18 if near_zone else 0.0
+        score += 0.16 if swept_or_tagged else 0.0
+        score += 0.14 if reclaimed else 0.0
+        score += 0.13 if above_vwap else 0.0
+        score += 0.12 if ema_turn else 0.0
+        score += 0.10 if bullish_candle else 0.0
+        score += 0.09 if volume_ok else 0.0
+        score += 0.04 if rsi_ok else 0.0
+        score += 0.04 if macd_ok else 0.0
+
+        # 5m confirmation prevents buying every tiny 1m bounce.
+        five_min_confirmed = True
+        if frame_5m is not None and not frame_5m.empty and len(frame_5m) >= 8:
+            g5 = frame_5m.copy().sort_values("timestamp")
+            g5_close = pd.to_numeric(g5["close"], errors="coerce").dropna()
+            if len(g5_close) >= 8:
+                five_min_confirmed = bool(g5_close.iloc[-1] >= g5_close.rolling(5).mean().iloc[-1] or g5_close.iloc[-1] > g5_close.iloc[-2])
+                score += 0.08 if five_min_confirmed else -0.08
+
+        return {
+            "reversal_score": float(max(0.0, min(1.0, score))),
+            "current_price": current,
+            "vwap": vwap,
+            "rel_volume": rel_volume,
+            "rsi14": rsi,
+            "macd_hist": macd_hist,
+            "near_zone": near_zone,
+            "swept_or_tagged": swept_or_tagged,
+            "reclaimed": reclaimed,
+            "above_vwap": above_vwap,
+            "ema_turn": ema_turn,
+            "bullish_candle": bullish_candle,
+            "volume_ok": volume_ok,
+            "five_min_confirmed": five_min_confirmed,
+        }
+
+    def _pivot_signal_for_symbol(self, symbol: str, bars_1m: pd.DataFrame, bars_5m: pd.DataFrame, bars_15m: pd.DataFrame) -> dict[str, Any]:
+        """Find a buyable support-pivot pullback/reclaim setup for one symbol."""
+        symbol = normalize_symbol(symbol)
+        if not self.config.pivot_buy_enabled:
+            return {"symbol": symbol, "available": False, "reason": "pivot_buy_disabled"}
+        if bars_1m is None or bars_1m.empty:
+            return {"symbol": symbol, "available": False, "reason": "no_1m_bars"}
+
+        f1 = bars_1m[bars_1m["symbol"].map(normalize_symbol) == symbol].copy() if "symbol" in bars_1m.columns else bars_1m.copy()
+        f5 = bars_5m[bars_5m["symbol"].map(normalize_symbol) == symbol].copy() if bars_5m is not None and not bars_5m.empty and "symbol" in bars_5m.columns else pd.DataFrame()
+        f15 = bars_15m[bars_15m["symbol"].map(normalize_symbol) == symbol].copy() if bars_15m is not None and not bars_15m.empty and "symbol" in bars_15m.columns else pd.DataFrame()
+        if f1.empty:
+            return {"symbol": symbol, "available": False, "reason": "no_symbol_1m_bars"}
+
+        support_zones = self._weighted_pivot_zones(f1, "support") + self._weighted_pivot_zones(f5, "support") + self._weighted_pivot_zones(f15, "support")
+        resistance_zones = self._weighted_pivot_zones(f1, "resistance") + self._weighted_pivot_zones(f5, "resistance") + self._weighted_pivot_zones(f15, "resistance")
+        support_zones = sorted(support_zones, key=lambda z: (z["price"], -z["weight"]))
+        resistance_zones = sorted(resistance_zones, key=lambda z: (z["price"], -z["weight"]))
+        if not support_zones:
+            return {"symbol": symbol, "available": False, "reason": "no_support_pivots"}
+
+        f1 = f1.sort_values("timestamp").copy()
+        current = float(pd.to_numeric(f1["close"], errors="coerce").dropna().iloc[-1])
+        candidates: list[dict[str, Any]] = []
+        for zone in support_zones:
+            level = float(zone.get("price", 0.0))
+            if level <= 0:
+                continue
+            distance_pct = abs(current - level) / max(level, 1e-9)
+            if current < level * (1.0 - self.config.pivot_buy_zone_pct) or distance_pct > self.config.pivot_buy_zone_pct:
+                continue
+            if float(zone.get("weight", 0.0)) < self.config.pivot_min_weight:
+                continue
+            metrics = self._pivot_reversal_metrics(f1, f5, zone)
+            if float(metrics.get("reversal_score", 0.0)) < self.config.pivot_min_reversal_score:
+                continue
+            if not bool(metrics.get("near_zone", False)) or not bool(metrics.get("reclaimed", False)):
+                continue
+
+            recent_low = float(pd.to_numeric(f1["low"], errors="coerce").tail(20).min())
+            stop = min(recent_low, level) * (1.0 - self.config.pivot_stop_buffer_pct)
+            entry = current if self.config.pivot_allow_market_entry_when_confirmed else min(current, level * (1.0 + self.config.pivot_buy_zone_pct))
+            risk = max(entry - stop, 0.01)
+            rr_target = entry + risk * self.config.pivot_target_rr
+            resistance_above = [float(r["price"]) for r in resistance_zones if float(r.get("price", 0.0)) > entry]
+            next_resistance = min(resistance_above) if resistance_above else 0.0
+            target = rr_target
+            if next_resistance > entry and next_resistance >= entry + risk * self.config.pivot_min_rr:
+                target = min(next_resistance, rr_target) if next_resistance >= rr_target else next_resistance
+            rr = (target - entry) / risk if risk > 0 else 0.0
+            if rr < self.config.pivot_min_rr:
+                continue
+            candidates.append({
+                "symbol": symbol,
+                "available": True,
+                "direction": "long",
+                "side": "buy",
+                "setup_type": "support_pivot_pullback_reclaim",
+                "reason": "buy_validated_support_pivot_reversal",
+                "entry_price": float(entry),
+                "market_price": float(current),
+                "stop_price": float(stop),
+                "target_price": float(target),
+                "risk_reward_ratio": float(rr),
+                "nearest_support": float(level),
+                "nearest_resistance": float(next_resistance),
+                "support_zone": zone,
+                "support_levels": support_zones[-8:],
+                "resistance_levels": resistance_zones[:8],
+                "reversal_metrics": metrics,
+                "setup_score": float(min(1.0, 0.45 + 0.35 * metrics.get("reversal_score", 0.0) + 0.20 * min(zone.get("weight", 0.0) / 12.0, 1.0))),
+                "trade_confidence": float(min(0.90, 0.50 + 0.35 * metrics.get("reversal_score", 0.0) + 0.10 * min(zone.get("weight", 0.0) / 10.0, 1.0))),
+            })
+
+        if not candidates:
+            return {"symbol": symbol, "available": False, "reason": "no_valid_pivot_pullback_reclaim", "current_price": current}
+        return sorted(candidates, key=lambda x: (x["trade_confidence"], x["setup_score"], x["risk_reward_ratio"]), reverse=True)[0]
+
+    def _build_pivot_point_orders(
+        self,
+        symbols: list[str],
+        positions: dict[str, BrokerPosition],
+        equity: float,
+    ) -> pd.DataFrame:
+        """Create BUY orders from validated support pivot pullbacks/reclaims."""
+        if not self.config.pivot_buy_enabled or not symbols:
+            return pd.DataFrame()
+        symbols = [normalize_symbol(s) for s in symbols if normalize_symbol(s)]
+        if not symbols:
+            return pd.DataFrame()
+
+        print(f"[pivot-buy] scanning symbols={len(symbols)} for support pivot pullback/reclaim entries")
+        old_lookback = self.config.intraday_lookback_days
+        try:
+            self.config.intraday_lookback_days = max(old_lookback, self.config.pivot_scan_lookback_days)
+            bars_1m = self._download_intraday_bars(symbols, 1)
+            bars_5m = self._download_intraday_bars(symbols, 5)
+            bars_15m = self._download_intraday_bars(symbols, 15)
+        finally:
+            self.config.intraday_lookback_days = old_lookback
+
+        if bars_1m.empty:
+            print("[pivot-buy] no 1m bars available")
+            return pd.DataFrame()
+
+        rows: list[dict[str, Any]] = []
+        for symbol in dict.fromkeys(symbols):
+            sig = self._pivot_signal_for_symbol(symbol, bars_1m, bars_5m, bars_15m)
+            if not sig.get("available"):
+                continue
+
+            price = to_float(sig.get("entry_price"), to_float(sig.get("market_price")))
+            market_price = to_float(sig.get("market_price"), price)
+            if price <= 0 or market_price <= 0:
+                continue
+
+            current_mv = float(getattr(positions.get(symbol), "market_value", 0.0)) if symbol in positions else 0.0
+            current_weight = current_mv / max(equity, 1e-9)
+            target_weight = min(
+                self.config.pivot_max_target_weight,
+                self.config.pivot_base_target_weight * min(1.75, max(0.75, to_float(sig.get("trade_confidence"), 0.65) / 0.60)),
+                self.executor_config.max_position_weight,
+            )
+            delta_weight = target_weight - current_weight
+            if delta_weight < self.executor_config.min_weight_delta:
+                continue
+            delta_dollars = delta_weight * equity
+            qty = int(delta_dollars // price)
+            if qty <= 0 or delta_dollars < self.executor_config.min_notional_to_trade:
+                continue
+
+            rows.append({
+                "symbol": symbol,
+                "side": "buy",
+                "delta_shares": qty,
+                "order_qty": qty,
+                "delta_dollars": float(delta_dollars),
+                "abs_delta_dollars": float(abs(delta_dollars)),
+                "capped_dollars": float(abs(delta_dollars)),
+                "price": float(price),
+                "market_price": float(market_price),
+                "entry_price": float(price),
+                "entry_type": str(sig.get("setup_type", "support_pivot_pullback_reclaim")),
+                "reason": str(sig.get("reason", "buy_validated_support_pivot_reversal")),
+                "source": "pivot_point_buy_strategy",
+                "target_weight": float(target_weight),
+                "current_weight": float(current_weight),
+                "delta_weight": float(delta_weight),
+                "trade_confidence": to_float(sig.get("trade_confidence"), 0.66),
+                "confidence_score": to_float(sig.get("trade_confidence"), 0.66),
+                "continuation_probability": to_float(sig.get("trade_confidence"), 0.66),
+                "setup_score": to_float(sig.get("setup_score"), 0.66),
+                "risk_reward_ratio": to_float(sig.get("risk_reward_ratio"), 2.0),
+                "stop_price": to_float(sig.get("stop_price")),
+                "target_price": to_float(sig.get("target_price")),
+                "nearest_support": to_float(sig.get("nearest_support")),
+                "nearest_resistance": to_float(sig.get("nearest_resistance")),
+                "support_levels": json.dumps(sig.get("support_levels", []), default=json_default),
+                "resistance_levels": json.dumps(sig.get("resistance_levels", []), default=json_default),
+                "entry_notes": json.dumps({"support_zone": sig.get("support_zone", {}), "reversal_metrics": sig.get("reversal_metrics", {})}, default=json_default),
+                "stream_confirmed": True,
+                "pivot_buy_signal": True,
+                "rel_volume": to_float(sig.get("reversal_metrics", {}).get("rel_volume")),
+                "rsi14": to_float(sig.get("reversal_metrics", {}).get("rsi14")),
+                "macd_hist": to_float(sig.get("reversal_metrics", {}).get("macd_hist")),
+            })
+
+        out = pd.DataFrame(rows)
+        if not out.empty:
+            print("[pivot-buy] generated orders:")
+            show = ["symbol", "side", "entry_type", "price", "nearest_support", "stop_price", "target_price", "risk_reward_ratio", "trade_confidence"]
+            print(out[[c for c in show if c in out.columns]].to_string(index=False))
+            write_event("pivot_buy_orders_generated", {"rows": out.to_dict(orient="records")})
+        else:
+            print("[pivot-buy] no validated support pivot pullback/reclaim setups")
+        return out
+
+
+    def _today_8am_orb_range(self, frame_1m: pd.DataFrame) -> dict[str, Any]:
+        """
+        Build the 8:00-8:59 ET one-hour range from 1m bars.
+
+        The returned high/low define the daily ORB dealing range used by the
+        liquidity-sweep/FVG model.
+        """
+        if frame_1m is None or frame_1m.empty or "timestamp" not in frame_1m.columns:
+            return {"available": False, "reason": "no_1m_bars"}
+
+        g = frame_1m.copy()
+        g["timestamp"] = pd.to_datetime(g["timestamp"], errors="coerce", utc=True)
+        g = g.dropna(subset=["timestamp", "open", "high", "low", "close"]).sort_values("timestamp")
+        if g.empty:
+            return {"available": False, "reason": "no_valid_1m_bars"}
+
+        g["timestamp_et"] = g["timestamp"].dt.tz_convert(ET)
+        today_et = datetime.now(ET).date()
+        hour = int(self.config.orb_8am_hour_et)
+        range_bars = g[
+            (g["timestamp_et"].dt.date == today_et)
+            & (g["timestamp_et"].dt.hour == hour)
+        ].copy()
+
+        if len(range_bars) < 20:
+            return {"available": False, "reason": f"not_enough_{hour}am_bars", "bar_count": int(len(range_bars))}
+
+        high = float(pd.to_numeric(range_bars["high"], errors="coerce").max())
+        low = float(pd.to_numeric(range_bars["low"], errors="coerce").min())
+        open_ = float(pd.to_numeric(range_bars["open"], errors="coerce").iloc[0])
+        close = float(pd.to_numeric(range_bars["close"], errors="coerce").iloc[-1])
+        mid = (high + low) / 2.0
+        range_pct = (high - low) / max(mid, 1e-9)
+
+        if not np.isfinite(high) or not np.isfinite(low) or high <= low or range_pct <= 0:
+            return {"available": False, "reason": "invalid_8am_range", "bar_count": int(len(range_bars))}
+
+        if range_pct < self.config.orb_min_range_pct:
+            return {"available": False, "reason": "8am_range_too_tight", "high": high, "low": low, "range_pct": range_pct}
+        if range_pct > self.config.orb_max_range_pct:
+            return {"available": False, "reason": "8am_range_too_wide", "high": high, "low": low, "range_pct": range_pct}
+
+        return {
+            "available": True,
+            "hour_et": hour,
+            "bar_count": int(len(range_bars)),
+            "start_et": range_bars["timestamp_et"].iloc[0].isoformat(),
+            "end_et": range_bars["timestamp_et"].iloc[-1].isoformat(),
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "mid": mid,
+            "range_pct": range_pct,
+        }
+
+    def _find_recent_fvg(self, after_bars: pd.DataFrame, direction: str) -> dict[str, Any]:
+        """
+        Three-candle imbalance detector on 1m bars.
+
+        bullish FVG: candle[i].low > candle[i-2].high
+        bearish FVG: candle[i].high < candle[i-2].low
+
+        Returns the latest valid gap and whether price has pulled back/retested it.
+        """
+        if after_bars is None or after_bars.empty or len(after_bars) < 5:
+            return {"available": False, "reason": "not_enough_bars_for_fvg"}
+
+        g = after_bars.dropna(subset=["high", "low", "close", "timestamp"]).sort_values("timestamp").reset_index(drop=True)
+        if len(g) < 5:
+            return {"available": False, "reason": "not_enough_clean_bars_for_fvg"}
+
+        gaps: list[dict[str, Any]] = []
+        min_gap_pct = float(self.config.orb_fvg_min_gap_pct)
+
+        for i in range(2, len(g)):
+            b0 = g.iloc[i - 2]
+            b2 = g.iloc[i]
+            if direction == "long":
+                lower = float(b0["high"])
+                upper = float(b2["low"])
+                gap_pct = (upper - lower) / max(float(b2["close"]), 1e-9)
+                if upper > lower and gap_pct >= min_gap_pct:
+                    gaps.append({"index": i, "timestamp": b2["timestamp"], "fvg_low": lower, "fvg_high": upper, "gap_pct": gap_pct, "kind": "bullish_fvg"})
+            else:
+                lower = float(b2["high"])
+                upper = float(b0["low"])
+                gap_pct = (upper - lower) / max(float(b2["close"]), 1e-9)
+                if upper > lower and gap_pct >= min_gap_pct:
+                    gaps.append({"index": i, "timestamp": b2["timestamp"], "fvg_low": lower, "fvg_high": upper, "gap_pct": gap_pct, "kind": "bearish_fvg"})
+
+        if not gaps:
+            return {"available": False, "reason": f"no_{direction}_fvg"}
+
+        fvg = gaps[-1]
+        recent = g.iloc[int(fvg["index"]) + 1:].copy()
+        current_price = float(g["close"].iloc[-1])
+        fvg_low = float(fvg["fvg_low"])
+        fvg_high = float(fvg["fvg_high"])
+        tol = float(self.config.orb_retest_tolerance_pct)
+
+        if recent.empty:
+            retested = False
+        elif direction == "long":
+            retested = bool((pd.to_numeric(recent["low"], errors="coerce") <= fvg_high * (1.0 + tol)).any())
+        else:
+            retested = bool((pd.to_numeric(recent["high"], errors="coerce") >= fvg_low * (1.0 - tol)).any())
+
+        in_retest_zone = fvg_low * (1.0 - tol) <= current_price <= fvg_high * (1.0 + tol)
+        fvg.update({
+            "available": True,
+            "current_price": current_price,
+            "retested": bool(retested),
+            "in_retest_zone": bool(in_retest_zone),
+            "mid": (fvg_low + fvg_high) / 2.0,
+        })
+        return fvg
+
+    def _orb_8am_signal_for_symbol(self, symbol: str, frame_1m: pd.DataFrame) -> dict[str, Any]:
+        """
+        Detect liquidity sweep + rejection + FVG pullback using the 8am 1H range.
+
+        Long:
+            sweep below 8am low, reclaim back inside range, bullish FVG, retest.
+
+        Bearish/short:
+            sweep above 8am high, reject back inside range, bearish FVG, retest.
+            By default this is used to exit existing longs only unless
+            ORB_ALLOW_SHORT_ENTRIES=1.
+        """
+        symbol = normalize_symbol(symbol)
+        if not self.config.orb_8am_enabled:
+            return {"symbol": symbol, "available": False, "reason": "orb_disabled"}
+
+        if frame_1m is None or frame_1m.empty:
+            return {"symbol": symbol, "available": False, "reason": "no_1m_bars"}
+
+        g = frame_1m[frame_1m["symbol"].map(normalize_symbol) == symbol].copy() if "symbol" in frame_1m.columns else frame_1m.copy()
+        if g.empty:
+            return {"symbol": symbol, "available": False, "reason": "no_symbol_1m_bars"}
+
+        g["timestamp"] = pd.to_datetime(g["timestamp"], errors="coerce", utc=True)
+        g = g.dropna(subset=["timestamp", "open", "high", "low", "close"]).sort_values("timestamp")
+        if g.empty:
+            return {"symbol": symbol, "available": False, "reason": "no_clean_symbol_1m_bars"}
+
+        orb = self._today_8am_orb_range(g)
+        if not orb.get("available"):
+            return {"symbol": symbol, "available": False, "reason": orb.get("reason", "orb_unavailable"), "orb": orb}
+
+        hour = int(self.config.orb_8am_hour_et)
+        g["timestamp_et"] = g["timestamp"].dt.tz_convert(ET)
+        today_et = datetime.now(ET).date()
+        after = g[(g["timestamp_et"].dt.date == today_et) & (g["timestamp_et"].dt.hour > hour)].copy()
+        if len(after) < 8:
+            return {"symbol": symbol, "available": False, "reason": "not_enough_post_8am_bars", "orb": orb}
+
+        high = float(orb["high"])
+        low = float(orb["low"])
+        mid = float(orb["mid"])
+        range_size = high - low
+        current = float(after["close"].iloc[-1])
+        sweep_buffer = float(self.config.orb_sweep_buffer_pct)
+        reclaim_buffer = float(self.config.orb_reclaim_buffer_pct)
+
+        above_sweep_mask = pd.to_numeric(after["high"], errors="coerce") > high * (1.0 + sweep_buffer)
+        below_sweep_mask = pd.to_numeric(after["low"], errors="coerce") < low * (1.0 - sweep_buffer)
+
+        signals: list[dict[str, Any]] = []
+
+        if below_sweep_mask.any() and self.config.orb_allow_long_entries:
+            sweep_idx = int(np.where(below_sweep_mask.to_numpy())[0][-1])
+            sweep_bar = after.iloc[sweep_idx]
+            after_sweep = after.iloc[sweep_idx:].copy()
+            reclaimed = bool((pd.to_numeric(after_sweep["close"], errors="coerce") > low * (1.0 + reclaim_buffer)).any())
+            if reclaimed:
+                fvg = self._find_recent_fvg(after_sweep, "long")
+                if fvg.get("available") and (fvg.get("retested") or fvg.get("in_retest_zone") or not self.config.orb_require_fvg_retest):
+                    stop = float(sweep_bar["low"]) * (1.0 - max(0.0005, sweep_buffer))
+                    entry = float(fvg.get("mid") or current)
+                    if not np.isfinite(entry) or entry <= 0:
+                        entry = current
+                    risk = max(entry - stop, 0.01)
+                    rr_target = entry + risk * float(self.config.orb_target_rr)
+                    target = min(high, rr_target) if high > entry else rr_target
+                    rr = (target - entry) / risk
+                    age_min = (now_utc() - pd.Timestamp(fvg["timestamp"]).to_pydatetime()).total_seconds() / 60.0
+                    signals.append({
+                        "symbol": symbol,
+                        "available": True,
+                        "direction": "long",
+                        "side": "buy",
+                        "setup_type": "orb_8am_low_sweep_bullish_fvg_retest",
+                        "reason": "orb_8am_low_sweep_reclaim_inside_range_bullish_fvg_retest",
+                        "entry_price": entry,
+                        "market_price": current,
+                        "stop_price": stop,
+                        "target_price": target,
+                        "opposing_range_side": high,
+                        "risk_reward_ratio": rr,
+                        "age_minutes": age_min,
+                        "sweep_wick": float(sweep_bar["low"]),
+                        "swept_level": low,
+                        "orb": orb,
+                        "fvg": fvg,
+                    })
+
+        if above_sweep_mask.any():
+            sweep_idx = int(np.where(above_sweep_mask.to_numpy())[0][-1])
+            sweep_bar = after.iloc[sweep_idx]
+            after_sweep = after.iloc[sweep_idx:].copy()
+            rejected = bool((pd.to_numeric(after_sweep["close"], errors="coerce") < high * (1.0 - reclaim_buffer)).any())
+            if rejected:
+                fvg = self._find_recent_fvg(after_sweep, "short")
+                if fvg.get("available") and (fvg.get("retested") or fvg.get("in_retest_zone") or not self.config.orb_require_fvg_retest):
+                    stop = float(sweep_bar["high"]) * (1.0 + max(0.0005, sweep_buffer))
+                    entry = float(fvg.get("mid") or current)
+                    if not np.isfinite(entry) or entry <= 0:
+                        entry = current
+                    risk = max(stop - entry, 0.01)
+                    rr_target = entry - risk * float(self.config.orb_target_rr)
+                    target = max(low, rr_target) if low < entry else rr_target
+                    rr = (entry - target) / risk
+                    age_min = (now_utc() - pd.Timestamp(fvg["timestamp"]).to_pydatetime()).total_seconds() / 60.0
+                    signals.append({
+                        "symbol": symbol,
+                        "available": True,
+                        "direction": "short",
+                        "side": "sell",
+                        "setup_type": "orb_8am_high_sweep_bearish_fvg_retest",
+                        "reason": "orb_8am_high_sweep_reject_back_inside_range_bearish_fvg_retest",
+                        "entry_price": entry,
+                        "market_price": current,
+                        "stop_price": stop,
+                        "target_price": target,
+                        "opposing_range_side": low,
+                        "risk_reward_ratio": rr,
+                        "age_minutes": age_min,
+                        "sweep_wick": float(sweep_bar["high"]),
+                        "swept_level": high,
+                        "orb": orb,
+                        "fvg": fvg,
+                    })
+
+        if not signals:
+            return {
+                "symbol": symbol,
+                "available": False,
+                "reason": "no_completed_orb_sweep_fvg_retest",
+                "orb": orb,
+                "current_price": current,
+                "swept_above": bool(above_sweep_mask.any()),
+                "swept_below": bool(below_sweep_mask.any()),
+            }
+
+        # Prefer the freshest qualifying signal.
+        signals = [s for s in signals if s["risk_reward_ratio"] >= self.config.orb_min_rr and s["age_minutes"] <= self.config.orb_entry_max_age_minutes]
+        if not signals:
+            return {"symbol": symbol, "available": False, "reason": "orb_signal_failed_rr_or_age_filter", "orb": orb, "current_price": current}
+        return sorted(signals, key=lambda x: x["age_minutes"])[0]
+
+    def _build_orb_8am_orders(
+        self,
+        symbols: list[str],
+        positions: dict[str, BrokerPosition],
+        equity: float,
+    ) -> pd.DataFrame:
+        """Create ORB orders from the 8am range liquidity-sweep strategy."""
+        if not self.config.orb_8am_enabled or not symbols:
+            return pd.DataFrame()
+
+        symbols = [normalize_symbol(s) for s in symbols if normalize_symbol(s)]
+        if not symbols:
+            return pd.DataFrame()
+
+        print(f"[orb-8am] scanning symbols={len(symbols)} for 8am range sweeps/FVG retests")
+        old_lookback = self.config.intraday_lookback_days
+        try:
+            self.config.intraday_lookback_days = max(old_lookback, self.config.orb_scan_lookback_days)
+            bars_1m = self._download_intraday_bars(symbols, 1)
+        finally:
+            self.config.intraday_lookback_days = old_lookback
+
+        if bars_1m.empty:
+            print("[orb-8am] no 1m bars available")
+            return pd.DataFrame()
+
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for symbol in symbols:
+            if symbol in seen:
+                continue
+            seen.add(symbol)
+            sig = self._orb_8am_signal_for_symbol(symbol, bars_1m)
+            if not sig.get("available"):
+                continue
+
+            direction = str(sig.get("direction", ""))
+            side = str(sig.get("side", "buy")).lower()
+            price = to_float(sig.get("entry_price"), to_float(sig.get("market_price")))
+            market_price = to_float(sig.get("market_price"), price)
+            if price <= 0 or market_price <= 0:
+                continue
+
+            current_mv = float(getattr(positions.get(symbol), "market_value", 0.0)) if symbol in positions else 0.0
+            current_qty = int(float(getattr(positions.get(symbol), "qty", 0.0))) if symbol in positions else 0
+            current_weight = current_mv / max(equity, 1e-9)
+
+            if direction == "short":
+                if current_qty > 0 and self.config.orb_exit_longs_on_bearish_sweep:
+                    qty = current_qty
+                    delta_dollars = qty * market_price
+                    target_weight = 0.0
+                    delta_weight = -current_weight
+                    reason = str(sig.get("reason")) + "|exit_long_after_high_sweep_rejection"
+                elif self.config.orb_allow_short_entries:
+                    # Alpaca sell can open a short only if account/margin permissions allow it.
+                    # Keep sizing small and make it opt-in through ORB_ALLOW_SHORT_ENTRIES=1.
+                    delta_dollars = min(
+                        equity * self.config.orb_base_target_weight,
+                        self.executor_config.max_order_dollars,
+                        self.config.orb_max_target_weight * equity,
+                    )
+                    qty = int(delta_dollars // market_price)
+                    target_weight = -delta_dollars / max(equity, 1e-9)
+                    delta_weight = target_weight - current_weight
+                    reason = str(sig.get("reason")) + "|optional_short_entry"
+                else:
+                    write_event("orb_8am_short_signal_shadow_only", sig)
+                    continue
+            else:
+                if not self.config.orb_allow_long_entries:
+                    continue
+                target_weight = min(
+                    self.config.orb_max_target_weight,
+                    self.config.orb_base_target_weight * min(1.50, max(1.0, to_float(sig.get("risk_reward_ratio"), 2.0) / 2.0)),
+                    self.executor_config.max_position_weight,
+                )
+                delta_weight = target_weight - current_weight
+                if delta_weight < self.executor_config.min_weight_delta:
+                    continue
+                delta_dollars = delta_weight * equity
+                qty = int(delta_dollars // price)
+                reason = str(sig.get("reason"))
+
+            if qty <= 0 or abs(delta_dollars) < self.executor_config.min_notional_to_trade:
+                continue
+
+            rows.append({
+                "symbol": symbol,
+                "side": side,
+                "delta_shares": qty,
+                "order_qty": qty,
+                "delta_dollars": float(abs(delta_dollars)),
+                "abs_delta_dollars": float(abs(delta_dollars)),
+                "capped_dollars": float(abs(delta_dollars)),
+                "price": float(price),
+                "market_price": float(market_price),
+                "entry_price": float(price),
+                "entry_type": str(sig.get("setup_type", "")),
+                "reason": reason,
+                "source": "orb_8am_liquidity_sweep_fvg",
+                "target_weight": float(target_weight),
+                "current_weight": float(current_weight),
+                "delta_weight": float(delta_weight),
+                "trade_confidence": 0.74 if direction == "long" else 0.70,
+                "confidence_score": 0.74 if direction == "long" else 0.70,
+                "continuation_probability": 0.66 if direction == "long" else 0.60,
+                "setup_score": 0.72,
+                "risk_reward_ratio": to_float(sig.get("risk_reward_ratio"), 2.0),
+                "stop_price": to_float(sig.get("stop_price")),
+                "target_price": to_float(sig.get("target_price")),
+                "orb_8am_high": to_float(sig.get("orb", {}).get("high")),
+                "orb_8am_low": to_float(sig.get("orb", {}).get("low")),
+                "orb_8am_mid": to_float(sig.get("orb", {}).get("mid")),
+                "orb_8am_range_pct": to_float(sig.get("orb", {}).get("range_pct")),
+                "swept_level": to_float(sig.get("swept_level")),
+                "sweep_wick": to_float(sig.get("sweep_wick")),
+                "fvg_low": to_float(sig.get("fvg", {}).get("fvg_low")),
+                "fvg_high": to_float(sig.get("fvg", {}).get("fvg_high")),
+                "fvg_mid": to_float(sig.get("fvg", {}).get("mid")),
+                "fvg_kind": str(sig.get("fvg", {}).get("kind", "")),
+                "entry_notes": json.dumps({"orb": sig.get("orb", {}), "fvg": sig.get("fvg", {})}, default=json_default),
+                "stream_confirmed": True,
+                "orb_8am_signal": True,
+            })
+
+        out = pd.DataFrame(rows)
+        if not out.empty:
+            print("[orb-8am] generated orders:")
+            show = ["symbol", "side", "entry_type", "price", "stop_price", "target_price", "risk_reward_ratio", "reason"]
+            print(out[[c for c in show if c in out.columns]].to_string(index=False))
+            write_event("orb_8am_orders_generated", {"rows": out.to_dict(orient="records")})
+        else:
+            print("[orb-8am] no completed sweep/rejection/FVG-retest setups")
+        return out
+
     def _intraday_direction_metrics(self, symbol: str, frame: pd.DataFrame, minutes: int, avg_entry_price: float) -> dict[str, Any]:
         if frame.empty or len(frame) < 5:
             return {
@@ -5964,8 +6928,15 @@ class MomentumSetupScanner:
                         ascending=[False, False, False, False],
                     ).reset_index(drop=True)
         if scores.empty:
-            print("[scanner] no symbols passed scanner filters")
-            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+            print("[scanner] no symbols passed scanner filters; trying ORB-8AM fallback scanner")
+            acct = self.broker.get_account_snapshot()
+            equity = max(float(acct.equity), 1.0)
+            positions = {normalize_symbol(p.symbol): p for p in self.broker.get_all_open_positions()}
+            orb_rebalance = self._build_orb_8am_orders(symbols, positions, equity)
+            exits = self._update_high_water_and_exits(pd.DataFrame(), equity)
+            orb_rebalance.to_csv(DEFAULT_REBALANCE_ORDERS, index=False)
+            exits.to_csv(DEFAULT_EXIT_ORDERS, index=False)
+            return orb_rebalance, exits, pd.DataFrame()
 
         scores.to_csv(SCANNER_SCORES_PATH, index=False)
         print("[scanner] top setups:")
@@ -6004,13 +6975,74 @@ class MomentumSetupScanner:
             strict_mask |= opportunity_mask
 
         if self.config.require_positive_daily_move:
-            strict_mask &= scores["positive_daily_move"].fillna(0).astype(bool)
+            # Breakout/momentum setups require a positive daily move.
+            # Reversal setups may pass with a negative daily move if they show
+            # reclaim/recovery evidence and the gate is enabled.
+            if self.config.allow_negative_daily_move_reversals and "setup_type" in scores.columns:
+                is_reversal = scores["setup_type"].astype(str).str.lower().isin({"reversal", "reclaim", "gap_fill"})
+                reclaim_col = None
+                for _rc in ["reversal_score", "reclaim_score", "bullish_structure_score"]:
+                    if _rc in scores.columns:
+                        reclaim_col = _rc
+                        break
+                if reclaim_col:
+                    strong_reclaim = pd.to_numeric(scores[reclaim_col], errors="coerce").fillna(0.0) >= self.config.reversal_min_reclaim_score
+                else:
+                    strong_reclaim = pd.Series(False, index=scores.index)
+                # Gate condition: non-breakout or verified reversal with evidence
+                vwap_ok = pd.Series(True, index=scores.index)
+                if "dist_vwap" in scores.columns:
+                    vwap_ok = pd.to_numeric(scores["dist_vwap"], errors="coerce").fillna(-1.0) >= -0.005
+                elif "above_vwap" in scores.columns:
+                    vwap_ok = pd.to_numeric(scores["above_vwap"], errors="coerce").fillna(0.0) > 0
+                macd_ok = pd.Series(True, index=scores.index)
+                if "macd_hist" in scores.columns:
+                    macd_ok = pd.to_numeric(scores["macd_hist"], errors="coerce").fillna(-999.0) > -0.01
+                reversal_exception = (
+                    is_reversal
+                    & strong_reclaim
+                    & vwap_ok
+                    & macd_ok
+                    & (scores.get("regime_label", pd.Series("", index=scores.index)).astype(str) != "BEARISH")
+                )
+                # Flag reversals allowed despite negative day
+                if reversal_exception.any() and not scores["positive_daily_move"].fillna(0).astype(bool).all():
+                    neg_rev = scores[reversal_exception & ~scores["positive_daily_move"].fillna(0).astype(bool)]
+                    if not neg_rev.empty:
+                        print(f"[scanner] reversal_allowed_despite_negative_daily_move: {sorted(neg_rev['symbol'].map(safe_symbol).tolist())}")
+                daily_move_ok = scores["positive_daily_move"].fillna(0).astype(bool) | reversal_exception
+                strict_mask &= daily_move_ok
+            else:
+                strict_mask &= scores["positive_daily_move"].fillna(0).astype(bool)
 
         if self.config.avoid_bearish_regime_for_longs:
             strict_mask &= scores["regime_score"] >= self.config.min_regime_score_for_longs
             strict_mask &= scores["regime_label"] != "BEARISH"
 
         candidates = scores[strict_mask].head(self.config.top_n).copy()
+
+        _scanner_dropped = scores[~strict_mask]
+        if not _scanner_dropped.empty:
+            _drop_parts = []
+            for _, _dr in _scanner_dropped.sort_values("trade_confidence", ascending=False).head(8).iterrows():
+                _why = []
+                if to_float(_dr.get("setup_score")) < self.config.min_setup_score:
+                    _why.append(f"setup={to_float(_dr.get('setup_score')):.2f}<{self.config.min_setup_score:.2f}")
+                if to_float(_dr.get("trade_confidence")) < self.config.min_buy_confidence:
+                    _why.append(f"conf={to_float(_dr.get('trade_confidence')):.2f}<{self.config.min_buy_confidence:.2f}")
+                if to_float(_dr.get("dollar_volume20")) < self.config.min_avg_dollar_volume:
+                    _why.append(f"dv20={to_float(_dr.get('dollar_volume20')):.0f}<{self.config.min_avg_dollar_volume:.0f}")
+                if to_float(_dr.get("risk_penalty")) > 0.55:
+                    _why.append(f"risk_penalty={to_float(_dr.get('risk_penalty')):.2f}")
+                if to_float(_dr.get("rsi14")) > self.config.max_overbought_rsi:
+                    _why.append(f"rsi14={to_float(_dr.get('rsi14')):.1f}>{self.config.max_overbought_rsi:.1f}")
+                if self.config.avoid_bearish_regime_for_longs and (
+                    to_float(_dr.get("regime_score")) < self.config.min_regime_score_for_longs
+                    or str(_dr.get("regime_label", "")) == "BEARISH"
+                ):
+                    _why.append(f"regime={_dr.get('regime_label', '?')}:{to_float(_dr.get('regime_score')):.2f}<{self.config.min_regime_score_for_longs:.2f}")
+                _drop_parts.append(f"{_dr.get('symbol', '?')}:[{','.join(_why or ['other'])}]")
+            print(f"[scanner] strict filter: dropped {len(_scanner_dropped)} | top-confidence rejects: {' | '.join(_drop_parts)}")
 
         if candidates.empty and self.config.allow_relaxed_fallback:
             print("[scanner] strict filters returned no candidates; applying relaxed fallback filters")
@@ -6050,24 +7082,43 @@ class MomentumSetupScanner:
             price = to_float(r.get("entry_price"), to_float(r["close"]))
             market_price = to_float(r["close"])
             if price <= 0:
+                print(f"[scanner] skip BUY {symbol}: no usable price (entry_price={r.get('entry_price')} close={r.get('close')})")
                 continue
 
             current_mv = positions.get(symbol).market_value if symbol in positions else 0.0
             current_weight = float(current_mv) / equity
             type_mult = self.config.reversal_target_weight_mult if r["setup_type"] == "reversal" else 1.0
 
+            # Composite quality score weights setup quality, entry confidence, and
+            # liquidity so higher-conviction, more-liquid setups receive larger allocations.
+            _wt_setup = self.config.position_setup_score_weight
+            _wt_conf = self.config.position_confidence_weight
+            _wt_liq = self.config.position_liquidity_weight
+            composite_quality = (
+                _wt_setup * float(r["setup_score"])
+                + _wt_conf * float(r["trade_confidence"])
+                + _wt_liq * min(float(r["liquidity_score"]), 1.0)
+            )
             target_weight = min(
                 self.config.max_target_weight,
-                self.config.base_target_weight * (0.50 + 1.50 * float(r["setup_score"])) * type_mult,
+                self.config.base_target_weight * (0.40 + 2.0 * composite_quality) * type_mult,
                 self.executor_config.max_position_weight,
+            )
+            print(
+                f"[sizing] {symbol}: setup={float(r['setup_score']):.2f} "
+                f"conf={float(r['trade_confidence']):.2f} "
+                f"liq={float(r['liquidity_score']):.2f} "
+                f"composite={composite_quality:.3f} → target_weight={target_weight:.3%}"
             )
             delta_weight = target_weight - current_weight
 
             if delta_weight < self.executor_config.min_weight_delta:
+                print(f"[scanner] skip BUY {symbol}: delta_weight={delta_weight:.4f} below min={self.executor_config.min_weight_delta:.4f} (current_weight={current_weight:.2%})")
                 continue
 
             delta_dollars = delta_weight * equity
             if delta_dollars < self.executor_config.min_notional_to_trade:
+                print(f"[scanner] skip BUY {symbol}: delta_dollars=${delta_dollars:.2f} below min_notional=${self.executor_config.min_notional_to_trade:.2f}")
                 continue
 
             rows.append(
@@ -6132,6 +7183,48 @@ class MomentumSetupScanner:
 
         rebalance = pd.DataFrame(rows)
 
+        # Merge support-pivot buy orders.
+        # This is the preferred intraday path: buy strong support zones after
+        # a pullback/tag/sweep and confirmed 1m/5m reversal. It avoids the old
+        # rare sweep -> FVG -> retest dependency that left the bot sidelined.
+        pivot_rebalance = self._build_pivot_point_orders(symbols, positions, equity)
+        if not pivot_rebalance.empty:
+            if rebalance.empty:
+                rebalance = pivot_rebalance.copy()
+            else:
+                out = rebalance.copy()
+                for _, _pivot_row in pivot_rebalance.iterrows():
+                    _sym = normalize_symbol(_pivot_row.get("symbol"))
+                    same = out["symbol"].map(normalize_symbol) == _sym if "symbol" in out.columns else pd.Series(False, index=out.index)
+                    if not same.any():
+                        out = pd.concat([out, pd.DataFrame([_pivot_row])], ignore_index=True)
+                    else:
+                        # If the existing scanner row is lower confidence, replace it with the cleaner pivot setup.
+                        existing_conf = float(pd.to_numeric(out.loc[same, "trade_confidence"], errors="coerce").fillna(0.0).max()) if "trade_confidence" in out.columns else 0.0
+                        pivot_conf = to_float(_pivot_row.get("trade_confidence"), 0.0)
+                        if pivot_conf > existing_conf:
+                            out = out[~same].copy()
+                            out = pd.concat([out, pd.DataFrame([_pivot_row])], ignore_index=True)
+                rebalance = out.reset_index(drop=True)
+
+        # Optional legacy 8am ORB/liquidity-sweep/FVG scanner. Disabled by default.
+        orb_rebalance = self._build_orb_8am_orders(symbols, positions, equity)
+        if not orb_rebalance.empty:
+            if rebalance.empty:
+                rebalance = orb_rebalance.copy()
+            else:
+                out = rebalance.copy()
+                for _, _orb_row in orb_rebalance.iterrows():
+                    _sym = normalize_symbol(_orb_row.get("symbol"))
+                    _side = str(_orb_row.get("side", "")).lower()
+                    same = out["symbol"].map(normalize_symbol) == _sym if "symbol" in out.columns else pd.Series(False, index=out.index)
+                    if _side == "sell":
+                        out = out[~same].copy()
+                        out = pd.concat([out, pd.DataFrame([_orb_row])], ignore_index=True)
+                    elif not same.any():
+                        out = pd.concat([out, pd.DataFrame([_orb_row])], ignore_index=True)
+                rebalance = out.reset_index(drop=True)
+
         # ------------------------------------------------------------------
         # Execution-alpha gate:
         #   1. Rank candidates cross-sectionally vs today's universe.
@@ -6183,12 +7276,13 @@ class MomentumSetupScanner:
         df = rebalance.copy()
         df["symbol"] = df["symbol"].map(normalize_symbol)
         df["side"] = df["side"].astype(str).str.lower().str.strip()
+        orb_mask = df.get("orb_8am_signal", pd.Series(False, index=df.index)).fillna(False).astype(bool) if "orb_8am_signal" in df.columns else pd.Series(False, index=df.index)
 
         if scores is None or scores.empty or "symbol" not in scores.columns:
             df["cross_sectional_score"] = 0.50
             df["time_series_score"] = 0.50
-            df["execution_alpha_score"] = 0.50
-            df["execution_alpha_pass"] = df["side"] != "buy"
+            df["execution_alpha_score"] = np.where(orb_mask, 0.72, 0.50)
+            df["execution_alpha_pass"] = (df["side"] != "buy") | orb_mask
             blocked = df[(df["side"] == "buy") & (~df["execution_alpha_pass"])]
             if not blocked.empty:
                 print(f"[execution-alpha] blocked {len(blocked)} BUY order(s): missing score context")
@@ -6294,7 +7388,7 @@ class MomentumSetupScanner:
         # Blend based on market regime. Trend markets favor time-series continuation.
         regime_bias = ""
         try:
-            market_context = load_json(MARKET_CONTEXT_PATH, default={})
+            market_context = read_json_file(MARKET_CONTEXT_PATH, default={})
             regime_bias = str(
                 market_context.get("overall_market_bias")
                 or market_context.get("market_bias")
@@ -6330,10 +7424,18 @@ class MomentumSetupScanner:
             + ts_weight * score_df["time_series_score"]
         ).clip(0.0, 1.0)
 
+        # risk_off: raise pass threshold slightly but do NOT haircut scores — a 0.70x
+        # multiplier on scores with a 0.70 threshold made pass impossible (only perfect
+        # scores could pass). Size is reduced later via risk_off_size_mult on accepted orders.
+        risk_off_size_mult = 1.0
         if risk_off:
-            score_df["execution_alpha_score"] = score_df["execution_alpha_score"] * 0.70
+            risk_off_size_mult = float(getattr(self.config, "execution_alpha_risk_off_size_mult", 0.50))
+            threshold_add = float(getattr(self.config, "execution_alpha_risk_off_threshold_add", 0.05))
+            print(f"[alpha-gate] risk_off mode: size multiplier={risk_off_size_mult:.0%} applied after gate, score not haircutted")
+        else:
+            threshold_add = 0.0
 
-        threshold = float(getattr(self.config, "execution_alpha_min_score", 0.70))
+        threshold = float(getattr(self.config, "execution_alpha_min_score", 0.70)) + threshold_add
 
         keep_cols = [
             "symbol",
@@ -6397,6 +7499,15 @@ class MomentumSetupScanner:
                 )
 
         passed = df[df["execution_alpha_pass"]].copy().reset_index(drop=True)
+
+        # Apply risk_off size reduction to buy rows only — sells are always unaffected.
+        if risk_off and risk_off_size_mult < 1.0 and "side" in passed.columns:
+            ro_buy_mask = passed["side"] == "buy"
+            if ro_buy_mask.any():
+                for col in ["capped_dollars", "abs_delta_dollars", "delta_dollars"]:
+                    if col in passed.columns:
+                        passed.loc[ro_buy_mask, col] = pd.to_numeric(passed.loc[ro_buy_mask, col], errors="coerce").fillna(0.0) * risk_off_size_mult
+                passed.loc[ro_buy_mask, "reason"] = passed.loc[ro_buy_mask, "reason"].astype(str) + f"|risk_off_size:{risk_off_size_mult:.0%}"
 
         buy_count = int((passed["side"] == "buy").sum()) if "side" in passed.columns else 0
         print(
@@ -6492,6 +7603,163 @@ class ProductionOrderExecutor:
         self.account_history: list[dict[str, Any]] = []
         self._last_morning_refresh_date: str | None = None
         self._rl_validation_cache: dict[str, Any] | None = None
+        self._planner_health_cache: dict[str, Any] | None = None
+        self._sa_assessment: dict[str, Any] = {}
+        self._sa_last_assessment_date: str | None = None
+
+    def _planner_health(self, refresh: bool = False) -> dict[str, Any]:
+        if refresh or self._planner_health_cache is None:
+            self._planner_health_cache = planner_health_snapshot(self.config.scanner)
+            print(
+                "[planner-health] "
+                f"healthy={self._planner_health_cache.get('healthy')} "
+                f"mode={self._planner_health_cache.get('execution_mode')} "
+                f"plan_age={self._planner_health_cache.get('plan_age_minutes')} "
+                f"structure_age={self._planner_health_cache.get('structure_age_minutes')} "
+                f"long_allowed={len(self._planner_health_cache.get('long_allowed_symbols', []))} "
+                f"issues={self._planner_health_cache.get('issues', [])}"
+            )
+            write_event("planner_health_snapshot", {
+                k: v for k, v in self._planner_health_cache.items()
+                if k not in {"plan_payload", "structure_payload", "structure_by_symbol"}
+            })
+        return self._planner_health_cache
+
+    def _current_market_context(self) -> dict[str, Any]:
+        if not self.config.scanner.market_context_enabled:
+            return {}
+        return read_json_file(MARKET_CONTEXT_PATH, {})
+
+    def _apply_planner_and_market_gates_to_plan(self, plan: pd.DataFrame) -> pd.DataFrame:
+        if plan is None or plan.empty or self.config.scanner is None:
+            return plan
+
+        out = plan.copy()
+        cfg = self.config.scanner
+        health = self._planner_health(refresh=True) if cfg.premarket_plan_enabled else {"healthy": True, "execution_mode": "NORMAL", "long_allowed_symbols": []}
+        market_context = self._current_market_context()
+
+        market_bias = str(market_context.get("overall_market_bias", "")).lower()
+        trade_permission = str(market_context.get("trade_permission", "")).lower()
+        risk_signal_bias = str((market_context.get("key_etf_context_summary", {}) or {}).get("risk_signal_bias", "")).lower()
+
+        buy_mask = out["side"].astype(str).str.lower() == "buy"
+        _sell_count_before = int((out["side"].astype(str).str.lower() == "sell").sum())
+        if not buy_mask.any():
+            return out
+
+        # Fresh planner / structure map gate. Exits are never blocked here.
+        if cfg.premarket_plan_enabled:
+            long_allowed = set(health.get("long_allowed_symbols", []) or [])
+            valid_symbols = set(health.get("valid_symbols", []) or [])
+
+            if cfg.require_fresh_premarket_plan_for_buys and not bool(health.get("healthy")):
+                if health.get("execution_mode") == "BLOCK_NEW_BUYS":
+                    blocked = int(buy_mask.sum())
+                    print(f"[planner-gate] stale/missing plan → BLOCK_NEW_BUYS: suppressed {blocked} BUY(s) | {health.get('issues')} | exits unaffected: {_sell_count_before} SELL(s) remain open")
+                    write_event("planner_gate_blocked_buys", {"count": blocked, "issues": health.get("issues", []), "sell_rows_preserved": _sell_count_before})
+                    out = out.loc[~buy_mask].copy()
+                    if out.empty:
+                        return out
+                    buy_mask = out["side"].astype(str).str.lower() == "buy"
+                else:
+                    _safe_syms = sorted(out.loc[buy_mask, "symbol"].map(safe_symbol).unique().tolist())
+                    print(f"[planner-gate] stale/missing plan → SAFE mode: reducing {len(_safe_syms)} BUY(s) to {cfg.safe_mode_buy_size_multiplier:.0%} of size | symbols: {_safe_syms} | issues: {health.get('issues', [])} | exits unaffected: {_sell_count_before} SELL(s) remain open")
+                    out.loc[buy_mask, "capped_dollars"] = pd.to_numeric(out.loc[buy_mask, "capped_dollars"], errors="coerce").fillna(0.0) * cfg.safe_mode_buy_size_multiplier
+                    out.loc[buy_mask, "abs_delta_dollars"] = pd.to_numeric(out.loc[buy_mask, "abs_delta_dollars"], errors="coerce").fillna(0.0) * cfg.safe_mode_buy_size_multiplier
+                    out.loc[buy_mask, "reason"] = out.loc[buy_mask, "reason"].astype(str) + f"|planner_safe_mode:{','.join(health.get('issues', []))}"
+
+            if cfg.require_structure_long_allowed_for_buys and long_allowed:
+                symbol_mask = out["symbol"].map(safe_symbol).isin(long_allowed)
+                block_mask = buy_mask & ~symbol_mask
+                if block_mask.any():
+                    print(f"[structure-gate] blocked BUY symbols not long_allowed: {sorted(out.loc[block_mask, 'symbol'].map(safe_symbol).unique().tolist())}")
+                    write_event("structure_gate_blocked_buys", {"symbols": sorted(out.loc[block_mask, "symbol"].map(safe_symbol).unique().tolist()), "long_allowed": sorted(long_allowed)})
+                    out = out.loc[~block_mask].copy()
+                    if out.empty:
+                        return out
+                    buy_mask = out["side"].astype(str).str.lower() == "buy"
+
+            if cfg.require_valid_premarket_plan_for_buys and valid_symbols:
+                valid_mask = out["symbol"].map(safe_symbol).isin(valid_symbols)
+                block_mask = buy_mask & ~valid_mask
+                if block_mask.any():
+                    print(f"[premarket-valid-gate] blocked BUY symbols without valid setup: {sorted(out.loc[block_mask, 'symbol'].map(safe_symbol).unique().tolist())}")
+                    out = out.loc[~block_mask].copy()
+                    if out.empty:
+                        return out
+                    buy_mask = out["side"].astype(str).str.lower() == "buy"
+
+        # Cautious / risk-off market degradation. Sells still pass through.
+        if trade_permission == "cautious" or risk_signal_bias == "risk_off":
+            out.loc[buy_mask, "capped_dollars"] = pd.to_numeric(out.loc[buy_mask, "capped_dollars"], errors="coerce").fillna(0.0) * cfg.cautious_market_buy_size_multiplier
+            out.loc[buy_mask, "abs_delta_dollars"] = pd.to_numeric(out.loc[buy_mask, "abs_delta_dollars"], errors="coerce").fillna(0.0) * cfg.cautious_market_buy_size_multiplier
+            out.loc[buy_mask, "confidence_used"] = pd.to_numeric(out.loc[buy_mask, "confidence_used"], errors="coerce").fillna(0.0) - cfg.cautious_market_confidence_addon
+            out.loc[buy_mask, "reason"] = out.loc[buy_mask, "reason"].astype(str) + f"|market_cautious:{trade_permission or risk_signal_bias}"
+            print(f"[market-gate] cautious/risk-off: reduced {int(buy_mask.sum())} BUY(s) to {cfg.cautious_market_buy_size_multiplier:.0%} of size | market={market_bias} permission={trade_permission} risk_signal={risk_signal_bias}")
+
+        # Mixed market: lighter haircut than cautious. Skip when cautious/risk-off already applied.
+        elif market_bias == "mixed" and trade_permission not in {"cautious", "halt_new_buys", "disabled"} and risk_signal_bias != "risk_off" and cfg.mixed_market_buy_size_multiplier < 1.0:
+            out.loc[buy_mask, "capped_dollars"] = pd.to_numeric(out.loc[buy_mask, "capped_dollars"], errors="coerce").fillna(0.0) * cfg.mixed_market_buy_size_multiplier
+            out.loc[buy_mask, "abs_delta_dollars"] = pd.to_numeric(out.loc[buy_mask, "abs_delta_dollars"], errors="coerce").fillna(0.0) * cfg.mixed_market_buy_size_multiplier
+            out.loc[buy_mask, "reason"] = out.loc[buy_mask, "reason"].astype(str) + f"|market_mixed_haircut:{cfg.mixed_market_buy_size_multiplier:.0%}"
+            print(f"[market-gate] mixed market: reduced {int(buy_mask.sum())} BUY(s) to {cfg.mixed_market_buy_size_multiplier:.0%} of size")
+
+        if cfg.bearish_market_disable_new_longs and market_bias == "bearish":
+            rl_col = None
+            for candidate in ["rl_confidence", "rl_score", "enter_long_confidence", "action_confidence"]:
+                if candidate in out.columns:
+                    rl_col = candidate
+                    break
+            if rl_col:
+                rl_ok = pd.to_numeric(out[rl_col], errors="coerce").fillna(0.0) >= cfg.bearish_market_min_rl_confidence
+            else:
+                rl_ok = pd.Series(False, index=out.index)
+            block_mask = buy_mask & ~rl_ok
+            if block_mask.any():
+                print(f"[market-gate] bearish market blocked BUY symbols: {sorted(out.loc[block_mask, 'symbol'].map(safe_symbol).unique().tolist())}")
+                write_event("bearish_market_gate_blocked_buys", {"symbols": sorted(out.loc[block_mask, "symbol"].map(safe_symbol).unique().tolist()), "min_rl_confidence": cfg.bearish_market_min_rl_confidence})
+                out = out.loc[~block_mask].copy()
+                if out.empty:
+                    return out
+                buy_mask = out["side"].astype(str).str.lower() == "buy"
+
+        # Degrade buy sizing when account health, drawdown, or data quality indicate elevated risk.
+        if _SA_AVAILABLE and self._sa_assessment:
+            sa = self._sa_assessment
+            sa_mode = self_assessment_mode(sa)
+            if sa_mode == "HALT_NEW_BUYS" and buy_mask.any():
+                sa_reasons = sa.get("reasons", [])
+                blocked = int(buy_mask.sum())
+                print(f"[sa-gate] HALT_NEW_BUYS: suppressed {blocked} BUY(s) | reasons={sa_reasons} | exits unaffected: {_sell_count_before} SELL(s)")
+                write_event("sa_gate_halt_new_buys", {"count": blocked, "reasons": sa_reasons, "sell_rows_preserved": _sell_count_before})
+                out = out.loc[~buy_mask].copy()
+                if out.empty:
+                    return out
+            elif sa_mode in ("SAFE", "CAUTIOUS") and buy_mask.any():
+                sa_mult = self_assessment_size_multiplier(sa)
+                sa_conf_raise = self_assessment_raises_confidence(sa)
+                sa_reasons = sa.get("reasons", [])
+                out.loc[buy_mask, "capped_dollars"] = pd.to_numeric(out.loc[buy_mask, "capped_dollars"], errors="coerce").fillna(0.0) * sa_mult
+                out.loc[buy_mask, "abs_delta_dollars"] = pd.to_numeric(out.loc[buy_mask, "abs_delta_dollars"], errors="coerce").fillna(0.0) * sa_mult
+                if sa_conf_raise > 0 and "confidence_used" in out.columns:
+                    out.loc[buy_mask, "confidence_used"] = pd.to_numeric(out.loc[buy_mask, "confidence_used"], errors="coerce").fillna(0.0) - sa_conf_raise
+                out.loc[buy_mask, "reason"] = out.loc[buy_mask, "reason"].astype(str) + f"|sa_{sa_mode.lower()}:mult={sa_mult:.2f}"
+                print(f"[sa-gate] {sa_mode}: reduced {int(buy_mask.sum())} BUY(s) to {sa_mult:.0%} | conf_raise={sa_conf_raise:.2f} | reasons={sa_reasons}")
+                write_event("sa_gate_size_reduced", {"mode": sa_mode, "count": int(buy_mask.sum()), "multiplier": sa_mult, "conf_raise": sa_conf_raise, "reasons": sa_reasons, "sell_rows_preserved": _sell_count_before})
+
+        # Recompute quantities after any sizing degradation.
+        if not out.empty and "price" in out.columns and "capped_dollars" in out.columns:
+            price = pd.to_numeric(out["price"], errors="coerce").fillna(0.0)
+            needs_qty = buy_mask & (price > 0)
+            out.loc[needs_qty, "order_qty"] = (pd.to_numeric(out.loc[needs_qty, "capped_dollars"], errors="coerce").fillna(0.0) / price.loc[needs_qty]).astype(int)
+            out = out[(out["side"].astype(str).str.lower() == "sell") | (pd.to_numeric(out["order_qty"], errors="coerce").fillna(0).astype(int) > 0)].copy()
+
+        # Invariant check: exit rows must always survive all gates.
+        _sell_count_after = int((out["side"].astype(str).str.lower() == "sell").sum())
+        if _sell_count_after != _sell_count_before:
+            print(f"[planner-gate] BUG: sell row count changed {_sell_count_before}→{_sell_count_after}; exits should never be suppressed by market or planner gates")
+        return out.reset_index(drop=True)
 
     def _in_cooldown(self) -> bool:
         return (time.time() - self.last_order_time) < self.config.cooldown_seconds
@@ -6820,8 +8088,9 @@ class ProductionOrderExecutor:
             try:
                 age_min = (time.time() - Path(path).stat().st_mtime) / 60.0
                 if path == FEATURE_STREAM_CSV_PATH or "feature_stream" in str(path):
-                    if age_min > self.config.scanner.feature_stream_max_age_minutes:
-                        print(f"[feature-stream] stale {path} age={age_min:.1f}m; trying fallback")
+                    max_age = self.config.scanner.feature_stream_max_age_minutes
+                    if age_min > max_age:
+                        print(f"[rl-gate] stale feature stream age={age_min:.1f}m max={max_age}m; trying fallback")
                         continue
                 df = pd.read_csv(path)
                 if df.empty or "symbol" not in df.columns:
@@ -7176,6 +8445,10 @@ class ProductionOrderExecutor:
 
         plan["abs_delta_shares"] = plan["delta_shares"].abs().fillna(0)
         plan["abs_delta_dollars"] = plan["delta_dollars"].abs().fillna(0)
+        _low_notional_buys = plan[(plan["side"] == "buy") & (plan["abs_delta_dollars"] < self.config.min_notional_to_trade)]
+        if not _low_notional_buys.empty:
+            for _, _r in _low_notional_buys.iterrows():
+                print(f"[order-plan] skip BUY {_r.get('symbol', '?')}: notional=${to_float(_r.get('abs_delta_dollars')):.2f} < min=${self.config.min_notional_to_trade:.2f}")
         plan = plan[(plan["side"] == "sell") | (plan["abs_delta_dollars"] >= self.config.min_notional_to_trade)].copy()
         if plan.empty:
             return pd.DataFrame()
@@ -7196,6 +8469,12 @@ class ProductionOrderExecutor:
             plan.loc[qty_from_dollars, "capped_dollars"] / plan.loc[qty_from_dollars, "price"]
         ).fillna(0).astype(int)
 
+        _bad_qty_buys = plan[(plan["side"] == "buy") & ((plan["order_qty"] <= 0) | (plan["order_qty"] > self.config.max_single_order_qty))]
+        if not _bad_qty_buys.empty:
+            for _, _r in _bad_qty_buys.iterrows():
+                _q = to_int(_r.get("order_qty"), 0)
+                _reason = "zero_qty" if _q <= 0 else f"qty={_q}>{self.config.max_single_order_qty}_max"
+                print(f"[order-plan] skip BUY {_r.get('symbol', '?')}: {_reason} price=${to_float(_r.get('price')):.2f} capped=${to_float(_r.get('capped_dollars')):.2f}")
         plan = plan[(plan["order_qty"] > 0) & (plan["order_qty"] <= self.config.max_single_order_qty)].copy()
         if plan.empty:
             return pd.DataFrame()
@@ -7349,9 +8628,17 @@ class ProductionOrderExecutor:
             elif self.broker.has_open_order_for_symbol(symbol):
                 skip_message = "existing open order for symbol"
 
-            if not skip_message and side == "buy" and direction_by_symbol:
+            is_orb_order = bool(row.get("orb_8am_signal", False)) or str(row.get("source", "")) == "orb_8am_liquidity_sweep_fvg"
+            if not skip_message and side == "buy" and direction_by_symbol and not is_orb_order:
                 if not bool(direction.get("direction_confirmed", False)):
                     skip_message = f"price_direction_not_confirmed:{direction.get('direction_reject_reason', 'unknown')}"
+            elif not skip_message and side == "buy" and direction_by_symbol and is_orb_order:
+                # ORB entries already require sweep -> rejection/reclaim -> FVG -> retest.
+                # Keep the direction metrics in logs, but do not let the generic trend gate
+                # block this specific liquidity-reversal setup.
+                if direction:
+                    row = row.copy()
+                    row["direction_gate_bypassed"] = "orb_8am_liquidity_sweep_fvg"
 
             if not skip_message and side == "buy":
                 cash_buffer = self._cash_buffer(equity)
@@ -7575,6 +8862,7 @@ class ProductionOrderExecutor:
         exit_orders = self._augment_exit_orders_with_exit_learning(exit_orders if exit_orders is not None else pd.DataFrame())
         plan = self._build_order_plan(rebalance_orders, exit_orders, equity)
         plan = self._apply_mtf_buy_gate_to_plan(plan)
+        plan = self._apply_planner_and_market_gates_to_plan(plan)
 
         # Cooldown is buy-only. Exits are always allowed so risk can be reduced immediately.
         if self._in_cooldown() and not plan.empty:
@@ -8097,6 +9385,41 @@ class ProductionOrderExecutor:
         if self.scanner is not None:
             try:
                 self._prepare_morning_inputs_once()
+
+                # Once-per-morning SA assessment. Degrades buy sizing when drawdown,
+                # data quality, or execution risk metrics indicate elevated account risk.
+                _sa_mode = "NORMAL"
+                if _SA_AVAILABLE:
+                    _today_sa = datetime.now(ET).date().isoformat()
+                    if self._sa_last_assessment_date != _today_sa:
+                        try:
+                            self._sa_assessment = run_self_assessment()
+                            self._sa_last_assessment_date = _today_sa
+                        except Exception as _sa_exc:
+                            print(f"[self-awareness] assessment failed (non-fatal): {_sa_exc}")
+                            self._sa_assessment = {}
+                    if self._sa_assessment:
+                        _sa_mode = self_assessment_mode(self._sa_assessment)
+                        sa_reasons = self._sa_assessment.get("reasons", [])
+                        sa_mult = self_assessment_size_multiplier(self._sa_assessment)
+                        print(f"[self-awareness] mode={_sa_mode} size_mult={sa_mult:.2f} reasons={sa_reasons}")
+                        write_event("self_awareness_assessment", {
+                            "mode": _sa_mode, "size_multiplier": sa_mult, "reasons": sa_reasons,
+                            "disable_options": self._sa_assessment.get("disable_options"),
+                            "disable_pyramiding": self._sa_assessment.get("disable_pyramiding"),
+                        })
+
+                # Save config flags before any SA override so they can be restored after build_orders().
+                _orig_options_booster = self.config.scanner.options_booster_enabled
+                _orig_allow_pyramiding = getattr(self.config.scanner, "allow_pyramiding", True)
+                if _SA_AVAILABLE and self._sa_assessment:
+                    if self._sa_assessment.get("disable_options"):
+                        self.config.scanner.options_booster_enabled = False
+                        print("[self-awareness] options booster disabled by SA assessment")
+                    if self._sa_assessment.get("disable_pyramiding") and hasattr(self.config.scanner, "allow_pyramiding"):
+                        self.config.scanner.allow_pyramiding = False
+                        print("[self-awareness] pyramiding disabled by SA assessment")
+
                 acct = self.broker.get_account_snapshot()
                 equity = max(float(acct.equity), 1.0)
 
@@ -8128,6 +9451,11 @@ class ProductionOrderExecutor:
                 else:
                     rebalance, scanner_exits, _scores = self.scanner.build_orders()
 
+                # Restore config flags that SA may have temporarily suppressed.
+                self.config.scanner.options_booster_enabled = _orig_options_booster
+                if hasattr(self.config.scanner, "allow_pyramiding"):
+                    self.config.scanner.allow_pyramiding = _orig_allow_pyramiding
+
                 exits = pd.concat([monitor_exits, scanner_exits], ignore_index=True)
 
                 # Market-context risk gate is BUY-ONLY. Never block exits.
@@ -8140,11 +9468,12 @@ class ProductionOrderExecutor:
                 valid_pm_symbols = valid_symbols_from_premarket_plan(premarket_plan)
                 if self.config.scanner.premarket_plan_enabled and self.config.scanner.prefer_premarket_valid_symbols and valid_pm_symbols and not rebalance.empty:
                     before = len(rebalance)
+                    _pm_removed_syms = sorted(rebalance.loc[~rebalance["symbol"].map(normalize_symbol).isin(valid_pm_symbols), "symbol"].map(normalize_symbol).unique().tolist()) if "symbol" in rebalance.columns else []
                     rebalance = rebalance[rebalance["symbol"].map(normalize_symbol).isin(valid_pm_symbols)].copy()
                     removed = before - len(rebalance)
                     if removed:
-                        print(f"[premarket-plan] kept {len(rebalance)} valid premarket setup buy(s); removed {removed}")
-                        write_event("premarket_plan_filtered_buys", {"kept": len(rebalance), "removed": removed, "valid_symbols": sorted(valid_pm_symbols)})
+                        print(f"[premarket-plan] kept {len(rebalance)} valid premarket setup buy(s); removed {removed}: {_pm_removed_syms}")
+                        write_event("premarket_plan_filtered_buys", {"kept": len(rebalance), "removed": removed, "removed_symbols": _pm_removed_syms, "valid_symbols": sorted(valid_pm_symbols)})
                 elif self.config.scanner.premarket_plan_enabled and self.config.scanner.require_valid_premarket_plan_for_buys and not valid_pm_symbols and not rebalance.empty:
                     print("[premarket-plan] no valid premarket setups; removing all buy candidates")
                     write_event("premarket_plan_removed_all_buys", {"rows": len(rebalance), "reason": "no_valid_premarket_symbols"})
@@ -8153,6 +9482,12 @@ class ProductionOrderExecutor:
                 # RL timing gate is applied after scanner/regime and buy-only context filters.
                 # Exits remain allowed, and the RL layer may add additional protective exits.
                 rebalance, exits = self._apply_rl_timing_gate(rebalance, exits)
+
+                # SA HALT_NEW_BUYS: remove all buy candidates after RL gate. Exits survive.
+                if _sa_mode == "HALT_NEW_BUYS" and not rebalance.empty:
+                    print(f"[sa-gate] HALT_NEW_BUYS: clearing {len(rebalance)} rebalance candidate(s) | exits unaffected")
+                    write_event("sa_halt_new_buys_rebalance", {"removed": len(rebalance), "reasons": self._sa_assessment.get("reasons", [])})
+                    rebalance = rebalance.iloc[0:0].copy()
 
                 if not monitor_exits.empty:
                     exited_today = sorted(set(monitor_exits["symbol"].map(safe_symbol)))
@@ -8303,6 +9638,29 @@ class ProductionOrderExecutor:
         if not self.config.scanner.sr_rl_live_enabled:
             return
 
+        # If model doesn't exist and we haven't trained yet, attempt one training run now
+        # so the live loop doesn't immediately crash-restart.
+        if not SR_RL_MODEL_PATH.exists() and not self.config.scanner.sr_rl_train_on_start:
+            print(f"[sr-rl] model missing: {SR_RL_MODEL_PATH}; attempting auto-train before live")
+            sr_write_event("auto_train_started", {"model_path": str(SR_RL_MODEL_PATH)})
+            train_cmd = [sys.executable, str(script_path), "--train"]
+            try:
+                proc = subprocess.Popen(
+                    train_cmd, cwd=str(PROJECT_ROOT), env=env,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                )
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    print(line.rstrip())
+                train_rc = proc.wait()
+                sr_write_event("auto_train_completed", {"returncode": train_rc, "model_exists": SR_RL_MODEL_PATH.exists()})
+            except Exception as train_exc:
+                print(f"[sr-rl] auto-train failed: {train_exc}")
+                train_rc = -1
+            if not SR_RL_MODEL_PATH.exists():
+                print(f"[sr-rl] auto-train did not produce model (rc={train_rc}); live mode skipped")
+                return
+
         cmd = [sys.executable, str(script_path), "--live"]
         # Keep sr_rl_agent long-only signal-only by default. run.py executes
         # merged rows after its own risk, direction, PDT, kill-switch and cash gates.
@@ -8327,8 +9685,12 @@ class ProductionOrderExecutor:
                     print(line.rstrip())
                 rc = proc.wait()
                 sr_write_event("live_exited", {"returncode": rc})
-                print(f"[sr-rl] exited returncode={rc}; restarting in 20s")
-                time.sleep(20)
+                if rc != 0 and not SR_RL_MODEL_PATH.exists():
+                    print(f"[sr-rl] model missing after exit (rc={rc}); waiting 300s before retry")
+                    time.sleep(300)
+                else:
+                    print(f"[sr-rl] exited returncode={rc}; restarting in 20s")
+                    time.sleep(20)
             except Exception as exc:
                 print(f"[sr-rl] loop error: {exc}")
                 sr_write_event("live_error", {"error": str(exc)})
@@ -8632,12 +9994,24 @@ def build_default_config() -> ExecutorConfig:
         use_sp500_fallback=False,
         max_universe_symbols=500,
         top_n=30,
-        min_setup_score=0.62,
-        min_buy_confidence=0.58,
+        min_setup_score=0.58,
+        min_buy_confidence=0.54,
         min_avg_dollar_volume=5_000_000.0,
         use_llm_sentiment_universe=True,
         refresh_llm_sentiment_universe=True,
         min_llm_universe_confidence=0.0,
+        max_plan_age_minutes=MAX_PLAN_AGE_MINUTES,
+        require_fresh_premarket_plan_for_buys=False,
+        require_structure_long_allowed_for_buys=False,
+        safe_mode_on_planner_failure=SAFE_MODE_ON_PLANNER_FAILURE,
+        safe_mode_buy_size_multiplier=SAFE_MODE_BUY_SIZE_MULTIPLIER,
+        cautious_market_buy_size_multiplier=CAUTIOUS_MARKET_BUY_SIZE_MULTIPLIER,
+        cautious_market_confidence_addon=CAUTIOUS_MARKET_CONFIDENCE_ADDON,
+        bearish_market_disable_new_longs=BEARISH_MARKET_DISABLE_NEW_LONGS,
+        bearish_market_min_rl_confidence=BEARISH_MARKET_MIN_RL_CONFIDENCE,
+        use_tradingview_screener=USE_TRADINGVIEW_SCREENER,
+        tradingview_require_rvol=TRADINGVIEW_REQUIRE_RVOL,
+        tradingview_max_planner_symbols=TRADINGVIEW_MAX_PLANNER_SYMBOLS,
         options_booster_enabled=True,
         options_booster_confidence_threshold=0.75,
         opportunity_scan_enabled=True,

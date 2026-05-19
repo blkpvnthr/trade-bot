@@ -4,8 +4,15 @@ from __future__ import annotations
 """
 premarket_trade_planner.py
 
-Builds a premarket breakout/consolidation trade plan and intraday structure map
-using yfinance minute bars instead of Alpaca market data.
+Builds a premarket breakout/consolidation trade plan and intraday structure map.
+
+Data hierarchy:
+    Primary  — Alpaca (StockHistoricalDataClient, SIP feed for extended-hours)
+    Fallback — yfinance (used automatically if Alpaca is unavailable or returns empty)
+
+Universe:
+    Discovery — tradingview-screener (ranking/scoring only)
+    TA/pivots — tradingview_ta columns from screener snapshot
 
 Default:
     python premarket_trade_planner.py
@@ -19,17 +26,17 @@ Outputs:
     system-data/YYYYMMDD/YYYYMMDD_intraday_structure_map.json
     system-data/YYYYMMDD/YYYYMMDD_premarket_trade_plan_diagnostics.json
 
-Notes:
-    - Uses yfinance 1m bars with prepost=True for premarket data.
-    - Uses yfinance 1m bars with prepost=True for intraday/structure data.
-    - Does not place trades.
-    - Structure maps are confirmation inputs for run.py / RL timing logic.
+Diagnostics printed:
+    [data-source] alpaca_primary=true|false
+    [data-source] fallback_used=yfinance
+    [data-source] symbols_from_alpaca=N
 """
 
 import json
 import math
 import os
 import time as time_module
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from dataclasses import asdict, dataclass
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
@@ -39,6 +46,29 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import yfinance as yf
 from dotenv import load_dotenv
+
+try:
+    from alpaca.data.enums import DataFeed
+    from alpaca.data.historical import StockHistoricalDataClient as _AlpacaHistoricalClient
+    from alpaca.data.requests import StockBarsRequest as _AlpacaBarsRequest
+    from alpaca.data.timeframe import TimeFrame as _AlpacaTimeFrame, TimeFrameUnit as _AlpacaTimeFrameUnit
+except Exception:
+    DataFeed = None
+    _AlpacaHistoricalClient = None
+    _AlpacaBarsRequest = None
+    _AlpacaTimeFrame = None
+    _AlpacaTimeFrameUnit = None
+
+try:
+    from tradingview_screener import Query, col
+except Exception:
+    Query = None
+    col = None
+
+try:
+    import rookiepy
+except Exception:
+    rookiepy = None
 
 try:
     from market_context_builder import TODAY_TAG
@@ -74,6 +104,11 @@ YF_BATCH_SIZE = int(os.getenv("YF_BATCH_SIZE", "25"))
 YF_INTRADAY_PERIOD = os.getenv("YF_INTRADAY_PERIOD", "5d")
 YF_AUTO_ADJUST = os.getenv("YF_AUTO_ADJUST", "0").lower() in {"1", "true", "yes"}
 
+# Alpaca primary data source config.
+ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "sip").lower().strip()
+ALPACA_BARS_TIMEOUT = int(os.getenv("ALPACA_BARS_TIMEOUT_SECONDS", "30"))
+ALPACA_BATCH_SIZE = int(os.getenv("ALPACA_BATCH_SIZE", "100"))
+
 MIN_PREMARKET_VOLUME = int(os.getenv("MIN_PREMARKET_VOLUME", "1000"))
 PREMARKET_START_ET = os.getenv("PREMARKET_START_ET", "04:00")
 PREMARKET_END_ET = os.getenv("PREMARKET_END_ET", "09:30")
@@ -104,8 +139,49 @@ MIN_INTRADAY_DOLLAR_VOLUME = float(os.getenv("MIN_INTRADAY_DOLLAR_VOLUME", "2500
 MIN_INTRADAY_BAR_COUNT = int(os.getenv("MIN_INTRADAY_BAR_COUNT", "5"))
 MIN_LIQUIDITY_SCORE_FOR_TRADE = float(os.getenv("MIN_LIQUIDITY_SCORE_FOR_TRADE", "0.35"))
 
-WAIT_FOR_MARKET_OPEN = os.getenv("PREMARKET_WAIT_FOR_MARKET_OPEN", "1").lower() in {"1", "true", "yes"}
+# IMPORTANT: this planner is called by the premarket collector between 04:00 and 09:30 ET.
+# The old default waited until 09:30, which caused the collector to hit its 900s timeout.
+WAIT_FOR_MARKET_OPEN = os.getenv("PREMARKET_WAIT_FOR_MARKET_OPEN", "0").lower() in {"1", "true", "yes"}
 MARKET_OPEN_WAIT_TIME = os.getenv("MARKET_OPEN_WAIT_TIME", "09:30")
+
+# Runtime protection. The collector may call this every few minutes, so this script must finish fast.
+MAX_PREMARKET_PLANNER_SYMBOLS = int(os.getenv("MAX_PREMARKET_PLANNER_SYMBOLS", "20"))
+MAX_STRUCTURE_WORKERS = int(os.getenv("MAX_STRUCTURE_WORKERS", "6"))
+PLANNER_TOTAL_TIMEOUT_SECONDS = int(os.getenv("PLANNER_TOTAL_TIMEOUT_SECONDS", "240"))
+PER_SYMBOL_TIMEOUT_SECONDS = int(os.getenv("PER_SYMBOL_TIMEOUT_SECONDS", "8"))
+MAX_PLAN_AGE_MINUTES = int(os.getenv("MAX_PLAN_AGE_MINUTES", "15"))
+MIN_STRUCTURE_ROWS_REQUIRED = int(os.getenv("MIN_STRUCTURE_ROWS_REQUIRED", "60"))
+BREAKOUT_CONFIRMATION_BUFFER_PCT = float(os.getenv("BREAKOUT_CONFIRMATION_BUFFER_PCT", "0.002"))
+MIN_TRAINING_ROWS_REQUIRED = int(os.getenv("MIN_TRAINING_ROWS_REQUIRED", "250"))
+SAFE_MODE_ON_PLANNER_DEGRADATION = os.getenv("SAFE_MODE_ON_PLANNER_DEGRADATION", "1").lower() in {"1", "true", "yes"}
+YF_DOWNLOAD_TIMEOUT_SECONDS = int(os.getenv("YF_DOWNLOAD_TIMEOUT_SECONDS", "45"))
+
+# Optional TradingView screener pre-rank layer. This is used only for lightweight candidate
+# ranking and multi-timeframe context. yfinance remains the structure-bar fallback.
+TRADINGVIEW_SCREENER_ENABLED = os.getenv("TRADINGVIEW_SCREENER_ENABLED", "1").lower() in {"1", "true", "yes"}
+TRADINGVIEW_USE_BROWSER_COOKIES = os.getenv("TRADINGVIEW_USE_BROWSER_COOKIES", "0").lower() in {"1", "true", "yes"}
+TRADINGVIEW_COOKIE_BROWSER = os.getenv("TRADINGVIEW_COOKIE_BROWSER", "chrome").lower().strip()
+TRADINGVIEW_QUERY_LIMIT = int(os.getenv("TRADINGVIEW_QUERY_LIMIT", "10000"))
+TRADINGVIEW_MIN_RVOL = float(os.getenv("TRADINGVIEW_MIN_RVOL", "0.0"))
+TRADINGVIEW_REQUIRE_1M_MACD_BULLISH = os.getenv("TRADINGVIEW_REQUIRE_1M_MACD_BULLISH", "0").lower() in {"1", "true", "yes"}
+TRADINGVIEW_RANK_WEIGHT = float(os.getenv("TRADINGVIEW_RANK_WEIGHT", "0.35"))
+
+# Pivot-point signal planner settings (LuxAlgo-style).
+PIVOT_PLANNER_ENABLED             = int(os.getenv("PIVOT_PLANNER_ENABLED", "1"))
+PIVOT_LENGTH                      = int(os.getenv("PIVOT_LENGTH", "5"))
+PIVOT_MIN_RR                      = float(os.getenv("PIVOT_MIN_RR", "2.0"))
+PIVOT_MAX_STOP_DISTANCE_PCT       = float(os.getenv("PIVOT_MAX_STOP_DISTANCE_PCT", "0.04"))
+PIVOT_MIN_TARGET_DISTANCE_PCT     = float(os.getenv("PIVOT_MIN_TARGET_DISTANCE_PCT", "0.02"))
+PIVOT_REQUIRE_VWAP_HOLD           = int(os.getenv("PIVOT_REQUIRE_VWAP_HOLD", "1"))
+PIVOT_BREAKOUT_BUFFER_PCT         = float(os.getenv("PIVOT_BREAKOUT_BUFFER_PCT", "0.001"))
+PIVOT_RECLAIM_BUFFER_PCT          = float(os.getenv("PIVOT_RECLAIM_BUFFER_PCT", "0.001"))
+PIVOT_MAX_DISTANCE_FROM_LEVEL_PCT = float(os.getenv("PIVOT_MAX_DISTANCE_FROM_LEVEL_PCT", "0.015"))
+
+# Module-level cache: populated by _analyze_symbol_pivot, consumed by build_intraday_structure_map_for_symbol.
+_pivot_signals_cache: dict[tuple[str, str], dict] = {}
+
+# Timeframe weights for pivot setup scoring.
+_TF_WEIGHTS: dict[str, float] = {"1m": 1.0, "5m": 1.5, "15m": 2.0, "1h": 3.0}
 
 
 # =============================================================================
@@ -279,7 +355,258 @@ def load_universe() -> list[str]:
 
 
 # =============================================================================
-# yfinance data ingestion
+# Data-source diagnostics tracker (populated by fetch functions, emitted in output)
+# =============================================================================
+
+_DATA_SOURCE_DIAGNOSTICS: dict[str, Any] = {
+    "alpaca_primary": False,
+    "fallback_used": None,
+    "symbols_from_alpaca": 0,
+}
+
+
+# =============================================================================
+# Alpaca data ingestion (primary)
+# =============================================================================
+
+def _get_alpaca_data_client() -> Any:
+    if _AlpacaHistoricalClient is None:
+        return None
+    key = os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY_ID")
+    secret = os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_API_SECRET_KEY")
+    if not key or not secret:
+        return None
+    try:
+        return _AlpacaHistoricalClient(key, secret)
+    except Exception as exc:
+        print(f"[alpaca-client] init failed: {exc}")
+        return None
+
+
+def _get_alpaca_feed() -> Any:
+    if DataFeed is None:
+        return None
+    return DataFeed.SIP if ALPACA_DATA_FEED == "sip" else DataFeed.IEX
+
+
+def _alpaca_bars_to_df(bars_df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize Alpaca get_stock_bars().df output to the shared OHLCV schema."""
+    if bars_df is None or bars_df.empty:
+        return pd.DataFrame()
+
+    df = bars_df.reset_index()
+    df.columns = [str(c).lower() for c in df.columns]
+
+    if "symbol" not in df.columns:
+        # Single-symbol case: index was just timestamp
+        df["symbol"] = ""
+
+    df["symbol"] = df["symbol"].map(normalize_symbol)
+    df = df[df["symbol"] != ""].copy()
+
+    for col_name in ["open", "high", "low", "close", "volume"]:
+        if col_name not in df.columns:
+            df[col_name] = 0.0
+        df[col_name] = pd.to_numeric(df[col_name], errors="coerce").fillna(0.0)
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    df = df.dropna(subset=["timestamp"])
+    df["timestamp_et"] = df["timestamp"].dt.tz_convert(ET)
+
+    return df[["symbol", "timestamp", "timestamp_et", "open", "high", "low", "close", "volume"]].copy()
+
+
+_SIP_SUBSCRIPTION_ERR = "subscription does not permit querying recent SIP data"
+
+
+def _alpaca_request_bars(
+    client: Any,
+    req_kwargs: dict[str, Any],
+    feed: Any,
+    label: str,
+) -> pd.DataFrame:
+    """
+    Execute one Alpaca StockBarsRequest.
+    If SIP feed returns a subscription error, auto-retry with IEX before giving up.
+    IEX covers regular-session bars; SIP covers extended hours.
+    """
+    kwargs = dict(req_kwargs)
+    if feed is not None:
+        kwargs["feed"] = feed
+
+    try:
+        raw = client.get_stock_bars(_AlpacaBarsRequest(**kwargs)).df
+        return _alpaca_bars_to_df(raw)
+    except Exception as exc:
+        err_str = str(exc)
+        if _SIP_SUBSCRIPTION_ERR in err_str and DataFeed is not None and feed != DataFeed.IEX:
+            # SIP subscription restriction — downgrade to IEX for regular-session bars
+            print(f"[alpaca-{label}] SIP subscription error, retrying with IEX feed")
+            kwargs["feed"] = DataFeed.IEX
+            try:
+                raw = client.get_stock_bars(_AlpacaBarsRequest(**kwargs)).df
+                return _alpaca_bars_to_df(raw)
+            except Exception as exc2:
+                print(f"[alpaca-{label}] IEX retry also failed: {exc2}")
+                return pd.DataFrame()
+        raise
+
+
+def fetch_alpaca_minute_bars(
+    symbols: list[str],
+    start_et: datetime,
+    end_et: datetime,
+    label: str,
+    interval_minutes: int = 1,
+) -> pd.DataFrame:
+    """
+    Fetch intraday bars from Alpaca. Returns normalized DataFrame or empty if unavailable.
+    Automatically downgrades from SIP to IEX when the account lacks a SIP subscription
+    for recent data (regular-session bars work on IEX; premarket requires SIP).
+    """
+    if not symbols or _AlpacaBarsRequest is None or _AlpacaTimeFrame is None:
+        return pd.DataFrame()
+
+    client = _get_alpaca_data_client()
+    if client is None:
+        return pd.DataFrame()
+
+    start_utc = start_et.astimezone(timezone.utc)
+    end_utc = end_et.astimezone(timezone.utc)
+
+    if interval_minutes == 1:
+        tf = _AlpacaTimeFrame.Minute
+    elif interval_minutes == 60:
+        tf = _AlpacaTimeFrame.Hour
+    else:
+        tf = _AlpacaTimeFrame(interval_minutes, _AlpacaTimeFrameUnit.Minute)
+
+    feed = _get_alpaca_feed()
+
+    frames: list[pd.DataFrame] = []
+    diag: dict[str, Any] = {
+        "label": label,
+        "source": "alpaca",
+        "feed": str(feed),
+        "interval_minutes": interval_minutes,
+        "window_et": {"start": start_et.isoformat(), "end": end_et.isoformat()},
+        "batches": [],
+    }
+
+    # Alpaca supports up to 1000 symbols per request but we batch conservatively.
+    for batch in chunked(symbols, ALPACA_BATCH_SIZE):
+        batch_diag: dict[str, Any] = {"symbols": batch, "row_count": 0, "error": None}
+        try:
+            req_kwargs: dict[str, Any] = {
+                "symbol_or_symbols": batch,
+                "timeframe": tf,
+                "start": start_utc,
+                "end": end_utc,
+            }
+            df = _alpaca_request_bars(client, req_kwargs, feed, label)
+
+            if not df.empty:
+                # Filter strictly to the requested ET window (Alpaca may return slightly outside)
+                df = df[(df["timestamp_et"] >= start_et) & (df["timestamp_et"] < end_et)].copy()
+
+            if not df.empty:
+                frames.append(df)
+                counts = df.groupby("symbol").size().to_dict()
+                batch_diag["row_count"] = int(len(df))
+                batch_diag["counts"] = {str(k): int(v) for k, v in counts.items()}
+                print(f"[alpaca-{label}] batch_counts={counts}")
+            else:
+                print(f"[alpaca-{label}] empty batch={batch}")
+
+        except Exception as exc:
+            batch_diag["error"] = str(exc)
+            print(f"[alpaca-{label}] batch failed: {exc}")
+        finally:
+            diag["batches"].append(batch_diag)
+
+    if not frames:
+        diag["final_rows"] = 0
+        diag["symbols_with_bars"] = []
+        merge_diagnostics(f"alpaca_{label}", diag)
+        return pd.DataFrame()
+
+    out = pd.concat(frames, ignore_index=True).sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+    diag["final_rows"] = int(len(out))
+    diag["symbols_with_bars"] = sorted(out["symbol"].dropna().unique().tolist())
+    merge_diagnostics(f"alpaca_{label}", diag)
+
+    print(f"[alpaca-{label}] final_rows={len(out)} symbols={out['symbol'].nunique()}")
+    return out
+
+
+def fetch_alpaca_multitimeframe_bars(symbols: list[str]) -> dict[str, pd.DataFrame]:
+    """Fetch OHLCV for 1m/5m/15m/1h from Alpaca for pivot signal detection."""
+    if not symbols or _AlpacaBarsRequest is None or _AlpacaTimeFrame is None:
+        return {}
+
+    client = _get_alpaca_data_client()
+    if client is None:
+        return {}
+
+    now_et = datetime.now(ET)
+    now_utc = datetime.now(timezone.utc)
+    feed = _get_alpaca_feed()
+
+    tf_config = [
+        ("1m",  _AlpacaTimeFrame.Minute,                                        1,  now_utc - timedelta(days=2)),
+        ("5m",  _AlpacaTimeFrame(5,  _AlpacaTimeFrameUnit.Minute) if _AlpacaTimeFrameUnit else None, 5,  now_utc - timedelta(days=7)),
+        ("15m", _AlpacaTimeFrame(15, _AlpacaTimeFrameUnit.Minute) if _AlpacaTimeFrameUnit else None, 15, now_utc - timedelta(days=35)),
+        ("1h",  _AlpacaTimeFrame.Hour,                                           60, now_utc - timedelta(days=95)),
+    ]
+
+    result: dict[str, pd.DataFrame] = {}
+
+    for interval_label, tf, _interval_mins, start_utc in tf_config:
+        if tf is None:
+            result[interval_label] = pd.DataFrame()
+            continue
+
+        frames: list[pd.DataFrame] = []
+        diag: dict[str, Any] = {
+            "interval": interval_label, "source": "alpaca", "feed": str(feed), "batches": []
+        }
+
+        for batch in chunked(symbols, ALPACA_BATCH_SIZE):
+            batch_diag: dict[str, Any] = {"symbols": batch, "row_count": 0, "error": None}
+            try:
+                req_kwargs: dict[str, Any] = {
+                    "symbol_or_symbols": batch,
+                    "timeframe": tf,
+                    "start": start_utc,
+                    "end": now_utc,
+                }
+                df = _alpaca_request_bars(client, req_kwargs, feed, f"mtf-{interval_label}")
+                if not df.empty:
+                    frames.append(df)
+                    batch_diag["row_count"] = int(len(df))
+            except Exception as exc:
+                batch_diag["error"] = str(exc)
+                print(f"[alpaca-mtf-{interval_label}] batch failed: {exc}")
+            finally:
+                diag["batches"].append(batch_diag)
+
+        if frames:
+            combined = pd.concat(frames, ignore_index=True).sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+            result[interval_label] = combined
+            diag["total_rows"] = int(len(combined))
+            print(f"[alpaca-mtf-{interval_label}] rows={len(combined)} symbols={combined['symbol'].nunique()}")
+        else:
+            result[interval_label] = pd.DataFrame()
+            diag["total_rows"] = 0
+            print(f"[alpaca-mtf-{interval_label}] no bars returned")
+
+        merge_diagnostics(f"alpaca_mtf_{interval_label}", diag)
+
+    return result
+
+
+# =============================================================================
+# yfinance data ingestion (fallback)
 # =============================================================================
 
 def flatten_yfinance_download(df: pd.DataFrame, symbols: list[str]) -> pd.DataFrame:
@@ -349,21 +676,13 @@ def flatten_yfinance_download(df: pd.DataFrame, symbols: list[str]) -> pd.DataFr
     return out[["symbol", "timestamp", "timestamp_et", "open", "high", "low", "close", "volume"]]
 
 
-def fetch_minute_bars(
+def _fetch_minute_bars_yfinance(
     symbols: list[str],
     start_et: datetime,
     end_et: datetime,
     label: str,
 ) -> pd.DataFrame:
-    """
-    Fetch 1-minute bars with yfinance.
-
-    yfinance only permits recent 1-minute history, so this uses a period-based
-    download and then filters to the requested ET window.
-    """
-    if not symbols:
-        return pd.DataFrame()
-
+    """Inner yfinance 1-minute bar fetcher. Called only when Alpaca is unavailable or returns empty."""
     frames: list[pd.DataFrame] = []
     diagnostics: dict[str, Any] = {
         "label": label,
@@ -393,6 +712,7 @@ def fetch_minute_bars(
                 auto_adjust=YF_AUTO_ADJUST,
                 progress=False,
                 threads=True,
+                timeout=YF_DOWNLOAD_TIMEOUT_SECONDS,
             )
 
             df = flatten_yfinance_download(raw, batch)
@@ -435,6 +755,40 @@ def fetch_minute_bars(
     return out
 
 
+def fetch_minute_bars(
+    symbols: list[str],
+    start_et: datetime,
+    end_et: datetime,
+    label: str,
+) -> pd.DataFrame:
+    """
+    Fetch 1-minute bars. Alpaca is the primary source; yfinance is the fallback.
+
+    Alpaca SIP feed covers extended hours (premarket 04:00-09:30 ET).
+    If Alpaca returns no bars (SDK not installed, missing credentials, or IEX feed
+    with no extended hours coverage), yfinance is used automatically.
+    """
+    if not symbols:
+        return pd.DataFrame()
+
+    # --- Primary: Alpaca ---
+    alpaca_df = fetch_alpaca_minute_bars(symbols, start_et, end_et, label, interval_minutes=1)
+
+    if not alpaca_df.empty:
+        syms = sorted(alpaca_df["symbol"].dropna().unique().tolist())
+        _DATA_SOURCE_DIAGNOSTICS["alpaca_primary"] = True
+        _DATA_SOURCE_DIAGNOSTICS["symbols_from_alpaca"] = max(
+            _DATA_SOURCE_DIAGNOSTICS.get("symbols_from_alpaca", 0), len(syms)
+        )
+        print(f"[data-source] alpaca_primary=true label={label} symbols_from_alpaca={len(syms)}")
+        return alpaca_df
+
+    # --- Fallback: yfinance ---
+    print(f"[data-source] fallback_used=yfinance label={label} reason=alpaca_empty_or_unavailable")
+    _DATA_SOURCE_DIAGNOSTICS["fallback_used"] = "yfinance"
+    return _fetch_minute_bars_yfinance(symbols, start_et, end_et, label)
+
+
 def fetch_premarket_bars(symbols: list[str]) -> pd.DataFrame:
     day = today_et_date()
     start_et = datetime.combine(day, parse_hhmm(PREMARKET_START_ET), tzinfo=ET)
@@ -449,6 +803,119 @@ def fetch_intraday_bars(symbols: list[str]) -> pd.DataFrame:
     regular_end_today = datetime.combine(day, parse_hhmm(REGULAR_SESSION_END_ET), tzinfo=ET)
     end_et = min(end_et, regular_end_today)
     return fetch_minute_bars(symbols, start_et, end_et, label="intraday_bars")
+
+
+def _fetch_multitimeframe_bars_yfinance(symbols: list[str]) -> dict[str, pd.DataFrame]:
+    """yfinance fallback for multi-timeframe bar fetching."""
+    tf_config = [
+        ("1m",  "1d"),
+        ("5m",  "5d"),
+        ("15m", "1mo"),
+        ("1h",  "3mo"),
+    ]
+
+    result: dict[str, pd.DataFrame] = {}
+
+    for interval, period in tf_config:
+        label = f"mtf_{interval}"
+        frames: list[pd.DataFrame] = []
+        diag: dict[str, Any] = {"interval": interval, "period": period, "source": "yfinance", "batches": []}
+
+        for batch in chunked(symbols, YF_BATCH_SIZE):
+            batch_diag: dict[str, Any] = {"symbols": batch, "row_count": 0, "error": None}
+            tickers = " ".join(batch)
+            try:
+                raw = yf.download(
+                    tickers=tickers,
+                    period=period,
+                    interval=interval,
+                    prepost=False,
+                    group_by="column",
+                    auto_adjust=YF_AUTO_ADJUST,
+                    progress=False,
+                    threads=True,
+                    timeout=YF_DOWNLOAD_TIMEOUT_SECONDS,
+                )
+                df = flatten_yfinance_download(raw, batch)
+                if not df.empty:
+                    frames.append(df)
+                    batch_diag["row_count"] = int(len(df))
+            except Exception as exc:
+                batch_diag["error"] = str(exc)
+                print(f"[{label}] batch failed: {exc}")
+            finally:
+                diag["batches"].append(batch_diag)
+
+        if frames:
+            combined = pd.concat(frames, ignore_index=True).sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+            result[interval] = combined
+            diag["total_rows"] = int(len(combined))
+            print(f"[{label}] rows={len(combined)} symbols={combined['symbol'].nunique()}")
+        else:
+            result[interval] = pd.DataFrame()
+            diag["total_rows"] = 0
+            print(f"[{label}] no bars returned")
+
+        merge_diagnostics(label, diag)
+
+    return result
+
+
+def fetch_multitimeframe_bars(symbols: list[str]) -> dict[str, pd.DataFrame]:
+    """
+    Fetch OHLCV for 1m/5m/15m/1h for pivot signal detection.
+    Alpaca is the primary source; yfinance fills any timeframe where Alpaca returns empty.
+    """
+    if not symbols:
+        return {}
+
+    # --- Primary: Alpaca ---
+    alpaca_result = fetch_alpaca_multitimeframe_bars(symbols)
+
+    # Check if Alpaca returned usable data for at least one timeframe
+    alpaca_has_data = any(not df.empty for df in alpaca_result.values())
+
+    if alpaca_has_data:
+        # Fill any empty Alpaca timeframes with yfinance
+        yf_tf_map = {"1m": "1d", "5m": "5d", "15m": "1mo", "1h": "3mo"}
+        needs_yf_fallback = [tf for tf, df in alpaca_result.items() if df.empty]
+
+        if needs_yf_fallback:
+            print(f"[data-source] alpaca_primary=true mtf_yfinance_fallback_tfs={needs_yf_fallback}")
+            _DATA_SOURCE_DIAGNOSTICS["fallback_used"] = "yfinance_partial_mtf"
+            for tf in needs_yf_fallback:
+                period = yf_tf_map.get(tf, "5d")
+                label = f"mtf_{tf}_yf_fallback"
+                frames: list[pd.DataFrame] = []
+                for batch in chunked(symbols, YF_BATCH_SIZE):
+                    try:
+                        raw = yf.download(
+                            tickers=" ".join(batch),
+                            period=period,
+                            interval=tf,
+                            prepost=False,
+                            group_by="column",
+                            auto_adjust=YF_AUTO_ADJUST,
+                            progress=False,
+                            threads=True,
+                            timeout=YF_DOWNLOAD_TIMEOUT_SECONDS,
+                        )
+                        df = flatten_yfinance_download(raw, batch)
+                        if not df.empty:
+                            frames.append(df)
+                    except Exception as exc:
+                        print(f"[{label}] batch failed: {exc}")
+                if frames:
+                    alpaca_result[tf] = pd.concat(frames, ignore_index=True).sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+                    print(f"[{label}] filled tf={tf} rows={len(alpaca_result[tf])}")
+
+        print(f"[data-source] alpaca_primary=true mtf tfs={list(alpaca_result.keys())}")
+        return alpaca_result
+
+    # --- Full fallback: yfinance for all timeframes ---
+    print(f"[data-source] fallback_used=yfinance mtf reason=alpaca_empty_or_unavailable")
+    _DATA_SOURCE_DIAGNOSTICS["fallback_used"] = "yfinance"
+    return _fetch_multitimeframe_bars_yfinance(symbols)
 
 
 # =============================================================================
@@ -494,6 +961,230 @@ def cluster_levels(levels: list[dict[str, Any]], cluster_pct: float = SR_CLUSTER
             }
         )
     return out
+
+
+def detect_pivot_signals(df: pd.DataFrame, length: int = PIVOT_LENGTH) -> dict[str, Any]:
+    """
+    LuxAlgo-style pivot detection with missed pivot (ghost) levels.
+
+    A bar is a pivot high if its high is the unique maximum of [i-length .. i+length].
+    A bar is a pivot low if its low is the unique minimum of [i-length .. i+length].
+
+    Missed pivot highs (ghost resistance): the max high tracked between two consecutive
+    pivot lows that exceeds the next confirmed pivot high — an unconfirmed swing high.
+
+    Missed pivot lows (ghost support): the min low tracked between two consecutive
+    pivot highs that falls below the next confirmed pivot low — an unconfirmed swing low.
+    """
+    if len(df) < 2 * length + 1:
+        return {"valid": False}
+
+    df = df.sort_values("timestamp").reset_index(drop=True)
+    highs = df["high"].astype(float).tolist()
+    lows = df["low"].astype(float).tolist()
+    timestamps = df["timestamp"].tolist()
+    n = len(df)
+
+    ph_events: list[tuple[int, float, Any]] = []
+    pl_events: list[tuple[int, float, Any]] = []
+
+    for i in range(length, n - length):
+        h = highs[i]
+        window_h = highs[i - length:i + length + 1]
+        if h == max(window_h) and window_h.count(h) == 1:
+            ph_events.append((i, h, timestamps[i]))
+
+        lo = lows[i]
+        window_l = lows[i - length:i + length + 1]
+        if lo == min(window_l) and window_l.count(lo) == 1:
+            pl_events.append((i, lo, timestamps[i]))
+
+    # Merge and sort all pivot events by bar index
+    all_events: list[tuple[int, str, float, Any]] = (
+        [(b, "ph", p, t) for b, p, t in ph_events] +
+        [(b, "pl", p, t) for b, p, t in pl_events]
+    )
+    all_events.sort(key=lambda x: x[0])
+
+    os_state = 0  # 0=last confirmed pivot was a low, 1=last confirmed was a high
+    last_ph: tuple | None = None
+    last_pl: tuple | None = None
+    tracked_max = float("-inf")
+    tracked_min = float("inf")
+    missed_highs: list[dict[str, Any]] = []
+    missed_lows: list[dict[str, Any]] = []
+    ghost_resistance: list[float] = []
+    ghost_support: list[float] = []
+
+    bar_cursor = 0
+    for (bar_idx, etype, price, t) in all_events:
+        while bar_cursor < bar_idx:
+            tracked_max = max(tracked_max, highs[bar_cursor])
+            tracked_min = min(tracked_min, lows[bar_cursor])
+            bar_cursor += 1
+
+        if etype == "ph":
+            if os_state == 0 and last_pl is not None and tracked_max > price * 1.001:
+                missed_highs.append({"price": round(tracked_max, 4), "bar": bar_idx})
+                ghost_resistance.append(round(tracked_max, 4))
+            os_state = 1
+            last_ph = (bar_idx, price, t)
+            tracked_min = float("inf")
+        else:  # pl
+            if os_state == 1 and last_ph is not None and tracked_min < price * 0.999:
+                missed_lows.append({"price": round(tracked_min, 4), "bar": bar_idx})
+                ghost_support.append(round(tracked_min, 4))
+            os_state = 0
+            last_pl = (bar_idx, price, t)
+            tracked_max = float("-inf")
+
+    active_range: dict[str, Any] | None = None
+    if last_ph and last_pl:
+        active_range = {
+            "high": round(last_ph[1], 4),
+            "low": round(last_pl[1], 4),
+            "midpoint": round((last_ph[1] + last_pl[1]) / 2.0, 4),
+        }
+
+    return {
+        "valid": True,
+        "pivot_highs": [{"bar": i, "price": round(p, 4), "time": str(t)} for i, p, t in ph_events],
+        "pivot_lows": [{"bar": i, "price": round(p, 4), "time": str(t)} for i, p, t in pl_events],
+        "missed_highs": missed_highs,
+        "missed_lows": missed_lows,
+        "ghost_resistance": ghost_resistance,
+        "ghost_support": ghost_support,
+        "active_range": active_range,
+        "os_state": os_state,
+        "last_ph": {"bar": last_ph[0], "price": round(last_ph[1], 4)} if last_ph else None,
+        "last_pl": {"bar": last_pl[0], "price": round(last_pl[1], 4)} if last_pl else None,
+    }
+
+
+def generate_pivot_trade_plan(
+    symbol: str,
+    mtf_signals: dict[str, dict[str, Any]],
+    current_price: float,
+    vwap: float | None,
+) -> dict[str, Any] | None:
+    """
+    Score pivot setups across timeframes and return the best valid long plan, or None.
+
+    Setup types:
+      reclaim     — price just above a pivot low (support reclaim / bounce)
+      breakout    — price just below a pivot high (imminent breakout)
+      ghost_support  — price near a missed pivot low ghost level
+      ghost_breakout — price near a missed pivot high ghost level
+    """
+    rejections: list[str] = []
+
+    if PIVOT_REQUIRE_VWAP_HOLD and vwap is not None and vwap > 0 and current_price < vwap:
+        rejections.append("pivot_rejected_below_vwap")
+        merge_diagnostics(
+            f"pivot_rejections_{symbol}",
+            {"symbol": symbol, "rejections": rejections, "current_price": current_price, "vwap": vwap},
+        )
+        return None
+
+    setups: list[dict[str, Any]] = []
+    any_level_within_range = False
+
+    for tf, sigs in mtf_signals.items():
+        if not sigs.get("valid"):
+            continue
+
+        tf_weight = _TF_WEIGHTS.get(tf, 1.0)
+        ph_prices = [x["price"] for x in sigs.get("pivot_highs", [])[-5:]]
+        pl_prices = [x["price"] for x in sigs.get("pivot_lows", [])[-5:]]
+        ghost_res = list(sigs.get("ghost_resistance", []))[-5:]
+        ghost_sup = list(sigs.get("ghost_support", []))[-5:]
+        all_res = sorted(set(ph_prices + ghost_res))
+        all_pl = sorted(set(pl_prices + ghost_sup))
+
+        # Reclaim and ghost support setups: price near or just above a support level
+        for level_price in pl_prices + ghost_sup:
+            if level_price <= 0:
+                continue
+            dist = (current_price - level_price) / level_price
+            if abs(dist) > PIVOT_MAX_DISTANCE_FROM_LEVEL_PCT:
+                continue
+            any_level_within_range = True
+            if current_price < level_price:
+                continue  # Below support — not a reclaim
+
+            entry = round(level_price * (1.0 + PIVOT_RECLAIM_BUFFER_PCT), 4)
+            stop = round(level_price * (1.0 - 0.005), 4)
+            if entry <= stop:
+                continue
+            stop_dist = (entry - stop) / max(entry, 1e-9)
+            if stop_dist > PIVOT_MAX_STOP_DISTANCE_PCT:
+                rejections.append("pivot_rejected_stop_too_wide")
+                continue
+
+            min_target = entry * (1.0 + PIVOT_MIN_TARGET_DISTANCE_PCT)
+            next_res = [r for r in all_res if r >= min_target]
+            target = min(next_res) if next_res else round(entry + 2.0 * (entry - stop), 4)
+            rr = (target - entry) / max(entry - stop, 1e-9)
+            if rr < PIVOT_MIN_RR:
+                rejections.append("pivot_rejected_low_rr")
+                continue
+
+            src = "ghost_support" if level_price in ghost_sup else "reclaim"
+            setups.append({
+                "type": src, "timeframe": tf, "entry": entry, "stop": stop,
+                "target": target, "rr": round(rr, 4), "pivot_level": round(level_price, 4),
+                "setup_weight": round(tf_weight * rr, 4),
+            })
+
+        # Breakout and ghost breakout setups: price just below a resistance level
+        for level_price in ph_prices + ghost_res:
+            if level_price <= 0:
+                continue
+            dist = (current_price - level_price) / level_price
+            if abs(dist) > PIVOT_MAX_DISTANCE_FROM_LEVEL_PCT:
+                continue
+            any_level_within_range = True
+            if current_price >= level_price:
+                continue  # Already above — not a pending breakout
+
+            entry = round(level_price * (1.0 + PIVOT_BREAKOUT_BUFFER_PCT), 4)
+            pl_below = [p for p in all_pl if p < entry]
+            stop = round(max(pl_below) * 0.995, 4) if pl_below else round(entry * (1.0 - PIVOT_MAX_STOP_DISTANCE_PCT), 4)
+            if entry <= stop:
+                continue
+            stop_dist = (entry - stop) / max(entry, 1e-9)
+            if stop_dist > PIVOT_MAX_STOP_DISTANCE_PCT:
+                rejections.append("pivot_rejected_stop_too_wide")
+                continue
+
+            min_target = entry * (1.0 + PIVOT_MIN_TARGET_DISTANCE_PCT)
+            next_res = [r for r in all_res if r >= min_target and r > level_price * 1.005]
+            target = min(next_res) if next_res else round(entry + 2.0 * (entry - stop), 4)
+            rr = (target - entry) / max(entry - stop, 1e-9)
+            if rr < PIVOT_MIN_RR:
+                rejections.append("pivot_rejected_low_rr")
+                continue
+
+            src = "ghost_breakout" if level_price in ghost_res else "breakout"
+            setups.append({
+                "type": src, "timeframe": tf, "entry": entry, "stop": stop,
+                "target": target, "rr": round(rr, 4), "pivot_level": round(level_price, 4),
+                "setup_weight": round(tf_weight * rr, 4),
+            })
+
+    if not any_level_within_range:
+        rejections.append("pivot_rejected_mid_range")
+
+    if rejections:
+        merge_diagnostics(
+            f"pivot_rejections_{symbol}",
+            {"symbol": symbol, "rejections": rejections, "setups_found": len(setups), "current_price": current_price, "vwap": vwap},
+        )
+
+    if not setups:
+        return None
+
+    return max(setups, key=lambda x: x["setup_weight"])
 
 
 def detect_pivot_levels(df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -716,6 +1407,16 @@ def build_intraday_structure_map_for_symbol(
 
     level_candidates.extend(detect_pivot_levels(ibar))
 
+    # Ghost reversal levels from higher-timeframe pivot signal cache (15m and 1h only).
+    for tf in ("1h", "15m"):
+        cached = _pivot_signals_cache.get((symbol, tf), {})
+        for gr in cached.get("ghost_resistance", []):
+            if gr and gr > 0:
+                level_candidates.append({"price": gr, "source": f"ghost_resistance_{tf}", "touch_count": 1, "weight": 2.5})
+        for gs in cached.get("ghost_support", []):
+            if gs and gs > 0:
+                level_candidates.append({"price": gs, "source": f"ghost_support_{tf}", "touch_count": 1, "weight": 2.5})
+
     orb = build_orb_map(ibar)
     if orb.get("high") is not None:
         level_candidates.append({"price": orb["high"], "source": "orb_high", "touch_count": 1, "weight": 5.0})
@@ -799,7 +1500,10 @@ def build_intraday_structure_map_for_symbol(
         "trade_structure": {
             "long_allowed": long_allowed,
             "short_or_put_allowed": short_or_put_allowed,
-            "preferred_long_trigger": resistances[0]["price"] if resistances else None,
+            "raw_resistance": resistances[0]["price"] if resistances else None,
+            "breakout_confirmation_buffer_pct": BREAKOUT_CONFIRMATION_BUFFER_PCT,
+            "buffered_long_trigger": round(resistances[0]["price"] * (1.0 + BREAKOUT_CONFIRMATION_BUFFER_PCT), 4) if resistances and resistances[0]["price"] else None,
+            "preferred_long_trigger": round(resistances[0]["price"] * (1.0 + BREAKOUT_CONFIRMATION_BUFFER_PCT), 4) if resistances and resistances[0]["price"] else None,
             "preferred_short_trigger": supports[0]["price"] if supports else None,
             "preferred_long_stop": supports[0]["price"] if supports else None,
             "preferred_short_stop": resistances[0]["price"] if resistances else None,
@@ -807,6 +1511,7 @@ def build_intraday_structure_map_for_symbol(
                 "Use this as a structure map, not a standalone order signal.",
                 "Require ML/RL direction confirmation before entries.",
                 "Always allow exits regardless of long_allowed/short_or_put_allowed.",
+                f"preferred_long_trigger is {BREAKOUT_CONFIRMATION_BUFFER_PCT:.1%} above raw_resistance to reduce false breakouts.",
             ],
         },
     }
@@ -951,13 +1656,115 @@ def build_daily_trade_plan_json(plan: PremarketPlan, structure_map: dict[str, An
     }
 
 
-def analyze_symbol(symbol: str, bars: pd.DataFrame) -> PremarketPlan:
+def _analyze_symbol_pivot(symbol: str, bars: pd.DataFrame, mtf_bars: dict[str, pd.DataFrame]) -> PremarketPlan:
+    """
+    Pivot-point-driven analysis: replaces consolidation pattern when PIVOT_PLANNER_ENABLED=1.
+    Detects LuxAlgo-style pivot highs/lows and missed pivot ghost levels across
+    1m/5m/15m/1h bars and generates a long trade plan with entry/stop/target/RR.
+    """
     if bars.empty or "symbol" not in bars.columns:
-        return empty_plan(symbol, "No yfinance premarket bars found. No premarket breakout entry will be created.")
+        return empty_plan(symbol, "pivot_rejected_insufficient_bars")
+
+    sdf = bars[bars["symbol"] == symbol].copy()
+    if len(sdf) < 5:
+        return empty_plan(symbol, "pivot_rejected_insufficient_bars")
+
+    sdf = sdf.sort_values("timestamp").reset_index(drop=True)
+    premarket_volume = int(pd.to_numeric(sdf["volume"], errors="coerce").fillna(0).sum())
+    premarket_open   = safe_float(sdf.iloc[0].get("open", 0))
+    premarket_close  = safe_float(sdf.iloc[-1].get("close", 0))
+    premarket_high   = safe_float(sdf["high"].max())
+    premarket_low    = safe_float(sdf["low"].min())
+    current_price    = premarket_close or premarket_high or premarket_open
+
+    if current_price <= 0:
+        return empty_plan(symbol, "pivot_rejected_insufficient_bars")
+
+    # VWAP from premarket 1m bars
+    vwap: float | None = None
+    if len(sdf) >= 5:
+        sdf_v = add_vwap_columns(sdf)
+        v_series = sdf_v.get("vwap")
+        if v_series is not None and not v_series.empty:
+            vwap = safe_float(v_series.iloc[-1], 0.0) or None
+
+    # Run pivot detection on each timeframe; populate cache for structure map
+    mtf_signals: dict[str, dict[str, Any]] = {}
+    for tf, tf_df in mtf_bars.items():
+        if tf_df is None or tf_df.empty:
+            mtf_signals[tf] = {"valid": False}
+            continue
+        sym_df = tf_df[tf_df.get("symbol", pd.Series(dtype=str)).eq(symbol)].copy()
+        if len(sym_df) < 2 * PIVOT_LENGTH + 1:
+            mtf_signals[tf] = {"valid": False}
+            continue
+        sigs = detect_pivot_signals(sym_df, PIVOT_LENGTH)
+        mtf_signals[tf] = sigs
+        _pivot_signals_cache[(symbol, tf)] = sigs
+
+    # Fall back to premarket bars for 1m if MTF fetch did not cover it
+    if not mtf_signals.get("1m", {}).get("valid") and len(sdf) >= 2 * PIVOT_LENGTH + 1:
+        pm_sigs = detect_pivot_signals(sdf, PIVOT_LENGTH)
+        mtf_signals["1m"] = pm_sigs
+        _pivot_signals_cache[(symbol, "1m")] = pm_sigs
+
+    setup = generate_pivot_trade_plan(symbol, mtf_signals, current_price, vwap)
+
+    if setup is None:
+        p = empty_plan(symbol, "no_valid_pivot_setup")
+        p.premarket_volume = premarket_volume
+        p.premarket_open   = round(premarket_open, 4)
+        p.premarket_high   = round(premarket_high, 4)
+        p.premarket_low    = round(premarket_low, 4)
+        p.premarket_close  = round(premarket_close, 4)
+        return p
+
+    entry          = setup["entry"]
+    stop           = setup["stop"]
+    target         = setup["target"]
+    rr             = setup["rr"]
+    risk_per_share = round(entry - stop, 4)
+    reward_per_share = round(target - entry, 4)
+    initial_move_pct = round(((premarket_high - premarket_open) / premarket_open) * 100.0, 4) if premarket_open > 0 else None
+
+    return PremarketPlan(
+        symbol=symbol,
+        valid=True,
+        reason=f"pivot_{setup['type']}_{setup['timeframe']}: rr={rr:.2f} level={setup['pivot_level']}",
+        premarket_volume=premarket_volume,
+        premarket_open=round(premarket_open, 4),
+        premarket_high=round(premarket_high, 4),
+        premarket_low=round(premarket_low, 4),
+        premarket_close=round(premarket_close, 4),
+        initial_move_pct=initial_move_pct,
+        consolidation_count=0,
+        consolidation_start=None,
+        consolidation_end=None,
+        support=stop,
+        resistance=target,
+        entry_price=entry,
+        stop_loss=stop,
+        target_5pct=round(entry * 1.05, 4),
+        target_risk_reward=round(entry + risk_per_share * RISK_REWARD_RATIO, 4),
+        target_measured_move=target,
+        primary_target=target,
+        measured_range=round(target - stop, 4),
+        risk_per_share=risk_per_share,
+        reward_per_share=reward_per_share,
+        risk_reward_ratio=round(rr, 4),
+    )
+
+
+def analyze_symbol(symbol: str, bars: pd.DataFrame, mtf_bars: dict[str, pd.DataFrame] | None = None) -> PremarketPlan:
+    if PIVOT_PLANNER_ENABLED:
+        return _analyze_symbol_pivot(symbol, bars, mtf_bars or {})
+
+    if bars.empty or "symbol" not in bars.columns:
+        return empty_plan(symbol, "No premarket bars found (Alpaca and yfinance both returned empty). No premarket breakout entry will be created.")
 
     sdf = bars[bars["symbol"] == symbol].copy()
     if sdf.empty:
-        return empty_plan(symbol, "No yfinance premarket bars found. No premarket breakout entry will be created.")
+        return empty_plan(symbol, "No premarket bars found (Alpaca and yfinance both returned empty). No premarket breakout entry will be created.")
 
     sdf = sdf.sort_values("timestamp").reset_index(drop=True)
     premarket_volume = int(pd.to_numeric(sdf["volume"], errors="coerce").fillna(0).sum())
@@ -1030,7 +1837,7 @@ def analyze_symbol(symbol: str, bars: pd.DataFrame) -> PremarketPlan:
     return PremarketPlan(
         symbol=symbol,
         valid=True,
-        reason="Valid setup: yfinance premarket volume, strong initial move, consolidation, support/resistance marked.",
+        reason="Valid setup: premarket volume confirmed, strong initial move, consolidation, support/resistance marked.",
         premarket_volume=premarket_volume,
         premarket_open=round(premarket_open, 4),
         premarket_high=round(premarket_high, 4),
@@ -1055,6 +1862,302 @@ def analyze_symbol(symbol: str, bars: pd.DataFrame) -> PremarketPlan:
     )
 
 
+
+# =============================================================================
+# Universe scoring / runtime guards
+# =============================================================================
+
+def seconds_remaining(start_monotonic: float, total_timeout: int = PLANNER_TOTAL_TIMEOUT_SECONDS) -> float:
+    return max(0.0, float(total_timeout) - (time_module.monotonic() - start_monotonic))
+
+
+def deadline_exceeded(start_monotonic: float, total_timeout: int = PLANNER_TOTAL_TIMEOUT_SECONDS) -> bool:
+    return seconds_remaining(start_monotonic, total_timeout) <= 0
+
+
+def build_minimal_structure(symbol: str, plan: PremarketPlan, reason: str) -> dict[str, Any]:
+    current_price = plan.premarket_close or plan.premarket_high or plan.premarket_low
+    return {
+        "symbol": symbol,
+        "generated_at_utc": now_utc(),
+        "current_price": round_price(current_price),
+        "premarket_setup_valid": plan.valid,
+        "premarket_reason": plan.reason,
+        "support_levels": [],
+        "resistance_levels": [],
+        "all_clustered_levels": [],
+        "nearest_levels": {"nearest_support": None, "nearest_resistance": None, "near_any_level": False},
+        "orb": {"available": False, "reason": reason, "minutes": ORB_MINUTES, "high": None, "low": None, "mid": None, "range_pct": None, "breakout_confirmed": False, "breakdown_confirmed": False},
+        "vwap": {"available": False, "reason": reason},
+        "liquidity": {"bar_count": 0, "total_volume": plan.premarket_volume, "total_dollar_volume": 0.0, "avg_bar_volume": 0.0, "avg_bar_dollar_volume": 0.0, "avg_range_pct": None, "liquidity_score": 0.0, "liquid_enough": False, "reason": reason},
+        "trade_structure": {
+            "long_allowed": False,
+            "short_or_put_allowed": False,
+            "preferred_long_trigger": None,
+            "preferred_short_trigger": None,
+            "preferred_long_stop": None,
+            "preferred_short_stop": None,
+            "notes": [
+                "Planner degraded for this symbol; use exits only until a fresh structure map is available.",
+                "Always allow exits regardless of planner status.",
+            ],
+        },
+    }
+
+
+def load_tradingview_cookies() -> Any:
+    if not TRADINGVIEW_USE_BROWSER_COOKIES or rookiepy is None:
+        return None
+    try:
+        loader = getattr(rookiepy, TRADINGVIEW_COOKIE_BROWSER, None)
+        if loader is None:
+            print(f"[tradingview] cookie browser unsupported={TRADINGVIEW_COOKIE_BROWSER}; continuing without cookies")
+            return None
+        return rookiepy.to_cookiejar(loader([".tradingview.com"]))
+    except Exception as exc:
+        print(f"[tradingview] cookie load failed: {exc}; continuing without cookies")
+        return None
+
+
+def fetch_tradingview_snapshot(symbols: list[str]) -> tuple[pd.DataFrame, dict[str, Any]]:
+    diagnostics: dict[str, Any] = {
+        "enabled": bool(TRADINGVIEW_SCREENER_ENABLED),
+        "available": bool(Query is not None),
+        "requested_symbols": symbols,
+        "row_count": 0,
+        "matched_symbols": [],
+        "error": None,
+    }
+    if not TRADINGVIEW_SCREENER_ENABLED:
+        diagnostics["error"] = "disabled_by_env"
+        return pd.DataFrame(), diagnostics
+    if Query is None:
+        diagnostics["error"] = "tradingview_screener_not_installed"
+        print("[tradingview] package missing; install with: pip install tradingview-screener")
+        return pd.DataFrame(), diagnostics
+    if not symbols:
+        diagnostics["error"] = "no_symbols"
+        return pd.DataFrame(), diagnostics
+
+    columns = [
+        "name",
+        "close",
+        "close|1",
+        "close|5",
+        "close|15",
+        "close|60",
+        "volume",
+        "relative_volume_10d_calc",
+        "MACD.macd|1",
+        "MACD.signal|1",
+        "MACD.macd|5",
+        "MACD.signal|5",
+        "market_cap_basic",
+        "exchange",
+        "update_mode",
+    ]
+
+    try:
+        cookies = load_tradingview_cookies()
+        query = Query().select(*columns).order_by("volume", ascending=False).limit(TRADINGVIEW_QUERY_LIMIT)
+
+        # Some versions of tradingview-screener support SQL-like list filters, others do not.
+        # Try a targeted query first; fall back to a broad high-volume snapshot and filter locally.
+        try:
+            if col is not None and hasattr(col("name"), "isin"):
+                query = query.where(col("name").isin(symbols))
+        except Exception:
+            pass
+
+        total, df = query.get_scanner_data(cookies=cookies) if cookies is not None else query.get_scanner_data()
+        if df is None or df.empty:
+            diagnostics["total_available"] = int(total) if total is not None else 0
+            diagnostics["error"] = "empty_response"
+            print("[tradingview] empty response")
+            merge_diagnostics("tradingview_snapshot", diagnostics)
+            return pd.DataFrame(), diagnostics
+
+        out = df.copy()
+        out.columns = [str(c) for c in out.columns]
+        if "name" not in out.columns:
+            diagnostics["error"] = "missing_name_column"
+            merge_diagnostics("tradingview_snapshot", diagnostics)
+            return pd.DataFrame(), diagnostics
+
+        wanted = {normalize_symbol(s) for s in symbols}
+        out["symbol"] = out["name"].map(normalize_symbol)
+        out = out[out["symbol"].isin(wanted)].copy()
+
+        # Normalize useful numeric fields, regardless of whether TradingView returned every column.
+        for c in columns:
+            if c not in out.columns:
+                out[c] = None
+        numeric_cols = ["close", "close|1", "close|5", "close|15", "close|60", "volume", "relative_volume_10d_calc", "MACD.macd|1", "MACD.signal|1", "MACD.macd|5", "MACD.signal|5", "market_cap_basic"]
+        for c in numeric_cols:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+
+        diagnostics["total_available"] = int(total) if total is not None else None
+        diagnostics["row_count"] = int(len(out))
+        diagnostics["matched_symbols"] = sorted(out["symbol"].dropna().unique().tolist())
+        diagnostics["using_browser_cookies"] = bool(cookies is not None)
+        diagnostics["query_limit"] = TRADINGVIEW_QUERY_LIMIT
+        print(f"[tradingview] matched={len(diagnostics['matched_symbols'])}/{len(symbols)} cookies={bool(cookies is not None)}")
+        merge_diagnostics("tradingview_snapshot", diagnostics)
+        return out, diagnostics
+    except Exception as exc:
+        diagnostics["error"] = str(exc)
+        print(f"[tradingview] failed: {exc}; falling back to yfinance-only ranking")
+        merge_diagnostics("tradingview_snapshot", diagnostics)
+        return pd.DataFrame(), diagnostics
+
+
+def tradingview_score_for_symbol(symbol: str, tv_snapshot: pd.DataFrame) -> dict[str, Any]:
+    if tv_snapshot.empty or "symbol" not in tv_snapshot.columns:
+        return {"tv_score": 0.0, "tv_reason": "no_tradingview_snapshot"}
+    row_df = tv_snapshot[tv_snapshot["symbol"].eq(symbol)]
+    if row_df.empty:
+        return {"tv_score": 0.0, "tv_reason": "symbol_not_in_tradingview_snapshot"}
+    row = row_df.iloc[0]
+
+    close = safe_float(row.get("close"), 0.0)
+    close_1m = safe_float(row.get("close|1"), close)
+    close_5m = safe_float(row.get("close|5"), close)
+    close_15m = safe_float(row.get("close|15"), close)
+    close_60m = safe_float(row.get("close|60"), close)
+    volume = safe_float(row.get("volume"), 0.0)
+    rvol = safe_float(row.get("relative_volume_10d_calc"), 0.0)
+    macd_1 = safe_float(row.get("MACD.macd|1"), 0.0)
+    signal_1 = safe_float(row.get("MACD.signal|1"), 0.0)
+    macd_5 = safe_float(row.get("MACD.macd|5"), 0.0)
+    signal_5 = safe_float(row.get("MACD.signal|5"), 0.0)
+
+    mtf_1m_pct = ((close_1m - close_5m) / close_5m) * 100.0 if close_5m > 0 else 0.0
+    mtf_5m_pct = ((close_5m - close_15m) / close_15m) * 100.0 if close_15m > 0 else 0.0
+    mtf_15m_pct = ((close_15m - close_60m) / close_60m) * 100.0 if close_60m > 0 else 0.0
+    macd_1_bullish = macd_1 >= signal_1
+    macd_5_bullish = macd_5 >= signal_5
+
+    if TRADINGVIEW_REQUIRE_1M_MACD_BULLISH and not macd_1_bullish:
+        penalty = 2.0
+    else:
+        penalty = 0.0
+
+    rvol_score = min(5.0, max(0.0, rvol))
+    volume_score = min(5.0, volume / 1_000_000.0)
+    mtf_score = max(0.0, min(5.0, (mtf_1m_pct + mtf_5m_pct + mtf_15m_pct) / 1.5))
+    macd_score = (1.25 if macd_1_bullish else 0.0) + (0.75 if macd_5_bullish else 0.0)
+    tv_score = round(0.35 * rvol_score + 0.25 * volume_score + 0.25 * mtf_score + 0.15 * macd_score - penalty, 4)
+
+    if rvol < TRADINGVIEW_MIN_RVOL:
+        tv_score = min(tv_score, 0.0)
+
+    return {
+        "tv_score": tv_score,
+        "tv_reason": "ok",
+        "tv_close": round_price(close),
+        "tv_close_1m": round_price(close_1m),
+        "tv_close_5m": round_price(close_5m),
+        "tv_close_15m": round_price(close_15m),
+        "tv_close_60m": round_price(close_60m),
+        "tv_volume": int(volume),
+        "tv_relative_volume_10d": round(rvol, 4),
+        "tv_macd_1m_bullish": bool(macd_1_bullish),
+        "tv_macd_5m_bullish": bool(macd_5_bullish),
+        "tv_mtf_1m_vs_5m_pct": round(mtf_1m_pct, 4),
+        "tv_mtf_5m_vs_15m_pct": round(mtf_5m_pct, 4),
+        "tv_mtf_15m_vs_60m_pct": round(mtf_15m_pct, 4),
+        "tv_exchange": row.get("exchange"),
+        "tv_update_mode": row.get("update_mode"),
+    }
+
+
+def score_symbol_from_premarket(symbol: str, premarket_bars: pd.DataFrame) -> dict[str, Any]:
+    if premarket_bars.empty or "symbol" not in premarket_bars.columns:
+        return {"symbol": symbol, "score": 0.0, "reason": "no_premarket_bars", "premarket_volume": 0, "dollar_volume": 0.0, "gap_pct": 0.0, "momentum_pct": 0.0, "bar_count": 0}
+
+    sdf = premarket_bars[premarket_bars["symbol"].eq(symbol)].sort_values("timestamp").copy()
+    if sdf.empty:
+        return {"symbol": symbol, "score": 0.0, "reason": "no_symbol_bars", "premarket_volume": 0, "dollar_volume": 0.0, "gap_pct": 0.0, "momentum_pct": 0.0, "bar_count": 0}
+
+    volume = pd.to_numeric(sdf["volume"], errors="coerce").fillna(0.0)
+    close = pd.to_numeric(sdf["close"], errors="coerce").fillna(0.0)
+    dollar_volume = float((volume * close).sum())
+    premarket_volume = int(volume.sum())
+    first_open = safe_float(sdf.iloc[0].get("open"), 0.0)
+    last_close = safe_float(sdf.iloc[-1].get("close"), 0.0)
+    high = safe_float(sdf["high"].max(), 0.0)
+    low = safe_float(sdf["low"].min(), 0.0)
+    gap_pct = ((last_close - first_open) / first_open) * 100.0 if first_open > 0 else 0.0
+    range_pct = ((high - low) / max(last_close, 1e-9)) * 100.0 if last_close > 0 else 0.0
+    last_n = sdf.tail(min(10, len(sdf)))
+    momentum_pct = ((safe_float(last_n.iloc[-1].get("close"), 0.0) - safe_float(last_n.iloc[0].get("open"), 0.0)) / max(safe_float(last_n.iloc[0].get("open"), 0.0), 1e-9)) * 100.0 if len(last_n) >= 2 else 0.0
+
+    volume_score = min(5.0, premarket_volume / max(MIN_PREMARKET_VOLUME, 1))
+    dollar_score = min(5.0, dollar_volume / max(MIN_INTRADAY_DOLLAR_VOLUME, 1.0))
+    gap_score = max(0.0, min(5.0, gap_pct / max(MIN_INITIAL_MOVE_PCT, 0.1)))
+    momentum_score = max(0.0, min(5.0, momentum_pct / 1.0))
+    range_penalty = max(0.0, min(2.0, (range_pct - 8.0) / 4.0))
+    score = round(0.30 * volume_score + 0.30 * dollar_score + 0.25 * gap_score + 0.15 * momentum_score - range_penalty, 4)
+
+    return {
+        "symbol": symbol,
+        "score": score,
+        "reason": "ok",
+        "premarket_volume": premarket_volume,
+        "dollar_volume": round(dollar_volume, 2),
+        "gap_pct": round(gap_pct, 4),
+        "momentum_pct": round(momentum_pct, 4),
+        "range_pct": round(range_pct, 4),
+        "bar_count": int(len(sdf)),
+    }
+
+
+def rank_and_cap_symbols(symbols: list[str], premarket_bars: pd.DataFrame, tv_snapshot: pd.DataFrame | None = None) -> tuple[list[str], list[dict[str, Any]]]:
+    scored: list[dict[str, Any]] = []
+    tv_snapshot = tv_snapshot if tv_snapshot is not None else pd.DataFrame()
+    for symbol in symbols:
+        base = score_symbol_from_premarket(symbol, premarket_bars)
+        tv = tradingview_score_for_symbol(symbol, tv_snapshot)
+        base_score = safe_float(base.get("score"), 0.0)
+        tv_score = safe_float(tv.get("tv_score"), 0.0)
+        if not tv_snapshot.empty:
+            base["score_yfinance"] = base_score
+            base["score_tradingview"] = tv_score
+            base["score"] = round((1.0 - TRADINGVIEW_RANK_WEIGHT) * base_score + TRADINGVIEW_RANK_WEIGHT * tv_score, 4)
+            base.update(tv)
+        scored.append(base)
+
+    # Keep symbols with real premarket participation first; TradingView adds RVOL/MACD/multi-timeframe context.
+    scored = sorted(
+        scored,
+        key=lambda x: (
+            safe_float(x.get("score")),
+            safe_float(x.get("score_tradingview")),
+            safe_float(x.get("dollar_volume")),
+            safe_float(x.get("premarket_volume")),
+            x.get("symbol", ""),
+        ),
+        reverse=True,
+    )
+    capped = [str(x["symbol"]) for x in scored[:max(1, MAX_PREMARKET_PLANNER_SYMBOLS)]]
+    print(f"[universe-rank] input={len(symbols)} capped={len(capped)} max={MAX_PREMARKET_PLANNER_SYMBOLS} tv_enabled={TRADINGVIEW_SCREENER_ENABLED}")
+    print("[universe-rank] selected=" + ",".join(capped))
+    return capped, scored
+
+
+def build_symbol_outputs(
+    symbol: str,
+    premarket_bars: pd.DataFrame,
+    intraday_bars: pd.DataFrame,
+    mtf_bars: dict[str, pd.DataFrame] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    plan = analyze_symbol(symbol, premarket_bars, mtf_bars)
+    ibar = intraday_bars[intraday_bars.get("symbol", pd.Series(dtype=str)).eq(symbol)].copy() if not intraday_bars.empty else pd.DataFrame()
+    if not ibar.empty and len(ibar) < MIN_STRUCTURE_ROWS_REQUIRED:
+        structure = build_minimal_structure(symbol, plan, f"insufficient_structure_rows_{len(ibar)}_lt_{MIN_STRUCTURE_ROWS_REQUIRED}")
+    else:
+        structure = build_intraday_structure_map_for_symbol(symbol, premarket_bars, intraday_bars, plan)
+    return asdict(plan), structure, build_daily_trade_plan_json(plan, structure)
 # =============================================================================
 # Orchestration
 # =============================================================================
@@ -1077,69 +2180,202 @@ def wait_until_market_open() -> None:
         time_module.sleep(min(60, max(5, seconds_left)))
 
 
+def _build_data_source_tag(tv_snapshot: pd.DataFrame) -> str:
+    """Compute a human-readable data_source tag for JSON output payloads."""
+    parts: list[str] = []
+    if _DATA_SOURCE_DIAGNOSTICS.get("alpaca_primary"):
+        parts.append("alpaca")
+    fallback = _DATA_SOURCE_DIAGNOSTICS.get("fallback_used")
+    if fallback:
+        parts.append(str(fallback))
+    if tv_snapshot is not None and not tv_snapshot.empty:
+        parts.append("tradingview_screener")
+    if not parts:
+        parts.append("yfinance")
+    return "+".join(parts)
+
+
 def build_premarket_trade_plan() -> dict[str, Any]:
+    run_started_monotonic = time_module.monotonic()
+
+    # Reset per-run data-source diagnostics
+    _DATA_SOURCE_DIAGNOSTICS["alpaca_primary"] = False
+    _DATA_SOURCE_DIAGNOSTICS["fallback_used"] = None
+    _DATA_SOURCE_DIAGNOSTICS["symbols_from_alpaca"] = 0
+
     symbols = load_universe()
     if not symbols:
         payload = {
             "created_at_utc": now_utc(),
-            "data_source": "yfinance",
+            "data_source": "none",
+            "planner_status": "disabled",
+            "execution_mode": "NO_TRADE",
             "valid_plan_count": 0,
             "plans": [],
             "error": "No symbols found in latest LLM universe or locked universe.",
         }
         write_json(TRADE_PLAN_PATH, payload)
-        write_json(STRUCTURE_MAP_PATH, {"created_at_utc": now_utc(), "data_source": "yfinance", "structures": []})
+        write_json(STRUCTURE_MAP_PATH, {"created_at_utc": now_utc(), "data_source": "none", "planner_status": "disabled", "structures": []})
         return payload
 
+    # Fetch premarket first for every candidate, then enrich/rank with optional TradingView screener context
+    # before expensive structure work. TradingView is non-blocking: failures fall back to yfinance-only.
     premarket_bars = fetch_premarket_bars(symbols)
-    intraday_bars = fetch_intraday_bars(symbols)
+    tv_snapshot, tv_diagnostics = fetch_tradingview_snapshot(symbols)
+    selected_symbols, symbol_scores = rank_and_cap_symbols(symbols, premarket_bars, tv_snapshot)
+
+    if deadline_exceeded(run_started_monotonic):
+        ds_tag = _build_data_source_tag(tv_snapshot)
+        payload = {
+            "created_at_utc": now_utc(),
+            "data_source": ds_tag,
+            "planner_status": "degraded_timeout_after_premarket_fetch",
+            "execution_mode": "SAFE" if SAFE_MODE_ON_PLANNER_DEGRADATION else "NO_TRADE",
+            "symbol_count": len(symbols),
+            "selected_symbol_count": len(selected_symbols),
+            "valid_plan_count": 0,
+            "symbol_scores": symbol_scores,
+            "tradingview_diagnostics": tv_diagnostics if "tv_diagnostics" in locals() else {},
+            "daily_trade_plans": [],
+            "raw_premarket_pattern_plans": [],
+            "stale_after_minutes": MAX_PLAN_AGE_MINUTES,
+            "notes": ["Planner timed out before structure build. Allow exits only or safe-mode reduced risk."],
+        }
+        write_json(TRADE_PLAN_PATH, payload)
+        write_json(STRUCTURE_MAP_PATH, {"created_at_utc": now_utc(), "data_source": ds_tag, "planner_status": payload["planner_status"], "structures": []})
+        return payload
+
+    intraday_bars = fetch_intraday_bars(selected_symbols)
+    mtf_bars = fetch_multitimeframe_bars(selected_symbols) if PIVOT_PLANNER_ENABLED else {}
 
     plans: list[dict[str, Any]] = []
     daily_trade_plans: list[dict[str, Any]] = []
     structure_maps: list[dict[str, Any]] = []
+    symbol_errors: list[dict[str, Any]] = []
 
-    for symbol in symbols:
-        plan = analyze_symbol(symbol, premarket_bars)
-        structure = build_intraday_structure_map_for_symbol(symbol, premarket_bars, intraday_bars, plan)
-        plans.append(asdict(plan))
-        structure_maps.append(structure)
-        daily_trade_plans.append(build_daily_trade_plan_json(plan, structure))
+    max_workers = max(1, min(MAX_STRUCTURE_WORKERS, len(selected_symbols)))
+    print(f"[planner] processing_symbols={len(selected_symbols)} workers={max_workers} total_timeout={PLANNER_TOTAL_TIMEOUT_SECONDS}s")
 
-    valid = [p for p in plans if p["valid"]]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(build_symbol_outputs, symbol, premarket_bars, intraday_bars, mtf_bars): symbol for symbol in selected_symbols}
+        for future in as_completed(future_map, timeout=max(1.0, seconds_remaining(run_started_monotonic))):
+            symbol = future_map[future]
+            if deadline_exceeded(run_started_monotonic):
+                symbol_errors.append({"symbol": symbol, "error": "planner_deadline_exceeded"})
+                break
+            try:
+                plan_dict, structure, daily_plan = future.result(timeout=PER_SYMBOL_TIMEOUT_SECONDS)
+                plans.append(plan_dict)
+                structure_maps.append(structure)
+                daily_trade_plans.append(daily_plan)
+            except TimeoutError:
+                fallback_plan = empty_plan(symbol, "Per-symbol planner timeout; no entry allowed.")
+                plans.append(asdict(fallback_plan))
+                structure_maps.append(build_minimal_structure(symbol, fallback_plan, "per_symbol_timeout"))
+                daily_trade_plans.append(build_daily_trade_plan_json(fallback_plan, structure_maps[-1]))
+                symbol_errors.append({"symbol": symbol, "error": "per_symbol_timeout"})
+            except Exception as exc:
+                fallback_plan = empty_plan(symbol, f"Planner error: {exc}")
+                plans.append(asdict(fallback_plan))
+                structure_maps.append(build_minimal_structure(symbol, fallback_plan, "symbol_exception"))
+                daily_trade_plans.append(build_daily_trade_plan_json(fallback_plan, structure_maps[-1]))
+                symbol_errors.append({"symbol": symbol, "error": str(exc)})
+
+    completed_symbols = {p.get("symbol") for p in plans}
+    for symbol in selected_symbols:
+        if symbol not in completed_symbols:
+            fallback_plan = empty_plan(symbol, "Planner skipped symbol due to global timeout; no entry allowed.")
+            plans.append(asdict(fallback_plan))
+            structure_maps.append(build_minimal_structure(symbol, fallback_plan, "global_timeout_skipped"))
+            daily_trade_plans.append(build_daily_trade_plan_json(fallback_plan, structure_maps[-1]))
+            symbol_errors.append({"symbol": symbol, "error": "global_timeout_skipped"})
+
+    valid = [p for p in plans if p.get("valid")]
     liquid_structures = [s for s in structure_maps if s.get("liquidity", {}).get("liquid_enough")]
     long_allowed = [s["symbol"] for s in structure_maps if s.get("trade_structure", {}).get("long_allowed")]
+    elapsed = round(time_module.monotonic() - run_started_monotonic, 2)
+
+    planner_status = "ok"
+    if symbol_errors:
+        planner_status = "degraded_symbol_errors"
+    if elapsed >= PLANNER_TOTAL_TIMEOUT_SECONDS:
+        planner_status = "degraded_global_timeout"
+
+    execution_mode = "NORMAL"
+    if planner_status != "ok":
+        execution_mode = "SAFE" if SAFE_MODE_ON_PLANNER_DEGRADATION else "NO_TRADE"
+
+    ds_tag = _build_data_source_tag(tv_snapshot)
+
+    # Emit final [data-source] diagnostics line
+    print(
+        f"[data-source] alpaca_primary={_DATA_SOURCE_DIAGNOSTICS['alpaca_primary']}"
+        f" fallback_used={_DATA_SOURCE_DIAGNOSTICS['fallback_used']}"
+        f" symbols_from_alpaca={_DATA_SOURCE_DIAGNOSTICS['symbols_from_alpaca']}"
+        f" data_source={ds_tag}"
+    )
+    merge_diagnostics("data_source_summary", {
+        "alpaca_primary": _DATA_SOURCE_DIAGNOSTICS["alpaca_primary"],
+        "fallback_used": _DATA_SOURCE_DIAGNOSTICS["fallback_used"],
+        "symbols_from_alpaca": _DATA_SOURCE_DIAGNOSTICS["symbols_from_alpaca"],
+        "data_source_tag": ds_tag,
+    })
 
     payload = {
         "created_at_utc": now_utc(),
-        "data_source": "yfinance",
+        "data_source": ds_tag,
+        "planner_status": planner_status,
+        "execution_mode": execution_mode,
+        "elapsed_seconds": elapsed,
+        "stale_after_minutes": MAX_PLAN_AGE_MINUTES,
         "premarket_window_et": {"start": PREMARKET_START_ET, "end": PREMARKET_END_ET},
         "regular_session_window_et": {"start": REGULAR_SESSION_START_ET, "end": REGULAR_SESSION_END_ET},
         "symbol_count": len(symbols),
+        "selected_symbol_count": len(selected_symbols),
+        "selected_symbols": selected_symbols,
         "valid_plan_count": len(valid),
         "valid_symbols": [p["symbol"] for p in valid],
         "liquid_structure_count": len(liquid_structures),
         "long_allowed_symbols": long_allowed,
+        "symbol_scores": symbol_scores,
+        "symbol_errors": symbol_errors,
+        "risk_controls": {
+            "max_symbols": MAX_PREMARKET_PLANNER_SYMBOLS,
+            "total_timeout_seconds": PLANNER_TOTAL_TIMEOUT_SECONDS,
+            "per_symbol_timeout_seconds": PER_SYMBOL_TIMEOUT_SECONDS,
+            "min_structure_rows_required": MIN_STRUCTURE_ROWS_REQUIRED,
+            "min_training_rows_required": MIN_TRAINING_ROWS_REQUIRED,
+            "safe_mode_on_degradation": SAFE_MODE_ON_PLANNER_DEGRADATION,
+            "always_allow_exits": True,
+            "block_new_entries_when_stale": True,
+        },
         "daily_trade_plans": daily_trade_plans,
         "raw_premarket_pattern_plans": plans,
     }
 
     structure_payload = {
         "created_at_utc": now_utc(),
-        "data_source": "yfinance",
+        "data_source": ds_tag,
+        "planner_status": planner_status,
+        "execution_mode": execution_mode,
+        "elapsed_seconds": elapsed,
+        "stale_after_minutes": MAX_PLAN_AGE_MINUTES,
         "symbol_count": len(symbols),
+        "selected_symbol_count": len(selected_symbols),
+        "selected_symbols": selected_symbols,
         "long_allowed_symbols": long_allowed,
+        "symbol_errors": symbol_errors,
         "structures": structure_maps,
     }
 
     write_json(TRADE_PLAN_PATH, payload)
     write_json(STRUCTURE_MAP_PATH, structure_payload)
 
-    print(f"[premarket-plan] symbols={len(symbols)} valid={len(valid)} liquid={len(liquid_structures)} long_allowed={len(long_allowed)}")
+    print(f"[premarket-plan] status={planner_status} mode={execution_mode} elapsed={elapsed}s symbols={len(symbols)} selected={len(selected_symbols)} valid={len(valid)} liquid={len(liquid_structures)} long_allowed={len(long_allowed)}")
     print("[premarket-plan] valid_symbols=" + ",".join(payload["valid_symbols"]))
     print("[structure-map] long_allowed_symbols=" + ",".join(long_allowed))
 
     return payload
-
 
 if __name__ == "__main__":
     wait_until_market_open()
