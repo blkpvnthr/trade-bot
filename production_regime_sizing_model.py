@@ -86,6 +86,7 @@ class RegimeSizingConfig:
     max_weight: float = float(os.getenv("REGIME_MAX_WEIGHT", "0.100"))
     min_weight: float = float(os.getenv("REGIME_MIN_WEIGHT", "0.010"))
     max_gross_exposure: float = float(os.getenv("REGIME_MAX_GROSS_EXPOSURE", "0.72"))
+    conviction_weighted_scaling: bool = os.getenv("CONVICTION_WEIGHTED_SCALING", "1").lower() in {"1", "true", "yes"}
 
     risk_off_gross_mult: float = float(os.getenv("REGIME_RISK_OFF_GROSS_MULT", "0.25"))
     cautious_gross_mult: float = float(os.getenv("REGIME_CAUTIOUS_GROSS_MULT", "0.55"))
@@ -554,13 +555,67 @@ def normalize_plan_weights(df: pd.DataFrame, context: dict[str, Any]) -> pd.Data
     buy_mask = out["trade_action"].isin(["OPEN_LONG", "HOLD_LONG", "CONTINUE_HOLD_WAIT_CONFIRMATION"])
     gross = float(out.loc[buy_mask, "target_weight"].sum())
 
-    if gross > max_gross and gross > 0:
+    if gross <= max_gross or gross <= 0:
+        out["weight_scale_applied"] = 1.0
+        out["before_weight"] = out["target_weight"]
+        out["after_weight"] = out["target_weight"]
+        out["trim_amount"] = 0.0
+        out["trim_reason"] = ""
+        return out
+
+    out["before_weight"] = out["target_weight"]
+    out["trim_amount"] = 0.0
+    out["trim_reason"] = ""
+
+    if CONFIG.conviction_weighted_scaling:
+        # Preserve highest-conviction positions first; trim lowest-conviction first.
+        # Score priority: execution_alpha_score → score → setup_score → confidence → continuation_probability
+        score_col = None
+        for c in ("execution_alpha_score", "score", "setup_score", "confidence", "continuation_probability"):
+            if c in out.columns:
+                score_col = c
+                break
+
+        if score_col is not None:
+            buy_idx = out[buy_mask].index.tolist()
+            ranked = out.loc[buy_idx].sort_values(score_col, ascending=False)
+            budget = max_gross
+            keep_weight: dict = {}
+            for idx, row in ranked.iterrows():
+                w = to_float(row["target_weight"], 0.0)
+                if budget <= 0:
+                    keep_weight[idx] = 0.0
+                elif w <= budget:
+                    keep_weight[idx] = w
+                    budget -= w
+                else:
+                    keep_weight[idx] = budget
+                    budget = 0.0
+            for idx, new_w in keep_weight.items():
+                old_w = to_float(out.at[idx, "target_weight"], 0.0)
+                out.at[idx, "target_weight"] = new_w
+                out.at[idx, "trim_amount"] = old_w - new_w
+                if old_w - new_w > 0.001:
+                    out.at[idx, "trim_reason"] = f"conviction_trim:{score_col}={to_float(out.at[idx, score_col]):.2f}"
+            scale = max_gross / gross
+            out["weight_scale_applied"] = scale
+            trimmed = out.loc[buy_mask & (out["trim_amount"] > 0.001)]
+            if not trimmed.empty:
+                print(f"[sizing] conviction_weighted_scaling: trimmed {len(trimmed)} position(s) to fit gross={max_gross:.0%}")
+                for _, tr in trimmed.iterrows():
+                    print(f"  {tr.get('symbol','?')}: {tr['before_weight']:.2%} → {tr['target_weight']:.2%} trim={tr['trim_amount']:.2%} ({tr['trim_reason']})")
+        else:
+            # No score column available — fall back to uniform scaling.
+            scale = max_gross / gross
+            out.loc[buy_mask, "target_weight"] *= scale
+            out["weight_scale_applied"] = scale
+            print(f"[sizing] conviction_weighted_scaling enabled but no score column found; applied uniform scale={scale:.2f}")
+    else:
         scale = max_gross / gross
         out.loc[buy_mask, "target_weight"] *= scale
         out["weight_scale_applied"] = scale
-    else:
-        out["weight_scale_applied"] = 1.0
 
+    out["after_weight"] = out["target_weight"]
     return out
 
 

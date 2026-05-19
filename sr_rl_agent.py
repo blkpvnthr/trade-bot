@@ -57,6 +57,8 @@ RISK_PER_TRADE_PCT = float(os.getenv("SR_RL_RISK_PER_TRADE_PCT", "0.005"))
 MAX_POSITION_PCT = float(os.getenv("SR_RL_MAX_POSITION_PCT", "0.08"))
 
 TRAIN_TIMESTEPS = int(os.getenv("SR_RL_TRAIN_TIMESTEPS", "50000"))
+TRAIN_LOOKBACK_DAYS = int(os.getenv("SR_RL_TRAIN_LOOKBACK_DAYS", "5"))
+TRAIN_MIN_ROWS = int(os.getenv("SR_RL_TRAIN_MIN_ROWS", "500"))
 
 ACTION_WAIT = 0
 ACTION_BUY = 1
@@ -149,16 +151,17 @@ def market_allows_trading() -> tuple[bool, float, str]:
     return True, 1.0, "market_context_normal"
 
 
-def fetch_bars(symbols: list[str], hours: int) -> pd.DataFrame:
+def _fetch_bars(
+    symbols: list[str],
+    timeframe: "TimeFrame",
+    lookback_days: int,
+    log_prefix: str = "[sr-rl]",
+) -> pd.DataFrame:
     if not symbols:
         return pd.DataFrame()
-
     client = data_client()
     end = datetime.now(timezone.utc)
-    start = end - timedelta(days=LOOKBACK_DAYS)
-
-    timeframe = TimeFrame(hours, TimeFrameUnit.Hour)
-
+    start = end - timedelta(days=lookback_days)
     req = StockBarsRequest(
         symbol_or_symbols=symbols,
         timeframe=timeframe,
@@ -166,15 +169,25 @@ def fetch_bars(symbols: list[str], hours: int) -> pd.DataFrame:
         end=end,
         feed=get_feed(),
     )
-
-    df = client.get_stock_bars(req).df
+    try:
+        df = client.get_stock_bars(req).df
+    except Exception as exc:
+        print(f"{log_prefix} bar fetch failed: {exc}")
+        return pd.DataFrame()
     if df is None or df.empty:
         return pd.DataFrame()
-
     df = df.reset_index()
     df["symbol"] = df["symbol"].map(normalize_symbol)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     return df.sort_values(["symbol", "timestamp"])
+
+
+def fetch_bars(symbols: list[str], hours: int) -> pd.DataFrame:
+    return _fetch_bars(symbols, TimeFrame(hours, TimeFrameUnit.Hour), LOOKBACK_DAYS)
+
+
+def fetch_bars_1m(symbols: list[str]) -> pd.DataFrame:
+    return _fetch_bars(symbols, TimeFrame(1, TimeFrameUnit.Minute), TRAIN_LOOKBACK_DAYS)
 
 
 def detect_levels(df: pd.DataFrame) -> tuple[list[float], list[float]]:
@@ -351,13 +364,21 @@ class SRTradingEnv(gym.Env):
 
 
 def build_training_rows(symbols: list[str]) -> pd.DataFrame:
+    # S/R level detection uses longer-horizon hourly bars for structural context.
     bars_1h = fetch_bars(symbols, 1)
     bars_4h = fetch_bars(symbols, 4)
+    # Training rows come from 1-minute bars over the last TRAIN_LOOKBACK_DAYS days.
+    bars_1m = fetch_bars_1m(symbols)
 
     rows = []
 
     for symbol in symbols:
-        sdf = bars_1h[bars_1h["symbol"] == symbol].sort_values("timestamp")
+        if not bars_1m.empty and (bars_1m["symbol"] == symbol).any():
+            sdf = bars_1m[bars_1m["symbol"] == symbol].sort_values("timestamp")
+        else:
+            print(f"[sr-rl] no 1m bars for {symbol}; falling back to 1H")
+            sdf = bars_1h[bars_1h["symbol"] == symbol].sort_values("timestamp")
+
         supports, resistances = combined_levels(symbol, bars_1h, bars_4h)
 
         for _, row in sdf.iterrows():
@@ -382,10 +403,12 @@ def train_agent() -> None:
     if not symbols:
         raise RuntimeError("No symbols found in premarket_trade_plan.json")
 
+    print(f"[sr-rl] training on {len(symbols)} symbols | 1m bars lookback={TRAIN_LOOKBACK_DAYS}d | timesteps={TRAIN_TIMESTEPS}")
     rows = build_training_rows(symbols)
+    print(f"[sr-rl] training rows: {len(rows)} ({len(rows) // max(len(symbols), 1)} avg per symbol)")
 
-    if len(rows) < 200:
-        raise RuntimeError(f"Not enough training rows: {len(rows)}")
+    if len(rows) < TRAIN_MIN_ROWS:
+        raise RuntimeError(f"Not enough training rows: {len(rows)} < {TRAIN_MIN_ROWS}")
 
     env = SRTradingEnv(rows)
     model = PPO("MlpPolicy", env, verbose=1, n_steps=512, batch_size=64, gamma=0.98)

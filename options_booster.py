@@ -70,6 +70,21 @@ try:
 except Exception as exc:
     raise RuntimeError("alpaca-py option data client is required. Install with: pip install alpaca-py") from exc
 
+try:
+    from alpaca.data.historical.stock import StockHistoricalDataClient
+    from alpaca.data.requests import (
+        StockLatestBarRequest,
+        StockLatestQuoteRequest,
+        StockLatestTradeRequest,
+    )
+    _STOCK_DATA_CLIENT_AVAILABLE = True
+except Exception:
+    StockHistoricalDataClient = None  # type: ignore[assignment,misc]
+    StockLatestTradeRequest = None  # type: ignore[assignment]
+    StockLatestQuoteRequest = None  # type: ignore[assignment]
+    StockLatestBarRequest = None  # type: ignore[assignment]
+    _STOCK_DATA_CLIENT_AVAILABLE = False
+
 
 # =============================================================================
 # Paths
@@ -90,6 +105,7 @@ REGIME_POSITION_PLAN_PATH = OUT_DIR / f"{TODAY_TAG}_regime_position_plan.csv"
 REGIME_UNIVERSE_PATH = OUT_DIR / f"{TODAY_TAG}_regime_universe_30.csv"
 SCANNER_SCORES_PATH = OUT_DIR / f"{TODAY_TAG}_latest_scanner_scores.csv"
 LOCKED_UNIVERSE_PATH = PROJECT_ROOT / f"{TODAY_TAG}_locked_trading_universe.txt"
+INTRADAY_STRUCTURE_MAP_PATH = OUT_DIR / f"{TODAY_TAG}_intraday_structure_map.json"
 
 REBALANCE_ORDERS_PATH = OUT_DIR / f"{TODAY_TAG}_daily_walkforward_emulated_rebalance_orders.csv"
 EXIT_ORDERS_PATH = OUT_DIR / f"{TODAY_TAG}_daily_walkforward_emulated_exit_orders.csv"
@@ -148,6 +164,7 @@ class OptionsBoosterConfig:
     paper: bool = env_bool("APCA_PAPER", True)
 
     # Universe / scan behavior.
+    require_structure_long_allowed: bool = env_bool("OPTIONS_REQUIRE_STRUCTURE_LONG_ALLOWED", True)
     max_underlyings: int = env_int("OPTIONS_FLOW_MAX_UNDERLYINGS", 30)
     max_contracts_per_underlying_scan: int = env_int("OPTIONS_FLOW_MAX_CONTRACTS_PER_UNDERLYING", 500)
     max_output_candidates: int = env_int("OPTIONS_FLOW_MAX_OUTPUT_CANDIDATES", 50)
@@ -181,6 +198,11 @@ class OptionsBoosterConfig:
     # EV assumptions.
     base_expected_move_pct: float = env_float("OPTIONS_BASE_EXPECTED_MOVE_PCT", 0.012)
     max_expected_move_pct: float = env_float("OPTIONS_MAX_EXPECTED_MOVE_PCT", 0.080)
+    # Scaled EV move params — override base/max when vol/signal data is available.
+    expected_move_min_pct: float = env_float("OPTIONS_EXPECTED_MOVE_MIN_PCT", 0.012)
+    expected_move_max_pct: float = env_float("OPTIONS_EXPECTED_MOVE_MAX_PCT", 0.060)
+    expected_move_vol_mult: float = env_float("OPTIONS_EXPECTED_MOVE_VOL_MULT", 0.50)
+    expected_move_signal_weight: float = env_float("OPTIONS_EXPECTED_MOVE_SIGNAL_WEIGHT", 0.65)
     loss_given_wrong_pct: float = env_float("OPTIONS_LOSS_GIVEN_WRONG_PCT", 0.55)
     min_probability_of_profit: float = env_float("OPTIONS_MIN_POP", 0.50)
     min_expected_value: float = env_float("OPTIONS_MIN_EXPECTED_VALUE", -5.0)
@@ -408,6 +430,126 @@ def build_option_data_client() -> OptionHistoricalDataClient:
     return OptionHistoricalDataClient(key, secret)
 
 
+def build_stock_data_client() -> Any:
+    if not _STOCK_DATA_CLIENT_AVAILABLE or StockHistoricalDataClient is None:
+        return None
+    key, secret = get_api_keys()
+    return StockHistoricalDataClient(key, secret)
+
+
+def resolve_underlying_price_alpaca(symbol: str, stock_client: Any) -> float:
+    """Try latest trade → quote midpoint → bar close via Alpaca stock data API."""
+    if stock_client is None:
+        return 0.0
+
+    try:
+        resp = stock_client.get_stock_latest_trade(StockLatestTradeRequest(symbol_or_symbols=symbol))
+        trade = (resp or {}).get(symbol)
+        if trade:
+            price = to_float(obj_get(trade, "price", "p", default=0.0))
+            if price > 0:
+                return price
+    except Exception:
+        pass
+
+    try:
+        resp = stock_client.get_stock_latest_quote(StockLatestQuoteRequest(symbol_or_symbols=symbol))
+        quote = (resp or {}).get(symbol)
+        if quote:
+            bid = to_float(obj_get(quote, "bid_price", "bp", default=0.0))
+            ask = to_float(obj_get(quote, "ask_price", "ap", default=0.0))
+            mid = (bid + ask) / 2.0
+            if mid > 0:
+                return mid
+    except Exception:
+        pass
+
+    try:
+        resp = stock_client.get_stock_latest_bar(StockLatestBarRequest(symbol_or_symbols=symbol))
+        bar = (resp or {}).get(symbol)
+        if bar:
+            price = to_float(obj_get(bar, "close", "c", default=0.0))
+            if price > 0:
+                return price
+    except Exception:
+        pass
+
+    return 0.0
+
+
+_INTRADAY_PRICE_CACHE: dict[str, float] = {}
+_INTRADAY_PRICE_CACHE_LOADED = False
+
+
+def _load_intraday_price_cache() -> None:
+    """Pre-load symbol→last-close from local intraday CSVs into a single dict."""
+    global _INTRADAY_PRICE_CACHE, _INTRADAY_PRICE_CACHE_LOADED
+    if _INTRADAY_PRICE_CACHE_LOADED:
+        return
+    _INTRADAY_PRICE_CACHE_LOADED = True
+    for path in [
+        OUT_DIR / f"{TODAY_TAG}_intraday_bars_1m.csv",
+        OUT_DIR / f"{TODAY_TAG}_intraday_training_dataset.csv",
+    ]:
+        df = read_csv_safe(path)
+        if df.empty:
+            continue
+        col_lower = {c.lower(): c for c in df.columns}
+        sym_col = col_lower.get("symbol")
+        if sym_col is None:
+            continue
+        for close_key in ("close", "c", "price"):
+            actual = col_lower.get(close_key)
+            if actual and actual in df.columns:
+                for sym, grp in df.groupby(sym_col):
+                    if str(sym).upper() in _INTRADAY_PRICE_CACHE:
+                        continue
+                    series = pd.to_numeric(grp[actual], errors="coerce").dropna()
+                    if not series.empty:
+                        val = to_float(series.iloc[-1])
+                        if val > 0:
+                            _INTRADAY_PRICE_CACHE[str(sym).upper()] = val
+                break
+
+
+def resolve_underlying_price_intraday(symbol: str) -> float:
+    _load_intraday_price_cache()
+    return _INTRADAY_PRICE_CACHE.get(symbol.upper(), 0.0)
+
+
+_STRUCTURE_MAP_PAYLOAD: dict[str, Any] | None = None
+_STRUCTURE_MAP_LOADED = False
+
+
+def _load_structure_map_payload() -> dict[str, Any]:
+    """Parse INTRADAY_STRUCTURE_MAP_PATH once and cache the result."""
+    global _STRUCTURE_MAP_PAYLOAD, _STRUCTURE_MAP_LOADED
+    if _STRUCTURE_MAP_LOADED:
+        return _STRUCTURE_MAP_PAYLOAD or {}
+    _STRUCTURE_MAP_LOADED = True
+    if not INTRADAY_STRUCTURE_MAP_PATH.exists():
+        return {}
+    try:
+        _STRUCTURE_MAP_PAYLOAD = json.loads(
+            INTRADAY_STRUCTURE_MAP_PATH.read_text(encoding="utf-8", errors="ignore")
+        )
+    except Exception:
+        _STRUCTURE_MAP_PAYLOAD = {}
+    return _STRUCTURE_MAP_PAYLOAD or {}
+
+
+def resolve_underlying_price_structure_map(symbol: str) -> float:
+    payload = _load_structure_map_payload()
+    for entry in payload.get("structures") or []:
+        if not isinstance(entry, dict):
+            continue
+        if safe_symbol(entry.get("symbol")) == symbol:
+            price = to_float(entry.get("current_price"), 0.0)
+            if price > 0:
+                return price
+    return 0.0
+
+
 def positions_by_symbol(client: TradingClient) -> dict[str, Any]:
     out: dict[str, Any] = {}
     try:
@@ -453,6 +595,26 @@ def load_locked_universe() -> list[str]:
         if sym and sym not in symbols:
             symbols.append(sym)
     return symbols
+
+
+def load_structure_long_allowed() -> set[str]:
+    """Return symbols where long_allowed=True from the intraday structure map."""
+    payload = _load_structure_map_payload()
+    if not payload:
+        return set()
+    raw = payload.get("long_allowed_symbols") or []
+    if isinstance(raw, list) and raw:
+        return {safe_symbol(s) for s in raw if safe_symbol(s)}
+    out: set[str] = set()
+    for entry in payload.get("structures") or []:
+        if not isinstance(entry, dict):
+            continue
+        ts = entry.get("trade_structure") or {}
+        if bool(ts.get("long_allowed")):
+            sym = safe_symbol(entry.get("symbol"))
+            if sym:
+                out.add(sym)
+    return out
 
 
 def load_universe() -> pd.DataFrame:
@@ -532,13 +694,48 @@ def estimate_probability_of_profit(row: pd.Series, metrics: dict[str, float]) ->
 
 
 def estimate_expected_underlying_move_pct(row: pd.Series, flow_score: float, dte: int) -> float:
-    confidence = clip01(row.get("continuation_confidence", 0.70))
-    signal = 0.55 * confidence + 0.45 * flow_score
-    edge = max(signal - 0.50, 0.0) / 0.50
+    """Estimate expected move scaled by flow, signal, volatility, and structure.
 
-    expected_move = CONFIG.base_expected_move_pct + edge * (CONFIG.max_expected_move_pct - CONFIG.base_expected_move_pct)
+    Replaces the near-constant 1.2% prior with a range-aware calculation:
+      - signal component: flow_score + continuation confidence + structure confidence
+      - volatility component: realized vol proxy from ATR/rolling_std if available
+      - blended with signal_weight / (1-signal_weight) ratio
+      - DTE-scaled and clamped to [expected_move_min_pct, expected_move_max_pct]
+    """
+    # Signal component: combine flow score, continuation confidence, structure confidence.
+    continuation_conf = clip01(to_float(row.get("continuation_confidence"), 0.0))
+    structure_conf = clip01(to_float(row.get("structure_confidence", row.get("bullish_structure_score", 0.0)), 0.0))
+    momentum_score = clip01(to_float(row.get("momentum_score", row.get("positive_momentum_score", 0.0)), 0.0))
+
+    # Weighted signal: flow is most objective, rest are softer priors.
+    raw_signal = (
+        0.45 * flow_score
+        + 0.25 * continuation_conf
+        + 0.15 * structure_conf
+        + 0.15 * momentum_score
+    )
+    signal_weight = CONFIG.expected_move_signal_weight
+    signal_component = np.clip(raw_signal, 0.0, 1.0)
+
+    # Volatility component: ATR pct or rolling_std acts as a realized-vol proxy.
+    vol_component = 0.0
+    for vol_col in ("atr_pct", "atr_ratio", "rolling_std10", "volatility_10", "rolling_std20"):
+        raw_vol = to_float(row.get(vol_col), 0.0)
+        if raw_vol > 0:
+            vol_component = float(np.clip(raw_vol * CONFIG.expected_move_vol_mult, 0.0, CONFIG.expected_move_max_pct))
+            break
+
+    # Blend signal and vol components.
+    if vol_component > 0:
+        blended = signal_weight * signal_component * CONFIG.expected_move_max_pct + (1.0 - signal_weight) * vol_component
+    else:
+        # Fall back to pure signal scaling when no vol data.
+        edge = max(signal_component - 0.50, 0.0) / 0.50
+        blended = CONFIG.expected_move_min_pct + edge * (CONFIG.expected_move_max_pct - CONFIG.expected_move_min_pct)
+
     dte_scale = float(np.clip(math.sqrt(max(dte, 1) / max(CONFIG.target_dte, 1)), 0.75, 1.25))
-    return float(np.clip(expected_move * dte_scale, CONFIG.base_expected_move_pct, CONFIG.max_expected_move_pct))
+    result = float(np.clip(blended * dte_scale, CONFIG.expected_move_min_pct, CONFIG.expected_move_max_pct))
+    return result
 
 
 def compute_flow_score(metrics: dict[str, float]) -> dict[str, float]:
@@ -825,7 +1022,11 @@ def scan_underlying(option_client: OptionHistoricalDataClient, row: pd.Series, u
     ).reset_index(drop=True)
 
 
-def scan_unusual_options_flow(option_client: OptionHistoricalDataClient, universe: pd.DataFrame) -> pd.DataFrame:
+def scan_unusual_options_flow(
+    option_client: OptionHistoricalDataClient,
+    universe: pd.DataFrame,
+    stock_client: Any = None,
+) -> pd.DataFrame:
     frames = []
     print(f"[flow] scanning underlyings={len(universe)}")
 
@@ -834,15 +1035,30 @@ def scan_unusual_options_flow(option_client: OptionHistoricalDataClient, univers
         if not underlying:
             continue
 
+        # Fallback order: row price fields → Alpaca trade → quote mid → bar close → local intraday.
         underlying_price = to_float(row.get("price"), 0.0)
-        # Price may be unknown from candidate files; EV fallback still works poorly without it.
-        # Use 1.0 to avoid crashing but chain moneyness will be lower quality.
         if underlying_price <= 0:
             underlying_price = to_float(row.get("close"), 0.0)
         if underlying_price <= 0:
             underlying_price = to_float(row.get("current_price"), 0.0)
         if underlying_price <= 0:
-            print(f"[flow] skip {underlying}: no underlying price in source rows")
+            underlying_price = to_float(row.get("underlying_price"), 0.0)
+        if underlying_price <= 0:
+            underlying_price = to_float(row.get("stock_price"), 0.0)
+        if underlying_price <= 0 and stock_client is not None:
+            underlying_price = resolve_underlying_price_alpaca(underlying, stock_client)
+            if underlying_price > 0:
+                print(f"[flow] {underlying}: resolved price=${underlying_price:.2f} via Alpaca")
+        if underlying_price <= 0:
+            underlying_price = resolve_underlying_price_intraday(underlying)
+            if underlying_price > 0:
+                print(f"[flow] {underlying}: resolved price=${underlying_price:.2f} via local intraday")
+        if underlying_price <= 0:
+            underlying_price = resolve_underlying_price_structure_map(underlying)
+            if underlying_price > 0:
+                print(f"[flow] {underlying}: resolved price=${underlying_price:.2f} via structure map")
+        if underlying_price <= 0:
+            print(f"[flow] skip {underlying}: no underlying price from any source (tried row fields, Alpaca trade/quote/bar, local intraday, structure map)")
             continue
 
         ranked = scan_underlying(option_client, row, underlying, underlying_price)
@@ -1052,13 +1268,45 @@ def main() -> dict[str, Any]:
 
     trading_client = build_trading_client()
     option_client = build_option_data_client()
+    stock_client = build_stock_data_client()
+    if stock_client is None:
+        print("[config] stock data client unavailable; Alpaca price fallback disabled")
 
     universe = load_universe()
     print(f"[universe] loaded={len(universe)}")
     if not universe.empty:
         print("[universe] symbols=" + ",".join(universe["symbol"].head(CONFIG.max_underlyings).tolist()))
 
-    flow = scan_unusual_options_flow(option_client, universe)
+    # Filter universe to long_allowed_symbols from the structure map unless the
+    # symbol already has an open stock position (booster can defend existing exposures).
+    print(f"[config] require_structure_long_allowed={CONFIG.require_structure_long_allowed}")
+    if CONFIG.require_structure_long_allowed and not universe.empty:
+        structure_allowed = load_structure_long_allowed()
+        if structure_allowed:
+            open_stock_syms: set[str] = set()
+            try:
+                for sym in positions_by_symbol(trading_client):
+                    if not parse_occ_option_symbol(sym):
+                        open_stock_syms.add(safe_symbol(sym))
+            except Exception as _pe:
+                print(f"[structure-filter] could not fetch positions: {_pe}")
+            allowed_set = structure_allowed | open_stock_syms
+            before_count = len(universe)
+            universe = universe[universe["symbol"].isin(allowed_set)].copy().reset_index(drop=True)
+            removed = before_count - len(universe)
+            print(
+                f"[structure-filter] structure_allowed={len(structure_allowed)} "
+                f"open_positions={len(open_stock_syms)} "
+                f"universe_before={before_count} after={len(universe)} removed={removed}"
+            )
+            if not universe.empty:
+                print("[structure-filter] filtered symbols=" + ",".join(universe["symbol"].tolist()))
+        else:
+            print("[structure-filter] no long_allowed symbols in structure map; skipping filter (map may be missing or pre-market)")
+    elif not CONFIG.require_structure_long_allowed:
+        print("[structure-filter] disabled via OPTIONS_REQUIRE_STRUCTURE_LONG_ALLOWED=0")
+
+    flow = scan_unusual_options_flow(option_client, universe, stock_client=stock_client)
 
     if not flow.empty:
         flow.head(CONFIG.max_output_candidates).to_csv(OPTION_FLOW_CANDIDATES_PATH, index=False)

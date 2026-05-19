@@ -1,4 +1,16 @@
 # trade-bot
+```bash
+curl https://tv.quantumquant.trade/
+```
+```bash
+sudo systemctl restart tradingview-bot
+```
+```bash
+sudo journalctl -u tradingview-bot -f
+```
+```bash
+sudo systemctl status tradingview-bot --no-pager -l
+```
 
 A high-conviction, regime-aware algorithmic trading system designed to identify and execute **momentum continuation and breakout trades** with a focus on:
 

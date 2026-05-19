@@ -57,6 +57,7 @@ ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower().strip()
 ALPACA_CHUNK_SIZE = int(os.getenv("ALPACA_CHUNK_SIZE", "25"))
 
 MIN_ROWS_PER_SYMBOL = int(os.getenv("INTRADAY_MIN_ROWS_PER_SYMBOL", "120"))
+FEATURE_STREAM_BARS_PER_SYMBOL = int(os.getenv("FEATURE_STREAM_BARS_PER_SYMBOL", "30"))
 
 FUTURE_HORIZONS = [1, 3, 5, 10, 15, 30]
 EXIT_HORIZONS = [5, 15, 30]
@@ -718,29 +719,42 @@ def build_features(raw: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 
 def write_feature_stream(features: pd.DataFrame) -> None:
+    """Write last N bars per symbol as a sequenced feature stream."""
+    n = max(1, FEATURE_STREAM_BARS_PER_SYMBOL)
+    stream_parts: list[pd.DataFrame] = []
     latest_rows: list[dict[str, Any]] = []
+    rows_per_sym: dict[str, int] = {}
 
     for symbol, g in features.groupby("symbol"):
-        g = g.sort_values("timestamp")
-        row = g.iloc[-1].to_dict()
-        latest_rows.append(row)
+        g = g.sort_values("timestamp").tail(n).reset_index(drop=True)
+        seq_len = len(g)
+        g = g.copy()
+        g["feature_sequence_index"] = range(seq_len)
+        g["feature_sequence_length"] = seq_len
+        g["is_latest_for_symbol"] = [False] * (seq_len - 1) + [True]
+        stream_parts.append(g)
+        latest_rows.append(g.iloc[-1].to_dict())
+        rows_per_sym[str(symbol)] = seq_len
 
-    latest = pd.DataFrame(latest_rows)
-    latest.to_csv(FEATURE_STREAM_CSV_PATH, index=False)
+    stream_df = pd.concat(stream_parts, ignore_index=True) if stream_parts else pd.DataFrame()
+    stream_df.to_csv(FEATURE_STREAM_CSV_PATH, index=False)
 
     with FEATURE_STREAM_JSONL_PATH.open("w", encoding="utf-8") as f:
-        for row in latest_rows:
+        for row in stream_df.to_dict("records"):
             f.write(json.dumps(safe_json(row)) + "\n")
 
+    latest_df = pd.DataFrame(latest_rows)
     state = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "symbol_count": len(latest_rows),
-        "symbols": sorted(latest["symbol"].astype(str).unique()) if not latest.empty else [],
+        "symbols": sorted(latest_df["symbol"].astype(str).unique()) if not latest_df.empty else [],
         "rows": safe_json(latest_rows),
     }
-
     write_json(SYMBOL_STATE_PATH, state)
 
+    print(f"[feature-stream] wrote {len(stream_df)} rows across {len(latest_rows)} symbols (bars_per_symbol={n})")
+    for sym, cnt in sorted(rows_per_sym.items()):
+        print(f"  {sym}: {cnt} rows")
     print(f"[saved] {FEATURE_STREAM_CSV_PATH}")
     print(f"[saved] {FEATURE_STREAM_JSONL_PATH}")
 

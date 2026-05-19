@@ -310,6 +310,19 @@ HOLD_WHILE_CONTINUATION_REWARD = float(os.getenv("RL_HOLD_WHILE_CONTINUATION_REW
 HOLD_THROUGH_GIVEBACK_PENALTY = float(os.getenv("RL_HOLD_THROUGH_GIVEBACK_PENALTY", "1.25"))
 FORCE_EXIT_ON_CONFIRMED_GIVEBACK = os.getenv("RL_FORCE_EXIT_ON_CONFIRMED_GIVEBACK", "0").lower() in {"1", "true", "yes"}
 
+# Held-out evaluation split.
+RL_TRAIN_SPLIT_PCT = float(os.getenv("RL_TRAIN_SPLIT_PCT", "0.70"))
+RL_MIN_TEST_EPISODES = int(os.getenv("RL_MIN_TEST_EPISODES", "10"))
+RL_ALLOW_SMALL_TEST_SET = os.getenv("RL_ALLOW_SMALL_TEST_SET", "0").lower() in {"1", "true", "yes"}
+
+# Multibar clean continuation: reward holding through >= N consecutive positive bars.
+MULTIBAR_CLEAN_CONTINUATION_REWARD = float(os.getenv("RL_MULTIBAR_CLEAN_CONTINUATION_REWARD", "0.30"))
+MULTIBAR_CLEAN_BARS_THRESHOLD = max(1, int(os.getenv("RL_MULTIBAR_CLEAN_BARS_THRESHOLD", "3")))
+# Chop/reentry penalty: extra penalty for re-entering after a very short hold.
+CHOP_REENTRY_PENALTY = float(os.getenv("RL_CHOP_REENTRY_PENALTY", "0.40"))
+CHOP_REENTRY_MAX_HOLD_BARS = int(os.getenv("RL_CHOP_REENTRY_MAX_HOLD_BARS", "5"))
+CHOP_ENTRY_EXIT_ENTRY_BARS = int(os.getenv("RL_CHOP_ENTRY_EXIT_ENTRY_BARS", "15"))
+
 # Balance penalties
 SHORT_BIAS_PENALTY = float(os.getenv("RL_SHORT_BIAS_PENALTY", "0.002"))
 LONG_BIAS_PENALTY = float(os.getenv("RL_LONG_BIAS_PENALTY", "0.0015"))
@@ -1202,13 +1215,7 @@ class IntradayStructureEnv(gym.Env):
         self.short_entry_count = 0
         self.add_long_count = 0
         self.entry_idx: int | None = None
-        self.entry_was_breakout = False
-        self.entry_cross_count = 0
-        self.vwap_cross_count = 0
-        self.max_favorable_excursion = 0.0
-        self.max_adverse_excursion = 0.0
-        self.previous_step_equity = STARTING_CASH
-        self.entry_idx: int | None = None
+        self.prev_entry_idx: int | None = None
         self.entry_was_breakout = False
         self.entry_cross_count = 0
         self.vwap_cross_count = 0
@@ -1341,6 +1348,7 @@ class IntradayStructureEnv(gym.Env):
         self.short_entry_count = 0
         self.add_long_count = 0
         self.entry_idx = None
+        self.prev_entry_idx = None
         self.entry_was_breakout = False
         self.entry_cross_count = 0
         self.vwap_cross_count = 0
@@ -1951,7 +1959,26 @@ class IntradayStructureEnv(gym.Env):
         if entries_today >= REENTRY_COUNT_TRIGGER:
             penalty -= REENTRY_COUNT_PENALTY
 
+        if (
+            self.last_exit_idx is not None
+            and self.prev_entry_idx is not None
+            and (self.last_exit_idx - self.prev_entry_idx) < CHOP_REENTRY_MAX_HOLD_BARS
+            and (self.idx - self.last_exit_idx) < CHOP_ENTRY_EXIT_ENTRY_BARS
+        ):
+            penalty -= CHOP_REENTRY_PENALTY
+
         return penalty
+
+    def _multibar_clean_continuation_bonus(self, price: float, row: pd.Series) -> float:
+        """Reward clean multi-bar trend continuation; discourages early scalp exits."""
+        if self.position_side != 1 or self.hold_bars < MULTIBAR_CLEAN_BARS_THRESHOLD:
+            return 0.0
+        f3 = to_float(row.get("future_return_3"), 0.0)
+        f5 = to_float(row.get("future_return_5"), 0.0)
+        if f3 > 0 and f5 > 0 and self._unrealized_pct(price) > 0:
+            scale = min(self.hold_bars / MULTIBAR_CLEAN_BARS_THRESHOLD, 3.0)
+            return MULTIBAR_CLEAN_CONTINUATION_REWARD * scale
+        return 0.0
 
     def _equity_penalty(self, previous_equity: float, new_equity: float, price: float) -> float:
         penalty = 0.0
@@ -2232,6 +2259,7 @@ class IntradayStructureEnv(gym.Env):
         self.entry_price = price
         self.position_side = 1
         self.hold_bars = 0
+        self.prev_entry_idx = self.entry_idx  # save before overwrite so chop penalty can measure previous hold
         self.entry_idx = self.idx
         refs_for_entry = self._market_refs(price, row)
         self.entry_was_breakout = bool(price >= refs_for_entry["orb_high"] or to_float(row.get("breakout_persistence_score"), 0.0) > 0.0)
@@ -2476,6 +2504,9 @@ class IntradayStructureEnv(gym.Env):
                 reward += 0.003
             if to_float(row.get("positive_volume_expansion_score"), 0.0) > 0:
                 reward += 0.004
+
+            # Multibar clean continuation: bonus for holding through N+ bars of positive price action.
+            reward += self._multibar_clean_continuation_bonus(price, row)
 
         if self.position_side == -1:
             reward -= 0.003 * to_float(row.get("bullish_acceleration_score"), 0.0)
@@ -2729,28 +2760,100 @@ def train_model(
         raise RuntimeError("Structure map loaded, but no usable symbol structures were found.")
 
     episodes, symbols_used = make_episodes(bars, structure)
-    env = build_policy_env(episodes, structure)
 
-    probe_env = IntradayStructureEnv(episodes[:1], structure)
+    # Chronological train/test split — never shuffle.
+    n_total = len(episodes)
+    n_train = max(1, int(n_total * RL_TRAIN_SPLIT_PCT))
+    train_episodes = episodes[:n_train]
+    test_episodes = episodes[n_train:]
+    n_test = len(test_episodes)
+    print(f"[train] episodes total={n_total} train={n_train} test={n_test} (split={RL_TRAIN_SPLIT_PCT:.0%})")
+
+    env = build_policy_env(train_episodes, structure)
+
+    probe_env = IntradayStructureEnv(train_episodes[:1], structure)
     feature_count = len(probe_env.feature_names)
 
     model = create_model(env)
 
     callback = MetricsCallback()
-    print("[train] fitting policy...")
+    print("[train] fitting policy on train set...")
     model.learn(total_timesteps=TRAIN_TIMESTEPS, callback=callback)
     model.save(str(MODEL_PATH))
 
-    diagnostics = evaluate_policy(model, episodes, structure, max_episodes=min(100, len(episodes)))
+    # In-sample diagnostics on train set.
+    diagnostics = evaluate_policy(model, train_episodes, structure, max_episodes=min(100, n_train))
     diagnostics.to_csv(DIAGNOSTICS_PATH, index=False)
+
+    # Held-out evaluation on test set.
+    test_diagnostics = pd.DataFrame()
+    test_metrics: dict[str, Any] = {}
+    production_ready = False
+    if n_test >= RL_MIN_TEST_EPISODES or RL_ALLOW_SMALL_TEST_SET:
+        print(f"[train] evaluating on {n_test} held-out test episodes...")
+        test_diagnostics = evaluate_policy(model, test_episodes, structure, max_episodes=n_test)
+        tq = trade_quality_metrics(test_diagnostics)
+        # Compute test win rate and avg trade return from trade events.
+        test_win_rate = 0.0
+        test_avg_return = 0.0
+        test_max_dd = 0.0
+        action_dist: dict[str, int] = {}
+        if not test_diagnostics.empty:
+            if "action" in test_diagnostics.columns:
+                for act in test_diagnostics["action"].dropna():
+                    action_dist[str(act)] = action_dist.get(str(act), 0) + 1
+            exits = test_diagnostics[test_diagnostics.get("action", pd.Series(dtype=str)) == "EXIT_LONG"] if "action" in test_diagnostics.columns else pd.DataFrame()
+            if not exits.empty and "realized_pnl" in exits.columns:
+                pnls = pd.to_numeric(exits["realized_pnl"], errors="coerce").dropna()
+                test_win_rate = float((pnls > 0).mean()) if len(pnls) > 0 else 0.0
+                test_avg_return = float(pnls.mean()) if len(pnls) > 0 else 0.0
+            if "equity" in test_diagnostics.columns:
+                eq = pd.to_numeric(test_diagnostics["equity"], errors="coerce").dropna()
+                if len(eq) > 1:
+                    peak = eq.cummax()
+                    dd = (eq / peak - 1.0)
+                    test_max_dd = float(dd.min())
+        test_metrics = {
+            "train_episode_count": n_train,
+            "test_episode_count": n_test,
+            "train_reward_mean": float(np.mean([s.get("mean_reward", 0.0) for s in callback.snapshots]) if callback.snapshots else 0.0),
+            "test_reward_mean": float(tq.get("avg_pnl_reward", 0.0)),
+            "test_win_rate": test_win_rate,
+            "test_avg_trade_return": test_avg_return,
+            "test_max_drawdown": test_max_dd,
+            "test_action_distribution": action_dist,
+        }
+        production_ready = (
+            n_test >= RL_MIN_TEST_EPISODES
+            and test_win_rate >= 0.45
+            and test_max_dd > -0.30
+        )
+        print(
+            f"[train] test metrics: win_rate={test_win_rate:.1%} avg_return={test_avg_return:.4f} "
+            f"max_dd={test_max_dd:.1%} production_ready={production_ready}"
+        )
+    else:
+        print(f"[train] WARNING: only {n_test} test episodes < RL_MIN_TEST_EPISODES={RL_MIN_TEST_EPISODES}; "
+              f"skipping held-out evaluation. Set RL_ALLOW_SMALL_TEST_SET=1 to override.")
+        test_metrics = {
+            "train_episode_count": n_train,
+            "test_episode_count": n_test,
+            "production_ready_skipped": True,
+            "reason": f"insufficient_test_episodes:{n_test}<{RL_MIN_TEST_EPISODES}",
+        }
+
+    test_metrics["production_ready"] = production_ready
 
     metrics = {
         "created_at_utc": now_utc(),
         "model_path": str(MODEL_PATH),
         "bars_rows": int(len(bars)),
         "episode_count": int(len(episodes)),
+        "train_episode_count": n_train,
+        "test_episode_count": n_test,
         "symbols_used": symbols_used,
         "feature_count": int(feature_count),
+        "held_out_evaluation": test_metrics,
         "diagnostics": {
             "rows": int(len(diagnostics)),
             "enter_long_count": int((diagnostics["action"] == "ENTER_LONG").sum()) if not diagnostics.empty else 0,
