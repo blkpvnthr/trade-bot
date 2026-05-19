@@ -1,27 +1,134 @@
+# =============================================================================
+# Environment & secrets
+# =============================================================================
 .env
+.env.*
+
+# =============================================================================
+# Python
+# =============================================================================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# =============================================================================
+# macOS
+# =============================================================================
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# =============================================================================
+# Runtime outputs — never commit generated state
+# =============================================================================
+
+# Daily system output directories
+system-data/
+daily_system_outputs/
+20260513_daily_system_outputs/
+
+# Execution and orchestrator logs
+logs/
+execution_logs/
+
+# =============================================================================
+# Generated data files
+# =============================================================================
+
+# Event streams and feature streams
+*.jsonl
+*_feature_stream*
+*_symbol_state.json
+*_intraday_feature_stream*
+
+# Trade plans and structure maps
+*_trade_plan.json
+*_trade_plan_diagnostics.json
+*_intraday_structure_map.json
+*_diagnostics.json
+*_premarket_collector_state.json
+*_premarket_collector_events*
+
+# Market context and signals
+*_market_context.json
+*_signals.json
+*_signal.json
+*_multitimeframe_context.json
+*_spx_price_action_state.json
+*_spx_price_action_signal.json
+*_evolution_strategy_signals.json
+*_evolution_strategy_metrics.json
+*_evolution_strategy_models.json
+*_data_validation_state.json
+*_option_booster_summary.json
+*_intraday_dataset_summary.json
+*_stream_confirmed_trade_plan.json
+*_tradingview_institutional_accumulation.json
+*_tradingview_institutional_accumulation_diagnostics.json
+*_llm_universe_financials_report.json
+*_llm_universe_sentiment_report.json
+
+# Universe discovery outputs
+*_locked_trading_universe.txt
+locked_trading_universe.txt
+*_latest_llm_candidate_discovery.json
+*_latest_llm_sentiment_universe.json
+latest_breakout_momentum_candidates.txt
+latest_breakout_momentum_symbols.txt
+latest_breakout_momentum_symbols_csv.txt
+latest_breakout_momentum_candidates.csv
+*_regime_universe_30.txt
+*_locked_trading_universe.csv
+
+# =============================================================================
+# RL model artifacts
+# =============================================================================
+*.zip
+*.pkl
+*.pt
+*.pth
+models/
+rl_models/
+*_rl_intraday_structure_model*
+*_sr_rl_agent_ppo*
+*_spx_multibar_gain_rl_model*
+*_spx_breakout_ppo*
+*_best_params.json
+*_rl_training_metrics.json
+*_spx_max_return_model.json
+*_spx_intraday_breakout_plan.json
+*_spx_rl_training_metrics.json
+*_sr_rl_live_signals.json
+*_sr_rl_best_params.json
+*tensorboard_*
+improvement_plan.json
+rollback_plan.md
+validation_report.json
+
+# =============================================================================
+# Data files
+# =============================================================================
+*.csv
+*.parquet
+alpaca_daily_bars.csv
+alpaca_dynamic_universe.csv
+
+# =============================================================================
+# Misc generated outputs
+# =============================================================================
+data/
+outputs/
 live/training_data.csv
 live/trading_model.zip
 live/vec_normalize.pkl
 live/regime_engine.pkl
-live/logs/.venv/
-outputs/
-*.csv
-*.parquet
-__pycache__/
-.DS_Store
-.env
 live/logs/
-logs/
 live/__pycache__/
-live/__pycache__/*
-live/__pycache__/**
-.venv/
-venv/
-.venv/*
-venv/*
-# Runtime generated universe files
-daily_system_outputs/latest_llm_candidate_discovery.json
-daily_system_outputs/latest_llm_sentiment_universe.json
-locked_trading_universe.txt
-venv/
-.venv/
