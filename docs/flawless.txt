@@ -1,0 +1,128 @@
+//@version=6
+strategy("Flawless Victory Strategy + Portfolio Tracker", overlay=true, shorttitle="FVS", default_qty_type=strategy.percent_of_equity, default_qty_value=100, initial_capital=100000, pyramiding=0, currency=currency.USD)
+
+// =====================================================
+// Portfolio Tracking
+// =====================================================
+
+position_qty = math.abs(strategy.position_size)
+position_value = position_qty * close
+tracked_equity = strategy.equity
+tracked_cash = tracked_equity - position_value
+
+new_day = ta.change(time("D")) != 0
+
+var float day_start_equity = na
+var bool daily_kill_switch = false
+
+if na(day_start_equity) or new_day
+    day_start_equity := tracked_equity
+    daily_kill_switch := false
+
+daily_change_dollars = tracked_equity - day_start_equity
+daily_change_pct = day_start_equity != 0 ? (daily_change_dollars / day_start_equity) * 100 : 0
+
+// =====================================================
+// Downside Risk Protection
+// =====================================================
+
+max_daily_loss_pct = input.float(2.0, "Max Daily Loss %", step=0.1)
+max_trade_loss_pct = input.float(1.25, "Max Trade Loss %", step=0.1)
+trailing_stop_pct = input.float(1.5, "Trailing Stop %", step=0.1)
+profit_protect_trigger_pct = input.float(1.0, "Profit Protection Trigger %", step=0.1)
+profit_protect_stop_pct = input.float(0.25, "Profit Protection Stop %", step=0.1)
+
+entry_price = strategy.position_avg_price
+open_trade_pct = strategy.position_size != 0 and entry_price != 0 ? ((close - entry_price) / entry_price) * 100 : 0
+
+var float highest_since_entry = na
+
+if strategy.position_size > 0
+    highest_since_entry := na(highest_since_entry) ? high : math.max(highest_since_entry, high)
+else
+    highest_since_entry := na
+
+trailing_stop_price = not na(highest_since_entry) ? highest_since_entry * (1 - trailing_stop_pct / 100) : na
+hard_stop_price = strategy.position_size > 0 ? entry_price * (1 - max_trade_loss_pct / 100) : na
+profit_protect_price = strategy.position_size > 0 and open_trade_pct >= profit_protect_trigger_pct ? entry_price * (1 + profit_protect_stop_pct / 100) : na
+
+daily_loss_hit = daily_change_pct <= -max_daily_loss_pct
+
+if daily_loss_hit
+    daily_kill_switch := true
+
+risk_exit = strategy.position_size > 0 and (close <= hard_stop_price or close <= trailing_stop_price or (not na(profit_protect_price) and close <= profit_protect_price) or daily_kill_switch)
+
+// =====================================================
+// Dashboard Table
+// =====================================================
+
+var table dashboard = table.new(position.top_right, 2, 8, border_width=1)
+
+if barstate.islast
+    table.cell(dashboard, 0, 0, "Metric")
+    table.cell(dashboard, 1, 0, "Value")
+    table.cell(dashboard, 0, 1, "Equity")
+    table.cell(dashboard, 1, 1, "$" + str.tostring(tracked_equity, "#.##"))
+    table.cell(dashboard, 0, 2, "Cash")
+    table.cell(dashboard, 1, 2, "$" + str.tostring(tracked_cash, "#.##"))
+    table.cell(dashboard, 0, 3, "Position Qty")
+    table.cell(dashboard, 1, 3, str.tostring(position_qty, "#.####"))
+    table.cell(dashboard, 0, 4, "Daily %")
+    table.cell(dashboard, 1, 4, str.tostring(daily_change_pct, "#.##") + "%")
+    table.cell(dashboard, 0, 5, "Open Trade %")
+    table.cell(dashboard, 1, 5, str.tostring(open_trade_pct, "#.##") + "%")
+    table.cell(dashboard, 0, 6, "Kill Switch")
+    table.cell(dashboard, 1, 6, daily_kill_switch ? "ON" : "OFF")
+    table.cell(dashboard, 0, 7, "Trail Stop")
+    table.cell(dashboard, 1, 7, na(trailing_stop_price) ? "NA" : "$" + str.tostring(trailing_stop_price, "#.##"))
+
+// =====================================================
+// Webhook JSON
+// =====================================================
+
+portfolio_json(_action) => '{"symbol":"' + syminfo.ticker + '","action":"' + _action + '","qty":"' + str.tostring(position_qty) + '","price":"' + str.tostring(close) + '","equity":"' + str.tostring(tracked_equity) + '","cash":"' + str.tostring(tracked_cash) + '","daily_change_dollars":"' + str.tostring(daily_change_dollars) + '","daily_change_pct":"' + str.tostring(daily_change_pct) + '","open_trade_pct":"' + str.tostring(open_trade_pct) + '","kill_switch":"' + str.tostring(daily_kill_switch) + '","strategy":"flawless_victory"}'
+
+// =====================================================
+// RSI
+// =====================================================
+
+len = 14
+
+up = ta.rma(math.max(ta.change(close), 0), len)
+down = ta.rma(-math.min(ta.change(close), 0), len)
+
+rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - 100 / (1 + up / down)
+
+// =====================================================
+// Bollinger Bands
+// =====================================================
+
+bb_len = 14
+bb_mult = 1.0
+
+basis = ta.sma(close, bb_len)
+dev = bb_mult * ta.stdev(close, bb_len)
+
+upper = basis + dev
+lower = basis - dev
+
+// =====================================================
+// Signals
+// =====================================================
+
+buy_signal = close < lower and rsi > 35 and not daily_kill_switch
+sell_signal = close > upper and rsi > 69.9
+
+// =====================================================
+// Orders
+// =====================================================
+
+if buy_signal
+    strategy.entry("Long", strategy.long, alert_message=portfolio_json("buy"))
+
+if sell_signal and position_qty > 0
+    strategy.close("Long", alert_message=portfolio_json("sell"))
+
+if risk_exit
+    strategy.close("Long", alert_message=portfolio_json("risk_sell"))

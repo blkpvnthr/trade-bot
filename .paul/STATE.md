@@ -6,6 +6,7 @@ See: .paul/PROJECT.md (updated 2026-05-20)
 
 **Core value:** Autonomous paper-trading engine that turns institutional accumulation signals into structured, risk-controlled intraday trade plans.
 **Current focus:** v0.1 Production Foundation — Phase 2: Training Pipeline Consistency
+**Objective:** Long-term adaptive compounding via multi-factor optimization (Sharpe, consistency, drawdown, profit factor, Calmar, alpha decay)
 
 ## Current Position
 
@@ -50,6 +51,8 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Split PREMARKET vs REGULAR feed | 1 | Premarket uses SIP/BOATS; intraday uses IEX |
 | ALPACA_FAIL_ON_FEED_ERROR=1 for strict mode | 1 | Training scripts fail loudly on feed errors |
 | TradingView screener: discovery only | 1 | No OHLCV from TradingView |
+| Multi-factor composite scoring for strategy ranking | Cross-cutting | evaluate_variants.py ranks by composite_score (Sharpe+consistency+PF+Calmar+decay penalties); config-driven weights in YAML |
+| Optimization objective encoded in YAML + PROJECT.md | Cross-cutting | $400-500/day research target documented as aspirational; system optimizes risk-adjusted returns, not raw P&L |
 
 ### Deferred Issues
 

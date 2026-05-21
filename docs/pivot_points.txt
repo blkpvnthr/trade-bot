@@ -1,0 +1,128 @@
+//@version=5
+strategy("Pivot Points Strategy - Regular + Missed Signals", overlay=true, max_labels_count=500, max_lines_count=500, max_bars_back=500, pyramiding=0, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+length = input.int(50, "Pivot Length", minval=2)
+
+show_reg = input.bool(true, "Regular Pivots")
+reg_ph_css = input.color(#ef5350, "Regular High")
+reg_pl_css = input.color(#26a69a, "Regular Low")
+
+show_miss = input.bool(true, "Missed Pivots")
+miss_ph_css = input.color(#ef5350, "Missed High")
+miss_pl_css = input.color(#26a69a, "Missed Low")
+
+label_css = input.color(color.white, "Text Label Color")
+
+var line zigzag = na
+var line ghost_level = na
+
+var float max = 0.0
+var float min = 0.0
+var int max_x1 = 0
+var int min_x1 = 0
+
+var float follow_max = 0.0
+var int follow_max_x1 = 0
+var float follow_min = 0.0
+var int follow_min_x1 = 0
+
+var int os = 0
+var float py1 = 0.0
+var int px1 = 0
+
+n = bar_index
+
+ph = ta.pivothigh(length, length)
+pl = ta.pivotlow(length, length)
+
+max := math.max(high[length], max)
+min := math.min(low[length], min)
+follow_max := math.max(high[length], follow_max)
+follow_min := math.min(low[length], follow_min)
+
+if max > max[1]
+    max_x1 := n - length
+    follow_min := low[length]
+
+if min < min[1]
+    min_x1 := n - length
+    follow_max := high[length]
+
+if follow_min < follow_min[1]
+    follow_min_x1 := n - length
+
+if follow_max > follow_max[1]
+    follow_max_x1 := n - length
+
+if not na(ghost_level[1])
+    line.set_x2(ghost_level[1], n)
+
+buySignal = false
+sellSignal = false
+
+if ph
+    if show_miss
+        if os[1] == 1
+            label.new(min_x1, min, "👻", color=miss_pl_css, style=label.style_label_up, size=size.small, tooltip=str.tostring(min, "#.####"))
+            buySignal := true
+
+            zigzag := line.new(px1, py1, min_x1, min, color=miss_ph_css, style=line.style_dashed)
+            px1 := min_x1
+            py1 := min
+
+            if not na(ghost_level[1])
+                line.set_x2(ghost_level[1], px1)
+
+            ghost_level := line.new(px1, py1, px1, py1, color=color.new(reg_pl_css, 50), width=2)
+
+        else if ph < max
+            label.new(max_x1, max, "👻", color=miss_ph_css, style=label.style_label_down, size=size.small, tooltip=str.tostring(max, "#.####"))
+            sellSignal := true
+
+            label.new(follow_min_x1, follow_min, "👻", color=miss_pl_css, style=label.style_label_up, size=size.small, tooltip=str.tostring(follow_min, "#.####"))
+            buySignal := true
+
+            zigzag := line.new(px1, py1, max_x1, max, color=miss_pl_css, style=line.style_dashed)
+            px1 := max_x1
+            py1 := max
+
+            if not na(ghost_level[1])
+                line.set_x2(ghost_level[1], px1)
+
+            ghost_level := line.new(px1, py1, px1, py1, color=color.new(reg_ph_css, 50), width=2)
+
+            zigzag := line.new(px1, py1, follow_min_x1, follow_min, color=miss_ph_css, style=line.style_dashed)
+            px1 := follow_min_x1
+            py1 := follow_min
+
+            line.set_x2(ghost_level, px1)
+            ghost_level := line.new(px1, py1, px1, py1, color=color.new(reg_pl_css, 50), width=2)
+
+    if show_reg
+        label.new(n - length, ph, "▼", textcolor=label_css, color=reg_ph_css, style=label.style_label_down, size=size.small, tooltip=str.tostring(ph, "#.####"))
+        sellSignal := true
+        zigzag := line.new(px1, py1, n - length, ph, color=miss_pl_css, style=ph < max or os[1] == 1 ? line.style_dashed : line.style_solid)
+
+    py1 := ph
+    px1 := n - length
+    os := 1
+    max := ph
+    min := ph
+
+if pl
+    if show_miss
+        if os[1] == 0
+            label.new(max_x1, max, "👻", color=miss_ph_css, style=label.style_label_down, size=size.small, tooltip=str.tostring(max, "#.####"))
+            sellSignal := true
+
+            zigzag := line.new(px1, py1, max_x1, max, color=miss_pl_css, style=line.style_dashed)
+            px1 := max_x1
+            py1 := max
+
+            if not na(ghost_level[1])
+                line.set_x2(ghost_level[1], px1)
+
+            ghost_level := line.new(px1, py1, px1, py1, color=color.new(reg_ph_css, 50), width=2)
+
+        else if pl > min
+            label.new(follow_max_x1, follow_max, "👻", color=miss_ph_
