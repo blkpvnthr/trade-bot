@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trader-tux-mtf-original
+  namespace: trade-research
+  labels:
+    app: quantumquant
+    strategy: tux_mtf_original
+    credential-set: bot01
+    environment: paper
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: quantumquant
+      strategy: tux_mtf_original
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+      labels:
+        app: quantumquant
+        strategy: tux_mtf_original
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: trader
+          image: quantumquant:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: quantumquant-config
+            - secretRef:
+                name: alpaca-paper-bot-tux-mtf
+          env:
+            - name: STRATEGY_ID
+              value: "tux_mtf_original"
+            - name: LOG_DIR
+              value: "/app/logs/execution/tux_mtf_original"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          volumeMounts:
+            - name: logs
+              mountPath: /app/logs
+            - name: system-data
+              mountPath: /app/system-data
+          # Liveness: heartbeat file written every ~60s by _print_heartbeat()
+          livenessProbe:
+            exec:
+              command:
+                - python3
+                - -c
+                - "import time,sys,os; f='/tmp/trader_heartbeat'; sys.exit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<600 else 1)"
+            initialDelaySeconds: 90
+            periodSeconds: 120
+            failureThreshold: 3
+          # Readiness: heartbeat file exists (main loop has started)
+          readinessProbe:
+            exec:
+              command:
+                - python3
+                - -c
+                - "import sys,os; sys.exit(0 if os.path.exists('/tmp/trader_heartbeat') else 1)"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: system-data
+          emptyDir: {}

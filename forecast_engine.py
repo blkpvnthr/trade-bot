@@ -231,6 +231,7 @@ def _load_intraday() -> pd.DataFrame:
                 df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
                 df = df.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
             _print(f"[data] loaded {path.name}: {df.shape}")
+            _print(f"[data-source] training_csv=alpaca_derived path={path.name}")
             return df
         except Exception as exc:
             _print(f"[data] failed to load {path.name}: {exc}")

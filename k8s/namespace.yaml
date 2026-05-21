@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: trade-research
+  labels:
+    app: quantumquant
+    environment: paper
+    managed-by: kubectl

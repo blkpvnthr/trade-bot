@@ -1,0 +1,83 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightly-evaluator
+  namespace: trade-research
+  labels:
+    app: quantumquant
+    component: evaluator
+spec:
+  # Run at 11:00 PM ET (UTC-4 summer / UTC-5 winter — use 03:00 UTC as safe choice)
+  schedule: "0 3 * * 1-5"   # Mon-Fri at 03:00 UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: quantumquant
+            component: evaluator
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+
+          restartPolicy: OnFailure
+
+          containers:
+            - name: evaluator
+              image: quantumquant:latest
+              imagePullPolicy: IfNotPresent
+
+              # Evaluator needs read access to logs but no trading credentials
+              envFrom:
+                - configMapRef:
+                    name: quantumquant-config
+
+              env:
+                - name: PAPER_ONLY
+                  value: "true"
+
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  echo "[nightly-eval] starting evaluation run"
+                  python scripts/evaluate_variants.py --config configs/strategy_experiments.yaml
+                  echo "[nightly-eval] generating diagnostics"
+                  for STRAT in tux_mtf_original tux_mtf_long_only pivot_points orb_8am liquidity_sweep flawless_victory; do
+                    python scripts/diagnose_strategy.py "$STRAT" || echo "[nightly-eval] diagnose $STRAT failed, continuing"
+                    python scripts/generate_claude_patch_request.py "$STRAT" || echo "[nightly-eval] patch-request $STRAT failed, continuing"
+                  done
+                  echo "[nightly-eval] complete"
+
+              resources:
+                requests:
+                  cpu: "200m"
+                  memory: "256Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "512Mi"
+
+              volumeMounts:
+                - name: logs
+                  mountPath: /app/logs
+                  readOnly: true
+                - name: system-data
+                  mountPath: /app/system-data
+                - name: research-requests
+                  mountPath: /app/research_requests
+
+          volumes:
+            - name: logs
+              emptyDir: {}
+            - name: system-data
+              emptyDir: {}
+            - name: research-requests
+              emptyDir: {}

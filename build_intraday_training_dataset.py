@@ -53,7 +53,14 @@ FEATURE_STREAM_CSV_PATH = FEATURE_STREAM_DIR / f"{TODAY_TAG}_intraday_feature_st
 FEATURE_STREAM_JSONL_PATH = FEATURE_STREAM_DIR / f"{TODAY_TAG}_intraday_feature_stream.jsonl"
 
 LOOKBACK_DAYS = int(os.getenv("RL_INTRADAY_LOOKBACK_DAYS", "30"))
-ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower().strip()
+# Must match ALPACA_REGULAR_FEED in premarket_trade_planner.py so RL training
+# uses the same data feed as live execution.
+ALPACA_REGULAR_FEED = os.getenv("ALPACA_REGULAR_FEED", "iex").lower().strip()
+ALPACA_FAIL_ON_FEED_ERROR = os.getenv("ALPACA_FAIL_ON_FEED_ERROR", "0").lower() in {"1", "true", "yes"}
+# Legacy alias — if set, overrides ALPACA_REGULAR_FEED.
+_LEGACY_FEED = os.getenv("ALPACA_DATA_FEED", "").lower().strip()
+if _LEGACY_FEED:
+    ALPACA_REGULAR_FEED = _LEGACY_FEED
 ALPACA_CHUNK_SIZE = int(os.getenv("ALPACA_CHUNK_SIZE", "25"))
 
 MIN_ROWS_PER_SYMBOL = int(os.getenv("INTRADAY_MIN_ROWS_PER_SYMBOL", "120"))
@@ -171,8 +178,15 @@ def get_client() -> StockHistoricalDataClient:
 def get_feed() -> Any:
     if DataFeed is None:
         return None
+    name = ALPACA_REGULAR_FEED
+    if name == "sip":
+        return DataFeed.SIP
+    if name in {"boats", "overnight"}:
+        return getattr(DataFeed, "BOATS", DataFeed.SIP)
+    return DataFeed.IEX
 
-    return DataFeed.SIP if ALPACA_DATA_FEED == "sip" else DataFeed.IEX
+
+_SIP_SUBSCRIPTION_ERR = "subscription does not permit querying recent SIP data"
 
 
 def fetch_intraday_bars(symbols: list[str]) -> pd.DataFrame:
@@ -185,11 +199,11 @@ def fetch_intraday_bars(symbols: list[str]) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
 
     print(f"[dataset] downloading {LOOKBACK_DAYS} days of 1m bars")
-    print(f"[dataset] feed={ALPACA_DATA_FEED}")
+    print(f"[data-feed] regular={ALPACA_REGULAR_FEED} fail_on_error={ALPACA_FAIL_ON_FEED_ERROR}")
     print(f"[dataset] symbols={len(symbols)} {symbols}")
 
     for batch in chunked(symbols, ALPACA_CHUNK_SIZE):
-        request_kwargs = {
+        request_kwargs: dict[str, Any] = {
             "symbol_or_symbols": batch,
             "timeframe": TimeFrame.Minute,
             "start": start,
@@ -214,7 +228,25 @@ def fetch_intraday_bars(symbols: list[str]) -> pd.DataFrame:
             print(f"[dataset] batch_counts={counts}")
 
         except Exception as exc:
-            print(f"[dataset] failed batch={batch}: {exc}")
+            err_str = str(exc)
+            if ALPACA_FAIL_ON_FEED_ERROR:
+                raise RuntimeError(
+                    f"[dataset] feed error (ALPACA_FAIL_ON_FEED_ERROR=1) batch={batch}: {exc}"
+                ) from exc
+            if _SIP_SUBSCRIPTION_ERR in err_str and DataFeed is not None and feed != DataFeed.IEX:
+                print(f"[dataset] SIP subscription error, retrying batch with IEX feed")
+                request_kwargs["feed"] = DataFeed.IEX
+                try:
+                    bars = client.get_stock_bars(StockBarsRequest(**request_kwargs))
+                    if bars is not None and bars.df is not None and not bars.df.empty:
+                        df = bars.df.reset_index()
+                        frames.append(df)
+                        print(f"[dataset] IEX retry batch_counts={df.groupby('symbol').size().to_dict()}")
+                        continue
+                except Exception as exc2:
+                    print(f"[dataset] IEX retry failed batch={batch}: {exc2}")
+            else:
+                print(f"[dataset] failed batch={batch}: {exc}")
 
     if not frames:
         raise RuntimeError("No bars returned from Alpaca for any requested symbol.")

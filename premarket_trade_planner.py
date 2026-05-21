@@ -7,12 +7,16 @@ premarket_trade_planner.py
 Builds a premarket breakout/consolidation trade plan and intraday structure map.
 
 Data hierarchy:
-    Primary  — Alpaca (StockHistoricalDataClient, SIP feed for extended-hours)
-    Fallback — yfinance (used automatically if Alpaca is unavailable or returns empty)
+    Universe   — tradingview-screener (discovery + TA enrichment only, no OHLCV)
+    Premarket  — Alpaca BOATS/SIP feed  (04:00–09:30 ET extended-hours bars)
+    Intraday   — Alpaca IEX feed        (09:30–16:00 ET regular-session bars)
+    Fallback   — yfinance (only when ALLOW_YFINANCE_MARKET_DATA_FALLBACK=1)
 
-Universe:
-    Discovery — tradingview-screener (ranking/scoring only)
-    TA/pivots — tradingview_ta columns from screener snapshot
+Feed env vars:
+    ALPACA_PREMARKET_FEED=boats|sip   (default: sip; boats requires overnight subscription)
+    ALPACA_REGULAR_FEED=iex|sip       (default: iex)
+    ALPACA_FAIL_ON_FEED_ERROR=0|1     (default: 0; set 1 to hard-fail instead of retrying)
+    ALLOW_YFINANCE_MARKET_DATA_FALLBACK=0|1  (default: 1; set 0 to disable yfinance fallback)
 
 Default:
     python premarket_trade_planner.py
@@ -27,8 +31,11 @@ Outputs:
     system-data/YYYYMMDD/YYYYMMDD_premarket_trade_plan_diagnostics.json
 
 Diagnostics printed:
+    [data-source] discovery=tradingview_screener
+    [data-feed] premarket=boats|sip
+    [data-feed] regular=iex|sip
+    [data-feed] yfinance_fallback=true|false
     [data-source] alpaca_primary=true|false
-    [data-source] fallback_used=yfinance
     [data-source] symbols_from_alpaca=N
 """
 
@@ -104,10 +111,26 @@ YF_BATCH_SIZE = int(os.getenv("YF_BATCH_SIZE", "25"))
 YF_INTRADAY_PERIOD = os.getenv("YF_INTRADAY_PERIOD", "5d")
 YF_AUTO_ADJUST = os.getenv("YF_AUTO_ADJUST", "0").lower() in {"1", "true", "yes"}
 
-# Alpaca primary data source config.
-ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "sip").lower().strip()
+# Alpaca primary data source config — feed separation.
+# Premarket bars (04:00–09:30 ET) require extended-hours coverage.
+#   boats = Alpaca overnight/premarket feed (paid subscription)
+#   sip   = SIP consolidated tape (extended hours, paid subscription)
+# Regular-session bars (09:30–16:00 ET) use IEX by default (free tier).
+ALPACA_PREMARKET_FEED = os.getenv("ALPACA_PREMARKET_FEED", "sip").lower().strip()
+ALPACA_REGULAR_FEED = os.getenv("ALPACA_REGULAR_FEED", "iex").lower().strip()
+# When 1: raise immediately on feed errors instead of silent retry/fallback.
+ALPACA_FAIL_ON_FEED_ERROR = os.getenv("ALPACA_FAIL_ON_FEED_ERROR", "0").lower() in {"1", "true", "yes"}
+# When 0: never fall back to yfinance for market data.
+ALLOW_YFINANCE_MARKET_DATA_FALLBACK = os.getenv("ALLOW_YFINANCE_MARKET_DATA_FALLBACK", "1").lower() in {"1", "true", "yes"}
 ALPACA_BARS_TIMEOUT = int(os.getenv("ALPACA_BARS_TIMEOUT_SECONDS", "30"))
 ALPACA_BATCH_SIZE = int(os.getenv("ALPACA_BATCH_SIZE", "100"))
+
+# Legacy alias kept for backward compat with any callers that set ALPACA_DATA_FEED.
+# Overrides both PREMARKET and REGULAR if explicitly set.
+_LEGACY_FEED = os.getenv("ALPACA_DATA_FEED", "").lower().strip()
+if _LEGACY_FEED:
+    ALPACA_PREMARKET_FEED = _LEGACY_FEED
+    ALPACA_REGULAR_FEED = _LEGACY_FEED
 
 MIN_PREMARKET_VOLUME = int(os.getenv("MIN_PREMARKET_VOLUME", "1000"))
 PREMARKET_START_ET = os.getenv("PREMARKET_START_ET", "04:00")
@@ -383,10 +406,25 @@ def _get_alpaca_data_client() -> Any:
         return None
 
 
-def _get_alpaca_feed() -> Any:
+def _resolve_feed(feed_name: str) -> Any:
+    """Map a feed name string to the DataFeed enum value, or None if SDK unavailable."""
     if DataFeed is None:
         return None
-    return DataFeed.SIP if ALPACA_DATA_FEED == "sip" else DataFeed.IEX
+    name = feed_name.lower().strip()
+    if name == "sip":
+        return DataFeed.SIP
+    if name in {"boats", "overnight"}:
+        # BOATS is exposed as DataFeed.BOATS in alpaca-py >= 0.20; fall back to SIP.
+        return getattr(DataFeed, "BOATS", DataFeed.SIP)
+    return DataFeed.IEX
+
+
+def _get_alpaca_premarket_feed() -> Any:
+    return _resolve_feed(ALPACA_PREMARKET_FEED)
+
+
+def _get_alpaca_regular_feed() -> Any:
+    return _resolve_feed(ALPACA_REGULAR_FEED)
 
 
 def _alpaca_bars_to_df(bars_df: pd.DataFrame) -> pd.DataFrame:
@@ -427,8 +465,10 @@ def _alpaca_request_bars(
 ) -> pd.DataFrame:
     """
     Execute one Alpaca StockBarsRequest.
-    If SIP feed returns a subscription error, auto-retry with IEX before giving up.
-    IEX covers regular-session bars; SIP covers extended hours.
+
+    If ALPACA_FAIL_ON_FEED_ERROR=1: any feed error raises immediately — no retry.
+    Otherwise: SIP subscription errors auto-retry with IEX (regular session only;
+    premarket bars may still fail if the account lacks extended-hours access).
     """
     kwargs = dict(req_kwargs)
     if feed is not None:
@@ -438,9 +478,12 @@ def _alpaca_request_bars(
         raw = client.get_stock_bars(_AlpacaBarsRequest(**kwargs)).df
         return _alpaca_bars_to_df(raw)
     except Exception as exc:
+        if ALPACA_FAIL_ON_FEED_ERROR:
+            raise RuntimeError(
+                f"[alpaca-{label}] feed error (ALPACA_FAIL_ON_FEED_ERROR=1): {exc}"
+            ) from exc
         err_str = str(exc)
         if _SIP_SUBSCRIPTION_ERR in err_str and DataFeed is not None and feed != DataFeed.IEX:
-            # SIP subscription restriction — downgrade to IEX for regular-session bars
             print(f"[alpaca-{label}] SIP subscription error, retrying with IEX feed")
             kwargs["feed"] = DataFeed.IEX
             try:
@@ -458,11 +501,14 @@ def fetch_alpaca_minute_bars(
     end_et: datetime,
     label: str,
     interval_minutes: int = 1,
+    feed: Any = None,
 ) -> pd.DataFrame:
     """
     Fetch intraday bars from Alpaca. Returns normalized DataFrame or empty if unavailable.
-    Automatically downgrades from SIP to IEX when the account lacks a SIP subscription
-    for recent data (regular-session bars work on IEX; premarket requires SIP).
+
+    feed: explicit DataFeed value; if None, defaults to the regular-session feed (IEX).
+    Call sites pass _get_alpaca_premarket_feed() for premarket windows and
+    _get_alpaca_regular_feed() for intraday windows.
     """
     if not symbols or _AlpacaBarsRequest is None or _AlpacaTimeFrame is None:
         return pd.DataFrame()
@@ -481,7 +527,8 @@ def fetch_alpaca_minute_bars(
     else:
         tf = _AlpacaTimeFrame(interval_minutes, _AlpacaTimeFrameUnit.Minute)
 
-    feed = _get_alpaca_feed()
+    if feed is None:
+        feed = _get_alpaca_regular_feed()
 
     frames: list[pd.DataFrame] = []
     diag: dict[str, Any] = {
@@ -550,7 +597,9 @@ def fetch_alpaca_multitimeframe_bars(symbols: list[str]) -> dict[str, pd.DataFra
 
     now_et = datetime.now(ET)
     now_utc = datetime.now(timezone.utc)
-    feed = _get_alpaca_feed()
+    # MTF bars span regular-session history; use the regular-session feed.
+    feed = _get_alpaca_regular_feed()
+    print(f"[data-feed] mtf=regular feed={ALPACA_REGULAR_FEED}")
 
     tf_config = [
         ("1m",  _AlpacaTimeFrame.Minute,                                        1,  now_utc - timedelta(days=2)),
@@ -760,19 +809,24 @@ def fetch_minute_bars(
     start_et: datetime,
     end_et: datetime,
     label: str,
+    alpaca_feed: Any = None,
 ) -> pd.DataFrame:
     """
-    Fetch 1-minute bars. Alpaca is the primary source; yfinance is the fallback.
+    Fetch 1-minute bars. Alpaca is always attempted first.
 
-    Alpaca SIP feed covers extended hours (premarket 04:00-09:30 ET).
-    If Alpaca returns no bars (SDK not installed, missing credentials, or IEX feed
-    with no extended hours coverage), yfinance is used automatically.
+    alpaca_feed: DataFeed to pass to Alpaca (premarket feed for extended-hours windows,
+                 regular feed for intraday windows). Callers must supply the right feed.
+
+    yfinance fallback is only used when ALLOW_YFINANCE_MARKET_DATA_FALLBACK=1 (default).
+    When ALLOW_YFINANCE_MARKET_DATA_FALLBACK=0 and Alpaca returns empty, returns empty DataFrame.
     """
     if not symbols:
         return pd.DataFrame()
 
     # --- Primary: Alpaca ---
-    alpaca_df = fetch_alpaca_minute_bars(symbols, start_et, end_et, label, interval_minutes=1)
+    alpaca_df = fetch_alpaca_minute_bars(
+        symbols, start_et, end_et, label, interval_minutes=1, feed=alpaca_feed
+    )
 
     if not alpaca_df.empty:
         syms = sorted(alpaca_df["symbol"].dropna().unique().tolist())
@@ -783,7 +837,15 @@ def fetch_minute_bars(
         print(f"[data-source] alpaca_primary=true label={label} symbols_from_alpaca={len(syms)}")
         return alpaca_df
 
-    # --- Fallback: yfinance ---
+    # --- Fallback: yfinance (only when allowed) ---
+    if not ALLOW_YFINANCE_MARKET_DATA_FALLBACK:
+        print(
+            f"[data-source] alpaca_empty label={label} "
+            f"yfinance_fallback=false (ALLOW_YFINANCE_MARKET_DATA_FALLBACK=0)"
+        )
+        _DATA_SOURCE_DIAGNOSTICS["fallback_used"] = None
+        return pd.DataFrame()
+
     print(f"[data-source] fallback_used=yfinance label={label} reason=alpaca_empty_or_unavailable")
     _DATA_SOURCE_DIAGNOSTICS["fallback_used"] = "yfinance"
     return _fetch_minute_bars_yfinance(symbols, start_et, end_et, label)
@@ -793,7 +855,9 @@ def fetch_premarket_bars(symbols: list[str]) -> pd.DataFrame:
     day = today_et_date()
     start_et = datetime.combine(day, parse_hhmm(PREMARKET_START_ET), tzinfo=ET)
     end_et = datetime.combine(day, parse_hhmm(PREMARKET_END_ET), tzinfo=ET)
-    return fetch_minute_bars(symbols, start_et, end_et, label="premarket_bars")
+    feed = _get_alpaca_premarket_feed()
+    print(f"[data-feed] premarket={ALPACA_PREMARKET_FEED} yfinance_fallback={ALLOW_YFINANCE_MARKET_DATA_FALLBACK}")
+    return fetch_minute_bars(symbols, start_et, end_et, label="premarket_bars", alpaca_feed=feed)
 
 
 def fetch_intraday_bars(symbols: list[str]) -> pd.DataFrame:
@@ -802,7 +866,9 @@ def fetch_intraday_bars(symbols: list[str]) -> pd.DataFrame:
     end_et = datetime.now(ET)
     regular_end_today = datetime.combine(day, parse_hhmm(REGULAR_SESSION_END_ET), tzinfo=ET)
     end_et = min(end_et, regular_end_today)
-    return fetch_minute_bars(symbols, start_et, end_et, label="intraday_bars")
+    feed = _get_alpaca_regular_feed()
+    print(f"[data-feed] regular={ALPACA_REGULAR_FEED} yfinance_fallback={ALLOW_YFINANCE_MARKET_DATA_FALLBACK}")
+    return fetch_minute_bars(symbols, start_et, end_et, label="intraday_bars", alpaca_feed=feed)
 
 
 def _fetch_multitimeframe_bars_yfinance(symbols: list[str]) -> dict[str, pd.DataFrame]:
@@ -864,25 +930,26 @@ def _fetch_multitimeframe_bars_yfinance(symbols: list[str]) -> dict[str, pd.Data
 def fetch_multitimeframe_bars(symbols: list[str]) -> dict[str, pd.DataFrame]:
     """
     Fetch OHLCV for 1m/5m/15m/1h for pivot signal detection.
-    Alpaca is the primary source; yfinance fills any timeframe where Alpaca returns empty.
+    Alpaca is the primary source using the regular-session feed (IEX by default).
+    yfinance is used to fill empty timeframes only when ALLOW_YFINANCE_MARKET_DATA_FALLBACK=1.
     """
     if not symbols:
         return {}
 
+    print(f"[data-feed] regular={ALPACA_REGULAR_FEED} yfinance_fallback={ALLOW_YFINANCE_MARKET_DATA_FALLBACK}")
+
     # --- Primary: Alpaca ---
     alpaca_result = fetch_alpaca_multitimeframe_bars(symbols)
 
-    # Check if Alpaca returned usable data for at least one timeframe
     alpaca_has_data = any(not df.empty for df in alpaca_result.values())
 
     if alpaca_has_data:
-        # Fill any empty Alpaca timeframes with yfinance
-        yf_tf_map = {"1m": "1d", "5m": "5d", "15m": "1mo", "1h": "3mo"}
         needs_yf_fallback = [tf for tf, df in alpaca_result.items() if df.empty]
 
-        if needs_yf_fallback:
+        if needs_yf_fallback and ALLOW_YFINANCE_MARKET_DATA_FALLBACK:
             print(f"[data-source] alpaca_primary=true mtf_yfinance_fallback_tfs={needs_yf_fallback}")
             _DATA_SOURCE_DIAGNOSTICS["fallback_used"] = "yfinance_partial_mtf"
+            yf_tf_map = {"1m": "1d", "5m": "5d", "15m": "1mo", "1h": "3mo"}
             for tf in needs_yf_fallback:
                 period = yf_tf_map.get(tf, "5d")
                 label = f"mtf_{tf}_yf_fallback"
@@ -908,12 +975,25 @@ def fetch_multitimeframe_bars(symbols: list[str]) -> dict[str, pd.DataFrame]:
                 if frames:
                     alpaca_result[tf] = pd.concat(frames, ignore_index=True).sort_values(["symbol", "timestamp"]).reset_index(drop=True)
                     print(f"[{label}] filled tf={tf} rows={len(alpaca_result[tf])}")
+        elif needs_yf_fallback:
+            print(
+                f"[data-source] alpaca_primary=true mtf_empty_tfs={needs_yf_fallback} "
+                f"yfinance_fallback=false (ALLOW_YFINANCE_MARKET_DATA_FALLBACK=0)"
+            )
 
         print(f"[data-source] alpaca_primary=true mtf tfs={list(alpaca_result.keys())}")
         return alpaca_result
 
     # --- Full fallback: yfinance for all timeframes ---
-    print(f"[data-source] fallback_used=yfinance mtf reason=alpaca_empty_or_unavailable")
+    if not ALLOW_YFINANCE_MARKET_DATA_FALLBACK:
+        print(
+            "[data-source] alpaca_empty mtf "
+            "yfinance_fallback=false (ALLOW_YFINANCE_MARKET_DATA_FALLBACK=0)"
+        )
+        _DATA_SOURCE_DIAGNOSTICS["fallback_used"] = None
+        return {}
+
+    print("[data-source] fallback_used=yfinance mtf reason=alpaca_empty_or_unavailable")
     _DATA_SOURCE_DIAGNOSTICS["fallback_used"] = "yfinance"
     return _fetch_multitimeframe_bars_yfinance(symbols)
 
@@ -1920,6 +2000,7 @@ def load_tradingview_cookies() -> Any:
 
 
 def fetch_tradingview_snapshot(symbols: list[str]) -> tuple[pd.DataFrame, dict[str, Any]]:
+    print("[data-source] discovery=tradingview_screener")
     diagnostics: dict[str, Any] = {
         "enabled": bool(TRADINGVIEW_SCREENER_ENABLED),
         "available": bool(Query is not None),

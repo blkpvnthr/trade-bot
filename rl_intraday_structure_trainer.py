@@ -571,6 +571,7 @@ def find_bars_path() -> Path:
 
 def load_bars(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path)
+    print(f"[data-source] training_csv=alpaca_derived path={path.name}")
 
     required = {"timestamp", "symbol", "open", "high", "low", "close", "volume"}
     missing = sorted(required - set(df.columns))

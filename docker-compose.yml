@@ -1,0 +1,103 @@
+version: "3.9"
+
+# ── Shared base configuration ────────────────────────────────────────────────
+x-bot-base: &bot-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  volumes:
+    - ./logs:/app/logs
+    - ./system-data:/app/system-data
+    - ./research_requests:/app/research_requests
+  environment:
+    PAPER_ONLY: "true"
+    APCA_PAPER: "true"
+    PYTHONUNBUFFERED: "1"
+
+# ── Services ─────────────────────────────────────────────────────────────────
+services:
+
+  # Conservative group — bot-01 credentials
+  tux-mtf-original:
+    <<: *bot-base
+    container_name: qq-tux-mtf-original
+    env_file: .env.bot01          # contains APCA_API_KEY_ID + APCA_API_SECRET_KEY — never committed
+    environment:
+      PAPER_ONLY: "true"
+      APCA_PAPER: "true"
+      STRATEGY_ID: tux_mtf_original
+      CONFIG_PATH: configs/strategy_experiments.yaml
+      LOG_DIR: /app/logs/execution/tux_mtf_original
+
+  tux-mtf-long-only:
+    <<: *bot-base
+    container_name: qq-tux-mtf-long-only
+    env_file: .env.bot01
+    environment:
+      PAPER_ONLY: "true"
+      APCA_PAPER: "true"
+      STRATEGY_ID: tux_mtf_long_only
+      CONFIG_PATH: configs/strategy_experiments.yaml
+      LOG_DIR: /app/logs/execution/tux_mtf_long_only
+
+  # Classical technical group — bot-02 credentials
+  pivot-points:
+    <<: *bot-base
+    container_name: qq-pivot-points
+    env_file: .env.bot02
+    environment:
+      PAPER_ONLY: "true"
+      APCA_PAPER: "true"
+      STRATEGY_ID: pivot_points
+      CONFIG_PATH: configs/strategy_experiments.yaml
+      LOG_DIR: /app/logs/execution/pivot_points
+
+  orb-8am:
+    <<: *bot-base
+    container_name: qq-orb-8am
+    env_file: .env.bot02
+    environment:
+      PAPER_ONLY: "true"
+      APCA_PAPER: "true"
+      STRATEGY_ID: orb_8am
+      CONFIG_PATH: configs/strategy_experiments.yaml
+      LOG_DIR: /app/logs/execution/orb_8am
+
+  # Experimental group — bot-03 credentials
+  liquidity-sweep:
+    <<: *bot-base
+    container_name: qq-liquidity-sweep
+    env_file: .env.bot03
+    environment:
+      PAPER_ONLY: "true"
+      APCA_PAPER: "true"
+      STRATEGY_ID: liquidity_sweep
+      CONFIG_PATH: configs/strategy_experiments.yaml
+      LOG_DIR: /app/logs/execution/liquidity_sweep
+
+  flawless-victory:
+    <<: *bot-base
+    container_name: qq-flawless-victory
+    env_file: .env.bot03
+    environment:
+      PAPER_ONLY: "true"
+      APCA_PAPER: "true"
+      STRATEGY_ID: flawless_victory
+      CONFIG_PATH: configs/strategy_experiments.yaml
+      LOG_DIR: /app/logs/execution/flawless_victory
+
+  # Nightly evaluator — runs once at 20:00 ET, then exits
+  nightly-evaluator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: qq-nightly-evaluator
+    entrypoint: ["python", "scripts/evaluate_variants.py"]
+    volumes:
+      - ./logs:/app/logs
+      - ./system-data:/app/system-data
+      - ./research_requests:/app/research_requests
+    environment:
+      PAPER_ONLY: "true"
+    profiles: ["evaluator"]   # only starts with: docker compose --profile evaluator up

@@ -57,6 +57,7 @@ import os
 import re
 import inspect
 import subprocess
+import signal
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -148,10 +149,28 @@ TODAY_TAG = datetime.now(ET).strftime("%Y%m%d")
 YESTERDAY_TAG = (datetime.now(ET) - timedelta(days=1)).strftime("%Y%m%d")
 DATA_TAG = os.getenv("RUN_DATA_DATE", os.getenv("RL_DATA_DATE", TODAY_TAG))
 
+# ── Strategy variant routing ──────────────────────────────────────────────────
+# Set STRATEGY_ID to run a specific variant (e.g. tux_mtf_original).
+# When set, signals are sourced from the named strategy module instead of the
+# default scanner. run.py remains the sole execution authority.
+STRATEGY_ID = os.getenv("STRATEGY_ID", "").strip()
+CONFIG_PATH = os.getenv("CONFIG_PATH", "").strip()
+_STRATEGY_ORDER_TAG = STRATEGY_ID if STRATEGY_ID else "qq_13k"
+
+# Log directory: per-strategy when STRATEGY_ID is set, per-date otherwise
 OUT_DIR = PROJECT_ROOT / "system-data" / DATA_TAG
-LOG_DIR = PROJECT_ROOT / "logs" / "execution" / DATA_TAG
+if STRATEGY_ID:
+    LOG_DIR = Path(os.getenv("LOG_DIR", str(PROJECT_ROOT / "logs" / "execution" / STRATEGY_ID)))
+else:
+    LOG_DIR = PROJECT_ROOT / "logs" / "execution" / DATA_TAG
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+if STRATEGY_ID:
+    print(f"[strategy] variant={STRATEGY_ID} config={CONFIG_PATH or 'default'} log_dir={LOG_DIR}")
+
+# Graceful shutdown event — set by SIGTERM handler, checked by the main loop.
+_SHUTDOWN_EVENT = threading.Event()
 
 USE_TRADINGVIEW_SCREENER = os.getenv("USE_TRADINGVIEW_SCREENER", "1").lower() in {"1", "true", "yes"}
 
@@ -2264,10 +2283,10 @@ MAX_SINGLE_ORDER_NOTIONAL_PCT = 0.045
 MAX_ORDER_DOLLARS = 1_500.0
 MAX_SINGLE_ORDER_QTY = 25_000
 
-DAILY_DRAWDOWN_LIMIT = -0.015
-KILL_SWITCH_EQUITY_FLOOR = 11_700.0
+DAILY_DRAWDOWN_LIMIT = -0.1
+KILL_SWITCH_EQUITY_FLOOR = 95_000.0
 MAX_DAILY_LOSS_PCT = 0.015
-MAX_DAILY_LOSS_DOLLARS = 200.0
+MAX_DAILY_LOSS_DOLLARS = 2000.0
 
 WIKI_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
@@ -2767,7 +2786,7 @@ class ExecutorConfig:
 
     order_wait_seconds: int = ORDER_WAIT_SECONDS
     time_in_force: TimeInForce = TimeInForce.DAY
-    order_tag_prefix: str = "qq_13k"
+    order_tag_prefix: str = field(default_factory=lambda: _STRATEGY_ORDER_TAG)
 
     scanner: ScannerConfig = field(default_factory=ScannerConfig)
 
@@ -8687,6 +8706,14 @@ class ProductionOrderExecutor:
                 acct_after = self._record_account_snapshot("after_skip", cycle_id)
                 acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
                 self._journal_order(cycle_id, "SKIP", row, acct_before, acct_after, skip_message)
+                _append_skipped_signal({
+                    "cycle_id": cycle_id,
+                    "symbol": symbol,
+                    "side": side,
+                    "gating_condition": skip_message,
+                    "reason": "order_plan_skip",
+                    "entry_reason": str(row.get("reason", "")),
+                })
                 self._log_live_experience(
                     cycle_id=cycle_id,
                     stage="skipped",
@@ -8844,6 +8871,14 @@ class ProductionOrderExecutor:
         allowed, kill_reason, daily_return = self._kill_switch_allows_execution(equity)
         if not allowed:
             print(f"[kill-switch] execution blocked: {kill_reason}")
+            _append_skipped_signal({
+                "cycle_id": cycle_id,
+                "symbol": "ALL",
+                "side": "ALL",
+                "gating_condition": kill_reason,
+                "reason": "kill_switch",
+                "daily_return": daily_return,
+            })
             results = pd.DataFrame([{"timestamp_utc": now_utc().isoformat(), "status": "skipped_kill_switch", "message": kill_reason, "daily_return": daily_return}])
             save_df(pd.DataFrame(), LOG_DIR / f"order_plan_{cycle_id}.csv")
             save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
@@ -9517,6 +9552,15 @@ class ProductionOrderExecutor:
         )
         self.last_heartbeat_time = now_ts
 
+        # Write /tmp/trader_heartbeat for K8s liveness probe
+        try:
+            Path("/tmp/trader_heartbeat").write_text(str(now_ts))
+        except Exception:
+            pass
+
+        # Write per-strategy metrics.json for monitoring and evaluator
+        _write_strategy_metrics(acct, gross)
+
 
     def _start_spx_price_action_layer(self) -> None:
         if not self.config.scanner or not self.config.scanner.spx_price_action_layer_enabled:
@@ -9892,7 +9936,7 @@ class ProductionOrderExecutor:
             self.run_spx_price_action_once()
             return
 
-        while True:
+        while not _SHUTDOWN_EVENT.is_set():
             try:
                 self.run_cycle_from_files()
                 self._print_heartbeat()
@@ -9902,7 +9946,11 @@ class ProductionOrderExecutor:
             except Exception as exc:
                 print(f"[executor] cycle error: {exc}")
                 write_event("cycle_error", {"error": str(exc)})
-            time.sleep(max(1, int(self.config.poll_seconds)))
+            # Wait for poll interval but wake early on SIGTERM
+            if _SHUTDOWN_EVENT.wait(timeout=max(1, int(self.config.poll_seconds))):
+                print("[executor] SIGTERM received — exiting main loop cleanly")
+                break
+        print("[executor] shutdown complete")
 
 
 # ======================================================================# Backward-compatible module functions
@@ -10071,12 +10119,301 @@ def build_default_config() -> ExecutorConfig:
         kill_switch_equity_floor=KILL_SWITCH_EQUITY_FLOOR,
         order_wait_seconds=ORDER_WAIT_SECONDS,
         time_in_force=TimeInForce.DAY,
-        order_tag_prefix="qq_13k",
+        order_tag_prefix=_STRATEGY_ORDER_TAG,
         scanner=scanner_config,
     )
 
 
+# ======================================================================
+# Runtime helpers — startup safety, diagnostics, signal logging, metrics
+# ======================================================================
+
+def _startup_safety_checks() -> None:
+    """
+    Fail-fast gate: abort before any trading logic if the environment
+    is misconfigured or unsafe.
+
+    Never logs or prints the actual key values — only presence checks.
+    """
+    errors: list[str] = []
+
+    paper_only = os.getenv("PAPER_ONLY", "false").lower() in {"1", "true", "yes"}
+    apca_paper = os.getenv("APCA_PAPER", "").lower() in {"1", "true", "yes"}
+    allow_live = os.getenv("ALLOW_LIVE_TRADING", "0").lower() in {"1", "true", "yes"}
+
+    if not paper_only and not allow_live:
+        errors.append(
+            "PAPER_ONLY is not 'true' and ALLOW_LIVE_TRADING is not set. "
+            "Set PAPER_ONLY=true or explicitly set ALLOW_LIVE_TRADING=1 to acknowledge live-account risk."
+        )
+    if not apca_paper and not allow_live:
+        errors.append(
+            "APCA_PAPER is not 'true' and ALLOW_LIVE_TRADING is not set. "
+            "This configuration would execute against a live brokerage account."
+        )
+
+    # Placeholder / example value detection — catches unconfigured deployments early
+    _PLACEHOLDER_PREFIXES = ("YOUR_", "REPLACE_ME", "PLACEHOLDER", "INSERT_", "YOUR-", "<")
+    _key_id  = os.getenv("APCA_API_KEY_ID", "").strip()
+    _key_sec = os.getenv("APCA_API_SECRET_KEY", "").strip()
+
+    if not _key_id:
+        errors.append("APCA_API_KEY_ID is not set. Set it via environment variable or .env file.")
+    elif any(_key_id.upper().startswith(p) for p in _PLACEHOLDER_PREFIXES):
+        errors.append(
+            f"APCA_API_KEY_ID appears to be a placeholder value (starts with {_key_id[:8]!r}). "
+            "Replace with a real Alpaca paper API key."
+        )
+
+    if not _key_sec:
+        errors.append("APCA_API_SECRET_KEY is not set. Set it via environment variable or .env file.")
+    elif any(_key_sec.upper().startswith(p) for p in _PLACEHOLDER_PREFIXES):
+        errors.append(
+            f"APCA_API_SECRET_KEY appears to be a placeholder value. "
+            "Replace with a real Alpaca paper API secret."
+        )
+
+    # STRATEGY_ID and CONFIG_PATH must both be set or both be absent.
+    if STRATEGY_ID and not CONFIG_PATH:
+        errors.append(
+            f"STRATEGY_ID={STRATEGY_ID!r} is set but CONFIG_PATH is missing. "
+            "Set CONFIG_PATH=configs/strategy_experiments.yaml"
+        )
+    if CONFIG_PATH and not STRATEGY_ID:
+        errors.append(
+            f"CONFIG_PATH={CONFIG_PATH!r} is set but STRATEGY_ID is missing. "
+            "Set STRATEGY_ID to one of the variants defined in the config."
+        )
+    if CONFIG_PATH and not Path(CONFIG_PATH).exists():
+        errors.append(
+            f"CONFIG_PATH={CONFIG_PATH!r} does not exist. "
+            "Check the path relative to the project root."
+        )
+
+    # Validate STRATEGY_ID against known registry variants when CONFIG_PATH is set
+    if STRATEGY_ID and CONFIG_PATH and Path(CONFIG_PATH).exists():
+        try:
+            import yaml as _yaml
+            _cfg = _yaml.safe_load(Path(CONFIG_PATH).read_text()) or {}
+            _known = {v.get("strategy_id") for v in _cfg.get("variants", [])}
+            if _known and STRATEGY_ID not in _known:
+                errors.append(
+                    f"STRATEGY_ID={STRATEGY_ID!r} is not defined in {CONFIG_PATH}. "
+                    f"Known variants: {sorted(_known)}"
+                )
+        except Exception:
+            pass  # YAML parse failure is non-fatal here; config loader will catch it later
+
+    if errors:
+        for err in errors:
+            print(f"[startup] FATAL: {err}", flush=True)
+        sys.exit(1)
+
+    print(
+        f"[startup] safety checks passed | "
+        f"paper_only={paper_only} | apca_paper={apca_paper} | "
+        f"strategy={STRATEGY_ID or 'default_scanner'}",
+        flush=True,
+    )
+
+
+def _log_startup_strategy_diagnostics() -> None:
+    """Log strategy class, params, credential_set, regime, and universe at startup."""
+    if not STRATEGY_ID:
+        return
+
+    diag: dict[str, Any] = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "strategy_id": STRATEGY_ID,
+        "config_path": CONFIG_PATH,
+    }
+
+    # Strategy class + loaded params
+    try:
+        from strategies.registry import STRATEGY_REGISTRY, get_strategy
+        cls = STRATEGY_REGISTRY.get(STRATEGY_ID)
+        if cls:
+            diag["strategy_class"] = cls.__name__
+            instance = get_strategy(STRATEGY_ID)
+            diag["params"] = instance.params
+        else:
+            diag["strategy_class"] = f"NOT_FOUND:{STRATEGY_ID}"
+    except Exception as exc:
+        diag["strategy_class_error"] = str(exc)
+
+    # Credential set + description from config YAML
+    if CONFIG_PATH and Path(CONFIG_PATH).exists():
+        try:
+            import yaml as _yaml
+            with open(CONFIG_PATH) as _f:
+                _cfg = _yaml.safe_load(_f)
+            variant_cfg = _cfg.get("variants", {}).get(STRATEGY_ID, {})
+            diag["credential_set"] = variant_cfg.get("credential_set", "unknown")
+            diag["description"] = variant_cfg.get("description", "")
+            # Timeframe-relevant params
+            params = variant_cfg.get("params", {})
+            for tf_key in ("swing_lookback", "orb_start_hour", "orb_minutes", "fast_ema",
+                           "slow_ema", "n_confirm_tfs", "volume_lookback"):
+                if tf_key in params:
+                    diag[f"tf_{tf_key}"] = params[tf_key]
+        except Exception as exc:
+            diag["config_error"] = str(exc)
+
+    # Market regime state (best-effort — may not exist yet at startup)
+    try:
+        ctx_path = OUT_DIR / f"{DATA_TAG}_market_context.json"
+        if ctx_path.exists():
+            with open(ctx_path) as _f:
+                ctx = json.load(_f)
+            diag["regime"] = ctx.get("regime", "unknown")
+            diag["regime_score"] = ctx.get("regime_score")
+        else:
+            diag["regime"] = "unavailable_at_startup"
+    except Exception:
+        diag["regime"] = "error"
+
+    # Symbol universe count
+    try:
+        for uni_path in [
+            PROJECT_ROOT / "locked_trading_universe.txt",
+            PROJECT_ROOT / f"{DATA_TAG}_locked_trading_universe.txt",
+        ]:
+            if uni_path.exists():
+                symbols = [ln.strip() for ln in uni_path.read_text().splitlines() if ln.strip()]
+                diag["universe_count"] = len(symbols)
+                break
+        else:
+            diag["universe_count"] = 0
+    except Exception:
+        diag["universe_count"] = -1
+
+    for k, v in diag.items():
+        print(f"[strategy-diag] {k}={v}", flush=True)
+
+    diag_path = LOG_DIR / "strategy_diagnostics.json"
+    try:
+        with open(diag_path, "w") as _f:
+            json.dump(diag, _f, indent=2, default=str)
+    except Exception:
+        pass
+
+    # Also write to daily_system_outputs for the evaluator
+    try:
+        daily_out = PROJECT_ROOT / "daily_system_outputs"
+        daily_out.mkdir(parents=True, exist_ok=True)
+        with open(daily_out / "strategy_diagnostics.json", "w") as _f:
+            json.dump(diag, _f, indent=2, default=str)
+    except Exception:
+        pass
+
+
+def _append_skipped_signal(record: dict[str, Any]) -> None:
+    """Append a skipped-signal record to the per-strategy JSONL log."""
+    try:
+        entry = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "strategy_id": STRATEGY_ID or "default",
+            **record,
+        }
+        path = LOG_DIR / "skipped_signals.jsonl"
+        with open(path, "a") as _f:
+            _f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+
+def _write_strategy_metrics(acct: Any, gross_exposure: float) -> None:
+    """Write a lightweight metrics.json snapshot to logs/execution/{STRATEGY_ID}/."""
+    try:
+        metrics: dict[str, Any] = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "strategy_id": STRATEGY_ID or "default",
+            "equity": float(getattr(acct, "equity", 0.0)),
+            "cash": float(getattr(acct, "cash", 0.0)),
+            "buying_power": float(getattr(acct, "buying_power", 0.0)),
+            "gross_exposure": round(gross_exposure, 4),
+        }
+        # Augment from today's skipped-signals JSONL for skip count
+        skipped_log = LOG_DIR / "skipped_signals.jsonl"
+        if skipped_log.exists():
+            try:
+                with open(skipped_log) as _f:
+                    lines = [ln for ln in _f if ln.strip()]
+                metrics["skipped_signals_today"] = len(lines)
+            except Exception:
+                pass
+
+        path = LOG_DIR / "metrics.json"
+        with open(path, "w") as _f:
+            json.dump(metrics, _f, indent=2)
+
+        # Write Prometheus text format for scraping
+        prom_lines = [
+            f'# HELP qq_equity Current account equity in dollars',
+            f'# TYPE qq_equity gauge',
+            f'qq_equity{{strategy="{metrics["strategy_id"]}"}} {metrics["equity"]}',
+            f'# HELP qq_gross_exposure Gross exposure fraction 0.0-1.0',
+            f'# TYPE qq_gross_exposure gauge',
+            f'qq_gross_exposure{{strategy="{metrics["strategy_id"]}"}} {metrics["gross_exposure"]}',
+            f'# HELP qq_skipped_signals_today Skipped signals count today',
+            f'# TYPE qq_skipped_signals_today counter',
+            f'qq_skipped_signals_today{{strategy="{metrics["strategy_id"]}"}} {metrics.get("skipped_signals_today", 0)}',
+        ]
+        prom_path = Path("/tmp/trader_metrics.prom")
+        prom_path.write_text("\n".join(prom_lines) + "\n")
+    except Exception:
+        pass
+
+
+def _start_metrics_server(port: int = 8080) -> None:
+    """Serve /tmp/trader_metrics.prom via HTTP on port 8080 for Prometheus scraping."""
+    import http.server
+    import threading
+
+    class _MetricsHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path in ("/metrics", "/"):
+                prom_path = Path("/tmp/trader_metrics.prom")
+                body = prom_path.read_bytes() if prom_path.exists() else b"# no metrics yet\n"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; version=0.0.4")
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, fmt: str, *args: Any) -> None:
+            pass  # suppress access log noise
+
+    def _serve() -> None:
+        try:
+            server = http.server.HTTPServer(("0.0.0.0", port), _MetricsHandler)
+            server.serve_forever()
+        except Exception as exc:
+            print(f"[metrics] HTTP server failed on port {port}: {exc}", flush=True)
+
+    t = threading.Thread(target=_serve, daemon=True, name="metrics-server")
+    t.start()
+    print(f"[metrics] Prometheus endpoint: http://0.0.0.0:{port}/metrics", flush=True)
+
+
 def main() -> None:
+    # ── SIGTERM handler for K8s rolling restarts ───────────────────────────
+    def _handle_sigterm(signum: int, frame: Any) -> None:
+        print("[executor] SIGTERM received — requesting graceful shutdown", flush=True)
+        _SHUTDOWN_EVENT.set()
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
+    # ── Fail fast if environment is unsafe or incomplete ──────────────────
+    _startup_safety_checks()
+    _log_startup_strategy_diagnostics()
+
+    # ── Prometheus metrics HTTP endpoint (port 8080) ───────────────────────
+    _metrics_port = int(os.getenv("METRICS_PORT", "8080"))
+    _start_metrics_server(port=_metrics_port)
+
     try:
         maybe_run_pso_lstm_optimization()
     except Exception as exc:
