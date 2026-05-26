@@ -169,11 +169,19 @@ def _fetch_bars(
         end=end,
         feed=get_feed(),
     )
-    try:
-        df = client.get_stock_bars(req).df
-    except Exception as exc:
-        print(f"{log_prefix} bar fetch failed: {exc}")
-        return pd.DataFrame(columns=["symbol", "timestamp", "open", "high", "low", "close", "volume"])
+    df = None
+    for attempt in range(3):
+        try:
+            df = client.get_stock_bars(req).df
+            break
+        except Exception as exc:
+            if "too many requests" in str(exc).lower() and attempt < 2:
+                wait_s = 1.5 * (attempt + 1)
+                print(f"{log_prefix} bar fetch rate-limited; retrying in {wait_s:.1f}s")
+                time.sleep(wait_s)
+                continue
+            print(f"{log_prefix} bar fetch failed: {exc}")
+            return pd.DataFrame(columns=["symbol", "timestamp", "open", "high", "low", "close", "volume"])
     if df is None or df.empty:
         return pd.DataFrame(columns=["symbol", "timestamp", "open", "high", "low", "close", "volume"])
     df = df.reset_index()
@@ -188,6 +196,37 @@ def fetch_bars(symbols: list[str], hours: int) -> pd.DataFrame:
 
 def fetch_bars_1m(symbols: list[str]) -> pd.DataFrame:
     return _fetch_bars(symbols, TimeFrame(1, TimeFrameUnit.Minute), TRAIN_LOOKBACK_DAYS)
+
+
+def resample_bars(base_df: pd.DataFrame, minutes: int) -> pd.DataFrame:
+    if base_df is None or base_df.empty or minutes <= 1:
+        return base_df.copy() if isinstance(base_df, pd.DataFrame) else pd.DataFrame()
+
+    rule = f"{int(minutes)}min"
+    frames: list[pd.DataFrame] = []
+    for symbol, group in base_df.groupby("symbol", sort=False):
+        g = group.copy()
+        g["timestamp"] = pd.to_datetime(g["timestamp"], errors="coerce", utc=True)
+        g = g.dropna(subset=["timestamp"]).sort_values("timestamp").set_index("timestamp")
+        agg_map = {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }
+        for col, agg in {"trade_count": "sum", "vwap": "last"}.items():
+            if col in g.columns:
+                agg_map[col] = agg
+        resampled = g.resample(rule, label="right", closed="right").agg(agg_map).dropna(subset=["open", "high", "low", "close"])
+        if resampled.empty:
+            continue
+        resampled = resampled.reset_index()
+        resampled["symbol"] = symbol
+        frames.append(resampled)
+    if not frames:
+        return pd.DataFrame(columns=base_df.columns)
+    return pd.concat(frames, ignore_index=True).sort_values(["symbol", "timestamp"]).reset_index(drop=True)
 
 
 def detect_levels(df: pd.DataFrame) -> tuple[list[float], list[float]]:
@@ -364,11 +403,11 @@ class SRTradingEnv(gym.Env):
 
 
 def build_training_rows(symbols: list[str]) -> pd.DataFrame:
-    # S/R level detection uses longer-horizon hourly bars for structural context.
-    bars_1h = fetch_bars(symbols, 1)
-    bars_4h = fetch_bars(symbols, 4)
-    # Training rows come from 1-minute bars over the last TRAIN_LOOKBACK_DAYS days.
+    # Training rows come from one 1-minute stream over the last TRAIN_LOOKBACK_DAYS days.
+    # Higher timeframes are derived locally to avoid redundant bar requests.
     bars_1m = fetch_bars_1m(symbols)
+    bars_1h = resample_bars(bars_1m, 60)
+    bars_4h = resample_bars(bars_1m, 240)
 
     rows = []
 
@@ -457,7 +496,7 @@ def live_cycle(model: PPO, execute: bool = False) -> list[dict[str, Any]]:
 
     symbols = load_symbols_from_plan()
     bars_1h = fetch_bars(symbols, 1)
-    bars_4h = fetch_bars(symbols, 4)
+    bars_4h = resample_bars(bars_1h, 240)
 
     decisions = []
 

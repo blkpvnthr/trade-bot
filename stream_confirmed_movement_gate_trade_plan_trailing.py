@@ -59,7 +59,16 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
-from config.env_loader import load_instance_env
+try:
+    from config.env_loader import load_instance_env
+except Exception:
+    def load_instance_env() -> None:
+        # Fallback for running this file outside the repo package layout.
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except Exception:
+            return
 
 from alpaca.data.enums import DataFeed
 from alpaca.data.live import StockDataStream
@@ -104,7 +113,7 @@ ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower().strip()
 PAPER = os.getenv("APCA_PAPER", "1").lower() in {"1", "true", "yes"}
 
 STREAM_CONFIRM_EXECUTE = os.getenv("STREAM_CONFIRM_EXECUTE", "0").lower() in {"1", "true", "yes"}
-SCAN_RELOAD_SECONDS = int(os.getenv("STREAM_CONFIRM_RELOAD_SECONDS", "10"))
+SCAN_RELOAD_SECONDS = int(os.getenv("STREAM_CONFIRM_RELOAD_SECONDS", "60"))
 MAX_WATCH_SYMBOLS = int(os.getenv("STREAM_CONFIRM_MAX_WATCH_SYMBOLS", "75"))
 
 MIN_1M_DIRECTION_SCORE = float(os.getenv("STREAM_CONFIRM_MIN_1M_SCORE", "0.62"))
@@ -149,6 +158,22 @@ MAX_STOP_PCT = float(os.getenv("STREAM_CONFIRM_MAX_STOP_PCT", "0.012"))
 TRAILING_STOP_ENABLED = os.getenv("STREAM_CONFIRM_TRAILING_STOP_ENABLED", "1").lower() in {"1", "true", "yes"}
 TRAIL_PERCENT = float(os.getenv("STREAM_CONFIRM_TRAIL_PERCENT", "0.65"))
 TRAIL_PRICE_MIN = float(os.getenv("STREAM_CONFIRM_TRAIL_PRICE_MIN", "0.05"))
+
+# Alpaca rate-limit protection. Polling every symbol every few seconds can easily
+# trigger {"message": "too many requests."}. These controls keep fetches bounded,
+# reuse recent bars, and back off per symbol after 429 responses.
+BAR_FETCH_CACHE_SECONDS = int(os.getenv("STREAM_CONFIRM_BAR_FETCH_CACHE_SECONDS", "55"))
+RATE_LIMIT_BACKOFF_SECONDS = int(os.getenv("STREAM_CONFIRM_RATE_LIMIT_BACKOFF_SECONDS", "90"))
+RATE_LIMIT_MAX_BACKOFF_SECONDS = int(os.getenv("STREAM_CONFIRM_RATE_LIMIT_MAX_BACKOFF_SECONDS", "300"))
+POLL_SYMBOLS_PER_CYCLE = int(os.getenv("STREAM_CONFIRM_POLL_SYMBOLS_PER_CYCLE", "20"))
+ALPACA_REQUEST_SLEEP_SECONDS = float(os.getenv("STREAM_CONFIRM_REQUEST_SLEEP_SECONDS", "0.20"))
+
+_DATA_CLIENT: StockHistoricalDataClient | None = None
+_BAR_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
+_RATE_LIMIT_UNTIL: dict[str, float] = {}
+_RATE_LIMIT_BACKOFF: dict[str, int] = {}
+_POLL_CURSOR = 0
+
 
 
 @dataclass
@@ -274,8 +299,11 @@ def get_feed() -> DataFeed:
 
 
 def data_client() -> StockHistoricalDataClient:
-    key, secret = get_credentials()
-    return StockHistoricalDataClient(key, secret)
+    global _DATA_CLIENT
+    if _DATA_CLIENT is None:
+        key, secret = get_credentials()
+        _DATA_CLIENT = StockHistoricalDataClient(key, secret)
+    return _DATA_CLIENT
 
 
 def trading_client() -> TradingClient:
@@ -535,7 +563,69 @@ def already_confirmed_today(symbol: str) -> bool:
     return symbol in set(df["symbol"].map(normalize_symbol))
 
 
+def _is_rate_limit_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    return status_code == 429 or "too many requests" in msg or "rate limit" in msg or "429" in msg
+
+
+def _cached_bars(symbol: str, allow_stale: bool = False) -> pd.DataFrame:
+    symbol = normalize_symbol(symbol)
+    cached = _BAR_CACHE.get(symbol)
+    if not cached:
+        return pd.DataFrame()
+
+    fetched_at, df = cached
+    age = time.time() - fetched_at
+    if allow_stale or age <= BAR_FETCH_CACHE_SECONDS:
+        return df.copy()
+    return pd.DataFrame()
+
+
+def _record_rate_limit(symbol: str, exc: Exception) -> None:
+    symbol = normalize_symbol(symbol)
+    previous = int(_RATE_LIMIT_BACKOFF.get(symbol, RATE_LIMIT_BACKOFF_SECONDS))
+    backoff = min(max(previous, RATE_LIMIT_BACKOFF_SECONDS), RATE_LIMIT_MAX_BACKOFF_SECONDS)
+    _RATE_LIMIT_BACKOFF[symbol] = min(backoff * 2, RATE_LIMIT_MAX_BACKOFF_SECONDS)
+    _RATE_LIMIT_UNTIL[symbol] = time.time() + backoff
+
+    preview = str(exc)[:300]
+    print(f"[stream-confirm] Alpaca rate limited symbol={symbol}; backing off {backoff}s")
+    write_event(
+        "alpaca_rate_limited",
+        {
+            "module": "stream_confirmed_movement_gate",
+            "symbol": symbol,
+            "backoff_seconds": backoff,
+            "response_preview": preview,
+        },
+    )
+
+
+def _clear_rate_limit(symbol: str) -> None:
+    symbol = normalize_symbol(symbol)
+    _RATE_LIMIT_UNTIL.pop(symbol, None)
+    _RATE_LIMIT_BACKOFF.pop(symbol, None)
+
+
 def fetch_recent_1m(symbol: str, lookback_days: int = 2) -> pd.DataFrame:
+    symbol = normalize_symbol(symbol)
+    if not symbol:
+        return pd.DataFrame()
+
+    cached = _cached_bars(symbol)
+    if not cached.empty:
+        return cached
+
+    rate_limited_until = float(_RATE_LIMIT_UNTIL.get(symbol, 0.0))
+    if rate_limited_until > time.time():
+        stale = _cached_bars(symbol, allow_stale=True)
+        if not stale.empty:
+            return stale
+        wait_left = int(rate_limited_until - time.time())
+        print(f"[stream-confirm] skipping fetch symbol={symbol}; rate-limit backoff {wait_left}s left")
+        return pd.DataFrame()
+
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=lookback_days)
     req = StockBarsRequest(
@@ -545,28 +635,46 @@ def fetch_recent_1m(symbol: str, lookback_days: int = 2) -> pd.DataFrame:
         end=end,
         feed=get_feed(),
     )
+
     try:
         df = data_client().get_stock_bars(req).df
+        _clear_rate_limit(symbol)
+        if ALPACA_REQUEST_SLEEP_SECONDS > 0:
+            time.sleep(ALPACA_REQUEST_SLEEP_SECONDS)
     except Exception as exc:
-        _preview = str(exc)[:300]
-        print(f"[stream-confirm] bar fetch failed symbol={symbol}: {exc}")
-        write_event("external_http_error", {
-            "module": "stream_confirmed_movement_gate",
-            "symbol": symbol,
-            "url_host": "api.alpaca.markets",
-            "status_code": getattr(getattr(exc, "response", None), "status_code", None),
-            "response_preview": _preview,
-        })
+        preview = str(exc)[:300]
+        if _is_rate_limit_error(exc):
+            _record_rate_limit(symbol, exc)
+            stale = _cached_bars(symbol, allow_stale=True)
+            if not stale.empty:
+                return stale
+        else:
+            print(f"[stream-confirm] bar fetch failed symbol={symbol}: {exc}")
+            write_event(
+                "external_http_error",
+                {
+                    "module": "stream_confirmed_movement_gate",
+                    "symbol": symbol,
+                    "url_host": "api.alpaca.markets",
+                    "status_code": getattr(getattr(exc, "response", None), "status_code", None),
+                    "response_preview": preview,
+                },
+            )
         return pd.DataFrame()
+
     if df is None or df.empty:
         return pd.DataFrame()
 
     df = df.reset_index()
     if "symbol" in df.columns:
         df = df[df["symbol"].astype(str).str.upper() == symbol.upper()].copy()
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-    return df.sort_values("timestamp").reset_index(drop=True)
+    if df.empty or "timestamp" not in df.columns:
+        return pd.DataFrame()
 
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df = df.sort_values("timestamp").reset_index(drop=True)
+    _BAR_CACHE[symbol] = (time.time(), df.copy())
+    return df
 
 def add_features(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
@@ -1172,14 +1280,42 @@ async def run_stream() -> None:
         manager_task.cancel()
 
 
+def _polling_symbol_batch(universe: dict[str, WatchSymbol]) -> dict[str, WatchSymbol]:
+    """
+    Return a rotating subset so polling does not refetch every watched symbol in
+    every cycle. This is the main protection against Alpaca 429s.
+    """
+    global _POLL_CURSOR
+
+    if not universe:
+        return {}
+
+    symbols = sorted(universe.keys())
+    limit = max(1, min(POLL_SYMBOLS_PER_CYCLE, len(symbols)))
+
+    if _POLL_CURSOR >= len(symbols):
+        _POLL_CURSOR = 0
+
+    selected: list[str] = []
+    while len(selected) < limit:
+        selected.append(symbols[_POLL_CURSOR % len(symbols)])
+        _POLL_CURSOR += 1
+
+    return {symbol: universe[symbol] for symbol in selected}
+
+
 def run_polling_fallback() -> None:
     print("[stream-confirm] polling fallback active")
     while not _STOP:
         universe = load_watch_universe()
-        print(f"[stream-confirm] watching symbols={len(universe)}")
+        batch = _polling_symbol_batch(universe)
+        print(
+            f"[stream-confirm] watching symbols={len(universe)} "
+            f"polling_this_cycle={len(batch)} reload_seconds={SCAN_RELOAD_SECONDS}"
+        )
 
         ranked: list[tuple[float, str, WatchSymbol, MovementState | None]] = []
-        for symbol, row in universe.items():
+        for symbol, row in batch.items():
             try:
                 state = evaluate_symbol(symbol, row)
                 ranked.append((state.early_continuation_score, symbol, row, state))
@@ -1226,7 +1362,6 @@ def run_polling_fallback() -> None:
 
         time.sleep(max(1, SCAN_RELOAD_SECONDS))
 
-
 def main() -> None:
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
@@ -1240,6 +1375,10 @@ def main() -> None:
     print(f"[config] execute_now={STREAM_CONFIRM_EXECUTE}")
     print(f"[config] feed={ALPACA_DATA_FEED}")
     print(f"[config] max_watch_symbols={MAX_WATCH_SYMBOLS}")
+    print(f"[config] poll_symbols_per_cycle={POLL_SYMBOLS_PER_CYCLE}")
+    print(f"[config] bar_fetch_cache_seconds={BAR_FETCH_CACHE_SECONDS}")
+    print(f"[config] rate_limit_backoff_seconds={RATE_LIMIT_BACKOFF_SECONDS}")
+    print(f"[config] reload_seconds={SCAN_RELOAD_SECONDS}")
     print(f"[config] early_continuation_min_score={EARLY_CONTINUATION_MIN_SCORE}")
     print(f"[config] top_n_ranked={EARLY_CONTINUATION_TOP_N}")
     print(f"[config] trailing_stop_enabled={TRAILING_STOP_ENABLED}")

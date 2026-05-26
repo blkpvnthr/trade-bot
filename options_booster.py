@@ -16,7 +16,7 @@ What it does:
         - locked_trading_universe.txt
         - DEFAULT_UNIVERSE fallback
     3. Fetches option chains.
-    4. Finds unusual call flow using:
+    4. Finds call flow using:
         - volume / open-interest ratio
         - option volume
         - bid/ask spread
@@ -191,6 +191,7 @@ class OptionsBoosterConfig:
     max_contract_mid_price: float = env_float("OPTIONS_MAX_CONTRACT_MID_PRICE", 7.50)
 
     # Unusual flow thresholds.
+    min_rvolchg_pct: float = env_float("OPTIONS_MIN_RVOLCHG_PCT", 25.0)
     min_volume_oi_ratio: float = env_float("OPTIONS_MIN_VOLUME_OI_RATIO", 0.25)
     min_premium_flow_dollars: float = env_float("OPTIONS_MIN_PREMIUM_FLOW_DOLLARS", 25000.0)
     min_flow_score: float = env_float("OPTIONS_MIN_FLOW_SCORE", 0.45)
@@ -745,6 +746,7 @@ def compute_flow_score(metrics: dict[str, float]) -> dict[str, float]:
     spread_pct = metrics["spread_pct"]
 
     volume_oi_ratio = volume / max(oi, 1.0)
+    rvolchg_pct = volume_oi_ratio * 100.0
     premium_flow_dollars = volume * mid * 100.0
 
     volume_score = min(volume / max(CONFIG.min_volume * 10.0, 1.0), 1.0)
@@ -770,6 +772,7 @@ def compute_flow_score(metrics: dict[str, float]) -> dict[str, float]:
 
     return {
         "volume_oi_ratio": float(volume_oi_ratio),
+        "rvolchg_pct": float(rvolchg_pct),
         "premium_flow_dollars": float(premium_flow_dollars),
         "volume_score": float(volume_score),
         "volume_oi_score": float(voi_score),
@@ -985,15 +988,13 @@ def scan_underlying(option_client: OptionHistoricalDataClient, row: pd.Series, u
 
         scores = score_contract(row, underlying_price, parsed, dte, metrics)
 
-        if scores["volume_oi_ratio"] < CONFIG.min_volume_oi_ratio:
+        if scores["rvolchg_pct"] < CONFIG.min_rvolchg_pct:
             continue
         if scores["premium_flow_dollars"] < CONFIG.min_premium_flow_dollars:
             continue
         if scores["flow_score"] < CONFIG.min_flow_score:
             continue
         if scores["probability_of_profit"] < CONFIG.min_probability_of_profit:
-            continue
-        if scores["expected_value_dollars"] < CONFIG.min_expected_value:
             continue
 
         rows.append(
@@ -1069,10 +1070,10 @@ def scan_unusual_options_flow(
                 f"[flow] {underlying} best={best['option_symbol']} "
                 f"score={best['option_score']:.3f} flow={best['flow_score']:.3f} "
                 f"ev=${best['expected_value_dollars']:.2f} "
-                f"vol/OI={best['volume_oi_ratio']:.2f}"
+                f"Rvolchg%={best['rvolchg_pct']:.1f}"
             )
         else:
-            print(f"[flow] {underlying}: no unusual positive-EV calls")
+            print(f"[flow] {underlying}: no calls passed Rvolchg% filter")
 
     if not frames:
         return pd.DataFrame()
@@ -1144,7 +1145,7 @@ def build_booster_orders(flow: pd.DataFrame, trading_client: TradingClient) -> p
                 "delta_dollars": contract_notional * contracts,
                 "price": float(limit_price),
                 "limit_price": float(limit_price),
-                "reason": "option_booster_unusual_flow_positive_ev_long_call",
+                "reason": "option_booster_rvolchg_long_call",
                 "target_weight": (contract_notional * contracts) / max(equity, 1e-9),
                 "current_weight": 0.0,
                 "delta_weight": (contract_notional * contracts) / max(equity, 1e-9),
@@ -1253,7 +1254,7 @@ def main() -> dict[str, Any]:
     print(f"[config] universe_limit={CONFIG.max_underlyings}")
     print(f"[config] dte={CONFIG.min_dte}-{CONFIG.max_dte} target={CONFIG.target_dte}")
     print(f"[config] delta={CONFIG.target_delta_min:.2f}-{CONFIG.target_delta_max:.2f}")
-    print(f"[config] min_volume={CONFIG.min_volume} min_oi={CONFIG.min_open_interest} min_vol_oi={CONFIG.min_volume_oi_ratio:.2f}")
+    print(f"[config] min_volume={CONFIG.min_volume} min_oi={CONFIG.min_open_interest} min_rvolchg_pct={CONFIG.min_rvolchg_pct:.1f}")
     print(f"[config] min_premium_flow=${CONFIG.min_premium_flow_dollars:,.0f}")
     print(f"[config] require_open_underlying_position={CONFIG.require_open_underlying_position}")
 
@@ -1328,7 +1329,7 @@ def main() -> dict[str, Any]:
         pd.DataFrame().to_csv(OPTION_FLOW_CANDIDATES_PATH, index=False)
         pd.DataFrame().to_csv(RANKED_CONTRACTS_PATH, index=False)
         pd.DataFrame().to_csv(OPTION_BOOSTER_CANDIDATES_PATH, index=False)
-        print("[flow] no unusual positive-EV calls found")
+        print("[flow] no calls passed Rvolchg% filter")
 
     orders = build_booster_orders(flow, trading_client)
     exits = build_exit_orders(trading_client)
