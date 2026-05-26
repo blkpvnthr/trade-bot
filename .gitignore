@@ -146,3 +146,6 @@ live/vec_normalize.pkl
 live/regime_engine.pkl
 live/logs/
 live/__pycache__/
+
+logs/execution/*.jsonl
+daily_system_outputs/*.json
