@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
@@ -32,7 +32,7 @@ except Exception:
 # =============================================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-load_dotenv(PROJECT_ROOT / ".env")
+load_instance_env()
 
 OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -811,7 +811,7 @@ def dataset_summary(
     return {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "today_tag": TODAY_TAG,
-        "feed": ALPACA_DATA_FEED,
+        "feed": ALPACA_REGULAR_FEED,
         "lookback_days": LOOKBACK_DAYS,
         "raw_rows": int(len(raw)),
         "feature_rows": int(len(features)),

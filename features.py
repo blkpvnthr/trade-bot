@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import requests
 from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical.stock import StockHistoricalDataClient
@@ -24,6 +25,7 @@ def normalize_symbol(sym: str) -> str:
 THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 ENV_PATH = PROJECT_ROOT / ".env"
+load_instance_env()
 
 OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)

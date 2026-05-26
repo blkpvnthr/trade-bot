@@ -46,7 +46,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 
 try:
     import gymnasium as gym
@@ -79,7 +79,7 @@ DATA_TAG = os.getenv("RUN_DATA_DATE", os.getenv("SPX_LAYER_DATA_DATE", TODAY_TAG
 THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 ENV_PATH = PROJECT_ROOT / ".env"
-load_dotenv(ENV_PATH)
+load_instance_env()
 
 OUT_DIR = PROJECT_ROOT / "system-data" / DATA_TAG
 LOG_DIR = PROJECT_ROOT / "logs" / "execution" / DATA_TAG
@@ -357,7 +357,11 @@ def trading_client() -> TradingClient:
 
 
 def market_clock_ok(client: TradingClient, allow_for_exit: bool = False) -> tuple[bool, str]:
-    clock = client.get_clock()
+    try:
+        clock = client.get_clock()
+    except Exception as exc:
+        print(f"[spx-layer] clock fetch failed: {exc}")
+        return False, "clock_unavailable"
     now_et = clock.timestamp.astimezone(ET)
 
     open_time = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
@@ -379,7 +383,11 @@ def market_clock_ok(client: TradingClient, allow_for_exit: bool = False) -> tupl
 
 
 def account_snapshot(client: TradingClient) -> dict[str, float]:
-    account = client.get_account()
+    try:
+        account = client.get_account()
+    except Exception as exc:
+        print(f"[spx-layer] account snapshot failed: {exc}")
+        return {"equity": 0.0, "cash": 0.0, "buying_power": 0.0, "portfolio_value": 0.0}
     return {
         "equity": f(getattr(account, "equity", 0.0)),
         "cash": f(getattr(account, "cash", 0.0)),
@@ -443,7 +451,20 @@ def fetch_bars(symbol: str, timeframe: TimeFrame, lookback_days: int) -> pd.Data
         feed=get_feed(),
     )
 
-    df = client.get_stock_bars(req).df
+    try:
+        df = client.get_stock_bars(req).df
+    except Exception as exc:
+        _preview = str(exc)[:300]
+        print(f"[spx] bar fetch failed symbol={symbol} tf={timeframe}: {exc}")
+        write_event("external_http_error", {
+            "module": "spx_price_action_layer",
+            "symbol": symbol,
+            "url_host": "api.alpaca.markets",
+            "status_code": getattr(getattr(exc, "response", None), "status_code", None),
+            "response_preview": _preview,
+        })
+        return pd.DataFrame()
+
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -1837,7 +1858,12 @@ def run_once() -> SPXSignal | None:
         write_event("spx_cycle_halted", {"reason": loss_reason})
         return None
 
-    signal_obj = build_signal(client)
+    try:
+        signal_obj = build_signal(client)
+    except RuntimeError as exc:
+        print(f"[spx-layer] build_signal skipped: {exc}")
+        write_event("spx_cycle_skipped", {"reason": "bars_unavailable", "error": str(exc)})
+        return None
     write_json(SIGNAL_PATH, asdict(signal_obj))
     write_event("spx_signal", asdict(signal_obj))
 

@@ -264,3 +264,44 @@ These constants must remain unchanged for paper-trading safety:
 ---
 
 *Deployment is paper-only. No auto-promotion to live trading. All live-trading promotions require explicit manual PR review.*
+
+---
+
+## Post-Market Retraining Validation
+
+After the first full market day, verify the retraining pipeline works.
+
+### Option A — Automatic (run.py hook, opt-in)
+
+Enable in `.env.botNN` (one instance is enough to own retraining):
+```bash
+POST_MARKET_RETRAIN_ENABLED=true
+POST_MARKET_RETRAIN_START_ET=1605
+POST_MARKET_RETRAIN_ONCE_PER_DAY=true
+```
+
+After 16:05 ET, check execution events for the instance that had this enabled:
+```bash
+grep 'post_market_retrain' logs/execution/tux_mtf_original/$(date +%Y%m%d)_execution_events.jsonl
+```
+
+### Option B — Manual standalone
+
+```bash
+python scripts/post_market_retrain_pipeline.py
+```
+
+### Validation
+
+```bash
+# Check summary report
+cat daily_system_outputs/post_market_retrain_summary.json | python3 -m json.tool
+
+# Expected:
+# "all_ok": true
+# "provenance_confirmed": true
+# "artifacts": { "bars_csv": {"exists": true}, "rl_model_zip": {"exists": true}, ... }
+
+# Check RL model lifecycle
+python scripts/check_rl_training_status.py
+```

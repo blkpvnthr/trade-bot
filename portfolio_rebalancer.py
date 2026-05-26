@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 
 from zoneinfo import ZoneInfo
 import pandas as pd
-from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 from alpaca.trading.client import TradingClient
 
 from market_context_builder import TODAY_TAG
@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "system-data" / f"{TODAY_TAG}"
 OUT.mkdir(parents=True, exist_ok=True)
 
-load_dotenv(ROOT / ".env")
+load_instance_env()
 
 API_KEY = os.getenv("APCA_API_KEY_ID")
 SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")

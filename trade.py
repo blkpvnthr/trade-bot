@@ -77,6 +77,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 
 from execution_alpha_gate import add_execution_alpha_scores
 
@@ -106,7 +107,7 @@ THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 ENV_PATH = PROJECT_ROOT / ".env"
 
-load_dotenv(ENV_PATH)
+load_instance_env()
 
 ET = ZoneInfo("America/New_York")
 TODAY_TAG = datetime.now(ET).strftime("%Y%m%d")

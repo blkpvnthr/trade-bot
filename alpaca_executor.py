@@ -48,7 +48,7 @@ from typing import Any
 from datetime import datetime, timezone, timedelta
 
 import pandas as pd
-from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 
 from alpaca.common.exceptions import APIError
 from alpaca.data.enums import DataFeed
@@ -70,7 +70,7 @@ THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 ENV_PATH = PROJECT_ROOT / ".env"
 
-load_dotenv(ENV_PATH)
+load_instance_env()
 
 OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
 LOG_DIR = PROJECT_ROOT / "logs" / "execution" / f"{TODAY_TAG}"

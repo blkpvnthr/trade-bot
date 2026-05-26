@@ -51,7 +51,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -82,7 +82,7 @@ except Exception:
 # ---------------------------------------------------------------------------
 THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
-load_dotenv(PROJECT_ROOT / ".env", override=True)
+load_instance_env()
 
 try:
     from zoneinfo import ZoneInfo
@@ -147,7 +147,26 @@ AR_PATH = MODEL_DIR / "ar_models.pkl"
 # Input data paths
 INTRADAY_TRAIN_PATH = OUT_DIR / f"{DATA_TAG}_intraday_training_dataset.csv"
 INTRADAY_BARS_PATH = OUT_DIR / f"{DATA_TAG}_intraday_bars_1m.csv"
-DAILY_FEATURES_PATH = PROJECT_ROOT / "daily_system_outputs" / "daily_features.csv"
+
+
+def _resolve_daily_features_path(date_tag: str = DATA_TAG) -> Path:
+    env_override = os.getenv("DAILY_FEATURES_PATH", "")
+    if env_override and Path(env_override).exists():
+        return Path(env_override)
+    new_path = PROJECT_ROOT / "system-data" / date_tag / f"{date_tag}_daily_features.csv"
+    if new_path.exists():
+        return new_path
+    old_dated = PROJECT_ROOT / "daily_system_outputs" / f"{date_tag}_daily_features.csv"
+    if old_dated.exists():
+        return old_dated
+    legacy = PROJECT_ROOT / "daily_system_outputs" / "daily_features.csv"
+    if legacy.exists():
+        return legacy
+    return new_path  # canonical; let caller handle missing
+
+
+DAILY_FEATURES_PATH = _resolve_daily_features_path()
+print(f"[features-path] forecast_engine resolved={DAILY_FEATURES_PATH} exists={DAILY_FEATURES_PATH.exists()}")
 LOCKED_UNIVERSE_PATH = PROJECT_ROOT / f"{DATA_TAG}_locked_trading_universe.txt"
 
 # Device selection

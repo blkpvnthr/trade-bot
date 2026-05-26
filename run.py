@@ -84,6 +84,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 
 from execution_alpha_gate import add_execution_alpha_scores
 
@@ -141,8 +142,7 @@ except Exception:
 THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 ENV_PATH = PROJECT_ROOT / ".env"
-
-load_dotenv(ENV_PATH)
+load_instance_env()
 
 ET = ZoneInfo("America/New_York")
 TODAY_TAG = datetime.now(ET).strftime("%Y%m%d")
@@ -191,6 +191,18 @@ CAUTIOUS_MARKET_CONFIDENCE_ADDON = float(os.getenv("CAUTIOUS_MARKET_CONFIDENCE_A
 BEARISH_MARKET_DISABLE_NEW_LONGS = os.getenv("BEARISH_MARKET_DISABLE_NEW_LONGS", "1").lower() in {"1", "true", "yes"}
 BEARISH_MARKET_MIN_RL_CONFIDENCE = float(os.getenv("BEARISH_MARKET_MIN_RL_CONFIDENCE", "0.85"))
 MIXED_MARKET_BUY_SIZE_MULTIPLIER = float(os.getenv("MIXED_MARKET_BUY_SIZE_MULTIPLIER", "0.80"))
+
+# Post-market retraining hook — disabled by default, never runs during market hours
+POST_MARKET_RETRAIN_ENABLED = os.getenv("POST_MARKET_RETRAIN_ENABLED", "false").lower() in {"1", "true", "yes"}
+POST_MARKET_RETRAIN_START_ET = os.getenv("POST_MARKET_RETRAIN_START_ET", "1605")
+POST_MARKET_RETRAIN_ONCE_PER_DAY = os.getenv("POST_MARKET_RETRAIN_ONCE_PER_DAY", "true").lower() in {"1", "true", "yes"}
+_POST_MARKET_RETRAIN_LAUNCHED_DATE: str = ""
+
+# Execution-alpha threshold env-var overrides (empty = use config/default)
+EXECUTION_ALPHA_BUY_THRESHOLD = os.getenv("EXECUTION_ALPHA_BUY_THRESHOLD", "")
+EXECUTION_ALPHA_BUY_THRESHOLD_STREAM_CONFIRMED_PIVOT = os.getenv(
+    "EXECUTION_ALPHA_BUY_THRESHOLD_STREAM_CONFIRMED_PIVOT", ""
+)
 
 # =============================================================================
 # FORECAST ENSEMBLE LAYER: ARIMA + LSTM + STACKED-LSTM + ATTENTION-LSTM
@@ -2247,7 +2259,7 @@ SPX_PRICE_ACTION_ORDERS_CSV = LOG_DIR / f"{DATA_TAG}_spx_price_action_orders.csv
 SPX_RL_PLAN_PATH = PROJECT_ROOT / "system-data" / f"{DATA_TAG}_SPX" / f"{DATA_TAG}_spx_intraday_breakout_plan.json"
 
 # Stream-confirmed movement gate outputs.
-STREAM_CONFIRM_SCRIPT_PATH = PROJECT_ROOT / "stream_confirmed_movement_gate.py"
+STREAM_CONFIRM_SCRIPT_PATH = PROJECT_ROOT / "stream_confirmed_movement_gate_trade_plan_trailing.py"
 PENDING_DIRECTION_WATCHLIST_PATH = LOG_DIR / "pending_direction_watchlist.csv"
 STREAM_CONFIRMED_ORDERS_PATH = OUT_DIR / f"{DATA_TAG}_stream_confirmed_rebalance_orders.csv"
 STREAM_CONFIRMED_TRADE_PLAN_CSV_PATH = OUT_DIR / f"{DATA_TAG}_stream_confirmed_trade_plan.csv"
@@ -2713,7 +2725,7 @@ class ScannerConfig:
     # confirmation layer watches all day symbols and writes confirmed trade
     # plans/rebalance rows once early multibar movement is detected.
     stream_confirmed_movement_enabled: bool = True
-    stream_confirmed_movement_script: str = "stream_confirmed_movement_gate.py"
+    stream_confirmed_movement_script: str = "stream_confirmed_movement_gate_trade_plan_trailing.py"
     stream_confirmed_use_polling: bool = True
     stream_confirmed_execute_now: bool = False
     stream_confirmed_reload_seconds: int = 10
@@ -3072,6 +3084,35 @@ def build_account_risk_profile(equity: float) -> AccountRiskProfile:
         daily_drawdown_limit=daily_drawdown_limit,
         kill_switch_equity_floor=equity * (1.0 - kill_floor_drawdown),
         min_notional_to_trade=min_notional,
+    )
+
+
+def _maybe_launch_post_market_retrain() -> None:
+    global _POST_MARKET_RETRAIN_LAUNCHED_DATE
+    now_et = datetime.now(ET)
+    today_str = now_et.strftime("%Y%m%d")
+    time_hhmm = now_et.strftime("%H%M")
+
+    if time_hhmm < POST_MARKET_RETRAIN_START_ET or time_hhmm > "2000":
+        return
+    if POST_MARKET_RETRAIN_ONCE_PER_DAY and _POST_MARKET_RETRAIN_LAUNCHED_DATE == today_str:
+        return
+
+    script = PROJECT_ROOT / "scripts" / "post_market_retrain_pipeline.py"
+    if not script.exists():
+        write_event("post_market_retrain_failed", {"error": f"script_not_found: {script}"})
+        return
+
+    _POST_MARKET_RETRAIN_LAUNCHED_DATE = today_str
+    write_event("post_market_retrain_launched", {"date": today_str, "time_et": time_hhmm})
+    print(f"[post-market-retrain] launched date={today_str} time_et={time_hhmm}")
+
+    subprocess.Popen(
+        [sys.executable, str(script)],
+        cwd=str(PROJECT_ROOT),
+        env={**os.environ, "RL_DATA_DATE": DATA_TAG},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
@@ -3887,6 +3928,9 @@ def refresh_rl_intraday_structure_model(timeout_seconds: int = 900, config: Opti
         )
         return payload
 
+    write_event("rl_training_started", {"date": DATA_TAG, "timeout_seconds": timeout_seconds})
+    print(f"[rl-trainer] starting date={DATA_TAG} timeout={timeout_seconds}s")
+
     ok, output = run_python_script(
         RL_INTRADAY_STRUCTURE_TRAINER_PATH,
         timeout_seconds=timeout_seconds,
@@ -3898,14 +3942,28 @@ def refresh_rl_intraday_structure_model(timeout_seconds: int = 900, config: Opti
             "RL_ADD_LONG_ENABLED": "1",
         },
     )
+
+    rl_log_path = LOG_DIR / f"{DATA_TAG}_rl_trainer.log"
+    try:
+        rl_log_path.write_text(output or "", encoding="utf-8")
+        print(f"[rl-trainer] log written to {rl_log_path}")
+    except Exception as _log_exc:
+        print(f"[rl-trainer] could not write log: {_log_exc}")
+
     if ok:
         print("[rl-trainer] refreshed via subprocess")
         if output:
             print(output[-2500:])
-        write_event("rl_intraday_model_refreshed", {"output_tail": output[-2500:]})
+        write_event("rl_intraday_model_refreshed", {"output_tail": output[-2500:], "log_path": str(rl_log_path)})
     else:
-        print(f"[rl-trainer] refresh failed: {output}")
-        write_event("rl_intraday_model_refresh_failed", {"error": output})
+        print(f"[rl-trainer] refresh failed — see log: {rl_log_path}")
+        print(f"[rl-trainer] tail: {output[-1000:] if output else '(no output)'}")
+        write_event("rl_intraday_model_refresh_failed", {
+            "error": output[-2000:] if output else "",
+            "log_path": str(rl_log_path),
+            "model_path": str(RL_MODEL_PATH),
+            "model_exists": RL_MODEL_PATH.exists(),
+        })
 
     validation = validate_rl_intraday_structure_model(config)
     validation.update({
@@ -5293,7 +5351,12 @@ class MomentumSetupScanner:
             feed=self._feed(),
         )
 
-        bars = self.data.get_stock_bars(req).df
+        try:
+            bars = self.data.get_stock_bars(req).df
+        except Exception as exc:
+            print(f"[scanner] daily bar download failed: {exc}")
+            write_event("external_http_error", {"module": "_download_bars", "error": str(exc)[:300]})
+            return pd.DataFrame()
         if bars is None or bars.empty:
             return pd.DataFrame()
 
@@ -7454,7 +7517,27 @@ class MomentumSetupScanner:
         else:
             threshold_add = 0.0
 
-        threshold = float(getattr(self.config, "execution_alpha_min_score", 0.70)) + threshold_add
+        # Threshold resolution: env var > config value > hardcoded default (0.70)
+        _base_threshold = float(getattr(self.config, "execution_alpha_min_score", 0.70))
+        if EXECUTION_ALPHA_BUY_THRESHOLD:
+            _base_threshold = float(EXECUTION_ALPHA_BUY_THRESHOLD)
+            _threshold_source = "env:EXECUTION_ALPHA_BUY_THRESHOLD"
+        else:
+            _threshold_source = "config:execution_alpha_min_score"
+
+        _is_stream_confirmed_pivot = bool(
+            df.get("stream_confirmed", pd.Series(dtype=bool)).any()
+            if "stream_confirmed" in df.columns else False
+        )
+        if _is_stream_confirmed_pivot and EXECUTION_ALPHA_BUY_THRESHOLD_STREAM_CONFIRMED_PIVOT:
+            _base_threshold = float(EXECUTION_ALPHA_BUY_THRESHOLD_STREAM_CONFIRMED_PIVOT)
+            _threshold_source = "env:EXECUTION_ALPHA_BUY_THRESHOLD_STREAM_CONFIRMED_PIVOT"
+
+        threshold = _base_threshold + threshold_add
+        print(
+            f"[alpha-gate] threshold={threshold:.4f} source={_threshold_source}"
+            f" stream_confirmed_pivot={_is_stream_confirmed_pivot} risk_off={risk_off}"
+        )
 
         keep_cols = [
             "symbol",
@@ -7505,6 +7588,7 @@ class MomentumSetupScanner:
             print(blocked[[c for c in show if c in blocked.columns]].to_string(index=False))
 
             for _, row in blocked.iterrows():
+                _row_stream_confirmed_pivot = bool(row.get("stream_confirmed")) and bool(row.get("pivot_buy_signal"))
                 write_event(
                     "execution_alpha_buy_blocked",
                     {
@@ -7514,6 +7598,8 @@ class MomentumSetupScanner:
                         "cross_sectional_score": to_float(row.get("cross_sectional_score")),
                         "time_series_score": to_float(row.get("time_series_score")),
                         "threshold": threshold,
+                        "threshold_source": _threshold_source,
+                        "stream_confirmed_pivot": _row_stream_confirmed_pivot,
                     },
                 )
 
@@ -9415,6 +9501,8 @@ class ProductionOrderExecutor:
             save_df(pd.DataFrame(), LOG_DIR / f"order_plan_{cycle_id}.csv")
             save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
             self._write_account_equity_curve()
+            if POST_MARKET_RETRAIN_ENABLED:
+                _maybe_launch_post_market_retrain()
             return pd.DataFrame(), results, self.broker.get_account_snapshot(), pd.DataFrame([asdict(p) for p in self.broker.get_all_open_positions()])
 
         if self.scanner is not None:
@@ -9770,13 +9858,15 @@ class ProductionOrderExecutor:
 
         run.py merges those confirmed orders into each execution cycle.
         """
-        script_name = self.config.scanner.stream_confirmed_movement_script if self.config.scanner else "stream_confirmed_movement_gate.py"
+        script_name = self.config.scanner.stream_confirmed_movement_script if self.config.scanner else "stream_confirmed_movement_gate_trade_plan_trailing.py"
         script_path = PROJECT_ROOT / script_name
 
         if not script_path.exists():
             # fallback to the specific generated filename if user has not renamed it
             alt = PROJECT_ROOT / "stream_confirmed_movement_gate_trade_plan_trailing.py"
             script_path = alt if alt.exists() else script_path
+
+        print(f"[subprocess-check] stream_confirm_script={script_path} exists={script_path.exists()}")
 
         if not script_path.exists():
             print(f"[stream-confirm] script missing: {script_path}")
@@ -10215,6 +10305,18 @@ def _startup_safety_checks() -> None:
         f"strategy={STRATEGY_ID or 'default_scanner'}",
         flush=True,
     )
+
+    # Log resolved daily features path so multi-instance runs are diagnosable
+    _feat_candidates = [
+        OUT_DIR / f"{DATA_TAG}_daily_features.csv",
+        PROJECT_ROOT / "daily_system_outputs" / f"{DATA_TAG}_daily_features.csv",
+        PROJECT_ROOT / "daily_system_outputs" / "daily_features.csv",
+    ]
+    _env_feat = os.getenv("DAILY_FEATURES_PATH", "")
+    if _env_feat:
+        _feat_candidates.insert(0, Path(_env_feat))
+    _resolved_feat = next((p for p in _feat_candidates if p.exists()), _feat_candidates[0])
+    print(f"[features-path] resolved={_resolved_feat} exists={_resolved_feat.exists()}", flush=True)
 
 
 def _log_startup_strategy_diagnostics() -> None:

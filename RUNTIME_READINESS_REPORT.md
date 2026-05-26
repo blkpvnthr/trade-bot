@@ -469,3 +469,46 @@ These are preserved unchanged and must never regress:
 
 *This report was generated as part of the QuantumQuant K8s research platform runtime readiness review.*  
 *All variants are paper-trading only. No auto-promotion to live trading.*
+
+---
+
+## Local Multi-Instance Runtime (macOS, 3 bots)
+
+A lightweight alternative to Docker Compose for local development and research.
+Runs three strategy instances in separate background processes — one per Alpaca paper account.
+
+### Instance layout
+
+| Bot file | Strategy ID | Group |
+|----------|------------|-------|
+| `.env.bot01` | `tux_mtf_original` | Conservative MTF |
+| `.env.bot02` | `pivot_points` | Aggressive pivot |
+| `.env.bot03` | `liquidity_sweep` | Experimental |
+
+### Setup
+
+```bash
+# 1. Copy env examples and fill in Alpaca paper credentials
+cp .env.bot01.example .env.bot01   # edit: APCA_API_KEY_ID, APCA_API_SECRET_KEY
+cp .env.bot02.example .env.bot02
+cp .env.bot03.example .env.bot03
+
+# 2. Start all three instances (skips any bot whose .env file is missing)
+bash scripts/start_local_multi_instance.sh
+
+# 3. Check status (process alive + last event + equity)
+bash scripts/check_local_multi_instance.sh
+
+# 4. Live dashboard (refreshes every 5s, Ctrl+C to exit)
+bash scripts/watch_local_bot.sh
+
+# 5. Stop all gracefully (SIGTERM, waits 30s, SIGKILL if stuck)
+bash scripts/stop_local_multi_instance.sh
+```
+
+### Paper-only invariants
+- Each `.env.botNN.example` has `PAPER_ONLY=true` and `ALLOW_LIVE_TRADING=` (blank)
+- `_startup_safety_checks()` enforces both before any order submission
+- PID files are written to `.local_pids/` (git-ignored, auto-created)
+- Startup log per instance: `logs/execution/{STRATEGY_ID}/startup.log`
+- Execution events per instance: `logs/execution/{STRATEGY_ID}/{DATE}_execution_events.jsonl`

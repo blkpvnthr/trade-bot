@@ -73,7 +73,23 @@ from market_context_builder import TODAY_TAG
 THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 
-INPUT_PATH = PROJECT_ROOT / "daily_system_outputs" / f"{TODAY_TAG}_daily_features.csv"
+
+def resolve_daily_features_path(date_tag: str = TODAY_TAG) -> Path:
+    """Resolve daily_features.csv: system-data/YYYYMMDD/ > daily_system_outputs/ > env override."""
+    env_override = os.getenv("DAILY_FEATURES_PATH", "")
+    if env_override and Path(env_override).exists():
+        return Path(env_override)
+    new_path = PROJECT_ROOT / "system-data" / date_tag / f"{date_tag}_daily_features.csv"
+    if new_path.exists():
+        return new_path
+    old_dated = PROJECT_ROOT / "daily_system_outputs" / f"{date_tag}_daily_features.csv"
+    if old_dated.exists():
+        return old_dated
+    return new_path  # canonical path; let caller handle missing
+
+
+INPUT_PATH = resolve_daily_features_path()
+print(f"[features-path] resolved={INPUT_PATH} exists={INPUT_PATH.exists()}")
 OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 

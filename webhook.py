@@ -5,13 +5,13 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 
-load_dotenv()
+load_instance_env()
 
 # =============================================================================
 # Logging

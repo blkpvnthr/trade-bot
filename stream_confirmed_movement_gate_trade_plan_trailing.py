@@ -59,7 +59,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 
 from alpaca.data.enums import DataFeed
 from alpaca.data.live import StockDataStream
@@ -81,7 +81,7 @@ TODAY_TAG = datetime.now(ET).strftime("%Y%m%d")
 DATA_TAG = os.getenv("RUN_DATA_DATE", os.getenv("STREAM_CONFIRM_DATA_DATE", TODAY_TAG))
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-load_dotenv(PROJECT_ROOT / ".env")
+load_instance_env()
 
 OUT_DIR = PROJECT_ROOT / "system-data" / DATA_TAG
 LOG_DIR = PROJECT_ROOT / "logs" / "execution" / DATA_TAG
@@ -545,7 +545,19 @@ def fetch_recent_1m(symbol: str, lookback_days: int = 2) -> pd.DataFrame:
         end=end,
         feed=get_feed(),
     )
-    df = data_client().get_stock_bars(req).df
+    try:
+        df = data_client().get_stock_bars(req).df
+    except Exception as exc:
+        _preview = str(exc)[:300]
+        print(f"[stream-confirm] bar fetch failed symbol={symbol}: {exc}")
+        write_event("external_http_error", {
+            "module": "stream_confirmed_movement_gate",
+            "symbol": symbol,
+            "url_host": "api.alpaca.markets",
+            "status_code": getattr(getattr(exc, "response", None), "status_code", None),
+            "response_preview": _preview,
+        })
+        return pd.DataFrame()
     if df is None or df.empty:
         return pd.DataFrame()
 

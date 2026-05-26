@@ -12,7 +12,7 @@ from typing import Any
 import gymnasium as gym
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 from gymnasium import spaces
 from stable_baselines3 import PPO
 from zoneinfo import ZoneInfo
@@ -32,7 +32,7 @@ TODAY_TAG = datetime.now(ET).strftime("%Y%m%d")
 DATA_TAG = os.getenv("RL_DATA_DATE", YESTERDAY_TAG)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-load_dotenv(PROJECT_ROOT / ".env")
+load_instance_env()
 
 OUT_DIR = PROJECT_ROOT / "system-data" / f"{DATA_TAG}"
 LOG_DIR = PROJECT_ROOT / "logs" / "execution"
@@ -173,9 +173,9 @@ def _fetch_bars(
         df = client.get_stock_bars(req).df
     except Exception as exc:
         print(f"{log_prefix} bar fetch failed: {exc}")
-        return pd.DataFrame()
+        return pd.DataFrame(columns=["symbol", "timestamp", "open", "high", "low", "close", "volume"])
     if df is None or df.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=["symbol", "timestamp", "open", "high", "low", "close", "volume"])
     df = df.reset_index()
     df["symbol"] = df["symbol"].map(normalize_symbol)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)

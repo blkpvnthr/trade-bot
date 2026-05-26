@@ -55,7 +55,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 
 from market_context_builder import TODAY_TAG
 
@@ -94,7 +94,7 @@ THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 ENV_PATH = PROJECT_ROOT / ".env"
 
-load_dotenv(ENV_PATH, override=True)
+load_instance_env()
 
 OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
 LOG_DIR = PROJECT_ROOT / "logs" / "execution" / f"{TODAY_TAG}"

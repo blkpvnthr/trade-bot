@@ -51,14 +51,14 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
-from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 
 # ---------------------------------------------------------------------------
 # Bootstrap
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-load_dotenv(PROJECT_ROOT / ".env")
+load_instance_env()
 
 ET = ZoneInfo("America/New_York")
 

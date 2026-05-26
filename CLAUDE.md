@@ -31,6 +31,35 @@ Primary objectives:
 
 ---
 
+## Orchestration Architecture Rule
+
+`run.py` is the canonical top-level orchestrator and sole runtime entrypoint for the production trading system.
+
+Other Python files are subsystem modules. They may be invoked standalone for development and testing, but production and research workflows must be coordinated through `run.py`.
+
+**`run.py` owns:**
+- Session lifecycle (startup, premarket window, intraday loop, shutdown)
+- Sequencing of all pipeline stages (data → features → models → signals → execution)
+- All safety gates, kill switches, and risk controls
+- Diagnostics, journaling, and runtime state
+
+**Architectural invariants:**
+- No subsystem file should import `run.py` — imports flow one direction only
+- Do not create parallel orchestrators (no second entry points that bypass run.py's safety gates)
+- Circular imports involving `run.py` are forbidden
+- New production orchestration hooks go into `run.py` only
+
+**Standalone-runnable scripts** (acceptable outside run.py for dev/research):
+- Training scripts: `rl_intraday_structure_trainer.py`, `forecast_engine.py`, `build_intraday_training_dataset.py`
+- Evaluation scripts: `scripts/evaluate_variants.py`, `scripts/walkforward_strategy.py`
+- Tuning scripts: `tune_*.py`, `scripts/diagnose_strategy.py`
+- Webhook server: `webhook.py`
+- Visualization: `visualize_outputs.py`
+
+These may be invoked directly for offline work but should not bypass `run.py`'s safety gates in any production flow.
+
+---
+
 ## Core Philosophy
 
 The trading engine prioritizes survival and disciplined compounding over trade frequency.
@@ -422,6 +451,35 @@ Bearish override:
 
 - If `BEARISH_MARKET_DISABLE_NEW_LONGS=1`, new longs should be blocked during bearish regimes unless a strong override condition exists.
 - Strong override should require unusually high confidence, strong structure, and risk budget.
+
+---
+
+## Time-of-Day Regime Gating
+
+**Status:** Planned — Phase 4 (paper trading validation). Not yet implemented.
+
+When implemented, the time-of-day gate introduces session-aware buy-side discipline in `run.py`. All gating is configurable via env vars. The gate applies only to new buy entries — never to exits, stop-losses, or risk-reducing orders.
+
+**Session windows (ET, all boundaries configurable):**
+
+| Session | Default | Buy-side rule |
+|---------|---------|--------------|
+| Morning full-size | 09:30–11:30 | Full size, normal confirmation, ORB/pivot/momentum prioritized |
+| Midday reduced | 11:30–13:00 | Reduced size, stronger confirmation, optionally block low-quality entries |
+| Afternoon continuation | 13:00–15:30 | Continuation entries allowed, requires trend + VWAP + regime confirmation |
+| Close exit window | 15:30–16:00 | New buys blocked, exits prioritized |
+
+**Key env vars:** `TIME_OF_DAY_GATING_ENABLED`, `MORNING_FULL_SIZE_START/END`, `MIDDAY_REDUCED_MODE_START/END`, `AFTERNOON_CONTINUATION_START/END`, `CLOSE_EXIT_WINDOW_START/END`.
+
+**Behavioral invariants Claude must preserve when implementing this feature:**
+
+- Never block exits, stop-losses, or risk-reducing orders via the time gate.
+- Never weaken kill switches, equity floors, or max-loss limits.
+- Never alter Alpaca credentials or paper/live mode flags.
+- All skipped buy signals must be logged: `[time-gate] <session_name>`, with `blocked_by=time_gate` in the skip reason.
+- `blocked_by_time_gate` count must be tracked in the execution journal.
+- If `TIME_OF_DAY_GATING_ENABLED=false`, the gate is fully bypassed — no behavior change.
+- Default to conservative session boundaries; do not widen windows without explicit instruction.
 
 ---
 

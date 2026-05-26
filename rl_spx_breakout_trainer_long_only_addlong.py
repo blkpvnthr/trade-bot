@@ -41,7 +41,7 @@ from zoneinfo import ZoneInfo
 import gymnasium as gym
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 from gymnasium import spaces
 
 try:
@@ -74,7 +74,7 @@ DATA_TAG = os.getenv("RL_DATA_DATE", os.getenv("SPX_RL_DATA_DATE", TODAY_TAG))
 # =============================================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-load_dotenv(PROJECT_ROOT / ".env")
+load_instance_env()
 
 OUT_DIR = PROJECT_ROOT / "system-data" / f"{DATA_TAG}_SPX"
 OUT_DIR.mkdir(parents=True, exist_ok=True)

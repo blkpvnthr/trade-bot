@@ -108,7 +108,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 
 try:
     import torch
@@ -139,7 +139,7 @@ TODAY_TAG = datetime.now(ET).strftime("%Y%m%d")
 DATA_TAG = os.getenv("RUN_DATA_DATE", os.getenv("DEEPLOB_DATA_DATE", TODAY_TAG))
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-load_dotenv(PROJECT_ROOT / ".env")
+load_instance_env()
 
 OUT_DIR = PROJECT_ROOT / "system-data" / DATA_TAG
 LOG_DIR = PROJECT_ROOT / "logs" / "execution" / DATA_TAG

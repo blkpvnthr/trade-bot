@@ -1,8 +1,13 @@
 # =============================================================================
 # Environment & secrets
 # =============================================================================
+# Block all .env files everywhere; allow only .env.example templates
 .env
 .env.*
+**/.env
+**/.env.*
+!**/.env.example
+!.env.example
 
 # =============================================================================
 # Python
@@ -38,6 +43,14 @@ daily_system_outputs/
 # Execution and orchestrator logs
 logs/
 execution_logs/
+
+# Local multi-instance runtime PID files
+.local_pids/
+
+# Allow bot env examples (credentials are REPLACE_ME placeholders)
+!.env.bot01.example
+!.env.bot02.example
+!.env.bot03.example
 
 # =============================================================================
 # Generated data files
