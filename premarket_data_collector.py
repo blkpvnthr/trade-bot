@@ -90,6 +90,7 @@ MARKET_CONTEXT_INTERVAL_SECONDS = int(os.getenv("PREMARKET_MARKET_CONTEXT_INTERV
 PREMARKET_PLAN_INTERVAL_SECONDS = int(os.getenv("PREMARKET_PLAN_INTERVAL_SECONDS", "300"))
 INTRADAY_DATASET_INTERVAL_SECONDS = int(os.getenv("PREMARKET_INTRADAY_DATASET_INTERVAL_SECONDS", "600"))
 OPTIONS_FLOW_INTERVAL_SECONDS = int(os.getenv("PREMARKET_OPTIONS_FLOW_INTERVAL_SECONDS", "600"))
+PIVOT_REVERSAL_INTERVAL_SECONDS = int(os.getenv("PREMARKET_PIVOT_REVERSAL_INTERVAL_SECONDS", "900"))
 
 SCRIPT_TIMEOUT_SECONDS = int(os.getenv("PREMARKET_SCRIPT_TIMEOUT_SECONDS", "900"))
 
@@ -99,6 +100,7 @@ RUN_MARKET_CONTEXT = os.getenv("PREMARKET_RUN_MARKET_CONTEXT", "1").lower() in {
 RUN_PREMARKET_PLAN = os.getenv("PREMARKET_RUN_PREMARKET_PLAN", "1").lower() in {"1", "true", "yes"}
 RUN_INTRADAY_DATASET = os.getenv("PREMARKET_RUN_INTRADAY_DATASET", "1").lower() in {"1", "true", "yes"}
 RUN_OPTIONS_FLOW = os.getenv("PREMARKET_RUN_OPTIONS_FLOW", "1").lower() in {"1", "true", "yes"}
+RUN_PIVOT_REVERSAL = os.getenv("PREMARKET_RUN_PIVOT_REVERSAL", "0").lower() in {"1", "true", "yes"}
 
 # Run one full cycle even if launched outside the time window.
 RUN_ONCE_IF_OUTSIDE_WINDOW = os.getenv("PREMARKET_RUN_ONCE_IF_OUTSIDE_WINDOW", "0").lower() in {"1", "true", "yes"}
@@ -151,6 +153,13 @@ TASKS = [
         script="options_booster.py",
         enabled=RUN_OPTIONS_FLOW,
         interval_seconds=OPTIONS_FLOW_INTERVAL_SECONDS,
+        required=False,
+    ),
+    CollectorTask(
+        name="pivot_reversal_scanner",
+        script="pivot_reversal_scanner.py",
+        enabled=RUN_PIVOT_REVERSAL,
+        interval_seconds=PIVOT_REVERSAL_INTERVAL_SECONDS,
         required=False,
     ),
 ]
