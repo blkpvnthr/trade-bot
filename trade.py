@@ -476,7 +476,9 @@ class ScannerConfig:
     rl_shadow_mode: bool = True
     rl_block_buys_when_model_invalid: bool = False
 
-
+    live_experience_log_skips: bool = True
+    live_experience_log_orders: bool = True
+    live_experience_log_errors: bool = True
     live_experience_logging_enabled: bool = True
     live_experience_write_parquet: bool = True
     live_experience_flush_every_event: bool = True
@@ -702,7 +704,7 @@ def build_account_risk_profile(equity: float) -> AccountRiskProfile:
         daily_drawdown_limit = -0.015
         kill_floor_drawdown = 0.10
         min_notional = 75.0
-    elif equity < 100_000:
+    elif equity < 50_000:
         band = "SMALL"
         cash_buffer_pct = 0.10
         min_cash_buffer = max(2_500.0, equity * 0.07)
@@ -715,6 +717,19 @@ def build_account_risk_profile(equity: float) -> AccountRiskProfile:
         daily_drawdown_limit = -0.018
         kill_floor_drawdown = 0.10
         min_notional = 100.0
+    elif equity < 100_000:
+        band = "MID_60K"
+        cash_buffer_pct = 0.09
+        min_cash_buffer = max(4_500.0, equity * 0.06)
+        max_gross_exposure = 0.84
+        max_position_weight = 0.12
+        max_single_order_notional_pct = 0.05
+        max_order_dollars = min(6_000.0, equity * 0.065)
+        max_daily_loss_pct = 0.017
+        max_daily_loss_dollars = min(1_500.0, equity * 0.017)
+        daily_drawdown_limit = -0.017
+        kill_floor_drawdown = 0.095
+        min_notional = 150.0
     elif equity < 250_000:
         band = "GROWTH"
         cash_buffer_pct = 0.08
@@ -4091,14 +4106,18 @@ class ProductionOrderExecutor:
         direction: Optional[dict[str, Any]] = None,
         message: str = "",
     ) -> None:
-        if not self.config.scanner.live_experience_logging_enabled:
+        if not getattr(self.config.scanner, "live_experience_logging_enabled", True):
             return
 
-        if stage == "skipped" and not self.config.scanner.live_experience_log_skips:
+        if stage == "skipped" and not getattr(self.config.scanner, "live_experience_log_skips", True):
             return
-        if stage in {"submitted", "order", "filled"} and not self.config.scanner.live_experience_log_orders:
+        if stage in {"submitted", "order", "filled"} and not getattr(
+            self.config.scanner,
+            "live_experience_log_orders",
+            True,
+        ):
             return
-        if stage in {"error", "api_error"} and not self.config.scanner.live_experience_log_errors:
+        if stage in {"error", "api_error"} and not getattr(self.config.scanner, "live_experience_log_errors", True):
             return
 
         symbol = safe_symbol(
@@ -4117,7 +4136,10 @@ class ProductionOrderExecutor:
             direction=direction,
             message=message,
         )
-        append_live_experience(row, write_parquet=self.config.scanner.live_experience_write_parquet)
+        append_live_experience(
+            row,
+            write_parquet=getattr(self.config.scanner, "live_experience_write_parquet", True),
+        )
 
     def _gross_exposure(self, equity: float) -> float:
         if equity <= 0:
@@ -5931,4 +5953,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

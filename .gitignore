@@ -51,6 +51,7 @@ execution_logs/
 !.env.bot01.example
 !.env.bot02.example
 !.env.bot03.example
+!.env.bot04.example
 
 # =============================================================================
 # Generated data files

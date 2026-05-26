@@ -2635,6 +2635,8 @@ class ScannerConfig:
 
 
     live_experience_log_skips: bool = True
+    live_experience_log_orders: bool = True
+    live_experience_log_errors: bool = True
     live_experience_logging_enabled: bool = True
     live_experience_write_parquet: bool = True
     live_experience_flush_every_event: bool = True
@@ -2755,6 +2757,19 @@ class ScannerConfig:
     sr_rl_max_order_dollars: float = 6500.0
     sr_rl_submit_trailing_stop_after_fill: bool = True
     sr_rl_trail_percent_default: float = 0.75
+
+    # 1-minute liquidity-sweep scalping layer.
+    # Detects 9:30 opening-range sweeps, reclaims, and bullish engulfs on
+    # individual symbols, then submits bracket orders (stop + target attached).
+    # Disabled by default; opt in with SCALP_LAYER_ENABLED=1.
+    scalping_layer_enabled: bool = os.getenv("SCALP_LAYER_ENABLED", "0").lower() in {"1", "true", "yes"}
+    scalping_layer_symbols: str = os.getenv("SCALP_SYMBOLS", "")
+    scalping_layer_scan_seconds: int = int(os.getenv("SCALP_SCAN_SECONDS", "10"))
+    scalping_layer_execute_orders: bool = os.getenv("SCALP_EXECUTE_ORDERS", "1").lower() in {"1", "true", "yes"}
+    scalping_layer_max_order_dollars: float = float(os.getenv("SCALP_MAX_ORDER_DOLLARS", "2000.0"))
+    scalping_layer_target_rr: float = float(os.getenv("SCALP_TARGET_RR", "3.0"))
+    scalping_layer_cooldown_minutes: int = int(os.getenv("SCALP_COOLDOWN_MINUTES", "5"))
+    scalping_layer_max_trades_per_day: int = int(os.getenv("SCALP_MAX_TRADES_PER_DAY_TOTAL", "6"))
 
 
 @dataclass
@@ -3017,7 +3032,7 @@ def build_account_risk_profile(equity: float) -> AccountRiskProfile:
         daily_drawdown_limit = -0.015
         kill_floor_drawdown = 0.10
         min_notional = 75.0
-    elif equity < 100_000:
+    elif equity < 50_000:
         band = "SMALL"
         cash_buffer_pct = 0.10
         min_cash_buffer = max(2_500.0, equity * 0.07)
@@ -3030,6 +3045,19 @@ def build_account_risk_profile(equity: float) -> AccountRiskProfile:
         daily_drawdown_limit = -0.018
         kill_floor_drawdown = 0.10
         min_notional = 100.0
+    elif equity < 100_000:
+        band = "MID_60K"
+        cash_buffer_pct = 0.09
+        min_cash_buffer = max(4_500.0, equity * 0.06)
+        max_gross_exposure = 0.84
+        max_position_weight = 0.12
+        max_single_order_notional_pct = 0.05
+        max_order_dollars = min(6_000.0, equity * 0.065)
+        max_daily_loss_pct = 0.017
+        max_daily_loss_dollars = min(1_500.0, equity * 0.017)
+        daily_drawdown_limit = -0.017
+        kill_floor_drawdown = 0.095
+        min_notional = 150.0
     elif equity < 250_000:
         band = "GROWTH"
         cash_buffer_pct = 0.08
@@ -7546,6 +7574,12 @@ class MomentumSetupScanner:
             "execution_alpha_score",
         ]
 
+        # The gate runs before and after pyramid orders; keep the second merge
+        # from suffixing away the score columns produced by the first pass.
+        df = df.drop(
+            columns=keep_cols[1:] + ["execution_alpha_pass"],
+            errors="ignore",
+        )
         df = df.merge(
             score_df[keep_cols].drop_duplicates("symbol"),
             on="symbol",
@@ -7905,14 +7939,18 @@ class ProductionOrderExecutor:
         direction: Optional[dict[str, Any]] = None,
         message: str = "",
     ) -> None:
-        if not self.config.scanner.live_experience_logging_enabled:
+        if not getattr(self.config.scanner, "live_experience_logging_enabled", True):
             return
 
-        if stage == "skipped" and not self.config.scanner.live_experience_log_skips:
+        if stage == "skipped" and not getattr(self.config.scanner, "live_experience_log_skips", True):
             return
-        if stage in {"submitted", "order", "filled"} and not self.config.scanner.live_experience_log_orders:
+        if stage in {"submitted", "order", "filled"} and not getattr(
+            self.config.scanner,
+            "live_experience_log_orders",
+            True,
+        ):
             return
-        if stage in {"error", "api_error"} and not self.config.scanner.live_experience_log_errors:
+        if stage in {"error", "api_error"} and not getattr(self.config.scanner, "live_experience_log_errors", True):
             return
 
         symbol = safe_symbol(
@@ -7931,7 +7969,10 @@ class ProductionOrderExecutor:
             direction=direction,
             message=message,
         )
-        append_live_experience(row, write_parquet=self.config.scanner.live_experience_write_parquet)
+        append_live_experience(
+            row,
+            write_parquet=getattr(self.config.scanner, "live_experience_write_parquet", True),
+        )
 
     def _gross_exposure(self, equity: float) -> float:
         if equity <= 0:
@@ -8150,6 +8191,26 @@ class ProductionOrderExecutor:
         for col in cols:
             if col not in out.columns:
                 out[col] = default_reason if col == "reason" else np.nan
+
+        # Confirmation layers publish executable qty/notional fields rather
+        # than optimizer delta fields; retain that sizing after frame merges.
+        qty_fallback = pd.to_numeric(
+            out["order_qty"] if "order_qty" in out.columns else pd.Series(np.nan, index=out.index),
+            errors="coerce",
+        )
+        notional_fallback = pd.to_numeric(
+            out["abs_delta_dollars"] if "abs_delta_dollars" in out.columns else pd.Series(np.nan, index=out.index),
+            errors="coerce",
+        )
+        if "capped_dollars" in out.columns:
+            notional_fallback = notional_fallback.fillna(
+                pd.to_numeric(out["capped_dollars"], errors="coerce")
+            )
+        notional_fallback = notional_fallback.fillna(
+            qty_fallback * pd.to_numeric(out["price"], errors="coerce")
+        )
+        out["delta_shares"] = pd.to_numeric(out["delta_shares"], errors="coerce").fillna(qty_fallback)
+        out["delta_dollars"] = pd.to_numeric(out["delta_dollars"], errors="coerce").fillna(notional_fallback)
 
         out["symbol"] = out["symbol"].map(safe_symbol)
         out["side"] = out["side"].astype(str).str.lower().str.strip()
@@ -8548,8 +8609,10 @@ class ProductionOrderExecutor:
                 if plan.empty:
                     return pd.DataFrame()
 
-        plan["abs_delta_shares"] = plan["delta_shares"].abs().fillna(0)
-        plan["abs_delta_dollars"] = plan["delta_dollars"].abs().fillna(0)
+        plan["delta_shares"] = pd.to_numeric(plan["delta_shares"], errors="coerce").fillna(0.0)
+        plan["delta_dollars"] = pd.to_numeric(plan["delta_dollars"], errors="coerce").fillna(0.0)
+        plan["abs_delta_shares"] = plan["delta_shares"].abs().astype(float)
+        plan["abs_delta_dollars"] = plan["delta_dollars"].abs().astype(float)
         _low_notional_buys = plan[(plan["side"] == "buy") & (plan["abs_delta_dollars"] < self.config.min_notional_to_trade)]
         if not _low_notional_buys.empty:
             for _, _r in _low_notional_buys.iterrows():
@@ -8558,15 +8621,20 @@ class ProductionOrderExecutor:
         if plan.empty:
             return pd.DataFrame()
 
-        plan["confidence_used"] = plan.apply(self._confidence_for_row, axis=1)
-        plan["confidence_multiplier"] = plan["confidence_used"].map(self._confidence_multiplier)
+        plan["confidence_used"] = pd.to_numeric(
+            plan.apply(self._confidence_for_row, axis=1), errors="coerce"
+        ).fillna(0.0).astype(float)
+        plan["confidence_multiplier"] = pd.to_numeric(
+            plan["confidence_used"].map(self._confidence_multiplier), errors="coerce"
+        ).fillna(1.0).astype(float)
 
         buy_mask = plan["side"] == "buy"
-        plan.loc[buy_mask, "abs_delta_dollars"] *= plan.loc[buy_mask, "confidence_multiplier"]
+        adjusted_buy_dollars = plan["abs_delta_dollars"] * plan["confidence_multiplier"]
+        plan["abs_delta_dollars"] = plan["abs_delta_dollars"].where(~buy_mask, adjusted_buy_dollars)
 
         max_order_notional = self._max_order_notional(equity)
-        plan.loc[buy_mask, "capped_dollars"] = plan.loc[buy_mask, "abs_delta_dollars"].clip(upper=max_order_notional)
-        plan.loc[~buy_mask, "capped_dollars"] = plan.loc[~buy_mask, "abs_delta_dollars"]
+        capped_buy_dollars = plan["abs_delta_dollars"].clip(upper=max_order_notional)
+        plan["capped_dollars"] = plan["abs_delta_dollars"].where(~buy_mask, capped_buy_dollars).astype(float)
 
         plan["order_qty"] = plan["abs_delta_shares"].fillna(0).astype(int)
         qty_from_dollars = (plan["order_qty"] <= 0) & (plan["price"] > 0)
@@ -9653,6 +9721,9 @@ class ProductionOrderExecutor:
     def _start_spx_price_action_layer(self) -> None:
         if not self.config.scanner or not self.config.scanner.spx_price_action_layer_enabled:
             return
+        if SPX_LAYER_ENABLED and SPX_LAYER_INTERNAL_SUBPROCESS:
+            print("[spx-layer] subprocess mode active; skipping duplicate in-process layer")
+            return
         if getattr(self, "_spx_price_action_thread_started", False):
             return
 
@@ -9911,6 +9982,54 @@ class ProductionOrderExecutor:
                 write_event("stream_confirm_watcher_error", {"error": str(exc)})
                 time.sleep(10)
 
+    def _start_scalping_layer(self) -> None:
+        if not self.config.scanner or not self.config.scanner.scalping_layer_enabled:
+            return
+        if getattr(self, "_scalping_thread_started", False):
+            return
+        self._scalping_thread_started = True
+        thread = threading.Thread(
+            target=self._scalping_loop,
+            name="scalping-layer",
+            daemon=True,
+        )
+        thread.start()
+        print(
+            "[scalp-layer] thread started "
+            f"execute={self.config.scanner.scalping_layer_execute_orders} "
+            f"scan_seconds={self.config.scanner.scalping_layer_scan_seconds} "
+            f"symbols={self.config.scanner.scalping_layer_symbols or '(from premarket plan)'}"
+        )
+
+    def _scalping_loop(self) -> None:
+        scan_seconds = max(5, int(self.config.scanner.scalping_layer_scan_seconds if self.config.scanner else 10))
+        env_overrides: dict[str, str] = {
+            "SCALP_EXECUTE_ORDERS": "1" if (self.config.scanner and self.config.scanner.scalping_layer_execute_orders) else "0",
+            "SCALP_MAX_ORDER_DOLLARS": str(self.config.scanner.scalping_layer_max_order_dollars if self.config.scanner else 2000.0),
+            "SCALP_TARGET_RR": str(self.config.scanner.scalping_layer_target_rr if self.config.scanner else 3.0),
+            "SCALP_COOLDOWN_MINUTES": str(self.config.scanner.scalping_layer_cooldown_minutes if self.config.scanner else 5),
+            "SCALP_MAX_TRADES_PER_DAY_TOTAL": str(self.config.scanner.scalping_layer_max_trades_per_day if self.config.scanner else 6),
+        }
+        if self.config.scanner and self.config.scanner.scalping_layer_symbols:
+            env_overrides["SCALP_SYMBOLS"] = self.config.scanner.scalping_layer_symbols
+        for k, v in env_overrides.items():
+            os.environ[k] = v
+
+        try:
+            from scalping_execution_layer import run_once as _scalp_run_once
+        except ImportError as exc:
+            print(f"[scalp-layer] import failed: {exc}")
+            write_event("scalp_layer_import_failed", {"error": str(exc)})
+            return
+
+        while True:
+            try:
+                _scalp_run_once()
+            except Exception as exc:
+                print(f"[scalp-layer] cycle error: {exc}")
+                write_event("scalp_cycle_error", {"error": str(exc)})
+            time.sleep(scan_seconds)
+
     def run(self) -> None:
         print("[executor] 13K account executor starting")
         print(f"[executor] journal={JOURNAL_PATH}")
@@ -9950,6 +10069,12 @@ class ProductionOrderExecutor:
             print(f"[executor] sr_rl_agent_enabled={self.config.scanner.sr_rl_agent_enabled}")
             print(f"[executor] sr_rl_signals={SR_RL_SIGNALS_PATH}")
             print(f"[executor] sr_rl_model={SR_RL_MODEL_PATH}")
+            print(f"[executor] scalping_layer_enabled={self.config.scanner.scalping_layer_enabled}")
+            if self.config.scanner.scalping_layer_enabled:
+                print(f"[executor] scalping_layer_symbols={self.config.scanner.scalping_layer_symbols or '(from premarket plan)'}")
+                print(f"[executor] scalping_layer_execute_orders={self.config.scanner.scalping_layer_execute_orders}")
+                print(f"[executor] scalping_layer_max_order_dollars=${self.config.scanner.scalping_layer_max_order_dollars:,.0f}")
+                print(f"[executor] scalping_layer_target_rr={self.config.scanner.scalping_layer_target_rr}")
         try:
             acct = self.broker.get_account_snapshot()
             profile = self._risk_profile(acct.equity)
@@ -10020,6 +10145,7 @@ class ProductionOrderExecutor:
         self._start_spx_price_action_layer()
         self._start_sr_rl_agent()
         self._start_stream_confirmed_movement_gate()
+        self._start_scalping_layer()
 
         if self.config.poll_once:
             self.run_cycle_from_files()
@@ -10507,6 +10633,21 @@ def main() -> None:
         _SHUTDOWN_EVENT.set()
 
     signal.signal(signal.SIGTERM, _handle_sigterm)
+
+    # ── Instance role dispatch ────────────────────────────────────────────
+    # When INSTANCE_ROLE=webhook_order_router, run the webhook router loop
+    # instead of the main scanner/executor. All Alpaca safety gates apply
+    # because the router has its own kill-switch and daily-loss checks.
+    _instance_role = os.getenv("INSTANCE_ROLE", "").strip().lower()
+    if _instance_role == "webhook_order_router":
+        print(f"[startup] INSTANCE_ROLE=webhook_order_router — launching webhook order router")
+        try:
+            from webhook_order_router import main as _whr_main
+            _whr_main()
+        except ImportError as exc:
+            print(f"[startup] webhook_order_router import failed: {exc}", flush=True)
+            sys.exit(1)
+        return
 
     # ── Fail fast if environment is unsafe or incomplete ──────────────────
     _startup_safety_checks()

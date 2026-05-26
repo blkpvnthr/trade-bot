@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 cd "$(dirname "$0")/.."
 
-for STRATEGY_ID in tux_mtf_original pivot_points liquidity_sweep; do
+for STRATEGY_ID in tux_mtf_original pivot_points liquidity_sweep webhook_order_router; do
   PID_FILE=".local_pids/${STRATEGY_ID}.pid"
   [[ ! -f "$PID_FILE" ]] && continue
   PID=$(cat "$PID_FILE")

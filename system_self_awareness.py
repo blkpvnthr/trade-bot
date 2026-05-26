@@ -64,6 +64,7 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------------------------------------------------------------------
 
 SA_MAX_FILE_AGE_MINUTES: float = float(os.getenv("SA_MAX_FILE_AGE_MINUTES", "20"))
+SA_SESSION_FILE_AGE_MINUTES: float = float(os.getenv("SA_SESSION_FILE_AGE_MINUTES", "600"))
 SA_CRITICAL_FILE_AGE_MINUTES: float = float(os.getenv("SA_CRITICAL_FILE_AGE_MINUTES", "60"))
 SA_HALT_EXEC_RISK: float = float(os.getenv("SA_HALT_EXEC_RISK", "0.85"))
 SA_SAFE_EXEC_RISK: float = float(os.getenv("SA_SAFE_EXEC_RISK", "0.65"))
@@ -293,9 +294,11 @@ def check_data_freshness() -> dict[str, Any]:
         score_parts.append(_check(name, path, weight, max_age))
         total_weight += weight
 
-    _add("market_context", MARKET_CONTEXT_PATH, 0.20, SA_MAX_FILE_AGE_MINUTES)
-    _add("premarket_plan", PREMARKET_PLAN_PATH, 0.25, SA_MAX_FILE_AGE_MINUTES)
-    _add("structure_map", STRUCTURE_MAP_PATH, 0.20, SA_MAX_FILE_AGE_MINUTES)
+    # Session planning artifacts are generated before the open and remain
+    # valid for that trading session; live streams retain the short TTL.
+    _add("market_context", MARKET_CONTEXT_PATH, 0.20, SA_SESSION_FILE_AGE_MINUTES)
+    _add("premarket_plan", PREMARKET_PLAN_PATH, 0.25, SA_SESSION_FILE_AGE_MINUTES)
+    _add("structure_map", STRUCTURE_MAP_PATH, 0.20, SA_SESSION_FILE_AGE_MINUTES)
     _add("feature_stream", FEATURE_STREAM_CSV_PATH, 0.15, SA_MAX_FILE_AGE_MINUTES)
     _add("forecast_ensemble", FORECAST_ENSEMBLE_PATH, 0.10, SA_MAX_FILE_AGE_MINUTES * 3)
     _add("journal", JOURNAL_PATH, 0.05, SA_MAX_FILE_AGE_MINUTES * 6)

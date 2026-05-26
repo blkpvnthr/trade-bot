@@ -6,6 +6,7 @@ INSTANCES=(
   "tux_mtf_original .env.bot01"
   "pivot_points .env.bot02"
   "liquidity_sweep .env.bot03"
+  "webhook_order_router .env.bot04"
 )
 
 mkdir -p .local_pids

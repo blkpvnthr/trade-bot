@@ -2,7 +2,7 @@
 cd "$(dirname "$0")/.."
 TODAY=$(date +%Y%m%d)
 
-for STRATEGY_ID in tux_mtf_original pivot_points liquidity_sweep; do
+for STRATEGY_ID in tux_mtf_original pivot_points liquidity_sweep webhook_order_router; do
   PID_FILE=".local_pids/${STRATEGY_ID}.pid"
   EVENTS="logs/execution/${STRATEGY_ID}/${TODAY}_execution_events.jsonl"
   METRICS="logs/execution/${STRATEGY_ID}/metrics.json"
