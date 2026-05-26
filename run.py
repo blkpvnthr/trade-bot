@@ -192,6 +192,23 @@ BEARISH_MARKET_DISABLE_NEW_LONGS = os.getenv("BEARISH_MARKET_DISABLE_NEW_LONGS",
 BEARISH_MARKET_MIN_RL_CONFIDENCE = float(os.getenv("BEARISH_MARKET_MIN_RL_CONFIDENCE", "0.85"))
 MIXED_MARKET_BUY_SIZE_MULTIPLIER = float(os.getenv("MIXED_MARKET_BUY_SIZE_MULTIPLIER", "0.80"))
 
+# Research-derived intraday execution quality filters (buy-side only; exits always allowed)
+# Heston et al. 2010: lower liquidity/higher adverse selection during lunch and pre-close
+TIME_OF_DAY_KILL_WINDOWS_ENABLED = os.getenv("TIME_OF_DAY_KILL_WINDOWS_ENABLED", "1").lower() in {"1", "true", "yes"}
+TIME_OF_DAY_LUNCH_WINDOW_START = os.getenv("TIME_OF_DAY_LUNCH_WINDOW_START", "11:30")
+TIME_OF_DAY_LUNCH_WINDOW_END = os.getenv("TIME_OF_DAY_LUNCH_WINDOW_END", "12:30")
+TIME_OF_DAY_CLOSE_WINDOW_START = os.getenv("TIME_OF_DAY_CLOSE_WINDOW_START", "15:45")
+TIME_OF_DAY_CLOSE_WINDOW_END = os.getenv("TIME_OF_DAY_CLOSE_WINDOW_END", "16:00")
+# Vince 1992: reduce position size as session drawdown increases
+DRAWDOWN_GRADUATED_SIZING_ENABLED = os.getenv("DRAWDOWN_GRADUATED_SIZING_ENABLED", "1").lower() in {"1", "true", "yes"}
+# Skip buys where bid-ask spread exceeds threshold (execution quality filter)
+SPREAD_AWARE_FILTER_ENABLED = os.getenv("SPREAD_AWARE_FILTER_ENABLED", "1").lower() in {"1", "true", "yes"}
+SPREAD_AWARE_MAX_BPS = float(os.getenv("SPREAD_AWARE_MAX_BPS", "10.0"))
+# ATR expansion: reduce buy size when intraday volatility is elevated
+VOLATILITY_EXPANSION_FILTER_ENABLED = os.getenv("VOLATILITY_EXPANSION_FILTER_ENABLED", "1").lower() in {"1", "true", "yes"}
+VOLATILITY_EXPANSION_ATR_THRESHOLD = float(os.getenv("VOLATILITY_EXPANSION_ATR_THRESHOLD", "0.030"))
+VOLATILITY_EXPANSION_SIZE_MULTIPLIER = float(os.getenv("VOLATILITY_EXPANSION_SIZE_MULTIPLIER", "0.50"))
+
 # Post-market retraining hook — disabled by default, never runs during market hours
 POST_MARKET_RETRAIN_ENABLED = os.getenv("POST_MARKET_RETRAIN_ENABLED", "false").lower() in {"1", "true", "yes"}
 POST_MARKET_RETRAIN_START_ET = os.getenv("POST_MARKET_RETRAIN_START_ET", "1605")
@@ -5129,7 +5146,7 @@ class AlpacaBroker:
         positions: list[BrokerPosition] = []
         for pos in raw_positions:
             qty = to_float(getattr(pos, "qty", 0.0))
-            if qty <= 0:
+            if qty == 0:
                 continue
             positions.append(
                 BrokerPosition(
@@ -7977,7 +7994,11 @@ class ProductionOrderExecutor:
     def _gross_exposure(self, equity: float) -> float:
         if equity <= 0:
             return 0.0
-        return sum(max(0.0, float(p.market_value)) for p in self.broker.get_all_open_positions()) / equity
+        try:
+            raw = self.broker.trading.get_all_positions()
+            return sum(abs(to_float(getattr(p, "market_value", 0.0))) for p in raw) / equity
+        except Exception:
+            return sum(abs(float(p.market_value)) for p in self.broker.get_all_open_positions()) / equity
 
     def _risk_profile(self, equity: float) -> AccountRiskProfile:
         return build_account_risk_profile(equity)
@@ -8813,6 +8834,36 @@ class ProductionOrderExecutor:
                     row = row.copy()
                     row["direction_gate_bypassed"] = "orb_8am_liquidity_sweep_fvg"
 
+            if not skip_message and side == "sell":
+                held = self.broker.get_position(symbol)
+                held_qty = int(held.qty) if held.qty > 0 else 0
+                if held_qty == 0:
+                    skip_message = f"sell_no_long_position_held qty={held.qty:.0f}"
+                elif qty > held_qty:
+                    qty = held_qty
+                    est_notional = qty * price
+                    print(f"[sell-cap] {symbol}: sell qty capped to held={held_qty} to prevent short")
+
+            # -- Time-of-day kill windows (buy-side only; never blocks exits) --
+            if not skip_message and side == "buy" and TIME_OF_DAY_KILL_WINDOWS_ENABLED:
+                now_et = datetime.now(ET)
+                et_hhmm = now_et.strftime("%H:%M")
+                if TIME_OF_DAY_LUNCH_WINDOW_START <= et_hhmm < TIME_OF_DAY_LUNCH_WINDOW_END:
+                    skip_message = f"time_gate_lunch_lull_{TIME_OF_DAY_LUNCH_WINDOW_START}-{TIME_OF_DAY_LUNCH_WINDOW_END}"
+                    print(f"[time-gate] blocked BUY {symbol} during lunch lull {et_hhmm} ET")
+                elif TIME_OF_DAY_CLOSE_WINDOW_START <= et_hhmm < TIME_OF_DAY_CLOSE_WINDOW_END:
+                    skip_message = f"time_gate_close_window_{TIME_OF_DAY_CLOSE_WINDOW_START}-{TIME_OF_DAY_CLOSE_WINDOW_END}"
+                    print(f"[time-gate] blocked BUY {symbol} during close window {et_hhmm} ET")
+
+            # -- Spread-aware execution quality filter (buy-side only) --
+            if not skip_message and side == "buy" and SPREAD_AWARE_FILTER_ENABLED:
+                spread_pct = to_float(row.get("spread_pct", feature_context.get("spread_pct", -1.0)))
+                if spread_pct >= 0:
+                    spread_bps = spread_pct * 10_000
+                    if spread_bps > SPREAD_AWARE_MAX_BPS:
+                        skip_message = f"spread_too_wide spread_bps={spread_bps:.1f} max={SPREAD_AWARE_MAX_BPS:.1f}"
+                        print(f"[spread-gate] blocked BUY {symbol}: {spread_bps:.1f}bps > {SPREAD_AWARE_MAX_BPS:.1f}bps threshold")
+
             if not skip_message and side == "buy":
                 cash_buffer = self._cash_buffer(equity)
                 max_order_notional = self._max_order_notional(equity)
@@ -8832,6 +8883,33 @@ class ProductionOrderExecutor:
                         qty = int(gross_room // price) if price > 0 else 0
                         est_notional = qty * price
                         print(f"[clip] BUY {symbol}: clipped to qty={qty} by gross exposure room")
+
+                    # -- Drawdown-graduated sizing (Vince 1992): reduce size as session DD increases --
+                    if DRAWDOWN_GRADUATED_SIZING_ENABLED:
+                        kill_state = self._read_kill_state()
+                        start_eq = to_float(kill_state.get("start_equity"), equity)
+                        dd_pct = (start_eq - equity) / max(start_eq, 1e-9)
+                        if dd_pct > 0.06:
+                            dd_mult = 0.25
+                        elif dd_pct > 0.04:
+                            dd_mult = 0.50
+                        elif dd_pct > 0.02:
+                            dd_mult = 0.75
+                        else:
+                            dd_mult = 1.0
+                        if dd_mult < 1.0:
+                            qty = max(0, int(qty * dd_mult))
+                            est_notional = qty * price
+                            print(f"[dd-size] BUY {symbol}: session_dd={dd_pct:.2%} → mult={dd_mult:.2f} qty={qty}")
+
+                    # -- Volatility expansion de-risking: half size when ATR is elevated --
+                    if VOLATILITY_EXPANSION_FILTER_ENABLED and feature_context:
+                        atr_pct = to_float(feature_context.get("atr_pct", -1.0))
+                        if atr_pct > VOLATILITY_EXPANSION_ATR_THRESHOLD:
+                            qty = max(0, int(qty * VOLATILITY_EXPANSION_SIZE_MULTIPLIER))
+                            est_notional = qty * price
+                            print(f"[vol-exp] BUY {symbol}: atr_pct={atr_pct:.3f} > {VOLATILITY_EXPANSION_ATR_THRESHOLD:.3f} → {VOLATILITY_EXPANSION_SIZE_MULTIPLIER:.2f}x qty={qty}")
+
                     if qty <= 0 or est_notional < profile.min_notional_to_trade:
                         skip_message = "buy_clipped_below_min_notional"
 
