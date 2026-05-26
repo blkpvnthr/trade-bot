@@ -109,6 +109,20 @@ variants:
       atr_target_mult: 2.5
       allow_shorts: true
 
+  alpaca_daily_income:
+    strategy_id: alpaca_daily_income
+    description: "Paper-only long intraday ORB/VWAP/premarket breakout objective with bracket-ready levels"
+    credential_set: paper
+    params:
+      min_price: 5.0
+      orb_minutes: 5
+      no_entry_before: "09:35"
+      no_entry_after: "15:30"
+      min_relative_volume: 1.5
+      min_risk_reward: 1.5
+      target_risk_reward: 2.0
+      max_entries_per_day: 3
+
 # ── Optimization objective ────────────────────────────────────────────────────
 optimization_objective:
   description: >

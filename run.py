@@ -116,6 +116,15 @@ from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, OrderStatus, OrderType, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
+try:
+    from alpaca.trading.enums import OrderClass
+    from alpaca.trading.requests import StopLossRequest, TakeProfitRequest
+    _BRACKET_ORDERS_AVAILABLE = True
+except ImportError:
+    OrderClass = None
+    StopLossRequest = None
+    TakeProfitRequest = None
+    _BRACKET_ORDERS_AVAILABLE = False
 
 try:
     from alpaca.trading.requests import TrailingStopOrderRequest
@@ -208,6 +217,19 @@ SPREAD_AWARE_MAX_BPS = float(os.getenv("SPREAD_AWARE_MAX_BPS", "10.0"))
 VOLATILITY_EXPANSION_FILTER_ENABLED = os.getenv("VOLATILITY_EXPANSION_FILTER_ENABLED", "1").lower() in {"1", "true", "yes"}
 VOLATILITY_EXPANSION_ATR_THRESHOLD = float(os.getenv("VOLATILITY_EXPANSION_ATR_THRESHOLD", "0.030"))
 VOLATILITY_EXPANSION_SIZE_MULTIPLIER = float(os.getenv("VOLATILITY_EXPANSION_SIZE_MULTIPLIER", "0.50"))
+
+# Opt-in $100K paper-account intraday objective. Targets are entry locks, not guarantees.
+DAILY_INCOME_CONTROLS_ENABLED = os.getenv("DAILY_INCOME_CONTROLS_ENABLED", "0").lower() in {"1", "true", "yes"}
+DAILY_PROFIT_TARGET_DOLLARS = float(os.getenv("DAILY_PROFIT_TARGET_DOLLARS", "400.0"))
+DAILY_INCOME_RISK_PER_TRADE_PCT = float(os.getenv("DAILY_INCOME_RISK_PER_TRADE_PCT", "0.0035"))
+DAILY_INCOME_MIN_RISK_REWARD = float(os.getenv("DAILY_INCOME_MIN_RISK_REWARD", "1.5"))
+DAILY_INCOME_MAX_OPEN_POSITIONS = int(os.getenv("DAILY_INCOME_MAX_OPEN_POSITIONS", "5"))
+DAILY_INCOME_MIN_PRICE = float(os.getenv("DAILY_INCOME_MIN_PRICE", "5.0"))
+DAILY_INCOME_MIN_AVG_VOLUME = float(os.getenv("DAILY_INCOME_MIN_AVG_VOLUME", "1000000"))
+DAILY_INCOME_MIN_REL_VOLUME = float(os.getenv("DAILY_INCOME_MIN_REL_VOLUME", "1.5"))
+DAILY_INCOME_USE_BRACKET_ORDERS = os.getenv("DAILY_INCOME_USE_BRACKET_ORDERS", "1").lower() in {"1", "true", "yes"}
+DAILY_INCOME_FLATTEN_BEFORE_CLOSE = os.getenv("DAILY_INCOME_FLATTEN_BEFORE_CLOSE", "1").lower() in {"1", "true", "yes"}
+DAILY_INCOME_FLATTEN_START_ET = os.getenv("DAILY_INCOME_FLATTEN_START_ET", "15:45")
 
 # Post-market retraining hook — disabled by default, never runs during market hours
 POST_MARKET_RETRAIN_ENABLED = os.getenv("POST_MARKET_RETRAIN_ENABLED", "false").lower() in {"1", "true", "yes"}
@@ -2304,18 +2326,18 @@ MIN_NOTIONAL_TO_TRADE = 75.0
 MIN_WEIGHT_DELTA = 0.005
 
 # Fallback defaults. Actual risk is dynamically scaled from account equity.
-MIN_CASH_BUFFER = 1_500.0
-DEFAULT_CASH_BUFFER_PCT = 0.12
-MAX_GROSS_EXPOSURE = 0.72
-MAX_POSITION_WEIGHT = 0.12
-MAX_SINGLE_ORDER_NOTIONAL_PCT = 0.045
-MAX_ORDER_DOLLARS = 1_500.0
+MIN_CASH_BUFFER = float(os.getenv("MIN_CASH_BUFFER", "1500.0"))
+DEFAULT_CASH_BUFFER_PCT = float(os.getenv("CASH_BUFFER_PCT", "0.12"))
+MAX_GROSS_EXPOSURE = float(os.getenv("MAX_GROSS_EXPOSURE", "0.72"))
+MAX_POSITION_WEIGHT = float(os.getenv("MAX_POSITION_WEIGHT", "0.12"))
+MAX_SINGLE_ORDER_NOTIONAL_PCT = float(os.getenv("MAX_SINGLE_ORDER_NOTIONAL_PCT", "0.045"))
+MAX_ORDER_DOLLARS = float(os.getenv("MAX_ORDER_DOLLARS", "1500.0"))
 MAX_SINGLE_ORDER_QTY = 25_000
 
-DAILY_DRAWDOWN_LIMIT = -0.1
-KILL_SWITCH_EQUITY_FLOOR = 95_000.0
-MAX_DAILY_LOSS_PCT = 0.015
-MAX_DAILY_LOSS_DOLLARS = 2000.0
+DAILY_DRAWDOWN_LIMIT = -abs(float(os.getenv("DAILY_DRAWDOWN_LIMIT_PCT", "0.015")))
+KILL_SWITCH_EQUITY_FLOOR = float(os.getenv("KILL_SWITCH_EQUITY_FLOOR", "95000.0"))
+MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "0.015"))
+MAX_DAILY_LOSS_DOLLARS = float(os.getenv("MAX_DAILY_LOSS_DOLLARS", "2000.0"))
 
 WIKI_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
@@ -5195,6 +5217,20 @@ class AlpacaBroker:
     def cancel_open_orders(self) -> None:
         self.trading.cancel_orders()
 
+    def cancel_open_orders_for_symbol(self, symbol: str) -> None:
+        """Cancel resting entries/protective legs before sending a risk-reducing exit."""
+        symbol = safe_symbol(symbol)
+        for order in self.list_open_orders():
+            if safe_symbol(getattr(order, "symbol", "")) != symbol:
+                continue
+            order_id = getattr(order, "id", None)
+            if not order_id:
+                continue
+            try:
+                self.trading.cancel_order_by_id(order_id)
+            except Exception as exc:
+                print(f"[orders] unable to cancel resting order for {symbol}: {exc}")
+
     def get_clock_info(self) -> dict[str, Any]:
         clock = self.trading.get_clock()
         return {
@@ -5217,6 +5253,30 @@ class AlpacaBroker:
 
     def submit_market_buy(self, symbol: str, qty: int, client_order_id: str, tif: TimeInForce):
         return self.submit_market_order(symbol, "buy", qty, client_order_id, tif)
+
+    def submit_bracket_buy(
+        self,
+        symbol: str,
+        qty: int,
+        stop_price: float,
+        target_price: float,
+        client_order_id: str,
+        tif: TimeInForce,
+    ):
+        if not _BRACKET_ORDERS_AVAILABLE:
+            raise RuntimeError("bracket order support is unavailable in installed alpaca-py")
+        order = MarketOrderRequest(
+            symbol=safe_symbol(symbol),
+            qty=int(qty),
+            side=OrderSide.BUY,
+            type=OrderType.MARKET,
+            time_in_force=tif,
+            client_order_id=client_order_id,
+            order_class=OrderClass.BRACKET,
+            stop_loss=StopLossRequest(stop_price=round(float(stop_price), 2)),
+            take_profit=TakeProfitRequest(limit_price=round(float(target_price), 2)),
+        )
+        return self.trading.submit_order(order_data=order)
 
     def submit_market_sell(self, symbol: str, qty: int, client_order_id: str, tif: TimeInForce):
         return self.submit_market_order(symbol, "sell", qty, client_order_id, tif)
@@ -7146,6 +7206,18 @@ class MomentumSetupScanner:
             strict_mask &= scores["regime_score"] >= self.config.min_regime_score_for_longs
             strict_mask &= scores["regime_label"] != "BEARISH"
 
+        if DAILY_INCOME_CONTROLS_ENABLED:
+            income_liquidity_mask = (
+                (scores["close"] >= DAILY_INCOME_MIN_PRICE)
+                & (scores["vol20"] >= DAILY_INCOME_MIN_AVG_VOLUME)
+                & (scores["rel_volume"] >= DAILY_INCOME_MIN_REL_VOLUME)
+            )
+            rejected = sorted(scores.loc[strict_mask & ~income_liquidity_mask, "symbol"].map(safe_symbol).tolist())
+            if rejected:
+                print(f"[daily-income-universe] rejected price/volume/rvol candidates: {rejected}")
+                write_event("daily_income_universe_filtered", {"symbols": rejected})
+            strict_mask &= income_liquidity_mask
+
         candidates = scores[strict_mask].head(self.config.top_n).copy()
 
         _scanner_dropped = scores[~strict_mask]
@@ -7182,6 +7254,17 @@ class MomentumSetupScanner:
                 & (scores["regime_score"] >= 0.30)
             )
             candidates = scores[relaxed_mask].head(self.config.top_n).copy()
+
+        if DAILY_INCOME_CONTROLS_ENABLED and not candidates.empty:
+            final_income_mask = (
+                (candidates["close"] >= DAILY_INCOME_MIN_PRICE)
+                & (candidates["vol20"] >= DAILY_INCOME_MIN_AVG_VOLUME)
+                & (candidates["rel_volume"] >= DAILY_INCOME_MIN_REL_VOLUME)
+            )
+            removed = sorted(candidates.loc[~final_income_mask, "symbol"].map(safe_symbol).tolist())
+            candidates = candidates[final_income_mask].copy()
+            if removed:
+                print(f"[daily-income-universe] final candidate filter removed: {removed}")
 
         candidates = self._annotate_intraday_entries(candidates)
 
@@ -7825,22 +7908,23 @@ class ProductionOrderExecutor:
                     out.loc[buy_mask, "abs_delta_dollars"] = pd.to_numeric(out.loc[buy_mask, "abs_delta_dollars"], errors="coerce").fillna(0.0) * cfg.safe_mode_buy_size_multiplier
                     out.loc[buy_mask, "reason"] = out.loc[buy_mask, "reason"].astype(str) + f"|planner_safe_mode:{','.join(health.get('issues', []))}"
 
-            if cfg.require_structure_long_allowed_for_buys and long_allowed:
-                symbol_mask = out["symbol"].map(safe_symbol).isin(long_allowed)
-                block_mask = buy_mask & ~symbol_mask
+            if cfg.require_structure_long_allowed_for_buys:
+                block_mask = buy_mask if not long_allowed else buy_mask & ~out["symbol"].map(safe_symbol).isin(long_allowed)
                 if block_mask.any():
-                    print(f"[structure-gate] blocked BUY symbols not long_allowed: {sorted(out.loc[block_mask, 'symbol'].map(safe_symbol).unique().tolist())}")
-                    write_event("structure_gate_blocked_buys", {"symbols": sorted(out.loc[block_mask, "symbol"].map(safe_symbol).unique().tolist()), "long_allowed": sorted(long_allowed)})
+                    symbols = sorted(out.loc[block_mask, "symbol"].map(safe_symbol).unique().tolist())
+                    print(f"[structure-gate] blocked BUY symbols not long_allowed: {symbols}")
+                    write_event("structure_gate_blocked_buys", {"symbols": symbols, "long_allowed": sorted(long_allowed)})
                     out = out.loc[~block_mask].copy()
                     if out.empty:
                         return out
                     buy_mask = out["side"].astype(str).str.lower() == "buy"
 
-            if cfg.require_valid_premarket_plan_for_buys and valid_symbols:
-                valid_mask = out["symbol"].map(safe_symbol).isin(valid_symbols)
-                block_mask = buy_mask & ~valid_mask
+            if cfg.require_valid_premarket_plan_for_buys:
+                block_mask = buy_mask if not valid_symbols else buy_mask & ~out["symbol"].map(safe_symbol).isin(valid_symbols)
                 if block_mask.any():
-                    print(f"[premarket-valid-gate] blocked BUY symbols without valid setup: {sorted(out.loc[block_mask, 'symbol'].map(safe_symbol).unique().tolist())}")
+                    symbols = sorted(out.loc[block_mask, "symbol"].map(safe_symbol).unique().tolist())
+                    print(f"[premarket-valid-gate] blocked BUY symbols without valid setup: {symbols}")
+                    write_event("premarket_valid_gate_blocked_buys", {"symbols": symbols, "valid_symbols": sorted(valid_symbols)})
                     out = out.loc[~block_mask].copy()
                     if out.empty:
                         return out
@@ -7903,6 +7987,26 @@ class ProductionOrderExecutor:
                 out.loc[buy_mask, "reason"] = out.loc[buy_mask, "reason"].astype(str) + f"|sa_{sa_mode.lower()}:mult={sa_mult:.2f}"
                 print(f"[sa-gate] {sa_mode}: reduced {int(buy_mask.sum())} BUY(s) to {sa_mult:.0%} | conf_raise={sa_conf_raise:.2f} | reasons={sa_reasons}")
                 write_event("sa_gate_size_reduced", {"mode": sa_mode, "count": int(buy_mask.sum()), "multiplier": sa_mult, "conf_raise": sa_conf_raise, "reasons": sa_reasons, "sell_rows_preserved": _sell_count_before})
+
+        if DAILY_INCOME_CONTROLS_ENABLED and buy_mask.any():
+            structures = health.get("structure_by_symbol", {}) if isinstance(health, dict) else {}
+            for idx, row in out.loc[buy_mask].iterrows():
+                symbol = safe_symbol(row.get("symbol"))
+                structure = structures.get(symbol, {}) if isinstance(structures, dict) else {}
+                trade_structure = structure.get("trade_structure", {}) if isinstance(structure, dict) else {}
+                entry_price = to_float(row.get("price"), to_float(structure.get("current_price"), 0.0))
+                stop_price = to_float(row.get("stop_price"), 0.0)
+                if stop_price <= 0:
+                    stop_price = to_float(trade_structure.get("preferred_long_stop"), 0.0)
+                    if stop_price > 0:
+                        out.at[idx, "stop_price"] = stop_price
+                target_price = to_float(row.get("target_price"), 0.0)
+                if target_price <= entry_price and entry_price > stop_price > 0:
+                    target_price = entry_price + (entry_price - stop_price) * DAILY_INCOME_MIN_RISK_REWARD
+                    out.at[idx, "target_price"] = target_price
+                    out.at[idx, "risk_reward_ratio"] = DAILY_INCOME_MIN_RISK_REWARD
+                if entry_price > stop_price > 0 and target_price > entry_price:
+                    out.at[idx, "reason"] = str(out.at[idx, "reason"]) + "|daily_income_structure_bracket"
 
         # Recompute quantities after any sizing degradation.
         if not out.empty and "price" in out.columns and "capped_dollars" in out.columns:
@@ -8001,7 +8105,16 @@ class ProductionOrderExecutor:
             return sum(abs(float(p.market_value)) for p in self.broker.get_all_open_positions()) / equity
 
     def _risk_profile(self, equity: float) -> AccountRiskProfile:
-        return build_account_risk_profile(equity)
+        profile = build_account_risk_profile(equity)
+        if DAILY_INCOME_CONTROLS_ENABLED:
+            # Explicit config may tighten dynamic account-band limits, never expand them.
+            profile.max_gross_exposure = min(profile.max_gross_exposure, self.config.max_gross_exposure)
+            profile.max_position_weight = min(profile.max_position_weight, self.config.max_position_weight)
+            profile.max_order_dollars = min(profile.max_order_dollars, self.config.max_order_dollars)
+            profile.max_daily_loss_pct = min(profile.max_daily_loss_pct, self.config.max_daily_loss_pct)
+            profile.max_daily_loss_dollars = min(profile.max_daily_loss_dollars, self.config.max_daily_loss_dollars)
+            profile.daily_drawdown_limit = max(profile.daily_drawdown_limit, -abs(self.config.max_daily_loss_pct))
+        return profile
 
     def _cash_buffer(self, equity: float) -> float:
         profile = self._risk_profile(equity)
@@ -8141,6 +8254,71 @@ class ProductionOrderExecutor:
             return False, reason, dd_pct
 
         return True, reason, dd_pct
+
+    def _daily_income_status(self, equity: float) -> dict[str, float | bool]:
+        """Read known realized exits plus account mark-to-market P&L for entry locking."""
+        state = self._read_kill_state()
+        start_equity = to_float(state.get("start_equity"), equity)
+        mark_to_market_pnl = equity - start_equity
+        realized_pnl = 0.0
+        if EXECUTED_ORDERS_LOG.exists():
+            try:
+                orders = pd.read_csv(EXECUTED_ORDERS_LOG)
+                if not orders.empty and "timestamp_utc" in orders.columns:
+                    timestamps = pd.to_datetime(orders["timestamp_utc"], errors="coerce", utc=True)
+                    today_et = datetime.now(ET).date()
+                    same_day = timestamps.dt.tz_convert(ET).dt.date == today_et
+                    sells = orders.get("side", pd.Series("", index=orders.index)).astype(str).str.lower() == "sell"
+                    realized_pnl = float(
+                        pd.to_numeric(orders.loc[same_day & sells, "realized_pnl"], errors="coerce")
+                        .fillna(0.0)
+                        .sum()
+                    )
+            except Exception as exc:
+                print(f"[daily-target] realized P&L log unavailable: {exc}")
+        target_hit = (
+            realized_pnl >= DAILY_PROFIT_TARGET_DOLLARS
+            or mark_to_market_pnl >= DAILY_PROFIT_TARGET_DOLLARS
+        )
+        return {
+            "realized_pnl": realized_pnl,
+            "mark_to_market_pnl": mark_to_market_pnl,
+            "profit_target": DAILY_PROFIT_TARGET_DOLLARS,
+            "target_hit": target_hit,
+        }
+
+    def _augment_end_of_day_exits(self, exits: pd.DataFrame | None) -> pd.DataFrame:
+        """Request liquidation before the close; this only adds sells."""
+        out = exits.copy() if exits is not None else pd.DataFrame()
+        if not (DAILY_INCOME_CONTROLS_ENABLED and DAILY_INCOME_FLATTEN_BEFORE_CLOSE):
+            return out
+        if datetime.now(ET).strftime("%H:%M") < DAILY_INCOME_FLATTEN_START_ET:
+            return out
+        existing = set(out["symbol"].map(safe_symbol)) if not out.empty and "symbol" in out.columns else set()
+        rows: list[dict[str, Any]] = []
+        for pos in self.broker.get_all_open_positions():
+            symbol = safe_symbol(pos.symbol)
+            if not symbol or symbol in existing or pos.qty <= 0:
+                continue
+            price = to_float(pos.current_price, to_float(pos.avg_entry_price, 0.0))
+            if price <= 0:
+                continue
+            rows.append({
+                "symbol": symbol,
+                "side": "sell",
+                "delta_shares": int(pos.qty),
+                "delta_dollars": float(pos.qty) * price,
+                "price": price,
+                "reason": "daily_income_end_of_day_flatten",
+                "target_weight": 0.0,
+                "trade_confidence": 1.0,
+                "exit_reason": "daily_income_end_of_day_flatten",
+            })
+        if rows:
+            print(f"[daily-target] pre-close flatten adding {len(rows)} exit order(s)")
+            write_event("daily_income_flatten_exits_added", {"symbols": [r["symbol"] for r in rows]})
+            out = pd.concat([out, pd.DataFrame(rows)], ignore_index=True)
+        return out
 
     def _safe_read_order_csv(self, path: Path, required: bool = False) -> pd.DataFrame:
         if not path.exists():
@@ -8345,7 +8523,7 @@ class ProductionOrderExecutor:
             "symbol": symbol,
             "side": side,
             "qty": qty,
-            "order_type": "market",
+            "order_type": "bracket" if bool(r.get("bracket_attached", False)) else "market",
             "submitted_at": str(fill_info.get("submitted_at", "") or ""),
             "filled_at": str(fill_info.get("filled_at", "") or ""),
             "filled_avg_price": fill_price,
@@ -8817,9 +8995,10 @@ class ProductionOrderExecutor:
                 message="pre_submit_decision",
             )
 
+            bracket_attached = False
             if qty <= 0:
                 skip_message = "qty <= 0"
-            elif self.broker.has_open_order_for_symbol(symbol):
+            elif side == "buy" and self.broker.has_open_order_for_symbol(symbol):
                 skip_message = "existing open order for symbol"
 
             is_orb_order = bool(row.get("orb_8am_signal", False)) or str(row.get("source", "")) == "orb_8am_liquidity_sweep_fvg"
@@ -8843,6 +9022,22 @@ class ProductionOrderExecutor:
                     qty = held_qty
                     est_notional = qty * price
                     print(f"[sell-cap] {symbol}: sell qty capped to held={held_qty} to prevent short")
+
+            # A profit objective locks only new entries. Sells always proceed.
+            if not skip_message and side == "buy" and DAILY_INCOME_CONTROLS_ENABLED:
+                daily_status = self._daily_income_status(equity)
+                print(
+                    f"[daily-target] realized=${daily_status['realized_pnl']:,.2f} "
+                    f"mark_to_market=${daily_status['mark_to_market_pnl']:,.2f} "
+                    f"entry_lock=${daily_status['profit_target']:,.2f}"
+                )
+                write_event("daily_income_status", {"symbol": symbol, **daily_status})
+                if bool(daily_status["target_hit"]):
+                    skip_message = (
+                        "daily_profit_target_reached:"
+                        f"realized={daily_status['realized_pnl']:.2f}:"
+                        f"mark_to_market={daily_status['mark_to_market_pnl']:.2f}"
+                    )
 
             # -- Time-of-day kill windows (buy-side only; never blocks exits) --
             if not skip_message and side == "buy" and TIME_OF_DAY_KILL_WINDOWS_ENABLED:
@@ -8910,6 +9105,38 @@ class ProductionOrderExecutor:
                             est_notional = qty * price
                             print(f"[vol-exp] BUY {symbol}: atr_pct={atr_pct:.3f} > {VOLATILITY_EXPANSION_ATR_THRESHOLD:.3f} → {VOLATILITY_EXPANSION_SIZE_MULTIPLIER:.2f}x qty={qty}")
 
+                    if DAILY_INCOME_CONTROLS_ENABLED:
+                        stop_price = to_float(row.get("stop_price"), 0.0)
+                        target_price = to_float(row.get("target_price"), 0.0)
+                        risk_per_share = price - stop_price
+                        reward_per_share = target_price - price
+                        risk_reward = reward_per_share / risk_per_share if risk_per_share > 0 else 0.0
+                        held_symbols = {
+                            safe_symbol(pos.symbol)
+                            for pos in self.broker.get_all_open_positions()
+                            if pos.qty > 0
+                        }
+                        if symbol not in held_symbols and len(held_symbols) >= DAILY_INCOME_MAX_OPEN_POSITIONS:
+                            skip_message = f"daily_income_max_open_positions:{len(held_symbols)}"
+                        elif risk_per_share <= 0 or target_price <= price:
+                            skip_message = "daily_income_missing_or_invalid_bracket_levels"
+                        elif risk_reward < DAILY_INCOME_MIN_RISK_REWARD:
+                            skip_message = (
+                                f"daily_income_reward_risk_too_low:"
+                                f"{risk_reward:.2f}<{DAILY_INCOME_MIN_RISK_REWARD:.2f}"
+                            )
+                        else:
+                            risk_budget = equity * DAILY_INCOME_RISK_PER_TRADE_PCT
+                            risk_qty = int(risk_budget // risk_per_share)
+                            if qty > risk_qty:
+                                qty = max(0, risk_qty)
+                                est_notional = qty * price
+                            print(
+                                f"[risk-size] BUY {symbol}: risk_budget=${risk_budget:,.2f} "
+                                f"risk/share=${risk_per_share:.2f} rr={risk_reward:.2f} qty={qty}"
+                            )
+                            bracket_attached = bool(DAILY_INCOME_USE_BRACKET_ORDERS and _BRACKET_ORDERS_AVAILABLE)
+
                     if qty <= 0 or est_notional < profile.min_notional_to_trade:
                         skip_message = "buy_clipped_below_min_notional"
 
@@ -8960,8 +9187,23 @@ class ProductionOrderExecutor:
 
             try:
                 if side == "buy":
-                    submitted = self.broker.submit_market_buy(symbol, qty, client_order_id, self.config.time_in_force)
+                    if bracket_attached:
+                        submitted = self.broker.submit_bracket_buy(
+                            symbol,
+                            qty,
+                            to_float(row.get("stop_price")),
+                            to_float(row.get("target_price")),
+                            client_order_id,
+                            self.config.time_in_force,
+                        )
+                        print(
+                            f"[bracket] BUY {symbol}: stop={to_float(row.get('stop_price')):.2f} "
+                            f"target={to_float(row.get('target_price')):.2f}"
+                        )
+                    else:
+                        submitted = self.broker.submit_market_buy(symbol, qty, client_order_id, self.config.time_in_force)
                 else:
+                    self.broker.cancel_open_orders_for_symbol(symbol)
                     submitted = self.broker.submit_market_sell(symbol, qty, client_order_id, self.config.time_in_force)
 
                 order_id = str(getattr(submitted, "id", ""))
@@ -8975,7 +9217,12 @@ class ProductionOrderExecutor:
                         symbol=symbol,
                         side=side,
                         qty=qty,
-                        row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
+                        row={
+                            **row.to_dict(),
+                            "order_qty": qty,
+                            "capped_dollars": est_notional,
+                            "bracket_attached": bracket_attached,
+                        },
                         feat=feature_context,
                         pos_before=position_before_order,
                         fill_info=fill_info,
@@ -8997,6 +9244,7 @@ class ProductionOrderExecutor:
                     "reason": reason,
                     "status": status,
                     "order_id": order_id,
+                    "bracket_attached": bracket_attached,
                     **fill_info,
                 }
                 results.append(result)
@@ -9015,6 +9263,7 @@ class ProductionOrderExecutor:
 
                 if (
                     side == "buy"
+                    and not bracket_attached
                     and self.config.scanner
                     and self.config.scanner.stream_confirmed_submit_trailing_stop_after_fill
                 ):
@@ -9102,31 +9351,28 @@ class ProductionOrderExecutor:
 
         allowed, kill_reason, daily_return = self._kill_switch_allows_execution(equity)
         if not allowed:
-            print(f"[kill-switch] execution blocked: {kill_reason}")
+            print(f"[kill-switch] new BUY entries blocked: {kill_reason}; exits remain allowed")
             _append_skipped_signal({
                 "cycle_id": cycle_id,
                 "symbol": "ALL",
-                "side": "ALL",
+                "side": "BUY",
                 "gating_condition": kill_reason,
                 "reason": "kill_switch",
                 "daily_return": daily_return,
             })
-            results = pd.DataFrame([{"timestamp_utc": now_utc().isoformat(), "status": "skipped_kill_switch", "message": kill_reason, "daily_return": daily_return}])
-            save_df(pd.DataFrame(), LOG_DIR / f"order_plan_{cycle_id}.csv")
-            save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
-            self._write_account_equity_curve()
-            return pd.DataFrame(), results, self.broker.get_account_snapshot(), positions_before
+            rebalance_orders = rebalance_orders.iloc[0:0].copy() if rebalance_orders is not None else pd.DataFrame()
 
         if self.config.cancel_open_orders_first:
             print("[orders] canceling open orders")
             self.broker.cancel_open_orders()
 
-        if self.config.scanner and self.config.scanner.stream_confirmed_merge_orders:
+        if allowed and self.config.scanner and self.config.scanner.stream_confirmed_merge_orders:
             rebalance_orders = merge_stream_confirmed_orders(rebalance_orders)
-        if self.config.scanner and self.config.scanner.sr_rl_merge_signals:
+        if allowed and self.config.scanner and self.config.scanner.sr_rl_merge_signals:
             rebalance_orders = merge_sr_rl_orders(rebalance_orders, self.config.scanner)
 
         exit_orders = self._augment_exit_orders_with_exit_learning(exit_orders if exit_orders is not None else pd.DataFrame())
+        exit_orders = self._augment_end_of_day_exits(exit_orders)
         plan = self._build_order_plan(rebalance_orders, exit_orders, equity)
         plan = self._apply_mtf_buy_gate_to_plan(plan)
         plan = self._apply_planner_and_market_gates_to_plan(plan)
@@ -9152,7 +9398,8 @@ class ProductionOrderExecutor:
             self._write_account_equity_curve()
             return plan, pd.DataFrame(), self.broker.get_account_snapshot(), positions_before
 
-        plan = merge_evolution_strategy_orders(plan)
+        if allowed:
+            plan = merge_evolution_strategy_orders(plan)
 
         print("\n===== ORDER PLAN =====")
         display_cols = [
@@ -10343,8 +10590,9 @@ def build_default_config() -> ExecutorConfig:
         refresh_llm_sentiment_universe=True,
         min_llm_universe_confidence=0.0,
         max_plan_age_minutes=MAX_PLAN_AGE_MINUTES,
-        require_fresh_premarket_plan_for_buys=False,
-        require_structure_long_allowed_for_buys=False,
+        require_fresh_premarket_plan_for_buys=True if DAILY_INCOME_CONTROLS_ENABLED else False,
+        require_structure_long_allowed_for_buys=True if DAILY_INCOME_CONTROLS_ENABLED else False,
+        require_valid_premarket_plan_for_buys=True if DAILY_INCOME_CONTROLS_ENABLED else False,
         safe_mode_on_planner_failure=SAFE_MODE_ON_PLANNER_FAILURE,
         safe_mode_buy_size_multiplier=SAFE_MODE_BUY_SIZE_MULTIPLIER,
         cautious_market_buy_size_multiplier=CAUTIOUS_MARKET_BUY_SIZE_MULTIPLIER,

@@ -60,7 +60,10 @@ class WFConfig:
     max_order_dollars: float   = 12_000.0
     cash_buffer_pct: float     = 0.08
     slippage_bps: float        = 5.0
-    max_daily_loss_pct: float  = 0.02
+    risk_per_trade_pct: float  = 0.0035
+    max_daily_loss_pct: float  = 0.015
+    daily_profit_target_dollars: float = 400.0
+    max_open_positions: int    = 5
     min_bars_per_slice: int    = 30
     min_symbols_per_window: int = 3
 
@@ -107,6 +110,15 @@ _STRATEGY_DEFAULTS: dict[str, dict[str, Any]] = {
         "pivot_lookback": 15, "atr_stop_mult": 1.0, "atr_target_mult": 2.5,
         "allow_shorts": True,
     },
+    "alpaca_daily_income": {
+        "min_price": 5.0, "orb_minutes": 5,
+        "no_entry_before": "09:35", "no_entry_after": "15:30",
+        "fast_ema": 9, "slow_ema": 21, "volume_lookback": 20,
+        "min_relative_volume": 1.5, "atr_period": 14,
+        "atr_stop_buffer": 0.20, "minimum_stop_pct": 0.002,
+        "maximum_stop_pct": 0.025, "min_risk_reward": 1.5,
+        "target_risk_reward": 2.0, "max_entries_per_day": 3,
+    },
 }
 
 # Search only 2–3 safe parameters per strategy (≤ 9 combinations)
@@ -117,6 +129,7 @@ _SEARCH_SPACES: dict[str, dict[str, list]] = {
     "orb_8am":           {"orb_minutes": [15, 30, 45], "volume_confirm_mult": [1.3, 1.5, 2.0]},
     "liquidity_sweep":   {"swing_lookback": [8, 10, 14], "atr_stop_mult": [0.5, 0.75, 1.0]},
     "flawless_victory":  {"rsi_buy_min": [35, 40, 45], "volume_spike_mult": [1.3, 1.5, 2.0]},
+    "alpaca_daily_income": {"min_relative_volume": [1.3, 1.5, 1.8], "target_risk_reward": [1.5, 2.0]},
 }
 
 
@@ -289,6 +302,8 @@ class _Portfolio:
         self.skipped = 0
         self.rejected = 0
         self.daily_violations = 0
+        self.daily_target_hits: set[str] = set()
+        self.daily_loss_hits: set[str] = set()
         self._bars_with_position = 0
         self._total_bars = 0
         self._symbol_pnl: dict[str, float] = {}
@@ -321,6 +336,8 @@ class _Portfolio:
         if sym in self.positions:
             self._check_exit(ts, sym, bar, day_str)
 
+        self._update_daily_locks(day_str)
+
         if prev_signal is not None and sym not in self.positions:
             self._check_entry(ts, sym, bar, prev_signal)
 
@@ -328,6 +345,17 @@ class _Portfolio:
             self._bars_with_position += 1
 
         self.equity_by_day[day_str] = self.equity
+
+    def _update_daily_locks(self, day_str: str) -> None:
+        daily_pnl = self.equity - self._daily_start_equity
+        if daily_pnl >= self.config.daily_profit_target_dollars:
+            self._daily_blocked = True
+            self.daily_target_hits.add(day_str)
+        if daily_pnl <= -(self._daily_start_equity * self.config.max_daily_loss_pct):
+            self._daily_blocked = True
+            if day_str not in self.daily_loss_hits:
+                self.daily_violations += 1
+            self.daily_loss_hits.add(day_str)
 
     def _check_exit(self, ts: pd.Timestamp, sym: str, bar: pd.Series, _: str) -> None:
         pos = self.positions[sym]
@@ -366,6 +394,9 @@ class _Portfolio:
         if self._daily_blocked:
             self.skipped += 1
             return
+        if len(self.positions) >= self.config.max_open_positions:
+            self.rejected += 1
+            return
 
         direction: str | None = None
         if bool(sig.get("buy_signal", False)):
@@ -391,7 +422,15 @@ class _Portfolio:
 
         equity = self.equity
         max_pos = min(equity * self.config.max_position_weight, self.config.max_order_dollars)
-        shares = max(1, int(max_pos / entry_price))
+        risk_per_share = abs(entry_price - stop)
+        if risk_per_share <= 0:
+            self.rejected += 1
+            return
+        risk_dollars = equity * self.config.risk_per_trade_pct
+        shares = min(int(max_pos / entry_price), int(risk_dollars / risk_per_share))
+        if shares <= 0:
+            self.rejected += 1
+            return
         cost = shares * entry_price
 
         if cost > self.cash * (1 - self.config.cash_buffer_pct):
@@ -401,13 +440,6 @@ class _Portfolio:
         gross = sum(p["shares"] * p["entry_price"] for p in self.positions.values())
         if equity > 0 and (gross + cost) / equity > self.config.max_gross_exposure:
             self.rejected += 1
-            return
-
-        daily_loss = (equity - self._daily_start_equity) / max(self._daily_start_equity, 1)
-        if daily_loss < -self.config.max_daily_loss_pct:
-            self._daily_blocked = True
-            self.daily_violations += 1
-            self.skipped += 1
             return
 
         self.cash -= cost
@@ -421,6 +453,7 @@ class _Portfolio:
             "entry_ts": str(ts),
             "last_price": entry_price,
             "bars_held": 0,
+            "initial_risk_dollars": risk_per_share * shares,
         }
 
     def _record_trade(
@@ -437,6 +470,7 @@ class _Portfolio:
             "shares": pos["shares"],
             "pnl": round(pnl, 2),
             "return_pct": round(pnl / pos["cost"], 5) if pos["cost"] > 0 else 0.0,
+            "r_multiple": round(pnl / pos["initial_risk_dollars"], 4) if pos.get("initial_risk_dollars", 0) > 0 else 0.0,
             "bars_held": pos.get("bars_held", 0),
             "exit_reason": reason,
         })
@@ -560,6 +594,13 @@ def _compute_metrics(portfolio: _Portfolio) -> dict[str, Any]:
     expectancy    = sum(pnls) / n if n else 0.0
     avg_trade_ret = sum(t["return_pct"] for t in trades) / n * 100 if n else 0.0
     avg_hold      = sum(t["bars_held"] for t in trades) / n if n else 0.0
+    avg_r          = sum(t.get("r_multiple", 0.0) for t in trades) / n if n else 0.0
+    day_pnls: list[float] = []
+    prior_equity = starting
+    for day_equity in day_values:
+        day_pnls.append(float(day_equity) - prior_equity)
+        prior_equity = float(day_equity)
+    trading_days = max(len(day_values), 1)
 
     sym_pnl  = portfolio._symbol_pnl
     best_sym  = max(sym_pnl, key=sym_pnl.get) if sym_pnl else "n/a"
@@ -578,6 +619,11 @@ def _compute_metrics(portfolio: _Portfolio) -> dict[str, Any]:
         "total_trades":        n,
         "avg_trade_return_pct":round(avg_trade_ret, 4),
         "avg_hold_bars":       round(avg_hold, 1),
+        "average_r_per_trade": round(avg_r, 4),
+        "average_daily_pnl":   round(float(np.mean(day_pnls)) if day_pnls else 0.0, 2),
+        "trades_per_day":      round(n / trading_days, 2),
+        "days_hitting_profit_target": len(portfolio.daily_target_hits),
+        "days_hitting_max_loss": len(portfolio.daily_loss_hits),
         "exposure_pct":        round(portfolio.exposure_pct * 100, 2),
         "daily_loss_violations": portfolio.daily_violations,
         "skipped_signals":     portfolio.skipped,
@@ -674,15 +720,15 @@ def run_walkforward_strategy(
     """
     base_params = base_params or {}
 
-    # ORB requires intraday timestamps (distinct times within each day)
-    if strategy_id == "orb_8am":
+    # Intraday setup strategies require distinct timestamps within each day.
+    if strategy_id in {"orb_8am", "alpaca_daily_income"}:
         unique_times_per_day = bars_df.groupby(bars_df["timestamp"].dt.date)["timestamp"].nunique().mean()
         if unique_times_per_day < 5:
             return {
                 "strategy_id": strategy_id,
                 "status": "skipped",
                 "skip_reason": (
-                    "orb_8am requires intraday 1-minute bars with ET session timestamps. "
+                    f"{strategy_id} requires intraday 1-minute bars with ET session timestamps. "
                     f"Available data averages {unique_times_per_day:.1f} bars/day — daily bars insufficient."
                 ),
                 "minimum_required": {

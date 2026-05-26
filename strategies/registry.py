@@ -9,6 +9,7 @@ from strategies.pivot_points import PivotPointsStrategy
 from strategies.orb_8am import ORB8amStrategy
 from strategies.liquidity_sweep import LiquiditySweepStrategy
 from strategies.flawless_victory import FlawlessVictoryStrategy
+from strategies.alpaca_daily_income import AlpacaDailyIncomeStrategy
 
 STRATEGY_REGISTRY: dict[str, type[BaseStrategy]] = {
     "tux_mtf_original": TuxMTF,
@@ -17,6 +18,7 @@ STRATEGY_REGISTRY: dict[str, type[BaseStrategy]] = {
     "orb_8am": ORB8amStrategy,
     "liquidity_sweep": LiquiditySweepStrategy,
     "flawless_victory": FlawlessVictoryStrategy,
+    "alpaca_daily_income": AlpacaDailyIncomeStrategy,
 }
 
 
