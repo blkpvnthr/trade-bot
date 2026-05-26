@@ -2552,6 +2552,7 @@ class MomentumSetupScanner:
 
         self.data = StockHistoricalDataClient(broker.api_key, broker.secret_key)
         self.llm_metadata_by_symbol: dict[str, dict[str, Any]] = {}
+        self._intraday_bar_cache: dict[tuple[tuple[str, ...], int], pd.DataFrame] = {}
 
     def _load_state(self) -> dict[str, Any]:
         if not SCANNER_STATE_PATH.exists():
@@ -2634,6 +2635,20 @@ class MomentumSetupScanner:
         if TimeFrameUnit is None:
             return pd.DataFrame()
 
+        norm_symbols = tuple(sorted(normalize_symbol(s) for s in symbols if normalize_symbol(s)))
+        cache_key = (norm_symbols, minutes)
+        cached = self._intraday_bar_cache.get(cache_key)
+        if cached is not None:
+            return cached.copy()
+
+        if minutes > 1:
+            base_1m = self._download_intraday_bars(list(norm_symbols), 1)
+            if base_1m.empty:
+                return pd.DataFrame()
+            resampled = self._resample_intraday_bars(base_1m, minutes)
+            self._intraday_bar_cache[cache_key] = resampled.copy()
+            return resampled
+
         end = now_utc()
         start = end - timedelta(days=max(1, self.config.intraday_lookback_days))
         timeframe = TimeFrame(minutes, TimeFrameUnit.Minute)
@@ -2646,11 +2661,19 @@ class MomentumSetupScanner:
             feed=self._feed(),
         )
 
-        try:
-            bars = self.data.get_stock_bars(req).df
-        except Exception as exc:
-            print(f"[intraday] failed to download {minutes}Min bars: {exc}")
-            return pd.DataFrame()
+        bars = None
+        for attempt in range(3):
+            try:
+                bars = self.data.get_stock_bars(req).df
+                break
+            except Exception as exc:
+                if "too many requests" in str(exc).lower() and attempt < 2:
+                    wait_s = 1.5 * (attempt + 1)
+                    print(f"[intraday] {minutes}Min bars rate-limited; retrying in {wait_s:.1f}s")
+                    time.sleep(wait_s)
+                    continue
+                print(f"[intraday] failed to download {minutes}Min bars: {exc}")
+                return pd.DataFrame()
 
         if bars is None or bars.empty:
             return pd.DataFrame()
@@ -2664,7 +2687,45 @@ class MomentumSetupScanner:
         df["symbol"] = df["symbol"].map(normalize_symbol)
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
         df["timeframe_minutes"] = minutes
-        return df.dropna(subset=["symbol", "timestamp", "close"]).sort_values(["symbol", "timestamp"])
+        out = df.dropna(subset=["symbol", "timestamp", "close"]).sort_values(["symbol", "timestamp"])
+        self._intraday_bar_cache[cache_key] = out.copy()
+        return out
+
+    def _resample_intraday_bars(self, base_df: pd.DataFrame, minutes: int) -> pd.DataFrame:
+        if base_df is None or base_df.empty or minutes <= 1:
+            return base_df.copy() if isinstance(base_df, pd.DataFrame) else pd.DataFrame()
+
+        rule = f"{int(minutes)}min"
+        frames: list[pd.DataFrame] = []
+        for symbol, group in base_df.groupby("symbol", sort=False):
+            g = group.copy()
+            g["timestamp"] = pd.to_datetime(g["timestamp"], errors="coerce", utc=True)
+            g = g.dropna(subset=["timestamp"]).sort_values("timestamp").set_index("timestamp")
+            agg_map = {
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum",
+            }
+            optional_aggs = {
+                "trade_count": "sum",
+                "vwap": "last",
+            }
+            for col, agg in optional_aggs.items():
+                if col in g.columns:
+                    agg_map[col] = agg
+            resampled = g.resample(rule, label="right", closed="right").agg(agg_map).dropna(subset=["open", "high", "low", "close"])
+            if resampled.empty:
+                continue
+            resampled = resampled.reset_index()
+            resampled["symbol"] = symbol
+            resampled["timeframe_minutes"] = minutes
+            frames.append(resampled)
+
+        if not frames:
+            return pd.DataFrame(columns=base_df.columns)
+        return pd.concat(frames, ignore_index=True).sort_values(["symbol", "timestamp"]).reset_index(drop=True)
 
     def _build_features(self, bars: pd.DataFrame) -> pd.DataFrame:
         rows: list[pd.DataFrame] = []

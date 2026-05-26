@@ -5345,6 +5345,7 @@ class MomentumSetupScanner:
 
         self.data = StockHistoricalDataClient(broker.api_key, broker.secret_key)
         self.llm_metadata_by_symbol: dict[str, dict[str, Any]] = {}
+        self._intraday_bar_cache: dict[tuple[tuple[str, ...], int], pd.DataFrame] = {}
     def _trigger_options_booster_if_needed(
         self,
         candidate_rows: pd.DataFrame,
@@ -5481,6 +5482,20 @@ class MomentumSetupScanner:
         if TimeFrameUnit is None:
             return pd.DataFrame()
 
+        norm_symbols = tuple(sorted(normalize_symbol(s) for s in symbols if normalize_symbol(s)))
+        cache_key = (norm_symbols, minutes)
+        cached = self._intraday_bar_cache.get(cache_key)
+        if cached is not None:
+            return cached.copy()
+
+        if minutes > 1:
+            base_1m = self._download_intraday_bars(list(norm_symbols), 1)
+            if base_1m.empty:
+                return pd.DataFrame()
+            resampled = self._resample_intraday_bars(base_1m, minutes)
+            self._intraday_bar_cache[cache_key] = resampled.copy()
+            return resampled
+
         end = now_utc()
         start = end - timedelta(days=max(1, self.config.intraday_lookback_days))
         timeframe = TimeFrame(minutes, TimeFrameUnit.Minute)
@@ -5493,11 +5508,19 @@ class MomentumSetupScanner:
             feed=self._feed(),
         )
 
-        try:
-            bars = self.data.get_stock_bars(req).df
-        except Exception as exc:
-            print(f"[intraday] failed to download {minutes}Min bars: {exc}")
-            return pd.DataFrame()
+        bars = None
+        for attempt in range(3):
+            try:
+                bars = self.data.get_stock_bars(req).df
+                break
+            except Exception as exc:
+                if "too many requests" in str(exc).lower() and attempt < 2:
+                    wait_s = 1.5 * (attempt + 1)
+                    print(f"[intraday] {minutes}Min bars rate-limited; retrying in {wait_s:.1f}s")
+                    time.sleep(wait_s)
+                    continue
+                print(f"[intraday] failed to download {minutes}Min bars: {exc}")
+                return pd.DataFrame()
 
         if bars is None or bars.empty:
             return pd.DataFrame()
@@ -5511,7 +5534,45 @@ class MomentumSetupScanner:
         df["symbol"] = df["symbol"].map(normalize_symbol)
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
         df["timeframe_minutes"] = minutes
-        return df.dropna(subset=["symbol", "timestamp", "close"]).sort_values(["symbol", "timestamp"])
+        out = df.dropna(subset=["symbol", "timestamp", "close"]).sort_values(["symbol", "timestamp"])
+        self._intraday_bar_cache[cache_key] = out.copy()
+        return out
+
+    def _resample_intraday_bars(self, base_df: pd.DataFrame, minutes: int) -> pd.DataFrame:
+        if base_df is None or base_df.empty or minutes <= 1:
+            return base_df.copy() if isinstance(base_df, pd.DataFrame) else pd.DataFrame()
+
+        rule = f"{int(minutes)}min"
+        frames: list[pd.DataFrame] = []
+        for symbol, group in base_df.groupby("symbol", sort=False):
+            g = group.copy()
+            g["timestamp"] = pd.to_datetime(g["timestamp"], errors="coerce", utc=True)
+            g = g.dropna(subset=["timestamp"]).sort_values("timestamp").set_index("timestamp")
+            agg_map = {
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum",
+            }
+            optional_aggs = {
+                "trade_count": "sum",
+                "vwap": "last",
+            }
+            for col, agg in optional_aggs.items():
+                if col in g.columns:
+                    agg_map[col] = agg
+            resampled = g.resample(rule, label="right", closed="right").agg(agg_map).dropna(subset=["open", "high", "low", "close"])
+            if resampled.empty:
+                continue
+            resampled = resampled.reset_index()
+            resampled["symbol"] = symbol
+            resampled["timeframe_minutes"] = minutes
+            frames.append(resampled)
+
+        if not frames:
+            return pd.DataFrame(columns=base_df.columns)
+        return pd.concat(frames, ignore_index=True).sort_values(["symbol", "timestamp"]).reset_index(drop=True)
 
     def _build_features(self, bars: pd.DataFrame) -> pd.DataFrame:
         rows: list[pd.DataFrame] = []
@@ -8095,6 +8156,28 @@ class ProductionOrderExecutor:
             write_parquet=getattr(self.config.scanner, "live_experience_write_parquet", True),
         )
 
+    def _safe_log_live_experience(self, **kwargs: Any) -> None:
+        try:
+            self._log_live_experience(**kwargs)
+        except Exception as exc:
+            order_row = kwargs.get("order_row")
+            symbol = safe_symbol(
+                (order_row.to_dict() if isinstance(order_row, pd.Series) else dict(order_row or {})).get("symbol", "")
+                or (kwargs.get("result") or {}).get("symbol", "")
+            )
+            stage = str(kwargs.get("stage", "unknown"))
+            message = str(exc)
+            print(f"[warn] live_experience_logging_failed stage={stage} symbol={symbol}: {message}")
+            write_event(
+                "live_experience_logging_failed",
+                {
+                    "cycle_id": kwargs.get("cycle_id", ""),
+                    "stage": stage,
+                    "symbol": symbol,
+                    "error": message,
+                },
+            )
+
     def _gross_exposure(self, equity: float) -> float:
         if equity <= 0:
             return 0.0
@@ -8986,7 +9069,7 @@ class ProductionOrderExecutor:
             position_before_order = self.broker.get_position(symbol)
 
             # Log the final executable decision state before broker submission/risk skips.
-            self._log_live_experience(
+            self._safe_log_live_experience(
                 cycle_id=cycle_id,
                 stage="decision",
                 order_row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
@@ -9173,7 +9256,7 @@ class ProductionOrderExecutor:
                     "reason": "order_plan_skip",
                     "entry_reason": str(row.get("reason", "")),
                 })
-                self._log_live_experience(
+                self._safe_log_live_experience(
                     cycle_id=cycle_id,
                     stage="skipped",
                     order_row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
@@ -9275,7 +9358,7 @@ class ProductionOrderExecutor:
                         {**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
                     )
 
-                self._log_live_experience(
+                self._safe_log_live_experience(
                     cycle_id=cycle_id,
                     stage="submitted",
                     order_row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
@@ -9300,7 +9383,7 @@ class ProductionOrderExecutor:
                 results.append(result)
                 self._journal_order(cycle_id, "ERROR", row, acct_before, acct_after, message)
                 write_event("order_api_error", result)
-                self._log_live_experience(
+                self._safe_log_live_experience(
                     cycle_id=cycle_id,
                     stage="api_error",
                     order_row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
@@ -9320,7 +9403,7 @@ class ProductionOrderExecutor:
                 results.append(result)
                 self._journal_order(cycle_id, "ERROR", row, acct_before, acct_after, message)
                 write_event("order_error", result)
-                self._log_live_experience(
+                self._safe_log_live_experience(
                     cycle_id=cycle_id,
                     stage="error",
                     order_row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},

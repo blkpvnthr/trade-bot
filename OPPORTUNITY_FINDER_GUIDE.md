@@ -28,7 +28,7 @@ The Opportunity Finder system has been successfully implemented at `~/Desktop/tr
 cd ~/Desktop/trader
 
 # Option A: Install only tradingview-ta (python-tradingview-ta already in requirements.txt)
-pip install python-tradingview-ta>=0.3.12
+pip install tradingview-ta
 
 # Option B: Reinstall all requirements
 pip install -r requirements.txt
