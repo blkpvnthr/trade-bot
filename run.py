@@ -181,6 +181,42 @@ if STRATEGY_ID:
 # Graceful shutdown event — set by SIGTERM handler, checked by the main loop.
 _SHUTDOWN_EVENT = threading.Event()
 
+# All subprocess.Popen children are registered here so the SIGTERM handler can
+# terminate them before calling sys.exit(0).
+_CHILD_PROCESSES: list[subprocess.Popen] = []
+_CHILD_PROCS_LOCK = threading.Lock()
+
+
+def _register_child(proc: subprocess.Popen) -> subprocess.Popen:
+    with _CHILD_PROCS_LOCK:
+        _CHILD_PROCESSES.append(proc)
+    return proc
+
+
+def _terminate_children(timeout: float = 5.0) -> None:
+    """SIGTERM all live child processes, wait up to timeout, then SIGKILL survivors."""
+    with _CHILD_PROCS_LOCK:
+        procs = [p for p in _CHILD_PROCESSES if p.poll() is None]
+    for p in procs:
+        try:
+            p.terminate()
+        except OSError:
+            pass
+    deadline = time.time() + timeout
+    for p in procs:
+        rem = deadline - time.time()
+        if rem > 0:
+            try:
+                p.wait(timeout=rem)
+            except Exception:
+                pass
+    for p in procs:
+        try:
+            if p.poll() is None:
+                p.kill()
+        except OSError:
+            pass
+
 USE_TRADINGVIEW_SCREENER = os.getenv("USE_TRADINGVIEW_SCREENER", "1").lower() in {"1", "true", "yes"}
 
 TRADINGVIEW_REQUIRE_RVOL = float(
@@ -2090,14 +2126,14 @@ def start_spx_price_action_layer_background() -> None:
             args.extend(["--train-rl", "--once"])
 
         log_fh = SPX_LAYER_LOG_PATH.open("a", encoding="utf-8")
-        proc = subprocess.Popen(
+        proc = _register_child(subprocess.Popen(
             args,
             cwd=str(PROJECT_ROOT),
             env=_spx_layer_env(),
             stdout=log_fh,
             stderr=log_fh,
             text=True,
-        )
+        ))
 
         print(
             "[spx-layer] started "
@@ -2934,7 +2970,8 @@ def launch_intraday_dataset_builder():
         f"scheduled in {wait_seconds / 60:.2f} minutes"
     )
 
-    time.sleep(wait_seconds)
+    if _SHUTDOWN_EVENT.wait(timeout=wait_seconds):
+        return  # shutdown requested during wait
 
     print("[scheduler] starting intraday dataset builder...")
 
@@ -3300,7 +3337,8 @@ def wait_until_premarket_collection_window(config: ScannerConfig) -> None:
             f"[premarket-collector] waiting until {start.strftime('%H:%M')} ET; "
             f"{int(seconds_left // 60)} minute(s) left"
         )
-        time.sleep(min(300, max(5, seconds_left)))
+        if _SHUTDOWN_EVENT.wait(timeout=min(300, max(5, seconds_left))):
+            return
 
 
 def dated_snapshot_name(path: Path, date_et: str | None = None) -> Path:
@@ -3866,7 +3904,8 @@ def wait_until_session_planning_window(config: ScannerConfig) -> None:
     while datetime.now(ET) < start_dt:
         seconds_left = max(1.0, (start_dt - datetime.now(ET)).total_seconds())
         print(f"[session-prep] waiting until {start_dt.strftime('%H:%M')} ET; {int(seconds_left // 60)} minute(s) left")
-        time.sleep(min(300, max(5, seconds_left)))
+        if _SHUTDOWN_EVENT.wait(timeout=min(300, max(5, seconds_left))):
+            return
 
 
 def _read_session_prep_state() -> dict[str, Any]:
@@ -5501,11 +5540,11 @@ class MomentumSetupScanner:
                 candidate_symbols=symbols,
             )
 
-            subprocess.Popen(
+            _register_child(subprocess.Popen(
                 [sys.executable, str(OPTIONS_BOOSTER_PATH)],
                 cwd=str(PROJECT_ROOT),
                 env={**os.environ, **env},
-            )
+            ))
 
         except Exception as exc:
             print(f"[options-booster] failed: {exc}")
@@ -8506,7 +8545,8 @@ class ProductionOrderExecutor:
         started = time.time()
         max_wait = self.config.max_wait_for_open_minutes * 60
         while time.time() - started < max_wait:
-            time.sleep(max(5, self.config.poll_seconds))
+            if _SHUTDOWN_EVENT.wait(timeout=max(5, self.config.poll_seconds)):
+                return False
             info = self.broker.get_clock_info()
             print(f"[clock] waiting | is_open={info['is_open']} next_open={info['next_open']}")
             write_event("market_clock_wait_poll", info)
@@ -10509,14 +10549,14 @@ class ProductionOrderExecutor:
             write_event("spx_cycle_error", {"error": str(exc)})
 
     def _spx_price_action_loop(self) -> None:
-        while True:
+        while not _SHUTDOWN_EVENT.is_set():
             try:
                 if self.config.scanner and self.config.scanner.spx_price_action_layer_enabled:
                     self.spx_price_action_cycle()
             except Exception as exc:
                 print(f"[spx-layer] cycle error: {exc}")
                 self.spx_write_event("spx_cycle_error", {"error": str(exc)})
-            time.sleep(max(1, int(self.config.scanner.spx_price_action_scan_seconds if self.config.scanner else 10)))
+            _SHUTDOWN_EVENT.wait(timeout=max(1, int(self.config.scanner.spx_price_action_scan_seconds if self.config.scanner else 10)))
 
     def run_spx_price_action_once(self) -> Optional[dict[str, Any]]:
         if not self.config.scanner:
@@ -10568,7 +10608,7 @@ class ProductionOrderExecutor:
             train_cmd = [sys.executable, str(script_path), "--train"]
             print(f"[sr-rl] training agent: {' '.join(train_cmd)}")
             sr_write_event("train_started", {"cmd": train_cmd, "model_path": str(SR_RL_MODEL_PATH)})
-            proc = subprocess.Popen(
+            proc = _register_child(subprocess.Popen(
                 train_cmd,
                 cwd=str(PROJECT_ROOT),
                 env=env,
@@ -10576,7 +10616,7 @@ class ProductionOrderExecutor:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
-            )
+            ))
             assert proc.stdout is not None
             for line in proc.stdout:
                 print(line.rstrip())
@@ -10601,10 +10641,10 @@ class ProductionOrderExecutor:
             sr_write_event("auto_train_started", {"model_path": str(SR_RL_MODEL_PATH)})
             train_cmd = [sys.executable, str(script_path), "--train"]
             try:
-                proc = subprocess.Popen(
+                proc = _register_child(subprocess.Popen(
                     train_cmd, cwd=str(PROJECT_ROOT), env=env,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-                )
+                ))
                 assert proc.stdout is not None
                 for line in proc.stdout:
                     print(line.rstrip())
@@ -10623,11 +10663,11 @@ class ProductionOrderExecutor:
         if self.config.scanner.sr_rl_execute_now:
             cmd.append("--execute")
 
-        while True:
+        while not _SHUTDOWN_EVENT.is_set():
             try:
                 print(f"[sr-rl] launching: {' '.join(cmd)}")
                 sr_write_event("live_started", {"cmd": cmd, "signals_path": str(SR_RL_SIGNALS_PATH)})
-                proc = subprocess.Popen(
+                proc = _register_child(subprocess.Popen(
                     cmd,
                     cwd=str(PROJECT_ROOT),
                     env=env,
@@ -10635,22 +10675,27 @@ class ProductionOrderExecutor:
                     stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,
-                )
+                ))
                 assert proc.stdout is not None
                 for line in proc.stdout:
                     print(line.rstrip())
                 rc = proc.wait()
                 sr_write_event("live_exited", {"returncode": rc})
+                if _SHUTDOWN_EVENT.is_set():
+                    break
                 if rc != 0 and not SR_RL_MODEL_PATH.exists():
                     print(f"[sr-rl] model missing after exit (rc={rc}); waiting 300s before retry")
-                    time.sleep(300)
+                    if _SHUTDOWN_EVENT.wait(timeout=300):
+                        break
                 else:
                     print(f"[sr-rl] exited returncode={rc}; restarting in 20s")
-                    time.sleep(20)
+                    if _SHUTDOWN_EVENT.wait(timeout=20):
+                        break
             except Exception as exc:
                 print(f"[sr-rl] loop error: {exc}")
                 sr_write_event("live_error", {"error": str(exc)})
-                time.sleep(20)
+                if _SHUTDOWN_EVENT.wait(timeout=20):
+                    break
 
     def _start_alpaca_stream_router(self) -> None:
         if not self.config.scanner or not self.config.scanner.alpaca_stream_router_enabled:
@@ -10689,7 +10734,7 @@ class ProductionOrderExecutor:
             try:
                 print(f"[stream-router] launching: {' '.join(cmd)}")
                 write_event("stream_router_started", {"cmd": cmd})
-                proc = subprocess.Popen(
+                proc = _register_child(subprocess.Popen(
                     cmd,
                     cwd=str(PROJECT_ROOT),
                     env=env,
@@ -10697,7 +10742,7 @@ class ProductionOrderExecutor:
                     stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,
-                )
+                ))
                 assert proc.stdout is not None
                 for line in proc.stdout:
                     print(line.rstrip())
@@ -10772,9 +10817,9 @@ class ProductionOrderExecutor:
         if self.config.scanner.stream_confirmed_use_polling:
             cmd.append("--poll")
 
-        while True:
+        while not _SHUTDOWN_EVENT.is_set():
             try:
-                proc = subprocess.Popen(
+                proc = _register_child(subprocess.Popen(
                     cmd,
                     cwd=str(PROJECT_ROOT),
                     env=env,
@@ -10782,7 +10827,7 @@ class ProductionOrderExecutor:
                     stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,
-                )
+                ))
                 write_event("stream_confirm_watcher_started", {"cmd": cmd, "path": str(script_path)})
                 if proc.stdout is not None:
                     for line in proc.stdout:
@@ -10790,12 +10835,16 @@ class ProductionOrderExecutor:
 
                 returncode = proc.wait()
                 write_event("stream_confirm_watcher_exited", {"returncode": returncode})
+                if _SHUTDOWN_EVENT.is_set():
+                    break
                 print(f"[stream-confirm] watcher exited returncode={returncode}; restarting in 10s")
-                time.sleep(10)
+                if _SHUTDOWN_EVENT.wait(timeout=10):
+                    break
             except Exception as exc:
                 print(f"[stream-confirm] watcher error: {exc}; restarting in 10s")
                 write_event("stream_confirm_watcher_error", {"error": str(exc)})
-                time.sleep(10)
+                if _SHUTDOWN_EVENT.wait(timeout=10):
+                    break
 
     def _start_scalping_layer(self) -> None:
         if not self.config.scanner or not self.config.scanner.scalping_layer_enabled:
@@ -10837,13 +10886,13 @@ class ProductionOrderExecutor:
             write_event("scalp_layer_import_failed", {"error": str(exc)})
             return
 
-        while True:
+        while not _SHUTDOWN_EVENT.is_set():
             try:
                 _scalp_run_once()
             except Exception as exc:
                 print(f"[scalp-layer] cycle error: {exc}")
                 write_event("scalp_cycle_error", {"error": str(exc)})
-            time.sleep(scan_seconds)
+            _SHUTDOWN_EVENT.wait(timeout=scan_seconds)
 
     def run(self) -> None:
         print("[executor] 13K account executor starting")
@@ -11478,8 +11527,10 @@ def _start_metrics_server(port: int = 8080) -> None:
 def main() -> None:
     # ── SIGTERM handler for K8s rolling restarts ───────────────────────────
     def _handle_sigterm(signum: int, frame: Any) -> None:
-        print("[executor] SIGTERM received — requesting graceful shutdown", flush=True)
+        print("[executor] SIGTERM received — terminating children and exiting", flush=True)
         _SHUTDOWN_EVENT.set()
+        _terminate_children(timeout=5.0)
+        sys.exit(0)
 
     signal.signal(signal.SIGTERM, _handle_sigterm)
 
