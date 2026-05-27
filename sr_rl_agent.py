@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import gymnasium as gym
+import yfinance as yf
 import numpy as np
 import pandas as pd
 from config.env_loader import load_instance_env
@@ -44,6 +45,9 @@ MARKET_CONTEXT_PATH = OUT_DIR / f"{DATA_TAG}_market_context.json"
 MODEL_PATH = OUT_DIR / f"{DATA_TAG}_sr_rl_agent_ppo.zip"
 SIGNALS_PATH = OUT_DIR / f"{DATA_TAG}_sr_rl_live_signals.json"
 SHARED_BARS_1M_PATH = OUT_DIR / f"{DATA_TAG}_stream_confirmed_bars_1m.csv"
+# Local disk cache for Alpaca historical bars — written on first fetch, reused by all
+# subsequent training calls in the same session (avoids re-hitting the API per trial).
+HIST_BARS_CACHE_PATH = OUT_DIR / f"{DATA_TAG}_sr_rl_hist_bars_cache.csv"
 
 ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower()
 
@@ -170,12 +174,16 @@ def compute_macd_hist(close: pd.Series) -> pd.Series:
 
 def compute_vwap(df: pd.DataFrame) -> pd.Series:
     """Daily VWAP, reset each calendar day using the timestamp column."""
-    typical = (df["high"] + df["low"] + df["close"]) / 3.0
-    date_key = pd.to_datetime(df["timestamp"], utc=True).dt.date
-    tpv = typical * df["volume"]
+    high  = pd.to_numeric(df["high"],   errors="coerce").fillna(df["close"])
+    low   = pd.to_numeric(df["low"],    errors="coerce").fillna(df["close"])
+    close = pd.to_numeric(df["close"],  errors="coerce").fillna(0.0)
+    vol   = pd.to_numeric(df["volume"], errors="coerce").fillna(0.0)
+    typical = (high + low + close) / 3.0
+    date_key = pd.to_datetime(df["timestamp"], utc=True).dt.floor("D")
+    tpv = typical * vol
     cum_tpv = tpv.groupby(date_key).cumsum()
-    cum_vol = df["volume"].groupby(date_key).cumsum()
-    return (cum_tpv / cum_vol.replace(0.0, 1e-9)).fillna(df["close"])
+    cum_vol = vol.groupby(date_key).cumsum()
+    return (cum_tpv / cum_vol.replace(0.0, 1e-9)).fillna(close)
 
 
 def compute_vol_ratio(volume: pd.Series, period: int = VOL_RATIO_PERIOD) -> pd.Series:
@@ -309,9 +317,85 @@ def market_allows_trading() -> tuple[bool, float, str]:
     return True, 1.0, "market_context_normal"
 
 
-def _fetch_historical_1m_alpaca(symbols: list[str], lookback_days: int) -> pd.DataFrame:
-    """Pull historical 1-minute bars from Alpaca REST for premarket training."""
+def _fetch_yfinance_fallback(symbols: list[str], lookback_days: int) -> pd.DataFrame:
+    """
+    Fetch intraday bars from yfinance when Alpaca is unavailable/rate-limited.
+    Uses 5m interval (60-day window) then resample-compatible output columns.
+    """
     columns = ["symbol", "timestamp", "open", "high", "low", "close", "volume"]
+    # yfinance 5m goes back 60 days; 1m only 7 days
+    interval = "5m" if lookback_days > 7 else "1m"
+    period = f"{min(lookback_days, 59)}d"
+    frames: list[pd.DataFrame] = []
+    print(f"[sr-rl] yfinance fallback: {len(symbols)} symbols interval={interval} period={period}")
+    for symbol in symbols:
+        try:
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(period=period, interval=interval, auto_adjust=True)
+            if df is None or df.empty:
+                continue
+            df = df.reset_index()
+            ts_col = "Datetime" if "Datetime" in df.columns else df.columns[0]
+            df = df.rename(columns={
+                ts_col: "timestamp",
+                "Open": "open", "High": "high", "Low": "low",
+                "Close": "close", "Volume": "volume",
+            })
+            df["symbol"] = symbol.upper()
+            df = df[["symbol", "timestamp", "open", "high", "low", "close", "volume"]]
+            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+            df = df.dropna(subset=["timestamp", "close"])
+            if not df.empty:
+                frames.append(df)
+                print(f"[sr-rl] yfinance {symbol}: {len(df)} bars")
+        except Exception as exc:
+            print(f"[sr-rl] yfinance failed for {symbol}: {exc}")
+
+    if not frames:
+        return pd.DataFrame(columns=columns)
+
+    out = pd.concat(frames, ignore_index=True).sort_values(["symbol", "timestamp"])
+    # Write to disk cache so Alpaca calls can reuse this data next time
+    try:
+        out.to_csv(HIST_BARS_CACHE_PATH, index=False)
+        print(f"[sr-rl] yfinance data cached: {len(out)} rows → {HIST_BARS_CACHE_PATH.name}")
+    except Exception as exc:
+        print(f"[sr-rl] yfinance cache write failed: {exc}")
+    return out
+
+
+def _fetch_historical_1m_alpaca(symbols: list[str], lookback_days: int) -> pd.DataFrame:
+    """
+    Pull historical 1-minute bars from Alpaca REST for premarket training.
+
+    Results are cached to HIST_BARS_CACHE_PATH for the session so that repeated
+    calls (multiple Optuna trials, retrain after tuning) don't re-hit the API.
+    The cache is filtered to the requested symbols and lookback window each call.
+    """
+    columns = ["symbol", "timestamp", "open", "high", "low", "close", "volume"]
+    wanted = {s.upper().strip() for s in symbols if s.strip()}
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days + 4)
+
+    # ── Try session-level disk cache first ────────────────────────────────────
+    if HIST_BARS_CACHE_PATH.exists():
+        try:
+            cached = pd.read_csv(HIST_BARS_CACHE_PATH)
+            cached["timestamp"] = pd.to_datetime(cached["timestamp"], utc=True, errors="coerce")
+            cached["symbol"] = cached["symbol"].astype(str).str.upper().str.strip()
+            cached = cached[cached["symbol"].isin(wanted) & (cached["timestamp"] >= cutoff)]
+            cached = cached.dropna(subset=["symbol", "timestamp", "close"])
+            if not cached.empty:
+                symbols_in_cache = set(cached["symbol"].unique())
+                missing = wanted - symbols_in_cache
+                if not missing:
+                    print(f"[sr-rl] hist cache hit: {len(cached)} rows for {len(symbols_in_cache)} symbols")
+                    return cached.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+                # Partial cache — only fetch what's missing
+                print(f"[sr-rl] hist cache partial: missing {len(missing)} symbols, fetching from Alpaca")
+                symbols = sorted(missing)
+        except Exception as exc:
+            print(f"[sr-rl] hist cache read failed ({exc}); fetching from Alpaca")
+
     api_key = os.getenv("APCA_API_KEY_ID", "")
     secret = os.getenv("APCA_API_SECRET_KEY", "")
     if not api_key or not secret:
@@ -349,12 +433,43 @@ def _fetch_historical_1m_alpaca(symbols: list[str], lookback_days: int) -> pd.Da
             print(f"[sr-rl] historical fetch failed for {symbol}: {exc}")
 
     if not frames:
-        return pd.DataFrame(columns=columns)
+        # No new data fetched — return whatever we have in cache if any
+        if HIST_BARS_CACHE_PATH.exists():
+            try:
+                cached = pd.read_csv(HIST_BARS_CACHE_PATH)
+                cached["timestamp"] = pd.to_datetime(cached["timestamp"], utc=True, errors="coerce")
+                cached["symbol"] = cached["symbol"].astype(str).str.upper().str.strip()
+                cached = cached[cached["symbol"].isin(wanted) & (cached["timestamp"] >= cutoff)]
+                if not cached.empty:
+                    print(f"[sr-rl] Alpaca returned nothing new; using {len(cached)} rows from disk cache")
+                    return cached.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+            except Exception:
+                pass
+        # Last resort: yfinance 5m bars (60-day window, free tier)
+        return _fetch_yfinance_fallback(list(wanted), lookback_days)
 
     out = pd.concat(frames, ignore_index=True)
     out["timestamp"] = pd.to_datetime(out["timestamp"], utc=True, errors="coerce")
     out["symbol"] = out["symbol"].astype(str).str.upper().str.strip()
-    return out.dropna(subset=["symbol", "timestamp", "close"]).sort_values(["symbol", "timestamp"])
+    out = out.dropna(subset=["symbol", "timestamp", "close"]).sort_values(["symbol", "timestamp"])
+
+    # ── Merge with any existing cache and write back ───────────────────────
+    try:
+        if HIST_BARS_CACHE_PATH.exists():
+            existing = pd.read_csv(HIST_BARS_CACHE_PATH)
+            existing["timestamp"] = pd.to_datetime(existing["timestamp"], utc=True, errors="coerce")
+            existing["symbol"] = existing["symbol"].astype(str).str.upper().str.strip()
+            merged = pd.concat([existing, out], ignore_index=True).drop_duplicates(
+                subset=["symbol", "timestamp"]
+            ).sort_values(["symbol", "timestamp"])
+        else:
+            merged = out
+        merged.to_csv(HIST_BARS_CACHE_PATH, index=False)
+        print(f"[sr-rl] hist cache written: {len(merged)} rows → {HIST_BARS_CACHE_PATH.name}")
+    except Exception as exc:
+        print(f"[sr-rl] hist cache write failed: {exc}")
+
+    return out
 
 
 def _load_shared_1m_bars(symbols: list[str], lookback_days: int) -> pd.DataFrame:
