@@ -169,6 +169,11 @@ RATE_LIMIT_MAX_BACKOFF_SECONDS = int(os.getenv("STREAM_CONFIRM_RATE_LIMIT_MAX_BA
 POLL_SYMBOLS_PER_CYCLE = int(os.getenv("STREAM_CONFIRM_POLL_SYMBOLS_PER_CYCLE", "20"))
 ALPACA_REQUEST_SLEEP_SECONDS = float(os.getenv("STREAM_CONFIRM_REQUEST_SLEEP_SECONDS", "0.20"))
 
+# When STREAM_ROUTER_MODE=1, alpaca_stream_router.py owns the sole WebSocket
+# connection and continuously writes to SHARED_BARS_1M_PATH. This module then
+# reads bars from that file instead of making its own Alpaca REST calls.
+STREAM_ROUTER_MODE = os.getenv("STREAM_ROUTER_MODE", "0").lower() in {"1", "true"}
+
 _DATA_CLIENT: StockHistoricalDataClient | None = None
 _BAR_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _RATE_LIMIT_UNTIL: dict[str, float] = {}
@@ -679,6 +684,23 @@ def fetch_recent_1m(symbol: str, lookback_days: int = 2) -> pd.DataFrame:
     return df
 
 
+def fetch_recent_1m_from_shared_cache(symbol: str, lookback_days: int = 2) -> pd.DataFrame:
+    """Read bars for symbol from the stream router's shared CSV (no Alpaca API call)."""
+    symbol = normalize_symbol(symbol)
+    if not symbol or not SHARED_BARS_1M_PATH.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(SHARED_BARS_1M_PATH)
+        df["symbol"] = df["symbol"].map(normalize_symbol)
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        df = df[(df["symbol"] == symbol) & (df["timestamp"] >= cutoff)]
+        return df.sort_values("timestamp").reset_index(drop=True)
+    except Exception as exc:
+        write_event("shared_bar_cache_read_error", {"symbol": symbol, "error": str(exc)})
+        return pd.DataFrame()
+
+
 def persist_bars_1m(df: pd.DataFrame) -> None:
     """
     Persist the single stream/poll source of 1-minute bars for downstream modules.
@@ -903,7 +925,8 @@ def early_continuation_features(bars: pd.DataFrame) -> dict[str, Any]:
 
 
 def evaluate_symbol(symbol: str, watch: WatchSymbol) -> MovementState:
-    bars = add_features(fetch_recent_1m(symbol))
+    raw = fetch_recent_1m_from_shared_cache(symbol) if STREAM_ROUTER_MODE else fetch_recent_1m(symbol)
+    bars = add_features(raw)
     if bars.empty or len(bars) < 30:
         return MovementState(symbol=symbol, confirm_reason="not_enough_bars")
 
@@ -1447,6 +1470,11 @@ def main() -> None:
     print(f"[config] top_n_ranked={EARLY_CONTINUATION_TOP_N}")
     print(f"[config] trailing_stop_enabled={TRAILING_STOP_ENABLED}")
     print(f"[config] take_profit_r={TAKE_PROFIT_R_MULTIPLE}")
+
+    if STREAM_ROUTER_MODE:
+        print("[stream-confirm] stream_router_mode=1 — WebSocket owned by alpaca_stream_router; reading from shared bar cache")
+        run_polling_fallback()
+        return
 
     if "--poll" in sys.argv or os.getenv("STREAM_CONFIRM_USE_POLLING", "1") in {"1", "true", "yes"}:
         run_polling_fallback()
