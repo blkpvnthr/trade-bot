@@ -1736,7 +1736,7 @@ def train_evolution_strategy_layer(symbols: list[str] | None = None) -> dict[str
 
     metrics: dict[str, Any] = {
         "ok": True,
-        "created_at_utc": now_utc_iso() if "now_utc_iso" in globals() else datetime.utcnow().isoformat(),
+        "created_at_utc": now_utc_iso() if "now_utc_iso" in globals() else datetime.now(timezone.utc).isoformat(),
         "symbols_requested": symbols,
         "symbols_trained": [],
         "symbols_skipped": [],
@@ -1841,14 +1841,14 @@ def infer_evolution_strategy_signals(symbols: list[str] | None = None) -> list[d
                 "prob_sell": signal["prob_sell"],
                 "price": signal["price"],
                 "source": "evolution_strategy_layer",
-                "created_at_utc": now_utc_iso() if "now_utc_iso" in globals() else datetime.utcnow().isoformat(),
+                "created_at_utc": now_utc_iso() if "now_utc_iso" in globals() else datetime.now(timezone.utc).isoformat(),
             }
             signals.append(row)
         except Exception as exc:
             print(f"[es-layer] inference failed symbol={symbol}: {exc}")
 
     payload = {
-        "created_at_utc": now_utc_iso() if "now_utc_iso" in globals() else datetime.utcnow().isoformat(),
+        "created_at_utc": now_utc_iso() if "now_utc_iso" in globals() else datetime.now(timezone.utc).isoformat(),
         "signals": signals,
     }
     ES_SIGNALS_PATH.write_text(json.dumps(safe_json(payload), indent=2) + "\n", encoding="utf-8")
@@ -11304,27 +11304,53 @@ def _write_strategy_metrics(acct: Any, gross_exposure: float) -> None:
 def _start_metrics_server(port: int = 8080) -> None:
     """Serve /tmp/trader_metrics.prom via HTTP on port 8080 for Prometheus scraping."""
     import http.server
+    import socketserver
     import threading
 
     class _MetricsHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            if self.path in ("/metrics", "/"):
-                prom_path = Path("/tmp/trader_metrics.prom")
-                body = prom_path.read_bytes() if prom_path.exists() else b"# no metrics yet\n"
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain; version=0.0.4")
-                self.end_headers()
-                self.wfile.write(body)
-            else:
-                self.send_response(404)
-                self.end_headers()
+            try:
+                if self.path in ("/metrics", "/"):
+                    prom_path = Path("/tmp/trader_metrics.prom")
+                    body = prom_path.read_bytes() if prom_path.exists() else b"# no metrics yet\n"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain; version=0.0.4")
+                    self.end_headers()
+                    self.wfile.write(body)
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                pass  # harmless client disconnect
 
         def log_message(self, fmt: str, *args: Any) -> None:
-            pass  # suppress access log noise
+            pass  # suppress per-request access log noise
+
+        def log_error(self, fmt: str, *args: Any) -> None:
+            # Suppress disconnect tracebacks; let real server errors surface via _serve()
+            msg = fmt % args if args else fmt
+            if any(k in msg for k in ("Connection reset", "Broken pipe", "104", "32")):
+                return
+            print(f"[metrics-server] {msg}", flush=True)
+
+    class _SafeHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+
+        def handle_error(self, request: Any, client_address: Any) -> None:
+            import sys as _sys
+            exc_type = _sys.exc_info()[0]
+            if exc_type in (ConnectionResetError, BrokenPipeError):
+                return
+            if exc_type is OSError:
+                import errno as _errno
+                exc_val = _sys.exc_info()[1]
+                if isinstance(exc_val, OSError) and exc_val.errno in (_errno.ECONNRESET, _errno.EPIPE):
+                    return
+            super().handle_error(request, client_address)
 
     def _serve() -> None:
         try:
-            server = http.server.HTTPServer(("0.0.0.0", port), _MetricsHandler)
+            server = _SafeHTTPServer(("0.0.0.0", port), _MetricsHandler)
             server.serve_forever()
         except Exception as exc:
             print(f"[metrics] HTTP server failed on port {port}: {exc}", flush=True)
