@@ -1,8 +1,9 @@
 # trade-bot
-alpaca credentials:
-efcb0935-b296-4005-923a-c7bd98afece9
 ```bash
 curl https://tv.quantumquant.trade/
+```
+```bash
+tail -n 120 /root/trade-bot/logs/run.log
 ```
 ```bash
 sudo systemctl restart tradingview-bot
