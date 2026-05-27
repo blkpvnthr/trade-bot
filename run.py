@@ -272,6 +272,9 @@ FORECAST_STRONG_BUY_THRESHOLD = float(os.getenv("FORECAST_STRONG_BUY_THRESHOLD",
 FORECAST_MAX_DRAWDOWN_PROB_FOR_BUY = float(os.getenv("FORECAST_MAX_DRAWDOWN_PROB_FOR_BUY", "0.42"))
 FORECAST_MIN_EXPECTED_RETURN_FOR_BUY = float(os.getenv("FORECAST_MIN_EXPECTED_RETURN_FOR_BUY", "0.0015"))
 FORECAST_BLOCK_BUYS_WHEN_MISSING = os.getenv("FORECAST_BLOCK_BUYS_WHEN_MISSING", "0").lower() in {"1", "true", "yes"}
+# FORECAST_ENSEMBLE_SOFT_GATE evaluated after SOFT_ALPHA_GATES constant is declared (below DWT block).
+# At runtime, apply_forecast_ensemble_to_order_plan checks FORECAST_BLOCK_BUYS_WHEN_MISSING *and*
+# FORECAST_ENSEMBLE_SOFT_GATE_OVERRIDE to decide hard vs soft mode.
 FORECAST_SIGNAL_MAX_AGE_SECONDS = int(os.getenv("FORECAST_SIGNAL_MAX_AGE_SECONDS", "900"))
 
 FORECAST_WEIGHTS = {
@@ -300,6 +303,20 @@ DWT_WAVELET = os.getenv("DWT_WAVELET", "db4")
 DWT_LEVEL = int(os.getenv("DWT_LEVEL", "3"))
 DWT_DENOISE_MODE = os.getenv("DWT_DENOISE_MODE", "soft")
 DWT_THRESHOLD_SCALE = float(os.getenv("DWT_THRESHOLD_SCALE", "0.50"))
+
+# ---------------------------------------------------------------------------
+# Soft alpha gates — convert model/structure vetoes to scoring penalties.
+# When SOFT_ALPHA_GATES=true, broken/missing/stale model layers do not block
+# trades outright; they apply confidence penalties to a final weighted score.
+# Hard risk controls (kill switch, daily loss, cash buffer, duplicate orders,
+# max exposure, PDT) are never affected by soft gate mode.
+# ---------------------------------------------------------------------------
+SOFT_ALPHA_GATES = os.getenv("SOFT_ALPHA_GATES", "false").lower() in {"1", "true", "yes"}
+RL_TIMING_SOFT_GATE = os.getenv("RL_TIMING_SOFT_GATE", SOFT_ALPHA_GATES and "true" or "false").lower() in {"1", "true", "yes"}
+STRUCTURE_SOFT_GATE = os.getenv("STRUCTURE_SOFT_GATE", SOFT_ALPHA_GATES and "true" or "false").lower() in {"1", "true", "yes"}
+FORECAST_ENSEMBLE_SOFT_GATE_OVERRIDE = os.getenv("FORECAST_ENSEMBLE_SOFT_GATE", "false").lower() in {"1", "true", "yes"}
+MIN_EXECUTION_SCORE = float(os.getenv("MIN_EXECUTION_SCORE", "0.62"))
+ALLOW_TRADE_WHEN_MODELS_MISSING = os.getenv("ALLOW_TRADE_WHEN_MODELS_MISSING", SOFT_ALPHA_GATES and "true" or "false").lower() in {"1", "true", "yes"}
 
 
 def _dwt_denoise_series(values: Any) -> np.ndarray:
@@ -859,16 +876,22 @@ def apply_forecast_ensemble_to_order_plan(plan: pd.DataFrame, config: ScannerCon
     if "side" in out.columns:
         buy_mask = out["side"].astype(str).str.lower() == "buy"
         reject_mask = buy_mask & (out.get("forecast_buy_approved", pd.Series(True, index=out.index)).astype(str).str.lower().isin({"false", "0", "nan"}))
-        if FORECAST_BLOCK_BUYS_WHEN_MISSING:
+        # Hard block only when explicitly enabled AND soft gate override is not set.
+        hard_block = FORECAST_BLOCK_BUYS_WHEN_MISSING and not FORECAST_ENSEMBLE_SOFT_GATE_OVERRIDE
+        if hard_block:
             if reject_mask.any():
-                skipped = out.loc[reject_mask, ["symbol", "side", "ensemble_score", "expected_return", "drawdown_probability", "forecast_reject_reason"]].copy()
-                print("[forecast] skipped BUY rows:")
+                skipped = out.loc[reject_mask, [c for c in ["symbol", "side", "ensemble_score", "expected_return", "drawdown_probability", "forecast_reject_reason"] if c in out.columns]].copy()
+                print("[forecast] hard-blocked BUY rows (FORECAST_BLOCK_BUYS_WHEN_MISSING=1):")
                 print(skipped.to_string(index=False))
                 out = out.loc[~reject_mask].copy()
         else:
-            # Soft mode: do not drop rows; lower confidence so existing gates/Kelly can size down.
-            if reject_mask.any() and "confidence_used" in out.columns:
-                out.loc[reject_mask, "confidence_used"] = pd.to_numeric(out.loc[reject_mask, "confidence_used"], errors="coerce").fillna(0.0) * 0.75
+            # Soft mode: never drop rows; apply a confidence penalty and tag the row.
+            if reject_mask.any():
+                if "confidence_used" in out.columns:
+                    out.loc[reject_mask, "confidence_used"] = pd.to_numeric(out.loc[reject_mask, "confidence_used"], errors="coerce").fillna(0.0) * 0.75
+                out.loc[reject_mask, "forecast_soft_penalty"] = "forecast_not_approved"
+                _fc_syms = sorted(out.loc[reject_mask, "symbol"].map(safe_symbol).tolist())
+                print(f"[forecast-soft] applied confidence penalty to {len(_fc_syms)} rows (soft gate): {_fc_syms}")
 
     return out.reset_index(drop=True)
 
@@ -6824,34 +6847,41 @@ class MomentumSetupScanner:
             ml_prob = to_float(ml_info.get("ml_next_bar_probability"), 0.50)
             ml_confirmed = bool(ml_info.get("ml_next_bar_confirmed", True))
 
-            confirmed = (
-                combined >= self.config.min_pretrade_direction_score
-                and to_float(metrics.get("1m_direction_score"), 0.5) >= self.config.min_pretrade_1m_score
-                and to_float(metrics.get("5m_direction_score"), 0.5) >= self.config.min_pretrade_5m_score
-                and to_float(metrics.get("15m_direction_score"), 0.5) >= self.config.min_pretrade_15m_score
-                and above_vwap_ok
-                and lower_low_ok
-                and pullback_ok
-                and last_1m > 0
-                and ml_confirmed
-            )
+            # Compute all individual conditions regardless of mode.
+            _dir_combined_ok = combined >= self.config.min_pretrade_direction_score
+            _dir_1m_ok = to_float(metrics.get("1m_direction_score"), 0.5) >= self.config.min_pretrade_1m_score
+            _dir_5m_ok = to_float(metrics.get("5m_direction_score"), 0.5) >= self.config.min_pretrade_5m_score
+            _dir_15m_ok = to_float(metrics.get("15m_direction_score"), 0.5) >= self.config.min_pretrade_15m_score
 
-            reason = "confirmed"
-            if not confirmed:
-                failed = []
-                if combined < self.config.min_pretrade_direction_score:
-                    failed.append("combined_direction_weak")
-                if not above_vwap_ok:
-                    failed.append("below_vwap")
-                if not lower_low_ok:
-                    failed.append("lower_low_structure")
-                if not pullback_ok:
-                    failed.append("active_pullback")
-                if last_1m <= 0:
-                    failed.append("missing_intraday_price")
-                if not ml_confirmed:
-                    failed.append(f"ml_next_bar_prob_low:{ml_prob:.2f}")
-                reason = ",".join(failed) or "direction_not_confirmed"
+            failed = []
+            if not _dir_combined_ok:
+                failed.append("combined_direction_weak")
+            if not above_vwap_ok:
+                failed.append("below_vwap")
+            if not lower_low_ok:
+                failed.append("lower_low_structure")
+            if not pullback_ok:
+                failed.append("active_pullback")
+            if last_1m <= 0:
+                failed.append("missing_intraday_price")
+            if not ml_confirmed:
+                failed.append(f"ml_next_bar_prob_low:{ml_prob:.2f}")
+
+            reason = ",".join(failed) or "confirmed"
+
+            if SOFT_ALPHA_GATES or STRUCTURE_SOFT_GATE:
+                # Soft mode: direction_confirmed is always True.
+                # The rejection reason is logged but is NOT a veto — it feeds
+                # into _compute_final_execution_score as a soft penalty.
+                confirmed = True
+                if failed:
+                    reason = "soft_penalties:" + ",".join(failed)
+            else:
+                confirmed = (
+                    _dir_combined_ok and _dir_1m_ok and _dir_5m_ok and _dir_15m_ok
+                    and above_vwap_ok and lower_low_ok and pullback_ok
+                    and last_1m > 0 and ml_confirmed
+                )
 
             rows.append({
                 **metrics,
@@ -7413,9 +7443,23 @@ class MomentumSetupScanner:
                 candidates = candidates.merge(ml_preds, on="symbol", how="left")
                 candidates["ml_next_bar_probability"] = pd.to_numeric(candidates["ml_next_bar_probability"], errors="coerce").fillna(0.50)
                 candidates["trade_confidence"] = (0.75 * candidates["trade_confidence"] + 0.25 * candidates["ml_next_bar_probability"]).clip(0, 1)
-                candidates = candidates[candidates["ml_next_bar_probability"] >= self.config.ml_next_bar_min_buy_probability].copy()
-                if candidates.empty:
-                    print("[ml-next-bar] all candidates rejected by next-bar direction filter")
+                if SOFT_ALPHA_GATES:
+                    # Soft mode: apply penalty instead of dropping. Low-prob candidates
+                    # continue to the direction gate and weighted execution score.
+                    low_ml_mask = candidates["ml_next_bar_probability"] < self.config.ml_next_bar_min_buy_probability
+                    if low_ml_mask.any():
+                        candidates.loc[low_ml_mask, "trade_confidence"] = (
+                            candidates.loc[low_ml_mask, "trade_confidence"] * 0.80
+                        ).clip(0, 1)
+                        candidates.loc[low_ml_mask, "ml_soft_penalty"] = "ml_prob_below_threshold"
+                        print(
+                            f"[ml-soft] {low_ml_mask.sum()} candidates below ml_prob threshold "
+                            f"({self.config.ml_next_bar_min_buy_probability:.2f}): soft penalty applied"
+                        )
+                else:
+                    candidates = candidates[candidates["ml_next_bar_probability"] >= self.config.ml_next_bar_min_buy_probability].copy()
+                    if candidates.empty:
+                        print("[ml-next-bar] all candidates rejected by next-bar direction filter")
 
         no_reentry_symbols = load_no_reentry_symbols()
         if no_reentry_symbols:
@@ -7968,6 +8012,143 @@ class MomentumSetupScanner:
 
         return rebalance
     
+# ======================================================================
+# Soft-gate weighted execution score
+# ======================================================================
+
+def _compute_final_execution_score(
+    row: dict[str, Any],
+    direction: dict[str, Any],
+    market_context: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Compute a weighted final execution score from signal components.
+    Used in SOFT_ALPHA_GATES mode so broken/stale model layers apply
+    confidence penalties instead of hard vetoes.
+
+    Returns:
+        dict with keys: structure_score, volume_score, trend_score,
+        pivot_signal_score, market_regime_score, ml_score, risk_score,
+        final_execution_score, soft_penalties, signal_source, would_have_traded
+    """
+    soft_penalties: list[str] = []
+
+    # --- Structure / direction score ---
+    direction_score = to_float(direction.get("direction_score"), 0.50)
+    direction_confirmed = bool(direction.get("direction_confirmed", True))
+    reject_reason = str(direction.get("direction_reject_reason", ""))
+
+    if not direction_confirmed or reject_reason.startswith("soft_penalties:"):
+        flags = reject_reason.replace("soft_penalties:", "")
+        if "lower_low_structure" in flags:
+            # Lower-low treated as possible liquidity sweep — moderate penalty
+            structure_score = max(0.35, direction_score * 0.82)
+            soft_penalties.append("lower_low_structure_soft_penalty")
+        else:
+            structure_score = max(0.25, direction_score * 0.80)
+        if flags and "lower_low" not in flags:
+            soft_penalties.append(f"direction_weak:{flags[:40]}")
+    else:
+        structure_score = direction_score
+
+    # --- Volume / liquidity score ---
+    rel_vol = to_float(row.get("rel_volume"), 1.0)
+    if rel_vol >= 1.5:
+        volume_score = 1.0
+    elif rel_vol >= 1.0:
+        volume_score = 0.65 + 0.35 * ((rel_vol - 1.0) / 0.5)
+    else:
+        volume_score = max(0.30, rel_vol * 0.65)
+        soft_penalties.append(f"rel_volume_low:{rel_vol:.2f}")
+
+    # --- Trend / setup quality score ---
+    setup_score = to_float(row.get("setup_score"), to_float(row.get("momentum_score"), 0.55))
+    ret_1d = to_float(row.get("ret_1d"), 0.0)
+    trend_score = setup_score
+    if ret_1d < -0.01:
+        trend_score = max(0.20, trend_score * 0.85)
+        soft_penalties.append("negative_daily_return")
+
+    # --- Pivot / signal quality score ---
+    signal_source = str(row.get("source", row.get("reason", "scanner")))
+    pivot_score = to_float(row.get("pivot_reversal_score"), 0.0)
+    breakout_score = to_float(row.get("breakout_score"), 0.0)
+    momentum_score = to_float(
+        row.get("positive_momentum_score"),
+        to_float(row.get("momentum_score"), 0.0),
+    )
+    confidence = to_float(row.get("trade_confidence"), to_float(row.get("confidence_used"), 0.55))
+    pivot_signal_score = max(pivot_score, breakout_score, momentum_score, confidence)
+
+    # --- Market regime score ---
+    bias = str(market_context.get("overall_market_bias", "")).lower()
+    perm = str(market_context.get("trade_permission", "normal")).lower()
+    if not bias:
+        market_regime_score = 0.52
+        soft_penalties.append("stale_market_context")
+    elif bias in {"bullish", "constructive", "risk_on"} and perm in {"normal", ""}:
+        market_regime_score = 0.85
+    elif bias in {"mixed"} or perm == "cautious":
+        market_regime_score = 0.62
+        soft_penalties.append("cautious_market")
+    elif bias in {"bearish", "risk_off", "defensive"}:
+        market_regime_score = 0.32
+        soft_penalties.append("bearish_market")
+    else:
+        market_regime_score = 0.55
+
+    # --- ML / model score ---
+    ml_prob = to_float(
+        direction.get("ml_next_bar_probability"),
+        to_float(row.get("ml_next_bar_probability"), 0.50),
+    )
+    if ml_prob < 0.45:
+        ml_score = ml_prob
+        soft_penalties.append(f"ml_prob_low:{ml_prob:.2f}")
+    elif ml_prob < 0.50:
+        ml_score = ml_prob
+        soft_penalties.append(f"ml_prob_near_threshold:{ml_prob:.2f}")
+    else:
+        ml_score = ml_prob
+
+    # Penalize for missing model layers
+    if ALLOW_TRADE_WHEN_MODELS_MISSING:
+        if not RL_MODEL_PATH.exists():
+            ml_score = max(ml_score * 0.90, 0.40)
+            soft_penalties.append("rl_model_missing_soft_penalty")
+
+    # --- Risk score ---
+    risk_score = confidence
+
+    # --- Weighted final score ---
+    # Weights: structure 25%, volume 15%, trend 20%, signal 20%, regime 10%, ml 5%, risk 5%
+    final_score = float(np.clip(
+        0.25 * structure_score
+        + 0.15 * volume_score
+        + 0.20 * trend_score
+        + 0.20 * pivot_signal_score
+        + 0.10 * market_regime_score
+        + 0.05 * ml_score
+        + 0.05 * risk_score,
+        0.0,
+        1.0,
+    ))
+
+    return {
+        "structure_score": round(structure_score, 4),
+        "volume_score": round(volume_score, 4),
+        "trend_score": round(trend_score, 4),
+        "pivot_signal_score": round(pivot_signal_score, 4),
+        "market_regime_score": round(market_regime_score, 4),
+        "ml_score": round(ml_score, 4),
+        "risk_score": round(risk_score, 4),
+        "final_execution_score": round(final_score, 4),
+        "soft_penalties": soft_penalties,
+        "signal_source": signal_source,
+        "would_have_traded": final_score >= MIN_EXECUTION_SCORE,
+    }
+
+
 # ======================================================================# Executor
 # ======================================================================
 class ProductionOrderExecutor:
@@ -9170,8 +9351,38 @@ class ProductionOrderExecutor:
 
             is_orb_order = bool(row.get("orb_8am_signal", False)) or str(row.get("source", "")) == "orb_8am_liquidity_sweep_fvg"
             if not skip_message and side == "buy" and direction_by_symbol and not is_orb_order:
-                if not bool(direction.get("direction_confirmed", False)):
-                    skip_message = f"price_direction_not_confirmed:{direction.get('direction_reject_reason', 'unknown')}"
+                if SOFT_ALPHA_GATES:
+                    # Soft mode: compute weighted execution score; skip only if score < threshold.
+                    # Hard risk controls (kill switch, cash buffer, etc.) run after this block.
+                    _mkt_ctx = read_json_file(MARKET_CONTEXT_PATH, {})
+                    _exec_info = _compute_final_execution_score(row.to_dict(), direction, _mkt_ctx)
+                    _final_score = _exec_info["final_execution_score"]
+                    _soft_penalties = _exec_info["soft_penalties"]
+                    row = row.copy()
+                    row["final_execution_score"] = _final_score
+                    row["soft_penalties"] = ",".join(_soft_penalties)
+                    row["signal_source"] = _exec_info.get("signal_source", str(row.get("reason", "")))
+                    row["order_submitted"] = False  # updated to True on actual submission
+                    row["hard_block_reason"] = ""
+                    if _final_score < MIN_EXECUTION_SCORE:
+                        skip_message = (
+                            f"final_execution_score_below_threshold:"
+                            f"score={_final_score:.3f}<min={MIN_EXECUTION_SCORE:.2f}"
+                            f"|{','.join(_soft_penalties[:3])}"
+                        )
+                        print(
+                            f"[soft-gate] SKIP BUY {symbol}: final_score={_final_score:.3f} "
+                            f"< {MIN_EXECUTION_SCORE:.2f} penalties={_soft_penalties}"
+                        )
+                    else:
+                        print(
+                            f"[soft-gate] PASS BUY {symbol}: final_score={_final_score:.3f} "
+                            f"penalties={_soft_penalties or 'none'}"
+                        )
+                else:
+                    # Hard gate mode (default): original direction veto behavior.
+                    if not bool(direction.get("direction_confirmed", False)):
+                        skip_message = f"price_direction_not_confirmed:{direction.get('direction_reject_reason', 'unknown')}"
             elif not skip_message and side == "buy" and direction_by_symbol and is_orb_order:
                 # ORB entries already require sweep -> rejection/reclaim -> FVG -> retest.
                 # Keep the direction metrics in logs, but do not let the generic trend gate
@@ -9376,6 +9587,8 @@ class ProductionOrderExecutor:
                 order_id = str(getattr(submitted, "id", ""))
                 status = str(getattr(submitted, "status", "submitted"))
                 print(f"[submitted] {side.upper()} {qty} {symbol} status={status} id={order_id}")
+                if SOFT_ALPHA_GATES and hasattr(row, "__setitem__"):
+                    row["order_submitted"] = True
                 self._mark_order()
 
                 fill_info = self._poll_fill(order_id, price)
