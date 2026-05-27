@@ -236,6 +236,12 @@ CAUTIOUS_MARKET_CONFIDENCE_ADDON = float(os.getenv("CAUTIOUS_MARKET_CONFIDENCE_A
 BEARISH_MARKET_DISABLE_NEW_LONGS = os.getenv("BEARISH_MARKET_DISABLE_NEW_LONGS", "1").lower() in {"1", "true", "yes"}
 BEARISH_MARKET_MIN_RL_CONFIDENCE = float(os.getenv("BEARISH_MARKET_MIN_RL_CONFIDENCE", "0.85"))
 MIXED_MARKET_BUY_SIZE_MULTIPLIER = float(os.getenv("MIXED_MARKET_BUY_SIZE_MULTIPLIER", "0.80"))
+STRUCTURE_BREAKOUT_FALLBACK_ENABLED = os.getenv("STRUCTURE_BREAKOUT_FALLBACK_ENABLED", "1").lower() in {"1", "true", "yes"}
+STRUCTURE_BREAKOUT_FALLBACK_MAX_ORDERS = int(os.getenv("STRUCTURE_BREAKOUT_FALLBACK_MAX_ORDERS", "3"))
+STRUCTURE_BREAKOUT_FALLBACK_RISK_PCT = float(os.getenv("STRUCTURE_BREAKOUT_FALLBACK_RISK_PCT", "0.0025"))
+STRUCTURE_BREAKOUT_FALLBACK_MIN_RR = float(os.getenv("STRUCTURE_BREAKOUT_FALLBACK_MIN_RR", "1.5"))
+STRUCTURE_BREAKOUT_FALLBACK_MAX_STOP_PCT = float(os.getenv("STRUCTURE_BREAKOUT_FALLBACK_MAX_STOP_PCT", "0.04"))
+STRUCTURE_BREAKOUT_FALLBACK_TRIGGER_TOLERANCE_PCT = float(os.getenv("STRUCTURE_BREAKOUT_FALLBACK_TRIGGER_TOLERANCE_PCT", "0.001"))
 
 # Research-derived intraday execution quality filters (buy-side only; exits always allowed)
 # Heston et al. 2010: lower liquidity/higher adverse selection during lunch and pre-close
@@ -2318,6 +2324,7 @@ PREMARKET_DATA_COLLECTOR_PATH = PROJECT_ROOT / "premarket_data_collector.py"
 PORTFOLIO_REBALANCER_PATH = PROJECT_ROOT / "portfolio_rebalancer.py"
 
 MARKET_CONTEXT_PATH = OUT_DIR / f"{DATA_TAG}_market_context.json"
+DAILY_MARKET_CONTEXT_PATH = PROJECT_ROOT / "daily_system_outputs" / DATA_TAG / f"{DATA_TAG}_market_context.json"
 PREMARKET_TRADE_PLAN_PATH = OUT_DIR / f"{DATA_TAG}_premarket_trade_plan.json"
 INTRADAY_STRUCTURE_MAP_PATH = OUT_DIR / f"{DATA_TAG}_intraday_structure_map.json"
 INTRADAY_BARS_1M_PATH = OUT_DIR / f"{DATA_TAG}_intraday_bars_1m.csv"
@@ -3126,6 +3133,11 @@ def fallback_market_context(reason: str = "market_context_unavailable") -> dict[
         "overall_market_bias": "mixed",
         "trade_permission": "cautious",
         "risk_level": "medium",
+        "summary": "Conservative fallback market context; entries should be reduced until the normal context refresh succeeds.",
+        "event_flags": {},
+        "sector_context_summary": {},
+        "key_etf_context_summary": {},
+        "decision_reasons": [str(reason)],
         "market_context_source": "run_py_fallback",
         "reason": str(reason),
         "notes": [
@@ -3137,6 +3149,64 @@ def fallback_market_context(reason: str = "market_context_unavailable") -> dict[
         MARKET_CONTEXT_PATH.write_text(json.dumps(payload, indent=2, default=json_default) + "\n", encoding="utf-8")
     except Exception:
         pass
+    return payload
+
+
+def market_context_is_complete(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return False
+    return all(payload.get(k) not in (None, "") for k in ("overall_market_bias", "trade_permission", "risk_level"))
+
+
+def market_context_is_fallback(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return True
+    return str(payload.get("market_context_source", "")).lower() == "run_py_fallback" or str(payload.get("reason", "")).lower().startswith("market_context_builder_returned_no_payload")
+
+
+def load_best_market_context() -> dict[str, Any]:
+    """Prefer the full builder output when run.py's handoff file only has fallback context."""
+    primary = read_json_file(MARKET_CONTEXT_PATH, {})
+    daily = read_json_file(DAILY_MARKET_CONTEXT_PATH, {})
+
+    use_daily = (
+        market_context_is_complete(daily)
+        and (not market_context_is_complete(primary) or market_context_is_fallback(primary))
+    )
+    if use_daily:
+        try:
+            MARKET_CONTEXT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            MARKET_CONTEXT_PATH.write_text(json.dumps(daily, indent=2, default=json_default) + "\n", encoding="utf-8")
+        except Exception as exc:
+            write_event("market_context_primary_update_failed", {"error": str(exc), "source": str(DAILY_MARKET_CONTEXT_PATH)})
+        write_event(
+            "market_context_daily_output_promoted",
+            {
+                "source": str(DAILY_MARKET_CONTEXT_PATH),
+                "target": str(MARKET_CONTEXT_PATH),
+                "overall_market_bias": daily.get("overall_market_bias"),
+                "trade_permission": daily.get("trade_permission"),
+                "risk_level": daily.get("risk_level"),
+            },
+        )
+        return daily
+
+    return primary if market_context_is_complete(primary) else fallback_market_context("market_context_missing_or_incomplete")
+
+
+def normalize_planner_payload(payload: dict[str, Any], path: Path | None = None) -> dict[str, Any]:
+    if not isinstance(payload, dict) or not payload:
+        return payload if isinstance(payload, dict) else {}
+    changed = False
+    if not payload.get("status"):
+        planner_status = str(payload.get("planner_status") or "").lower()
+        payload["status"] = "ok" if planner_status in {"ok", "normal", "success"} else (planner_status or "error")
+        changed = True
+    if path is not None and changed:
+        try:
+            path.write_text(json.dumps(payload, indent=2, default=json_default) + "\n", encoding="utf-8")
+        except Exception as exc:
+            write_event("planner_payload_normalize_failed", {"path": str(path), "error": str(exc)})
     return payload
 
 
@@ -3442,12 +3512,16 @@ def snapshot_and_validate_planning_files(config: ScannerConfig, stage: str) -> d
         "max_age_minutes": int(config.max_premarket_file_age_minutes),
         "validations": validations,
         "snapshots": snapshots,
-        "all_required_fresh": all(v.get("ok") for v in validations if Path(v.get("path", "")).name in {
-            "market_context.json",
-            "premarket_trade_plan.json",
-            "intraday_structure_map.json",
-            "regime_position_plan.csv",
-        }),
+        "all_required_fresh": all(
+            v.get("ok")
+            for v in validations
+            if Path(v.get("path", "")).name in {
+                MARKET_CONTEXT_PATH.name,
+                PREMARKET_TRADE_PLAN_PATH.name,
+                INTRADAY_STRUCTURE_MAP_PATH.name,
+                REGIME_POSITION_PLAN_PATH.name,
+            }
+        ),
     }
     write_json_file(DATA_VALIDATION_STATE_PATH, summary)
     write_event("planning_data_validated", summary)
@@ -3703,7 +3777,7 @@ def refresh_market_context(timeout_seconds: int = 240) -> dict[str, Any]:
         print("[market-context] refreshed via subprocess")
         if output:
             print(output[-2000:])
-        payload = read_json_file(MARKET_CONTEXT_PATH, {})
+        payload = load_best_market_context()
         write_event(
             "market_context_refreshed_subprocess",
             {
@@ -3762,17 +3836,17 @@ def refresh_premarket_trade_plan(timeout_seconds: int = 240) -> dict[str, Any]:
 def load_market_context(refresh: bool = False) -> dict[str, Any]:
     if refresh or not MARKET_CONTEXT_PATH.exists():
         return refresh_market_context()
-    return read_json_file(MARKET_CONTEXT_PATH, {})
+    return load_best_market_context()
 
 
 def load_premarket_trade_plan(refresh: bool = False) -> dict[str, Any]:
     if refresh or not PREMARKET_TRADE_PLAN_PATH.exists():
-        return refresh_premarket_trade_plan()
-    return read_json_file(PREMARKET_TRADE_PLAN_PATH, {})
+        return normalize_planner_payload(refresh_premarket_trade_plan(), PREMARKET_TRADE_PLAN_PATH)
+    return normalize_planner_payload(read_json_file(PREMARKET_TRADE_PLAN_PATH, {}), PREMARKET_TRADE_PLAN_PATH)
 
 
 def load_intraday_structure_map() -> dict[str, Any]:
-    return read_json_file(INTRADAY_STRUCTURE_MAP_PATH, {})
+    return normalize_planner_payload(read_json_file(INTRADAY_STRUCTURE_MAP_PATH, {}), INTRADAY_STRUCTURE_MAP_PATH)
 
 
 def parse_payload_time_utc(value: Any) -> datetime | None:
@@ -3821,8 +3895,8 @@ def structure_map_by_symbol(payload: dict[str, Any]) -> dict[str, dict[str, Any]
 
 def planner_health_snapshot(config: ScannerConfig | None = None) -> dict[str, Any]:
     cfg = config or ScannerConfig()
-    plan_payload = read_json_file(PREMARKET_TRADE_PLAN_PATH, {})
-    structure_payload = read_json_file(INTRADAY_STRUCTURE_MAP_PATH, {})
+    plan_payload = load_premarket_trade_plan(refresh=False)
+    structure_payload = load_intraday_structure_map()
     plan_age = payload_age_minutes(plan_payload, PREMARKET_TRADE_PLAN_PATH)
     structure_age = payload_age_minutes(structure_payload, INTRADAY_STRUCTURE_MAP_PATH)
 
@@ -4585,14 +4659,17 @@ def append_live_experience(row: dict[str, Any], write_parquet: bool = True) -> N
     that an after-close trainer can label with future returns/PnL and validate
     before promoting any model.
     """
-    row = dict(row)
+    row = {
+        str(key): (None if value == "" else json_default(value))
+        for key, value in dict(row).items()
+    }
     row.setdefault("logged_at_utc", now_utc().isoformat())
-    row.setdefault("future_return_5m", "")
-    row.setdefault("future_return_15m", "")
-    row.setdefault("future_return_60m", "")
-    row.setdefault("max_runup", "")
-    row.setdefault("max_drawdown", "")
-    row.setdefault("outcome_label", "")
+    row.setdefault("future_return_5m", None)
+    row.setdefault("future_return_15m", None)
+    row.setdefault("future_return_60m", None)
+    row.setdefault("max_runup", None)
+    row.setdefault("max_drawdown", None)
+    row.setdefault("outcome_label", None)
 
     LIVE_EXPERIENCE_JSONL_PATH.parent.mkdir(parents=True, exist_ok=True)
     with LIVE_EXPERIENCE_JSONL_PATH.open("a", encoding="utf-8") as f:
@@ -5398,13 +5475,33 @@ class AlpacaBroker:
                 print(f"[orders] unable to cancel resting order for {symbol}: {exc}")
 
     def get_clock_info(self) -> dict[str, Any]:
-        clock = self.trading.get_clock()
-        return {
-            "is_open": bool(getattr(clock, "is_open", False)),
-            "timestamp": str(getattr(clock, "timestamp", "")),
-            "next_open": str(getattr(clock, "next_open", "")),
-            "next_close": str(getattr(clock, "next_close", "")),
-        }
+        try:
+            clock = self.trading.get_clock()
+            return {
+                "is_open": bool(getattr(clock, "is_open", False)),
+                "timestamp": str(getattr(clock, "timestamp", "")),
+                "next_open": str(getattr(clock, "next_open", "")),
+                "next_close": str(getattr(clock, "next_close", "")),
+                "source": "alpaca",
+            }
+        except Exception as exc:
+            print(f"[clock] Alpaca API unavailable ({exc}); falling back to local time estimate")
+            ET = ZoneInfo("America/New_York")
+            now_et = datetime.now(ET)
+            market_open_t = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+            market_close_t = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+            is_open = now_et.weekday() < 5 and market_open_t <= now_et < market_close_t
+            next_open = market_open_t + timedelta(days=1) if now_et >= market_open_t else market_open_t
+            while next_open.weekday() >= 5:
+                next_open += timedelta(days=1)
+            next_close = market_close_t if is_open else next_open.replace(hour=16, minute=0)
+            return {
+                "is_open": is_open,
+                "timestamp": now_et.isoformat(),
+                "next_open": next_open.isoformat(),
+                "next_close": next_close.isoformat(),
+                "source": "local_estimate",
+            }
 
     def submit_market_order(self, symbol: str, side: str, qty: int, client_order_id: str, tif: TimeInForce):
         order = MarketOrderRequest(
@@ -7846,7 +7943,7 @@ class MomentumSetupScanner:
         # Blend based on market regime. Trend markets favor time-series continuation.
         regime_bias = ""
         try:
-            market_context = read_json_file(MARKET_CONTEXT_PATH, default={})
+            market_context = load_market_context(refresh=False)
             regime_bias = str(
                 market_context.get("overall_market_bias")
                 or market_context.get("market_bias")
@@ -8256,7 +8353,7 @@ class ProductionOrderExecutor:
     def _current_market_context(self) -> dict[str, Any]:
         if not self.config.scanner.market_context_enabled:
             return {}
-        return read_json_file(MARKET_CONTEXT_PATH, {})
+        return load_market_context(refresh=False)
 
     def _apply_planner_and_market_gates_to_plan(self, plan: pd.DataFrame) -> pd.DataFrame:
         if plan is None or plan.empty or self.config.scanner is None:
@@ -8738,13 +8835,19 @@ class ProductionOrderExecutor:
                 raise RuntimeError(f"Required order file not found: {path}. portfolio_rebalancer.py should generate this file before execution.")
             return pd.DataFrame()
         try:
-            if path.stat().st_size == 0:
+            if path.stat().st_size <= 1 or not path.read_text(encoding="utf-8", errors="ignore").strip():
+                write_event("order_csv_blank", {"path": str(path), "required": bool(required)})
                 return pd.DataFrame()
         except Exception:
             pass
         try:
-            return pd.read_csv(path)
+            df = pd.read_csv(path)
+            if df.empty and len(df.columns) == 0:
+                write_event("order_csv_no_columns", {"path": str(path), "required": bool(required)})
+                return pd.DataFrame()
+            return df
         except pd.errors.EmptyDataError:
+            write_event("order_csv_empty_data", {"path": str(path), "required": bool(required)})
             return pd.DataFrame()
 
     def _run_portfolio_rebalancer(self) -> None:
@@ -8773,6 +8876,139 @@ class ProductionOrderExecutor:
                 f"Required order file not found after portfolio_rebalancer.py: "
                 f"{self.config.rebalance_orders_path}"
             )
+
+    def _structure_breakout_fallback_orders(self, equity: float) -> pd.DataFrame:
+        """
+        Last-resort BUY candidate builder for the common "all order CSVs are blank"
+        failure mode. It uses only the audited premarket structure map and keeps
+        the normal execution gates, risk limits, duplicate-order checks, and
+        bracket validation in place.
+        """
+        if not (self.config.scanner and STRUCTURE_BREAKOUT_FALLBACK_ENABLED):
+            return pd.DataFrame()
+
+        market_context = load_market_context(refresh=False)
+        blocked, reason = market_context_blocks_new_buys(
+            market_context,
+            allow_cautious=self.config.scanner.allow_cautious_market_buys,
+        )
+        if blocked:
+            write_event("structure_breakout_fallback_blocked", {"reason": reason})
+            return pd.DataFrame()
+
+        health = self._planner_health(refresh=True)
+        structures = health.get("structure_by_symbol", {}) if isinstance(health, dict) else {}
+        valid_symbols = set(health.get("valid_symbols", []) or [])
+        long_allowed = set(health.get("long_allowed_symbols", []) or [])
+        positions = self._positions_by_symbol()
+        max_order_notional = self._max_order_notional(equity)
+        risk_budget = max(0.0, equity * STRUCTURE_BREAKOUT_FALLBACK_RISK_PCT)
+
+        rows: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+
+        for symbol, structure in sorted(structures.items()):
+            symbol = safe_symbol(symbol)
+            if not symbol:
+                continue
+            trade_structure = structure.get("trade_structure", {}) if isinstance(structure, dict) else {}
+            liquidity = structure.get("liquidity", {}) if isinstance(structure, dict) else {}
+
+            if long_allowed and symbol not in long_allowed:
+                skipped.append({"symbol": symbol, "reason": "not_long_allowed"})
+                continue
+            if valid_symbols and symbol not in valid_symbols:
+                skipped.append({"symbol": symbol, "reason": "not_in_valid_premarket_symbols"})
+                continue
+            if symbol in positions and to_float(positions[symbol].qty, 0.0) > 0:
+                skipped.append({"symbol": symbol, "reason": "position_already_open"})
+                continue
+
+            current_price = to_float(structure.get("current_price"), 0.0)
+            trigger = to_float(trade_structure.get("preferred_long_trigger"), 0.0)
+            stop = to_float(trade_structure.get("preferred_long_stop"), 0.0)
+            if current_price <= 0 or trigger <= 0 or stop <= 0:
+                skipped.append({"symbol": symbol, "reason": "missing_price_trigger_or_stop"})
+                continue
+            if current_price < DAILY_INCOME_MIN_PRICE:
+                skipped.append({"symbol": symbol, "reason": f"price_below_min:{current_price:.2f}"})
+                continue
+
+            # Do not front-run the setup. This fallback only buys if the saved
+            # structure already shows the breakout/reclaim level has been met.
+            if current_price < trigger * (1.0 - STRUCTURE_BREAKOUT_FALLBACK_TRIGGER_TOLERANCE_PCT):
+                skipped.append({
+                    "symbol": symbol,
+                    "reason": f"trigger_not_reached:price={current_price:.4f}<trigger={trigger:.4f}",
+                })
+                continue
+
+            entry = max(current_price, trigger)
+            risk_per_share = entry - stop
+            stop_pct = risk_per_share / max(entry, 1e-9)
+            if risk_per_share <= 0:
+                skipped.append({"symbol": symbol, "reason": "invalid_stop_above_entry"})
+                continue
+            if stop_pct > STRUCTURE_BREAKOUT_FALLBACK_MAX_STOP_PCT:
+                skipped.append({"symbol": symbol, "reason": f"stop_too_wide:{stop_pct:.2%}"})
+                continue
+
+            rr = max(STRUCTURE_BREAKOUT_FALLBACK_MIN_RR, DAILY_INCOME_MIN_RISK_REWARD)
+            target = entry + risk_per_share * rr
+            risk_qty = int(risk_budget // risk_per_share) if risk_per_share > 0 else 0
+            cap_qty = int(max_order_notional // entry) if entry > 0 else 0
+            qty = max(0, min(risk_qty, cap_qty, self.config.max_single_order_qty))
+            notional = qty * entry
+            if qty <= 0 or notional < self.config.min_notional_to_trade:
+                skipped.append({"symbol": symbol, "reason": f"qty_or_notional_too_small:qty={qty}:notional={notional:.2f}"})
+                continue
+
+            confidence = float(np.clip(0.58 + 0.12 * to_float(liquidity.get("liquidity_score"), 0.0), 0.58, 0.78))
+            rows.append({
+                "symbol": symbol,
+                "side": "buy",
+                "delta_shares": qty,
+                "order_qty": qty,
+                "delta_dollars": notional,
+                "abs_delta_dollars": notional,
+                "capped_dollars": notional,
+                "price": entry,
+                "entry_price": entry,
+                "stop_price": stop,
+                "target_price": target,
+                "risk_reward_ratio": rr,
+                "target_weight": min(notional / max(equity, 1e-9), self.config.max_position_weight),
+                "current_weight": 0.0,
+                "delta_weight": notional / max(equity, 1e-9),
+                "trade_confidence": confidence,
+                "confidence_score": confidence,
+                "continuation_probability": confidence,
+                "reason": "structure_breakout_fallback:valid_premarket_structure_triggered",
+                "source": "run_py_structure_breakout_fallback",
+                "premarket_trigger": trigger,
+                "nearest_support": stop,
+                "market_bias": market_context.get("overall_market_bias", ""),
+                "market_permission": market_context.get("trade_permission", ""),
+                "market_risk": market_context.get("risk_level", ""),
+            })
+
+        if skipped:
+            write_event("structure_breakout_fallback_skips", {"count": len(skipped), "sample": skipped[:50]})
+
+        if not rows:
+            print("[structure-fallback] no triggered premarket structure setups available")
+            write_event("structure_breakout_fallback_no_orders", {"reason": "no_triggered_valid_setups"})
+            return pd.DataFrame()
+
+        out = pd.DataFrame(rows).sort_values(
+            ["trade_confidence", "risk_reward_ratio", "capped_dollars"],
+            ascending=[False, False, False],
+        ).head(max(1, STRUCTURE_BREAKOUT_FALLBACK_MAX_ORDERS)).reset_index(drop=True)
+        print("[structure-fallback] generated fallback buy candidates:")
+        show = ["symbol", "price", "stop_price", "target_price", "order_qty", "capped_dollars", "trade_confidence", "reason"]
+        print(out[[c for c in show if c in out.columns]].to_string(index=False))
+        write_event("structure_breakout_fallback_orders_generated", {"rows": out.to_dict(orient="records")})
+        return out
 
     def _load_orders(self) -> tuple[pd.DataFrame, pd.DataFrame]:
         if not self.config.rebalance_orders_path.exists():
@@ -9424,7 +9660,7 @@ class ProductionOrderExecutor:
                 if SOFT_ALPHA_GATES:
                     # Soft mode: compute weighted execution score; skip only if score < threshold.
                     # Hard risk controls (kill switch, cash buffer, etc.) run after this block.
-                    _mkt_ctx = read_json_file(MARKET_CONTEXT_PATH, {})
+                    _mkt_ctx = load_market_context(refresh=False)
                     _exec_info = _compute_final_execution_score(row.to_dict(), direction, _mkt_ctx)
                     _final_score = _exec_info["final_execution_score"]
                     _soft_penalties = _exec_info["soft_penalties"]
@@ -10502,6 +10738,13 @@ class ProductionOrderExecutor:
         print(f"[executor] using rebalance_orders={self.config.rebalance_orders_path}")
         print(f"[executor] using exit_orders={self.config.exit_orders_path if self.config.exit_orders_path.exists() else 'NONE'}")
         rebalance, exits = self._load_orders()
+        if rebalance.empty:
+            try:
+                acct = self.broker.get_account_snapshot()
+                rebalance = self._structure_breakout_fallback_orders(max(float(acct.equity), 1.0))
+            except Exception as exc:
+                print(f"[structure-fallback] failed to build fallback orders: {exc}")
+                write_event("structure_breakout_fallback_error", {"error": str(exc)})
         return self.run_once_from_frames(rebalance, exits)
 
     def _print_heartbeat(self) -> None:
@@ -11048,18 +11291,40 @@ class ProductionOrderExecutor:
             self.run_spx_price_action_once()
             return
 
+        _consecutive_errors = 0
+        _last_error_logged: str = ""
+        _auth_error_logged = False
         while not _SHUTDOWN_EVENT.is_set():
             try:
                 self.run_cycle_from_files()
                 self._print_heartbeat()
+                _consecutive_errors = 0
+                _last_error_logged = ""
+                _auth_error_logged = False
+                backoff = max(1, int(self.config.poll_seconds))
             except KeyboardInterrupt:
                 print("[executor] interrupted by user")
                 raise
             except Exception as exc:
-                print(f"[executor] cycle error: {exc}")
-                write_event("cycle_error", {"error": str(exc)})
-            # Wait for poll interval but wake early on SIGTERM
-            if _SHUTDOWN_EVENT.wait(timeout=max(1, int(self.config.poll_seconds))):
+                err_str = str(exc)
+                _consecutive_errors += 1
+                _is_auth = is_auth_error(exc) or "auth failed" in err_str.lower()
+                _is_network = any(kw in err_str.lower() for kw in ("nameresolution", "connection", "timeout", "max retries"))
+                if _is_auth:
+                    if not _auth_error_logged:
+                        print(f"[executor] CRITICAL: Alpaca authentication failed. Regenerate API keys in .env and restart. ({exc})")
+                        write_event("cycle_error", {"error": err_str, "type": "auth_failure", "consecutive": _consecutive_errors})
+                        _auth_error_logged = True
+                    backoff = 300  # no point hammering a 401
+                elif err_str != _last_error_logged or _consecutive_errors % 20 == 0:
+                    print(f"[executor] cycle error (#{_consecutive_errors}): {exc}")
+                    write_event("cycle_error", {"error": err_str, "type": "network" if _is_network else "unknown", "consecutive": _consecutive_errors})
+                    _last_error_logged = err_str
+                    backoff = min(300, self.config.poll_seconds * (2 ** min(_consecutive_errors - 1, 5)))
+                else:
+                    backoff = min(300, self.config.poll_seconds * (2 ** min(_consecutive_errors - 1, 5)))
+            # Wait for poll/backoff interval but wake early on SIGTERM
+            if _SHUTDOWN_EVENT.wait(timeout=backoff):
                 print("[executor] SIGTERM received — exiting main loop cleanly")
                 break
         print("[executor] shutdown complete")
