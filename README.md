@@ -3,6 +3,9 @@
 curl https://tv.quantumquant.trade/
 ```
 ```bash
+python run_optimizer_agent.py --days 1 --write-env-patch
+```
+```bash
 tail -n 120 /root/trade-bot/logs/run.log
 ```
 ```bash
@@ -10,9 +13,6 @@ sudo systemctl restart tradingview-bot
 ```
 ```bash
 sudo journalctl -u tradingview-bot -f
-```
-```bash
-sudo systemctl status tradingview-bot --no-pager -l
 ```
 ```bash
 curl https://tv.quantumquant.trade/ {"cash":100000.0,"monitor":{"interval_seconds":10.0,"min_cash_floor":0.0,"stop_loss_pct":-1.5,"take_profit_pct":3.0},"ok":true,"paper":true,"service":"tradingview-webhook","timestamp":"2026-05-18T09:56:52.683257+00:00"}

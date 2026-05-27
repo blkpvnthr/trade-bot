@@ -124,16 +124,30 @@ def resolve_qty(data: dict[str, Any], side: OrderSide) -> float:
     if qty <= 0:
         if side == OrderSide.SELL:
             symbol = normalize_symbol(data.get("symbol"))
+
             try:
                 position = client.get_open_position(symbol)
                 qty = abs(float(position.qty))
+
+                if qty <= 0:
+                    logger.warning(
+                        "Ignoring SELL webhook with zero qty and empty position | symbol=%s",
+                        symbol,
+                    )
+                    return 0
+
             except Exception:
-                raise ValueError(f"Sell/exit qty was 0 and no open position was found for {symbol}")
+                logger.warning(
+                    "Ignoring SELL webhook because no open position exists | symbol=%s",
+                    symbol,
+                )
+                return 0
+
         else:
             qty = 1.0
+        
 
-    return qty
-
+        return qty
 
 def validate_cash_for_buy(symbol: str, qty: float, price: float | None) -> tuple[float, float, float]:
     if price is None or price <= 0:
@@ -285,6 +299,15 @@ def webhook():
         validate_optional_secret(data)
 
         signal, side, qty, price = normalized_signal_from_payload(data)
+        
+        qty = resolve_qty(data, side)
+
+        if qty <= 0:
+            return jsonify({
+                "ok": True,
+                "ignored": True,
+                "reason": "no_position_to_close"
+            }), 200
 
         queued = False
         submitted = None
