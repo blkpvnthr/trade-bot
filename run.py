@@ -2478,6 +2478,12 @@ class ScannerConfig:
     min_breakout_confirmation_score: float = 0.55
     require_positive_momentum_or_breakout: bool = True
 
+    # Intraday universe rotation engine (opportunity_finder.py).
+    # Runs on a timer during market hours, scoring and replacing stale/low-quality
+    # symbols in the locked universe with higher-quality screener candidates.
+    opportunity_finder_enabled: bool = os.getenv("OPPORTUNITY_FINDER_ENABLED", "true").lower() in {"1", "true"}
+    opportunity_finder_interval_minutes: int = int(os.getenv("OPPORTUNITY_FINDER_INTERVAL_MINUTES", "20"))
+
     # Intraday entry-analysis layer.
     analyze_intraday_entries: bool = True
     intraday_lookback_days: int = 5
@@ -8165,6 +8171,7 @@ class ProductionOrderExecutor:
         self._planner_health_cache: dict[str, Any] | None = None
         self._sa_assessment: dict[str, Any] = {}
         self._sa_last_assessment_date: str | None = None
+        self._last_opportunity_finder_run: float = 0.0
 
     def _planner_health(self, refresh: bool = False) -> dict[str, Any]:
         if refresh or self._planner_health_cache is None:
@@ -10267,6 +10274,36 @@ class ProductionOrderExecutor:
         self.config.scanner.refresh_market_context = False
         self.config.scanner.refresh_premarket_trade_plan = False
 
+    def _maybe_run_opportunity_finder(self) -> None:
+        """Run the opportunity finder if enabled and the interval has elapsed."""
+        if not (self.config.scanner and self.config.scanner.opportunity_finder_enabled):
+            return
+        interval_seconds = self.config.scanner.opportunity_finder_interval_minutes * 60
+        now_ts = time.time()
+        if now_ts - self._last_opportunity_finder_run < interval_seconds:
+            return
+        try:
+            from opportunity_finder import OpportunityConfig, run_opportunity_finder
+            result = run_opportunity_finder(OpportunityConfig.from_env())
+            self._last_opportunity_finder_run = now_ts
+            summary = result.get("universe_summary", {})
+            print(
+                f"[opportunity-finder] cycle complete | "
+                f"added={summary.get('added_count', 0)} "
+                f"removed={summary.get('removed_count', 0)} "
+                f"final_size={summary.get('final_size', 0)} "
+                f"elapsed={result.get('elapsed_seconds', 0):.1f}s"
+            )
+            write_event("opportunity_finder_cycle", {
+                "added": summary.get("added_count", 0),
+                "removed": summary.get("removed_count", 0),
+                "final_size": summary.get("final_size", 0),
+                "elapsed_seconds": result.get("elapsed_seconds", 0),
+            })
+        except Exception as exc:
+            print(f"[opportunity-finder] cycle failed (non-fatal): {exc}")
+            write_event("opportunity_finder_error", {"error": str(exc)})
+
     def run_cycle_from_files(self) -> tuple[pd.DataFrame, pd.DataFrame, AccountSnapshot, pd.DataFrame]:
         # Do not spend time refreshing/scanning before the market is executable.
         # Exits remain allowed once the market is open; buy-side gates are applied below.
@@ -10283,6 +10320,7 @@ class ProductionOrderExecutor:
         if self.scanner is not None:
             try:
                 self._prepare_morning_inputs_once()
+                self._maybe_run_opportunity_finder()
 
                 # Once-per-morning SA assessment. Degrades buy sizing when drawdown,
                 # data quality, or execution risk metrics indicate elevated account risk.
@@ -10782,6 +10820,9 @@ class ProductionOrderExecutor:
                 print(f"[executor] scalping_layer_execute_orders={self.config.scanner.scalping_layer_execute_orders}")
                 print(f"[executor] scalping_layer_max_order_dollars=${self.config.scanner.scalping_layer_max_order_dollars:,.0f}")
                 print(f"[executor] scalping_layer_target_rr={self.config.scanner.scalping_layer_target_rr}")
+            print(f"[executor] opportunity_finder_enabled={self.config.scanner.opportunity_finder_enabled}")
+            if self.config.scanner.opportunity_finder_enabled:
+                print(f"[executor] opportunity_finder_interval={self.config.scanner.opportunity_finder_interval_minutes}min")
         try:
             acct = self.broker.get_account_snapshot()
             profile = self._risk_profile(acct.equity)
