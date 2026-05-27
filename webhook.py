@@ -32,7 +32,7 @@ ALPACA_PAPER = os.getenv("APCA_PAPER", "true").lower() in {"true", "1", "yes"}
 TRADINGVIEW_WEBHOOK_SECRET = os.getenv("TRADINGVIEW_WEBHOOK_SECRET", "").strip()
 REQUIRE_WEBHOOK_SECRET = os.getenv("REQUIRE_WEBHOOK_SECRET", "false").lower() in {"1", "true", "yes"}
 
-WEBHOOK_MODE = os.getenv("WEBHOOK_MODE", "direct").lower().strip()  # direct | queue | both
+WEBHOOK_MODE = os.getenv("WEBHOOK_MODE", "queue").lower().strip()  # direct | queue | both
 WEBHOOK_EXECUTE_ORDERS = os.getenv("WEBHOOK_EXECUTE_ORDERS", "true").lower() in {"1", "true", "yes"}
 WEBHOOK_QUEUE_PATH = Path(
     os.getenv(
@@ -46,6 +46,10 @@ MONITOR_INTERVAL_SECONDS = float(os.getenv("MONITOR_INTERVAL_SECONDS", "10"))
 TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", "3.0"))
 STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", "-1.5"))
 MIN_CASH_FLOOR = float(os.getenv("MIN_CASH_FLOOR", "0"))
+
+if WEBHOOK_MODE not in {"direct", "queue", "both"}:
+    logger.warning("Invalid WEBHOOK_MODE=%s; defaulting to queue", WEBHOOK_MODE)
+    WEBHOOK_MODE = "queue"
 
 if not ALPACA_KEY or not ALPACA_SECRET:
     raise RuntimeError("Missing Alpaca API credentials: APCA_API_KEY_ID/APCA_API_SECRET_KEY")
@@ -92,6 +96,7 @@ def request_secret(data: dict[str, Any]) -> str:
     auth = request.headers.get("Authorization", "")
     if auth.lower().startswith("bearer "):
         return auth.split(" ", 1)[1].strip()
+
     return (
         str(data.get("secret") or "")
         or str(request.headers.get("X-Webhook-Secret") or "")
@@ -112,42 +117,40 @@ def get_account_cash() -> float:
     return float(client.get_account().cash)
 
 
+def get_position_qty(symbol: str) -> float:
+    try:
+        position = client.get_open_position(symbol)
+        return abs(float(position.qty))
+    except Exception:
+        return 0.0
+
+
 def resolve_qty(data: dict[str, Any], side: OrderSide) -> float:
     qty_raw = parse_float(data.get("qty"), default=1.0)
+
     if qty_raw is None:
-        raise ValueError(f"Invalid qty: {data.get('qty')}")
+        qty_raw = 0.0
 
     qty = abs(float(qty_raw))
 
-    # TradingView strategy.position_size can be negative on sell/exit. Alpaca qty must be positive.
-    # If TradingView sends a 0-size exit, close the current long position if one exists.
+    # TradingView can send qty=0 or negative strategy.position_size for exits.
+    # Alpaca requires positive qty. For zero-qty sells, close current position if it exists.
     if qty <= 0:
         if side == OrderSide.SELL:
             symbol = normalize_symbol(data.get("symbol"))
+            position_qty = get_position_qty(symbol)
 
-            try:
-                position = client.get_open_position(symbol)
-                qty = abs(float(position.qty))
+            if position_qty <= 0:
+                logger.warning("Ignoring SELL webhook because no open position exists | symbol=%s", symbol)
+                return 0.0
 
-                if qty <= 0:
-                    logger.warning(
-                        "Ignoring SELL webhook with zero qty and empty position | symbol=%s",
-                        symbol,
-                    )
-                    return 0
+            return float(position_qty)
 
-            except Exception:
-                logger.warning(
-                    "Ignoring SELL webhook because no open position exists | symbol=%s",
-                    symbol,
-                )
-                return 0
+        # For zero-qty BUY alerts, default to 1 share so alerts still route.
+        return 1.0
 
-        else:
-            qty = 1.0
-        
+    return float(qty)
 
-        return qty
 
 def validate_cash_for_buy(symbol: str, qty: float, price: float | None) -> tuple[float, float, float]:
     if price is None or price <= 0:
@@ -168,7 +171,12 @@ def validate_cash_for_buy(symbol: str, qty: float, price: float | None) -> tuple
 
 
 def submit_market_order(symbol: str, side: OrderSide, qty: float):
-    order = MarketOrderRequest(symbol=symbol, qty=qty, side=side, time_in_force=TimeInForce.DAY)
+    order = MarketOrderRequest(
+        symbol=symbol,
+        qty=qty,
+        side=side,
+        time_in_force=TimeInForce.DAY,
+    )
     return client.submit_order(order_data=order)
 
 
@@ -299,15 +307,19 @@ def webhook():
         validate_optional_secret(data)
 
         signal, side, qty, price = normalized_signal_from_payload(data)
-        
-        qty = resolve_qty(data, side)
 
         if qty <= 0:
-            return jsonify({
-                "ok": True,
-                "ignored": True,
-                "reason": "no_position_to_close"
-            }), 200
+            return jsonify(
+                {
+                    "ok": True,
+                    "ignored": True,
+                    "reason": "no_position_to_close",
+                    "symbol": signal["symbol"],
+                    "side": side.value,
+                    "qty": qty,
+                    "signal_id": signal["signal_id"],
+                }
+            ), 200
 
         queued = False
         submitted = None
@@ -360,6 +372,9 @@ def webhook():
     except PermissionError as exc:
         logger.warning("Unauthorized webhook attempt")
         return jsonify({"ok": False, "error": str(exc)}), 401
+    except ValueError as exc:
+        logger.warning("Bad webhook payload: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:
         logger.exception("Webhook processing failed")
         return jsonify({"ok": False, "error": str(exc)}), 500

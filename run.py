@@ -10975,6 +10975,13 @@ class ProductionOrderExecutor:
                 f"today={today_et}"
             )
 
+            # Start SR RL agent training early so it trains on the previous
+            # days' price action (via Alpaca REST history) in parallel with the
+            # premarket collector, rather than waiting until market open.
+            # The training thread is idempotent; _start_sr_rl_agent is a no-op
+            # if already started, so the call at line ~11017 is safe to keep.
+            self._start_sr_rl_agent()
+
             try:
                 collector_result = run_premarket_data_collector(self.config.scanner)
                 print(
