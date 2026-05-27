@@ -49,17 +49,34 @@ ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower()
 
 SCAN_SECONDS = int(os.getenv("SR_RL_SCAN_SECONDS", "60"))
 LOOKBACK_DAYS = int(os.getenv("SR_RL_LOOKBACK_DAYS", "90"))
-LEVEL_WINDOW = int(os.getenv("SR_RL_LEVEL_WINDOW", "5"))
-LEVEL_CLUSTER_PCT = float(os.getenv("SR_RL_LEVEL_CLUSTER_PCT", "0.003"))
+LEVEL_WINDOW = int(os.getenv("SR_RL_PIVOT_WINDOW", os.getenv("SR_RL_LEVEL_WINDOW", "5")))
+LEVEL_CLUSTER_PCT = float(os.getenv("SR_RL_LEVEL_MERGE_PCT", os.getenv("SR_RL_LEVEL_CLUSTER_PCT", "0.003")))
 ENTRY_DISTANCE_PCT = float(os.getenv("SR_RL_ENTRY_DISTANCE_PCT", "0.004"))
 STOP_BEYOND_LEVEL_PCT = float(os.getenv("SR_RL_STOP_BEYOND_LEVEL_PCT", "0.01"))
 TAKE_PROFIT_R_MULTIPLE = float(os.getenv("SR_RL_TAKE_PROFIT_R_MULTIPLE", "3.0"))
 RISK_PER_TRADE_PCT = float(os.getenv("SR_RL_RISK_PER_TRADE_PCT", "0.005"))
 MAX_POSITION_PCT = float(os.getenv("SR_RL_MAX_POSITION_PCT", "0.08"))
 
-TRAIN_TIMESTEPS = int(os.getenv("SR_RL_TRAIN_TIMESTEPS", "50000"))
+TRAIN_TIMESTEPS = int(os.getenv("SR_RL_TIMESTEPS", os.getenv("SR_RL_TRAIN_TIMESTEPS", "50000")))
 TRAIN_LOOKBACK_DAYS = int(os.getenv("SR_RL_TRAIN_LOOKBACK_DAYS", "5"))
 TRAIN_MIN_ROWS = int(os.getenv("SR_RL_TRAIN_MIN_ROWS", "500"))
+MAX_EPISODE_BARS = int(os.getenv("SR_RL_MAX_EPISODE_BARS", "390"))
+
+# PPO hyperparameters (tunable via Optuna)
+PPO_LEARNING_RATE = float(os.getenv("SR_RL_LEARNING_RATE", "3e-4"))
+PPO_GAMMA = float(os.getenv("SR_RL_GAMMA", "0.98"))
+PPO_N_STEPS = int(os.getenv("SR_RL_N_STEPS", "512"))
+PPO_BATCH_SIZE = int(os.getenv("SR_RL_BATCH_SIZE", "64"))
+PPO_ENT_COEF = float(os.getenv("SR_RL_ENT_COEF", "0.01"))
+
+# S/R touch buffers (tuner uses separate per-side values)
+SUPPORT_TOUCH_BUFFER_PCT = float(os.getenv("SR_RL_SUPPORT_TOUCH_BUFFER_PCT", os.getenv("SR_RL_ENTRY_DISTANCE_PCT", "0.004")))
+RESISTANCE_TOUCH_BUFFER_PCT = float(os.getenv("SR_RL_RESISTANCE_TOUCH_BUFFER_PCT", os.getenv("SR_RL_ENTRY_DISTANCE_PCT", "0.004")))
+BREAKOUT_BUFFER_PCT = float(os.getenv("SR_RL_BREAKOUT_BUFFER_PCT", "0.003"))
+
+# Live action confidence thresholds
+MIN_ENTRY_CONFIDENCE = float(os.getenv("SR_RL_MIN_ENTRY_CONFIDENCE", "0.55"))
+MIN_EXIT_CONFIDENCE = float(os.getenv("SR_RL_MIN_EXIT_CONFIDENCE", "0.50"))
 
 # Set to True during train_agent() so bar-fetch functions can fall back to
 # Alpaca REST history when the shared stream cache hasn't been populated yet
@@ -111,6 +128,20 @@ EARLY_CUT_BONUS_SCALE   = float(os.getenv("SR_RL_EARLY_CUT_BONUS_SCALE",   "0.40
 MIN_HOLD_BARS           = int(os.getenv("SR_RL_MIN_HOLD_BARS",           "15"))
 PREMATURE_THRESHOLD_R   = float(os.getenv("SR_RL_PREMATURE_THRESHOLD_R", "0.50"))
 PREMATURE_EXIT_PENALTY  = float(os.getenv("SR_RL_PREMATURE_EXIT_PENALTY", "-0.30"))
+
+# Tuner-compatible reward params (map onto existing or extend reward architecture)
+REWARD_SCALE            = float(os.getenv("SR_RL_REWARD_SCALE",             "1.0"))
+SUPPORT_ENTRY_BONUS     = float(os.getenv("SR_RL_SUPPORT_ENTRY_BONUS",      "0.08"))
+RECLAIM_ENTRY_BONUS     = float(os.getenv("SR_RL_RECLAIM_ENTRY_BONUS",      "0.06"))
+BREAKOUT_ENTRY_BONUS    = float(os.getenv("SR_RL_BREAKOUT_ENTRY_BONUS",     "0.05"))
+BAD_ENTRY_PENALTY       = abs(float(os.getenv("SR_RL_BAD_ENTRY_PENALTY",    "0.06")))
+HOLD_WINNER_MULT        = float(os.getenv("SR_RL_HOLD_WINNER_MULT",         "30.0"))
+RESISTANCE_EXIT_BONUS   = float(os.getenv("SR_RL_RESISTANCE_EXIT_BONUS",    "1.0"))
+MFE_CAPTURE_MULT        = float(os.getenv("SR_RL_MFE_CAPTURE_MULT",         "15.0"))
+GIVEBACK_PENALTY_MULT   = float(os.getenv("SR_RL_GIVEBACK_PENALTY_MULT",    "10.0"))
+MAE_PENALTY_MULT        = float(os.getenv("SR_RL_MAE_PENALTY_MULT",         "5.0"))
+MIN_QUALITY_HOLD_BARS   = int(os.getenv("SR_RL_MIN_QUALITY_HOLD_BARS",      str(int(os.getenv("SR_RL_MIN_HOLD_BARS", "15")))))
+FLAT_HOLD_PENALTY_PCT   = float(os.getenv("SR_RL_FLAT_HOLD_PENALTY",        "0.002"))
 
 N_FEATURES = 12  # 8 price/SR features + rsi + macd_hist + vwap_dist + vol_ratio
 
@@ -569,10 +600,12 @@ class SRTradingEnv(gym.Env):
         self.stop = 0.0
         self.tp = 0.0
         # Reward-shaping state (reset each trade)
-        self.max_price: float = 0.0        # peak price while in position
+        self.max_price: float = 0.0        # peak price while in position (for MFE)
+        self.min_price: float = 0.0        # trough price while in position (for MAE)
         self.prev_close: float = 0.0       # last bar's close for bar-over-bar move
         self.bars_in_position: int = 0     # bars held since entry
         self.reversal_penalized: bool = False  # apply reversal penalty only once
+        self.episode_bar: int = 0          # bars since last reset (for MAX_EPISODE_BARS)
 
         self.action_space = spaces.Discrete(3)
         self.observation_space = spaces.Box(low=-10, high=10, shape=(N_FEATURES,), dtype=np.float32)
@@ -601,9 +634,11 @@ class SRTradingEnv(gym.Env):
         self.stop = 0.0
         self.tp = 0.0
         self.max_price = 0.0
+        self.min_price = 0.0
         self.prev_close = 0.0
         self.bars_in_position = 0
         self.reversal_penalized = False
+        self.episode_bar = 0
         return self._obs(), {}
 
     def step(self, action: int):
@@ -618,15 +653,21 @@ class SRTradingEnv(gym.Env):
         vol_ratio  = to_float(row.get("vol_ratio", 1.0))
 
         reward = 0.0
+        self.episode_bar += 1
 
         if self.position == 0:
-            if action == ACTION_BUY and support > 0 and abs(price - support) / price <= ENTRY_DISTANCE_PCT:
+            near_support    = support > 0 and abs(price - support) / price <= SUPPORT_TOUCH_BUFFER_PCT
+            near_resistance = resistance > 0 and abs(price - resistance) / price <= RESISTANCE_TOUCH_BUFFER_PCT
+            above_resistance = resistance > 0 and price > resistance * (1.0 + BREAKOUT_BUFFER_PCT)
+
+            if action == ACTION_BUY and (near_support or above_resistance):
                 self.position = 1
                 self.entry = price
-                self.stop = support * (1.0 - STOP_BEYOND_LEVEL_PCT)
-                risk = self.entry - self.stop
+                self.stop = (support * (1.0 - STOP_BEYOND_LEVEL_PCT)) if support > 0 else price * (1.0 - STOP_BEYOND_LEVEL_PCT)
+                risk = max(self.entry - self.stop, 1e-9)
                 self.tp = self.entry + risk * TAKE_PROFIT_R_MULTIPLE
                 self.max_price = price
+                self.min_price = price
                 self.prev_close = price
                 self.bars_in_position = 0
                 self.reversal_penalized = False
@@ -634,25 +675,28 @@ class SRTradingEnv(gym.Env):
                 reward += 0.05  # base entry reward
 
                 # ── Entry quality ──────────────────────────────────────────
-                # Good timing: oversold bounce with momentum turning up, above VWAP
+                if near_support:
+                    reward += SUPPORT_ENTRY_BONUS              # near support — primary long trigger
+                if above_resistance:
+                    reward += BREAKOUT_ENTRY_BONUS             # breakout above resistance
+                if vwap_dist > 0:
+                    reward += RECLAIM_ENTRY_BONUS * 0.5        # VWAP reclaim / above VWAP
                 if rsi < 40:
                     reward += ENTRY_QUALITY_BONUS              # oversold bounce
                 if macd_hist > 0:
                     reward += ENTRY_QUALITY_BONUS * 0.5        # momentum turning positive
-                if vwap_dist > 0:
-                    reward += ENTRY_QUALITY_BONUS * 0.3        # above VWAP
                 if vol_ratio >= 1.5:
                     reward += ENTRY_QUALITY_BONUS * 0.4        # strong volume surge
 
                 # Bad timing: overbought, below VWAP, or thin volume
                 if rsi > 65:
-                    reward += ENTRY_QUALITY_PENALTY            # chasing overbought
+                    reward -= BAD_ENTRY_PENALTY                # chasing overbought
                 if vwap_dist < -0.005:
-                    reward += ENTRY_QUALITY_PENALTY * 0.5      # entering below VWAP
+                    reward -= BAD_ENTRY_PENALTY * 0.5          # entering below VWAP
                 if vol_ratio < 0.7:
-                    reward += ENTRY_QUALITY_PENALTY * 0.4      # weak / fading volume
+                    reward -= BAD_ENTRY_PENALTY * 0.4          # weak / fading volume
 
-            elif action == ACTION_SELL and resistance > 0 and abs(price - resistance) / price <= ENTRY_DISTANCE_PCT:
+            elif action == ACTION_SELL and near_resistance:
                 reward += 0.03
             elif action == ACTION_WAIT:
                 reward += 0.01
@@ -662,32 +706,36 @@ class SRTradingEnv(gym.Env):
         else:
             self.bars_in_position += 1
             self.max_price = max(self.max_price, price)
+            self.min_price = min(self.min_price, price)
             risk = max(self.entry - self.stop, 1e-9)
 
             # ── Per-bar unrealized drift ────────────────────────────────────
-            # Small continuous signal: rewards staying green, penalises going red.
             unrealized_r = (price - self.entry) / risk
             reward += unrealized_r * UNREALIZED_R_SCALE
+
+            # ── Per-bar MAE penalty (depth below entry) ─────────────────────
+            mae_pct = max(0.0, (self.entry - self.min_price) / max(self.entry, 1e-9))
+            reward -= mae_pct * MAE_PENALTY_MULT * UNREALIZED_R_SCALE
 
             # ── Violent single-bar move ─────────────────────────────────────
             bar_move = (price - self.prev_close) / max(self.prev_close, 1e-9)
             if bar_move > VIOLENT_MOVE_THRESHOLD:
-                reward += VIOLENT_MOVE_BONUS        # violently green bar
+                reward += VIOLENT_MOVE_BONUS
             elif bar_move < -VIOLENT_MOVE_THRESHOLD:
-                reward += VIOLENT_MOVE_PENALTY      # violently red bar while long
+                reward += VIOLENT_MOVE_PENALTY
 
             # ── Fizzle penalty ──────────────────────────────────────────────
-            # Trade has stalled near entry for too long — opportunity cost.
+            flat_threshold = float(os.getenv("SR_RL_FIZZLE_FLAT_PCT", str(FLAT_HOLD_PENALTY_PCT)))
             if self.bars_in_position > FIZZLE_MIN_BARS:
-                if abs(price - self.entry) / self.entry < FIZZLE_FLAT_PCT:
+                if abs(price - self.entry) / max(self.entry, 1e-9) < flat_threshold:
                     reward += FIZZLE_PENALTY
 
-            # ── Reversal penalty (applied once per trade) ───────────────────
-            # Was meaningfully up, gave it all back — failure to capture gains.
+            # ── Reversal penalty (once per trade) ───────────────────────────
             if not self.reversal_penalized:
                 if self.max_price > self.entry * (1.0 + REVERSAL_UP_PCT):
                     if price < self.entry * (1.0 + REVERSAL_BACK_PCT):
-                        reward += REVERSAL_PENALTY
+                        giveback_pct = (self.max_price - price) / max(self.max_price, 1e-9)
+                        reward += REVERSAL_PENALTY - giveback_pct * GIVEBACK_PENALTY_MULT * 0.01
                         self.reversal_penalized = True
 
             self.prev_close = price
@@ -698,24 +746,32 @@ class SRTradingEnv(gym.Env):
                 self.position = 0
 
             elif price >= self.tp:
-                # Multi-day bonus: each full trading day held earns extra reward
                 days_held = self.bars_in_position / max(MULTIDAY_BARS, 1)
                 reward += TAKE_PROFIT_R_MULTIPLE + days_held * MULTIDAY_BONUS
+                # Resistance exit bonus when TP is near resistance
+                if resistance > 0 and abs(price - resistance) / price <= RESISTANCE_TOUCH_BUFFER_PCT * 2:
+                    reward += RESISTANCE_EXIT_BONUS * 0.3
                 self.position = 0
 
             elif action == ACTION_SELL:
                 r = (price - self.entry) / risk
                 reward += r
 
+                # MFE capture bonus: reward proportional to how much of the MFE was kept
+                mfe = max(0.0, self.max_price - self.entry)
+                if mfe > 0 and r > 0:
+                    capture_ratio = min((price - self.entry) / mfe, 1.0)
+                    reward += capture_ratio * MFE_CAPTURE_MULT * 0.01
+
+                # Resistance exit bonus
+                if resistance > 0 and abs(price - resistance) / max(price, 1e-9) <= RESISTANCE_TOUCH_BUFFER_PCT:
+                    reward += RESISTANCE_EXIT_BONUS * 0.5
+
                 if r < 0:
-                    # Cutting a loser early: reward proportional to how much
-                    # of the full stop-loss distance was avoided.
-                    saved_r = (self.stop - price) / risk   # R saved vs hitting stop
+                    saved_r = max(0.0, (self.stop - price) / risk)
                     reward += saved_r * EARLY_CUT_BONUS_SCALE
                 else:
-                    # Exiting a winner: penalise if the trade wasn't given
-                    # enough time or enough room to develop.
-                    hold_shortfall = max(0.0, 1.0 - self.bars_in_position / max(MIN_HOLD_BARS, 1))
+                    hold_shortfall = max(0.0, 1.0 - self.bars_in_position / max(MIN_QUALITY_HOLD_BARS, 1))
                     size_shortfall = max(0.0, 1.0 - r / max(PREMATURE_THRESHOLD_R, 1e-9)) if r < PREMATURE_THRESHOLD_R else 0.0
                     penalty_weight = max(hold_shortfall, size_shortfall)
                     if penalty_weight > 0:
@@ -725,9 +781,18 @@ class SRTradingEnv(gym.Env):
 
         self.i += 1
         terminated = self.i >= len(self.rows) - 1
+        # Episode length cap: force reset after MAX_EPISODE_BARS bars (close any open position)
+        if not terminated and self.episode_bar >= MAX_EPISODE_BARS:
+            terminated = True
+            if self.position == 1:
+                risk = max(self.entry - self.stop, 1e-9)
+                r = (price - self.entry) / risk
+                reward += r * 0.5  # partial credit for forced close
+                self.position = 0
+            self.episode_bar = 0
         truncated = False
 
-        return self._obs(), float(reward), terminated, truncated, {}
+        return self._obs(), float(reward) * REWARD_SCALE, terminated, truncated, {}
 
 
 def build_training_rows(symbols: list[str]) -> pd.DataFrame:
@@ -772,6 +837,198 @@ def build_training_rows(symbols: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows).dropna()
 
 
+def _simulate_trades(model: "PPO", rows: pd.DataFrame) -> list[dict]:
+    """
+    Run the trained model through the training rows in evaluation mode and
+    return a list of completed trade records.  Used to compute the metrics
+    JSON that the Optuna tuner reads to score each trial.
+    """
+    if rows.empty:
+        return []
+
+    rows_reset = rows.reset_index(drop=True)
+    trades: list[dict] = []
+
+    position = 0
+    entry = stop = tp = 0.0
+    max_price = min_price = prev_close = 0.0
+    bars_in = 0
+    entry_row: dict = {}
+
+    # Re-create a temporary env just to generate observations.
+    tmp_env = SRTradingEnv(rows_reset)
+    tmp_env.reset()
+
+    for idx in range(len(rows_reset) - 1):
+        tmp_env.i = idx
+        obs = tmp_env._obs()
+        action, _ = model.predict(obs, deterministic=True)
+        action = int(action)
+
+        row = rows_reset.iloc[idx]
+        price     = to_float(row["close"])
+        support   = to_float(row["support"])
+        resistance = to_float(row["resistance"])
+
+        near_support    = support > 0 and abs(price - support) / price <= SUPPORT_TOUCH_BUFFER_PCT
+        above_resistance = resistance > 0 and price > resistance * (1.0 + BREAKOUT_BUFFER_PCT)
+
+        if position == 0:
+            if action == ACTION_BUY and (near_support or above_resistance):
+                position = 1
+                entry = price
+                stop = (support * (1.0 - STOP_BEYOND_LEVEL_PCT)) if support > 0 else price * (1.0 - STOP_BEYOND_LEVEL_PCT)
+                risk_amt = max(entry - stop, 1e-9)
+                tp = entry + risk_amt * TAKE_PROFIT_R_MULTIPLE
+                max_price = min_price = prev_close = price
+                bars_in = 0
+                entry_row = {
+                    "entry_price": price,
+                    "support": support,
+                    "resistance": resistance,
+                    "near_support": near_support,
+                }
+        else:
+            bars_in += 1
+            max_price = max(max_price, price)
+            min_price = min(min_price, price)
+            risk_amt = max(entry - stop, 1e-9)
+            closed = False
+            exit_reason = ""
+
+            if price <= stop:
+                exit_reason = "stop"
+                closed = True
+            elif price >= tp:
+                exit_reason = "tp"
+                closed = True
+            elif action == ACTION_SELL:
+                exit_reason = "signal_sell"
+                closed = True
+
+            if closed:
+                pnl_pct = (price - entry) / entry
+                mfe_pct = (max_price - entry) / entry
+                mae_pct = (entry - min_price) / entry
+                giveback_pct = max(0.0, mfe_pct - pnl_pct)
+                capture_ratio = pnl_pct / mfe_pct if mfe_pct > 1e-6 else 0.0
+                near_res_exit = resistance > 0 and abs(price - resistance) / max(price, 1e-9) <= RESISTANCE_TOUCH_BUFFER_PCT
+                trades.append(
+                    {
+                        "entry_price": entry,
+                        "exit_price": price,
+                        "pnl_pct": pnl_pct,
+                        "mfe_pct": mfe_pct,
+                        "mae_pct": mae_pct,
+                        "giveback_pct": giveback_pct,
+                        "capture_ratio": max(0.0, min(capture_ratio, 2.0)),
+                        "bars_held": bars_in,
+                        "exit_reason": exit_reason,
+                        "near_support_entry": entry_row.get("near_support", False),
+                        "near_resistance_exit": near_res_exit,
+                        "is_winner": pnl_pct > 0,
+                    }
+                )
+                position = 0
+
+            prev_close = price
+
+    return trades
+
+
+def _write_training_metrics(model: "PPO", rows: pd.DataFrame, timesteps: int) -> None:
+    """Simulate trades with the trained model and write a metrics JSON for the tuner."""
+    METRICS_PATH = OUT_DIR / f"{DATA_TAG}_sr_rl_training_metrics.json"
+    trades = _simulate_trades(model, rows)
+    n = len(trades)
+
+    if n == 0:
+        metrics: dict = {
+            "ok": False,
+            "rows": len(rows),
+            "timesteps": timesteps,
+            "trade_count": 0,
+            "entry_count": 0,
+            "exit_count": 0,
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "avg_pnl_pct": 0.0,
+            "total_return": 0.0,
+            "sharpe": 0.0,
+            "max_drawdown": 0.0,
+            "avg_mfe_pct": 0.0,
+            "avg_mae_pct": 0.0,
+            "avg_giveback_pct": 0.0,
+            "avg_capture_ratio": 0.0,
+            "avg_hold_bars": 0.0,
+            "support_entry_quality": 0.0,
+            "resistance_exit_quality": 0.0,
+            "chop_rate": 0.0,
+        }
+    else:
+        pnls = [t["pnl_pct"] for t in trades]
+        wins = [p for p in pnls if p > 0]
+        losses = [abs(p) for p in pnls if p <= 0]
+        win_rate = len(wins) / n
+        profit_factor = sum(wins) / max(sum(losses), 1e-9) if wins else 0.0
+        avg_pnl = float(np.mean(pnls))
+        total_return = float(np.sum(pnls))
+
+        # Sharpe from per-trade PnL series (annualized loosely)
+        pnl_arr = np.array(pnls)
+        sharpe = float(pnl_arr.mean() / max(pnl_arr.std(), 1e-9)) if n > 1 else 0.0
+
+        # Max drawdown on cumulative equity curve
+        cum = np.cumsum(pnl_arr)
+        running_max = np.maximum.accumulate(cum)
+        drawdowns = running_max - cum
+        max_drawdown = float(drawdowns.max()) if len(drawdowns) else 0.0
+
+        avg_mfe = float(np.mean([t["mfe_pct"] for t in trades]))
+        avg_mae = float(np.mean([t["mae_pct"] for t in trades]))
+        avg_giveback = float(np.mean([t["giveback_pct"] for t in trades]))
+        avg_capture = float(np.mean([t["capture_ratio"] for t in trades]))
+        avg_hold = float(np.mean([t["bars_held"] for t in trades]))
+
+        support_entries = sum(1 for t in trades if t["near_support_entry"])
+        support_entry_quality = support_entries / n
+
+        res_exits = sum(1 for t in trades if t["near_resistance_exit"])
+        resistance_exit_quality = res_exits / n
+
+        chop = sum(1 for t in trades if t["bars_held"] < MIN_QUALITY_HOLD_BARS and not t["is_winner"])
+        chop_rate = chop / n
+
+        metrics = {
+            "ok": True,
+            "rows": len(rows),
+            "timesteps": timesteps,
+            "trade_count": n,
+            "entry_count": n,
+            "exit_count": n,
+            "win_rate": round(win_rate, 4),
+            "profit_factor": round(profit_factor, 4),
+            "avg_pnl_pct": round(avg_pnl, 6),
+            "total_return": round(total_return, 6),
+            "sharpe": round(sharpe, 4),
+            "max_drawdown": round(max_drawdown, 6),
+            "avg_mfe_pct": round(avg_mfe, 6),
+            "avg_mae_pct": round(avg_mae, 6),
+            "avg_giveback_pct": round(avg_giveback, 6),
+            "avg_capture_ratio": round(avg_capture, 4),
+            "avg_hold_bars": round(avg_hold, 2),
+            "support_entry_quality": round(support_entry_quality, 4),
+            "resistance_exit_quality": round(resistance_exit_quality, 4),
+            "chop_rate": round(chop_rate, 4),
+        }
+
+    METRICS_PATH.write_text(json.dumps(metrics, indent=2) + "\n")
+    print(f"[sr-rl] metrics → {METRICS_PATH}")
+    print(f"[sr-rl] trades={metrics['trade_count']} win_rate={metrics['win_rate']:.2%} "
+          f"avg_pnl={metrics['avg_pnl_pct']:.4%} capture={metrics['avg_capture_ratio']:.3f} "
+          f"hold={metrics['avg_hold_bars']:.1f}bars")
+
+
 def train_agent() -> None:
     global _ALLOW_HISTORICAL_FALLBACK
     symbols = load_symbols_from_plan()
@@ -792,12 +1049,22 @@ def train_agent() -> None:
         raise RuntimeError(f"Not enough training rows: {len(rows)} < {TRAIN_MIN_ROWS}")
 
     env = SRTradingEnv(rows)
-    model = PPO("MlpPolicy", env, verbose=1, n_steps=512, batch_size=64, gamma=0.98)
+    model = PPO(
+        "MlpPolicy",
+        env,
+        verbose=1,
+        learning_rate=PPO_LEARNING_RATE,
+        n_steps=PPO_N_STEPS,
+        batch_size=PPO_BATCH_SIZE,
+        gamma=PPO_GAMMA,
+        ent_coef=PPO_ENT_COEF,
+    )
     model.learn(total_timesteps=TRAIN_TIMESTEPS)
     _ALLOW_HISTORICAL_FALLBACK = False
     model.save(str(MODEL_PATH))
-
     print(f"[saved] {MODEL_PATH}")
+
+    _write_training_metrics(model, rows, TRAIN_TIMESTEPS)
 
 
 def position_size(symbol: str, price: float, stop: float, size_mult: float) -> int:
