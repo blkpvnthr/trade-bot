@@ -104,6 +104,7 @@ TRADE_PLAN_PATH = OUT_DIR / f"{DATA_TAG}_stream_confirmed_trade_plan.csv"
 TRADE_PLAN_JSON_PATH = OUT_DIR / f"{DATA_TAG}_stream_confirmed_trade_plan.json"
 EVENTS_PATH = LOG_DIR / "stream_confirmed_movement_events.jsonl"
 STATE_PATH = LOG_DIR / "stream_confirmed_movement_state.json"
+SHARED_BARS_1M_PATH = OUT_DIR / f"{DATA_TAG}_stream_confirmed_bars_1m.csv"
 
 LLM_UNIVERSE_PATH = OUT_DIR / f"{DATA_TAG}_latest_llm_sentiment_universe.json"
 LOCKED_UNIVERSE_PATH = PROJECT_ROOT / f"{DATA_TAG}_locked_trading_universe.txt"
@@ -674,7 +675,65 @@ def fetch_recent_1m(symbol: str, lookback_days: int = 2) -> pd.DataFrame:
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df = df.sort_values("timestamp").reset_index(drop=True)
     _BAR_CACHE[symbol] = (time.time(), df.copy())
+    persist_bars_1m(df)
     return df
+
+
+def persist_bars_1m(df: pd.DataFrame) -> None:
+    """
+    Persist the single stream/poll source of 1-minute bars for downstream modules.
+
+    sr_rl_agent.py and intraday S/R logic should read this file instead of
+    making their own Alpaca bar requests. This keeps Alpaca usage centralized in
+    this stream-confirm process.
+    """
+    if df is None or df.empty:
+        return
+
+    required = {"symbol", "timestamp", "open", "high", "low", "close", "volume"}
+    if not required.issubset(set(df.columns)):
+        return
+
+    out = df[list(required)].copy()
+    out["symbol"] = out["symbol"].map(normalize_symbol)
+    out["timestamp"] = pd.to_datetime(out["timestamp"], utc=True, errors="coerce")
+    out = out.dropna(subset=["symbol", "timestamp", "close"])
+    if out.empty:
+        return
+
+    try:
+        if SHARED_BARS_1M_PATH.exists():
+            old = pd.read_csv(SHARED_BARS_1M_PATH)
+            old["timestamp"] = pd.to_datetime(old["timestamp"], utc=True, errors="coerce")
+            old["symbol"] = old["symbol"].map(normalize_symbol)
+            out = pd.concat([old, out], ignore_index=True)
+
+        out = out.drop_duplicates(["symbol", "timestamp"], keep="last")
+        out = out.sort_values(["symbol", "timestamp"])
+
+        # Keep recent rows only so the shared file stays small.
+        cutoff = datetime.now(timezone.utc) - timedelta(days=int(os.getenv("STREAM_CONFIRM_SHARED_BAR_RETENTION_DAYS", "7")))
+        out = out[out["timestamp"] >= cutoff]
+        out.to_csv(SHARED_BARS_1M_PATH, index=False)
+    except Exception as exc:
+        write_event("shared_bar_cache_write_error", {"path": str(SHARED_BARS_1M_PATH), "error": str(exc)})
+
+
+def _bar_to_frame(bar: Any) -> pd.DataFrame:
+    symbol = normalize_symbol(getattr(bar, "symbol", ""))
+    timestamp = getattr(bar, "timestamp", None)
+    if timestamp is None:
+        timestamp = now_utc()
+    row = {
+        "symbol": symbol,
+        "timestamp": pd.to_datetime(timestamp, utc=True, errors="coerce"),
+        "open": f(getattr(bar, "open", 0.0)),
+        "high": f(getattr(bar, "high", 0.0)),
+        "low": f(getattr(bar, "low", 0.0)),
+        "close": f(getattr(bar, "close", 0.0)),
+        "volume": f(getattr(bar, "volume", 0.0)),
+    }
+    return pd.DataFrame([row]) if symbol else pd.DataFrame()
 
 def add_features(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
@@ -1240,6 +1299,10 @@ async def bar_handler(bar: Any) -> None:
     if not symbol:
         return
 
+    # Persist the live streamed bar immediately. Downstream modules read this
+    # shared file instead of making separate Alpaca historical requests.
+    persist_bars_1m(_bar_to_frame(bar))
+
     universe = load_watch_universe()
     if symbol not in universe:
         return
@@ -1372,6 +1435,7 @@ def main() -> None:
     print(f"[paths] confirmed_orders={CONFIRMED_ORDERS_PATH}")
     print(f"[paths] trade_plan_csv={TRADE_PLAN_PATH}")
     print(f"[paths] trade_plan_json={TRADE_PLAN_JSON_PATH}")
+    print(f"[paths] shared_bars_1m={SHARED_BARS_1M_PATH}")
     print(f"[config] execute_now={STREAM_CONFIRM_EXECUTE}")
     print(f"[config] feed={ALPACA_DATA_FEED}")
     print(f"[config] max_watch_symbols={MAX_WATCH_SYMBOLS}")

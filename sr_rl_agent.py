@@ -29,7 +29,7 @@ from alpaca.trading.requests import MarketOrderRequest
 ET = ZoneInfo("America/New_York")
 YESTERDAY_TAG = (datetime.now(ET) - timedelta(days=1)).strftime("%Y%m%d")
 TODAY_TAG = datetime.now(ET).strftime("%Y%m%d")
-DATA_TAG = os.getenv("RL_DATA_DATE", YESTERDAY_TAG)
+DATA_TAG = os.getenv("RUN_DATA_DATE", os.getenv("STREAM_CONFIRM_DATA_DATE", os.getenv("RL_DATA_DATE", TODAY_TAG)))
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 load_instance_env()
@@ -43,10 +43,11 @@ PREMARKET_TRADE_PLAN_PATH = OUT_DIR / f"{DATA_TAG}_premarket_trade_plan.json"
 MARKET_CONTEXT_PATH = OUT_DIR / f"{DATA_TAG}_market_context.json"
 MODEL_PATH = OUT_DIR / f"{DATA_TAG}_sr_rl_agent_ppo.zip"
 SIGNALS_PATH = OUT_DIR / f"{DATA_TAG}_sr_rl_live_signals.json"
+SHARED_BARS_1M_PATH = OUT_DIR / f"{DATA_TAG}_stream_confirmed_bars_1m.csv"
 
 ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower()
 
-SCAN_SECONDS = int(os.getenv("SR_RL_SCAN_SECONDS", "10"))
+SCAN_SECONDS = int(os.getenv("SR_RL_SCAN_SECONDS", "60"))
 LOOKBACK_DAYS = int(os.getenv("SR_RL_LOOKBACK_DAYS", "90"))
 LEVEL_WINDOW = int(os.getenv("SR_RL_LEVEL_WINDOW", "5"))
 LEVEL_CLUSTER_PCT = float(os.getenv("SR_RL_LEVEL_CLUSTER_PCT", "0.003"))
@@ -101,11 +102,15 @@ def get_feed() -> DataFeed:
     return DataFeed.SIP if ALPACA_DATA_FEED == "sip" else DataFeed.IEX
 
 
-def data_client() -> StockHistoricalDataClient:
-    return StockHistoricalDataClient(
-        os.getenv("APCA_API_KEY_ID"),
-        os.getenv("APCA_API_SECRET_KEY"),
-    )
+def data_client() -> None:
+    """
+    Disabled on purpose.
+
+    This module must not create its own Alpaca data client. The single market-data
+    source is stream_confirmed_movement_gate_one_stream.py, which writes:
+        system-data/YYYYMMDD/YYYYMMDD_stream_confirmed_bars_1m.csv
+    """
+    return None
 
 
 def trading_client() -> TradingClient:
@@ -134,6 +139,17 @@ def load_symbols_from_plan() -> list[str]:
         if symbol:
             symbols.append(symbol)
 
+    # If the stream-confirm trade plan exists, include those symbols too. This
+    # lets SR/RL consume the same confirmed stream decisions without extra data
+    # downloads.
+    stream_plan = load_json(OUT_DIR / f"{DATA_TAG}_stream_confirmed_trade_plan.json", [])
+    if isinstance(stream_plan, list):
+        for row in stream_plan:
+            if isinstance(row, dict):
+                symbol = normalize_symbol(row.get("symbol"))
+                if symbol:
+                    symbols.append(symbol)
+
     return list(dict.fromkeys(symbols))
 
 
@@ -151,82 +167,98 @@ def market_allows_trading() -> tuple[bool, float, str]:
     return True, 1.0, "market_context_normal"
 
 
+def _load_shared_1m_bars(symbols: list[str], lookback_days: int) -> pd.DataFrame:
+    """
+    Read bars from the single stream-confirm cache.
+
+    No Alpaca request is made here. Start stream_confirmed_movement_gate first so
+    this file is continuously populated.
+    """
+    columns = ["symbol", "timestamp", "open", "high", "low", "close", "volume"]
+    if not symbols:
+        return pd.DataFrame(columns=columns)
+    if not SHARED_BARS_1M_PATH.exists():
+        print(f"[sr-rl] shared bar cache missing: {SHARED_BARS_1M_PATH}")
+        return pd.DataFrame(columns=columns)
+
+    try:
+        df = pd.read_csv(SHARED_BARS_1M_PATH)
+    except Exception as exc:
+        print(f"[sr-rl] failed to read shared bar cache: {exc}")
+        return pd.DataFrame(columns=columns)
+
+    if df.empty or not {"symbol", "timestamp", "close"}.issubset(df.columns):
+        return pd.DataFrame(columns=columns)
+
+    wanted = {normalize_symbol(s) for s in symbols if normalize_symbol(s)}
+    df = df.copy()
+    df["symbol"] = df["symbol"].map(normalize_symbol)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    df = df[df["symbol"].isin(wanted)]
+    df = df.dropna(subset=["symbol", "timestamp", "close"])
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    df = df[df["timestamp"] >= cutoff]
+
+    for col in ["open", "high", "low", "close", "volume"]:
+        if col not in df.columns:
+            df[col] = df["close"] if col != "volume" else 0.0
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df.dropna(subset=["open", "high", "low", "close"]).sort_values(["symbol", "timestamp"])
+
+
+def _resample_shared_bars(df: pd.DataFrame, hours: int) -> pd.DataFrame:
+    columns = ["symbol", "timestamp", "open", "high", "low", "close", "volume"]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    frames = []
+    rule = f"{int(hours)}h"
+    for symbol, sdf in df.groupby("symbol", sort=False):
+        x = sdf.sort_values("timestamp").set_index("timestamp")
+        out = pd.DataFrame(
+            {
+                "open": x["open"].resample(rule).first(),
+                "high": x["high"].resample(rule).max(),
+                "low": x["low"].resample(rule).min(),
+                "close": x["close"].resample(rule).last(),
+                "volume": x["volume"].resample(rule).sum(),
+            }
+        ).dropna().reset_index()
+        out["symbol"] = symbol
+        frames.append(out[columns])
+
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(frames, ignore_index=True).sort_values(["symbol", "timestamp"])
+
+
 def _fetch_bars(
     symbols: list[str],
     timeframe: "TimeFrame",
     lookback_days: int,
     log_prefix: str = "[sr-rl]",
 ) -> pd.DataFrame:
-    if not symbols:
-        return pd.DataFrame()
-    client = data_client()
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=lookback_days)
-    req = StockBarsRequest(
-        symbol_or_symbols=symbols,
-        timeframe=timeframe,
-        start=start,
-        end=end,
-        feed=get_feed(),
-    )
-    df = None
-    for attempt in range(3):
-        try:
-            df = client.get_stock_bars(req).df
-            break
-        except Exception as exc:
-            if "too many requests" in str(exc).lower() and attempt < 2:
-                wait_s = 1.5 * (attempt + 1)
-                print(f"{log_prefix} bar fetch rate-limited; retrying in {wait_s:.1f}s")
-                time.sleep(wait_s)
-                continue
-            print(f"{log_prefix} bar fetch failed: {exc}")
-            return pd.DataFrame(columns=["symbol", "timestamp", "open", "high", "low", "close", "volume"])
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["symbol", "timestamp", "open", "high", "low", "close", "volume"])
-    df = df.reset_index()
-    df["symbol"] = df["symbol"].map(normalize_symbol)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-    return df.sort_values(["symbol", "timestamp"])
+    """
+    Compatibility wrapper. It no longer fetches Alpaca bars.
+
+    Timeframes are built by resampling the shared 1-minute cache written by the
+    stream-confirm module, so the whole system uses one market-data stream.
+    """
+    # Alpaca TimeFrame objects expose amount/unit inconsistently across versions,
+    # so callers use fetch_bars(symbols, hours) for hourly bars and fetch_bars_1m
+    # for minute bars. If this wrapper is called directly, default to 1m cache.
+    return _load_shared_1m_bars(symbols, lookback_days)
 
 
 def fetch_bars(symbols: list[str], hours: int) -> pd.DataFrame:
-    return _fetch_bars(symbols, TimeFrame(hours, TimeFrameUnit.Hour), LOOKBACK_DAYS)
+    bars_1m = _load_shared_1m_bars(symbols, LOOKBACK_DAYS)
+    return _resample_shared_bars(bars_1m, hours)
 
 
 def fetch_bars_1m(symbols: list[str]) -> pd.DataFrame:
-    return _fetch_bars(symbols, TimeFrame(1, TimeFrameUnit.Minute), TRAIN_LOOKBACK_DAYS)
-
-
-def resample_bars(base_df: pd.DataFrame, minutes: int) -> pd.DataFrame:
-    if base_df is None or base_df.empty or minutes <= 1:
-        return base_df.copy() if isinstance(base_df, pd.DataFrame) else pd.DataFrame()
-
-    rule = f"{int(minutes)}min"
-    frames: list[pd.DataFrame] = []
-    for symbol, group in base_df.groupby("symbol", sort=False):
-        g = group.copy()
-        g["timestamp"] = pd.to_datetime(g["timestamp"], errors="coerce", utc=True)
-        g = g.dropna(subset=["timestamp"]).sort_values("timestamp").set_index("timestamp")
-        agg_map = {
-            "open": "first",
-            "high": "max",
-            "low": "min",
-            "close": "last",
-            "volume": "sum",
-        }
-        for col, agg in {"trade_count": "sum", "vwap": "last"}.items():
-            if col in g.columns:
-                agg_map[col] = agg
-        resampled = g.resample(rule, label="right", closed="right").agg(agg_map).dropna(subset=["open", "high", "low", "close"])
-        if resampled.empty:
-            continue
-        resampled = resampled.reset_index()
-        resampled["symbol"] = symbol
-        frames.append(resampled)
-    if not frames:
-        return pd.DataFrame(columns=base_df.columns)
-    return pd.concat(frames, ignore_index=True).sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+    return _load_shared_1m_bars(symbols, TRAIN_LOOKBACK_DAYS)
 
 
 def detect_levels(df: pd.DataFrame) -> tuple[list[float], list[float]]:
@@ -403,11 +435,11 @@ class SRTradingEnv(gym.Env):
 
 
 def build_training_rows(symbols: list[str]) -> pd.DataFrame:
-    # Training rows come from one 1-minute stream over the last TRAIN_LOOKBACK_DAYS days.
-    # Higher timeframes are derived locally to avoid redundant bar requests.
+    # S/R level detection uses longer-horizon hourly bars for structural context.
+    bars_1h = fetch_bars(symbols, 1)
+    bars_4h = fetch_bars(symbols, 4)
+    # Training rows come from 1-minute bars over the last TRAIN_LOOKBACK_DAYS days.
     bars_1m = fetch_bars_1m(symbols)
-    bars_1h = resample_bars(bars_1m, 60)
-    bars_4h = resample_bars(bars_1m, 240)
 
     rows = []
 
@@ -442,7 +474,7 @@ def train_agent() -> None:
     if not symbols:
         raise RuntimeError("No symbols found in premarket_trade_plan.json")
 
-    print(f"[sr-rl] training on {len(symbols)} symbols | 1m bars lookback={TRAIN_LOOKBACK_DAYS}d | timesteps={TRAIN_TIMESTEPS}")
+    print(f"[sr-rl] training on {len(symbols)} symbols from shared stream cache={SHARED_BARS_1M_PATH} | 1m lookback={TRAIN_LOOKBACK_DAYS}d | timesteps={TRAIN_TIMESTEPS}")
     rows = build_training_rows(symbols)
     print(f"[sr-rl] training rows: {len(rows)} ({len(rows) // max(len(symbols), 1)} avg per symbol)")
 
@@ -496,7 +528,7 @@ def live_cycle(model: PPO, execute: bool = False) -> list[dict[str, Any]]:
 
     symbols = load_symbols_from_plan()
     bars_1h = fetch_bars(symbols, 1)
-    bars_4h = resample_bars(bars_1h, 240)
+    bars_4h = fetch_bars(symbols, 4)
 
     decisions = []
 
