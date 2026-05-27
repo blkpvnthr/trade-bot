@@ -2372,6 +2372,12 @@ SR_RL_SIGNALS_PATH = OUT_DIR / f"{DATA_TAG}_sr_rl_live_signals.json"
 SR_RL_CONFIRMED_ORDERS_PATH = OUT_DIR / f"{DATA_TAG}_sr_rl_confirmed_rebalance_orders.csv"
 SR_RL_EVENTS_JSONL = LOG_DIR / f"{DATA_TAG}_sr_rl_agent_events.jsonl"
 
+# In-memory SR-RL decisions cache — written by the in-process live_cycle() thread.
+# load_sr_rl_signals() checks this before the signal file to avoid stale-file gaps.
+_SR_RL_LATEST_DECISIONS: list[dict[str, Any]] = []
+_SR_RL_DECISIONS_TS: float = 0.0
+_SR_RL_DECISIONS_LOCK: threading.Lock = threading.Lock()
+
 # Pivot reversal scanner (TradingView screener + LuxAlgo ghost-level S/R).
 PIVOT_REVERSAL_ORDERS_PATH = OUT_DIR / f"{DATA_TAG}_pivot_reversal_rebalance_orders.csv"
 PIVOT_REVERSAL_EXIT_ORDERS_PATH = OUT_DIR / f"{DATA_TAG}_pivot_reversal_exit_orders.csv"
@@ -5013,15 +5019,22 @@ def sr_write_event(event: str, payload: dict[str, Any] | None = None) -> None:
 
 def load_sr_rl_signals(max_age_seconds: int = 90) -> list[dict[str, Any]]:
     """
-    Load sr_rl_agent.py's live decisions.
+    Load SR-RL agent decisions.
 
-    Expected file:
-        system-data/YYYYMMDD/YYYYMMDD_sr_rl_live_signals.json
+    Checks the in-process in-memory cache first (updated by _sr_rl_agent_loop
+    every sr_rl_scan_seconds).  Falls back to the signal file written by
+    live_cycle() so that the file remains available for observability/replay.
 
-    Only fresh payloads are accepted. SELL decisions are treated as avoid/exit
-    signals by sr_rl_agent.py, but run.py keeps this layer long-only and only
-    promotes BUY decisions into the rebalance order set.
+    Only fresh payloads are accepted (age < max_age_seconds).
+    SELL decisions are skipped — run.py promotes only BUY decisions.
     """
+    # ── In-memory path (fastest, no file I/O, no stale-mtime issues) ──────────
+    with _SR_RL_DECISIONS_LOCK:
+        mem_age = time.time() - _SR_RL_DECISIONS_TS if _SR_RL_DECISIONS_TS > 0 else float("inf")
+        if mem_age <= max_age_seconds and _SR_RL_LATEST_DECISIONS:
+            return [d for d in _SR_RL_LATEST_DECISIONS if isinstance(d, dict)]
+
+    # ── File fallback (used before in-process thread has run its first cycle) ──
     if not SR_RL_SIGNALS_PATH.exists():
         return []
 
@@ -8219,6 +8232,8 @@ class ProductionOrderExecutor:
         self._sa_last_assessment_date: str | None = None
         self._last_opportunity_finder_run: float = 0.0
         self._alpaca_stream_router_thread_started: bool = False
+        # Loaded PPO model for the SR-RL agent (set by _sr_rl_agent_loop).
+        self._sr_rl_model: Any = None
 
     def _planner_health(self, refresh: bool = False) -> dict[str, Any]:
         if refresh or self._planner_health_cache is None:
@@ -10657,45 +10672,48 @@ class ProductionOrderExecutor:
                 print(f"[sr-rl] auto-train did not produce model (rc={train_rc}); live mode skipped")
                 return
 
-        cmd = [sys.executable, str(script_path), "--live"]
-        # Keep sr_rl_agent long-only signal-only by default. run.py executes
-        # merged rows after its own risk, direction, PDT, kill-switch and cash gates.
-        if self.config.scanner.sr_rl_execute_now:
-            cmd.append("--execute")
+        # ── In-process live loop ──────────────────────────────────────────────────
+        # Load the PPO model once and call live_cycle() directly in this thread.
+        # This eliminates subprocess cold-start latency, keeps the model resident
+        # in memory across scan cycles, and lets load_sr_rl_signals() read fresh
+        # decisions from _SR_RL_LATEST_DECISIONS without any file-age risk.
+        try:
+            import sr_rl_agent as _srl
+            self._sr_rl_model = _srl.PPO.load(str(SR_RL_MODEL_PATH))
+            sr_write_event("model_loaded_in_process", {"path": str(SR_RL_MODEL_PATH)})
+            print(f"[sr-rl] PPO model loaded in-process: {SR_RL_MODEL_PATH.name}")
+        except Exception as exc:
+            print(f"[sr-rl] model load failed: {exc}")
+            sr_write_event("model_load_failed", {"error": str(exc)})
+            if self.config.scanner.sr_rl_require_model:
+                return
+
+        execute = bool(self.config.scanner.sr_rl_execute_now)
+        scan_secs = int(self.config.scanner.sr_rl_scan_seconds)
+        sr_write_event("live_started_in_process", {
+            "model": SR_RL_MODEL_PATH.name,
+            "execute": execute,
+            "scan_secs": scan_secs,
+            "signals_path": str(SR_RL_SIGNALS_PATH),
+        })
+        print(f"[sr-rl] in-process live loop started execute={execute} scan_secs={scan_secs}")
 
         while not _SHUTDOWN_EVENT.is_set():
             try:
-                print(f"[sr-rl] launching: {' '.join(cmd)}")
-                sr_write_event("live_started", {"cmd": cmd, "signals_path": str(SR_RL_SIGNALS_PATH)})
-                proc = _register_child(subprocess.Popen(
-                    cmd,
-                    cwd=str(PROJECT_ROOT),
-                    env=env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                ))
-                assert proc.stdout is not None
-                for line in proc.stdout:
-                    print(line.rstrip())
-                rc = proc.wait()
-                sr_write_event("live_exited", {"returncode": rc})
-                if _SHUTDOWN_EVENT.is_set():
-                    break
-                if rc != 0 and not SR_RL_MODEL_PATH.exists():
-                    print(f"[sr-rl] model missing after exit (rc={rc}); waiting 300s before retry")
-                    if _SHUTDOWN_EVENT.wait(timeout=300):
-                        break
-                else:
-                    print(f"[sr-rl] exited returncode={rc}; restarting in 20s")
-                    if _SHUTDOWN_EVENT.wait(timeout=20):
-                        break
+                decisions = _srl.live_cycle(self._sr_rl_model, execute=execute)
+                global _SR_RL_LATEST_DECISIONS, _SR_RL_DECISIONS_TS
+                with _SR_RL_DECISIONS_LOCK:
+                    _SR_RL_LATEST_DECISIONS = list(decisions)
+                    _SR_RL_DECISIONS_TS = time.time()
+                buys = sum(1 for d in decisions if d.get("action") == "buy")
+                if buys:
+                    print(f"[sr-rl] cycle: {len(decisions)} signals, {buys} buy(s)")
+                sr_write_event("live_cycle_ok", {"n_decisions": len(decisions), "n_buy": buys})
             except Exception as exc:
-                print(f"[sr-rl] loop error: {exc}")
-                sr_write_event("live_error", {"error": str(exc)})
-                if _SHUTDOWN_EVENT.wait(timeout=20):
-                    break
+                print(f"[sr-rl] live_cycle error: {exc}")
+                sr_write_event("live_cycle_error", {"error": str(exc)})
+            if _SHUTDOWN_EVENT.wait(timeout=scan_secs):
+                break
 
     def _start_alpaca_stream_router(self) -> None:
         if not self.config.scanner or not self.config.scanner.alpaca_stream_router_enabled:
