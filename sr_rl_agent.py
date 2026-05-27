@@ -104,6 +104,14 @@ REVERSAL_PENALTY  = float(os.getenv("SR_RL_REVERSAL_PENALTY",  "-0.50"))
 MULTIDAY_BARS     = int(os.getenv("SR_RL_MULTIDAY_BARS",  "390"))
 MULTIDAY_BONUS    = float(os.getenv("SR_RL_MULTIDAY_BONUS", "0.20"))
 
+# Early loss-cut bonus: fraction of avoided stop-loss distance rewarded
+EARLY_CUT_BONUS_SCALE   = float(os.getenv("SR_RL_EARLY_CUT_BONUS_SCALE",   "0.40"))
+
+# Premature exit penalty: applied when a winning trade is closed too early
+MIN_HOLD_BARS           = int(os.getenv("SR_RL_MIN_HOLD_BARS",           "15"))
+PREMATURE_THRESHOLD_R   = float(os.getenv("SR_RL_PREMATURE_THRESHOLD_R", "0.50"))
+PREMATURE_EXIT_PENALTY  = float(os.getenv("SR_RL_PREMATURE_EXIT_PENALTY", "-0.30"))
+
 N_FEATURES = 12  # 8 price/SR features + rsi + macd_hist + vwap_dist + vol_ratio
 
 
@@ -698,6 +706,21 @@ class SRTradingEnv(gym.Env):
             elif action == ACTION_SELL:
                 r = (price - self.entry) / risk
                 reward += r
+
+                if r < 0:
+                    # Cutting a loser early: reward proportional to how much
+                    # of the full stop-loss distance was avoided.
+                    saved_r = (self.stop - price) / risk   # R saved vs hitting stop
+                    reward += saved_r * EARLY_CUT_BONUS_SCALE
+                else:
+                    # Exiting a winner: penalise if the trade wasn't given
+                    # enough time or enough room to develop.
+                    hold_shortfall = max(0.0, 1.0 - self.bars_in_position / max(MIN_HOLD_BARS, 1))
+                    size_shortfall = max(0.0, 1.0 - r / max(PREMATURE_THRESHOLD_R, 1e-9)) if r < PREMATURE_THRESHOLD_R else 0.0
+                    penalty_weight = max(hold_shortfall, size_shortfall)
+                    if penalty_weight > 0:
+                        reward += PREMATURE_EXIT_PENALTY * penalty_weight
+
                 self.position = 0
 
         self.i += 1
