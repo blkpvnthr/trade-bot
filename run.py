@@ -2846,6 +2846,13 @@ class ScannerConfig:
     scalping_layer_cooldown_minutes: int = int(os.getenv("SCALP_COOLDOWN_MINUTES", "5"))
     scalping_layer_max_trades_per_day: int = int(os.getenv("SCALP_MAX_TRADES_PER_DAY_TOTAL", "6"))
 
+    # Single Alpaca WebSocket stream router (alpaca_stream_router.py).
+    # When enabled this process owns the sole StockDataStream connection and
+    # writes 1m bars to the shared CSV. stream_confirmed and sr_rl read from
+    # that file instead of opening their own Alpaca connections.
+    alpaca_stream_router_enabled: bool = os.getenv("ALPACA_STREAM_ROUTER_ENABLED", "true").lower() in {"1", "true"}
+    alpaca_stream_router_reload_seconds: int = int(os.getenv("STREAM_ROUTER_RELOAD_SECONDS", "30"))
+
 
 @dataclass
 class ExecutorConfig:
@@ -8172,6 +8179,7 @@ class ProductionOrderExecutor:
         self._sa_assessment: dict[str, Any] = {}
         self._sa_last_assessment_date: str | None = None
         self._last_opportunity_finder_run: float = 0.0
+        self._alpaca_stream_router_thread_started: bool = False
 
     def _planner_health(self, refresh: bool = False) -> dict[str, Any]:
         if refresh or self._planner_health_cache is None:
@@ -10644,6 +10652,64 @@ class ProductionOrderExecutor:
                 sr_write_event("live_error", {"error": str(exc)})
                 time.sleep(20)
 
+    def _start_alpaca_stream_router(self) -> None:
+        if not self.config.scanner or not self.config.scanner.alpaca_stream_router_enabled:
+            return
+        if self._alpaca_stream_router_thread_started:
+            return
+        self._alpaca_stream_router_thread_started = True
+        thread = threading.Thread(
+            target=self._alpaca_stream_router_loop,
+            name="alpaca-stream-router",
+            daemon=True,
+        )
+        thread.start()
+        print(
+            "[stream-router] subprocess watcher started "
+            f"feed={os.getenv('ALPACA_DATA_FEED', 'iex')} "
+            f"reload_seconds={self.config.scanner.alpaca_stream_router_reload_seconds}"
+        )
+
+    def _alpaca_stream_router_loop(self) -> None:
+        script_path = PROJECT_ROOT / "alpaca_stream_router.py"
+        if not script_path.exists():
+            print(f"[stream-router] script missing: {script_path}")
+            write_event("stream_router_script_missing", {"path": str(script_path)})
+            return
+
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        env["RUN_DATA_DATE"] = DATA_TAG
+        env["STREAM_ROUTER_RELOAD_SECONDS"] = str(
+            self.config.scanner.alpaca_stream_router_reload_seconds if self.config.scanner else 30
+        )
+
+        cmd = [sys.executable, str(script_path)]
+        while not _SHUTDOWN_EVENT.is_set():
+            try:
+                print(f"[stream-router] launching: {' '.join(cmd)}")
+                write_event("stream_router_started", {"cmd": cmd})
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(PROJECT_ROOT),
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    print(line.rstrip())
+                rc = proc.wait()
+                write_event("stream_router_exited", {"returncode": rc})
+                print(f"[stream-router] exited returncode={rc}; restarting in 15s")
+            except Exception as exc:
+                print(f"[stream-router] loop error: {exc}")
+                write_event("stream_router_error", {"error": str(exc)})
+            if _SHUTDOWN_EVENT.wait(timeout=15):
+                break
+
     def _start_stream_confirmed_movement_gate(self) -> None:
         if not self.config.scanner or not self.config.scanner.stream_confirmed_movement_enabled:
             return
@@ -10696,6 +10762,10 @@ class ProductionOrderExecutor:
         env["STREAM_CONFIRM_USE_POLLING"] = "1" if self.config.scanner.stream_confirmed_use_polling else "0"
         env["STREAM_CONFIRM_RELOAD_SECONDS"] = str(self.config.scanner.stream_confirmed_reload_seconds)
         env["STREAM_CONFIRM_TRAILING_STOP_ENABLED"] = "1" if self.config.scanner.stream_confirmed_trailing_stop_enabled else "0"
+        # When the stream router is running it owns the sole WebSocket; tell
+        # stream_confirmed to read bars from the shared CSV instead of opening
+        # its own Alpaca connection.
+        env["STREAM_ROUTER_MODE"] = "1" if self.config.scanner.alpaca_stream_router_enabled else "0"
         env["PYTHONUNBUFFERED"] = "1"
 
         cmd = [sys.executable, str(script_path)]
@@ -10823,6 +10893,9 @@ class ProductionOrderExecutor:
             print(f"[executor] opportunity_finder_enabled={self.config.scanner.opportunity_finder_enabled}")
             if self.config.scanner.opportunity_finder_enabled:
                 print(f"[executor] opportunity_finder_interval={self.config.scanner.opportunity_finder_interval_minutes}min")
+            print(f"[executor] alpaca_stream_router_enabled={self.config.scanner.alpaca_stream_router_enabled}")
+            if self.config.scanner.alpaca_stream_router_enabled:
+                print(f"[executor] alpaca_stream_router_reload_seconds={self.config.scanner.alpaca_stream_router_reload_seconds}")
         try:
             acct = self.broker.get_account_snapshot()
             profile = self._risk_profile(acct.equity)
@@ -10890,6 +10963,7 @@ class ProductionOrderExecutor:
                 print(f"[session-prep] startup prep failed; executor will continue with fallbacks: {exc}")
                 write_event("session_planning_startup_error", {"error": str(exc)})
 
+        self._start_alpaca_stream_router()   # must be first — sole WebSocket owner
         self._start_spx_price_action_layer()
         self._start_sr_rl_agent()
         self._start_stream_confirmed_movement_gate()
