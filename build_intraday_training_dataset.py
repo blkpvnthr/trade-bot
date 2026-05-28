@@ -74,7 +74,45 @@ GIVEBACK_THRESHOLD = float(os.getenv("EXIT_LABEL_GIVEBACK_PCT", "0.004"))
 CUT_LOSER_THRESHOLD = float(os.getenv("EXIT_LABEL_CUT_LOSER_PCT", "-0.006"))
 CONTINUATION_THRESHOLD = float(os.getenv("EXIT_LABEL_CONTINUATION_PCT", "0.002"))
 
-DEFAULT_SYMBOLS = pd.read_csv("data/bullish_2026-05-13.csv")["Symbol"].to_list()
+def _load_universe_symbols() -> list[str]:
+    """Load today's trading universe in priority order."""
+    # 1. LLM sentiment universe (primary — full 21-symbol multi-screen list)
+    universe_path = OUT_DIR / f"{TODAY_TAG}_latest_llm_sentiment_universe.json"
+    if universe_path.exists():
+        try:
+            data = json.loads(universe_path.read_text(encoding="utf-8"))
+            syms = data.get("symbols", data.get("selected_symbols", []))
+            if syms:
+                print(f"[universe] loaded {len(syms)} symbols from llm_sentiment_universe")
+                return [str(s).upper().strip() for s in syms if s]
+        except Exception as exc:
+            print(f"[universe] failed to read {universe_path}: {exc}")
+
+    # 2. Premarket trade plan selected_symbols
+    plan_path = OUT_DIR / f"{TODAY_TAG}_premarket_trade_plan.json"
+    if plan_path.exists():
+        try:
+            data = json.loads(plan_path.read_text(encoding="utf-8"))
+            syms = data.get("selected_symbols", [])
+            if syms:
+                print(f"[universe] loaded {len(syms)} symbols from premarket_trade_plan")
+                return [str(s).upper().strip() for s in syms if s]
+        except Exception as exc:
+            print(f"[universe] failed to read {plan_path}: {exc}")
+
+    # 3. Last resort: most recent bullish CSV
+    data_dir = PROJECT_ROOT / "data"
+    for path in sorted(data_dir.glob("bullish_*.csv"), reverse=True):
+        try:
+            syms = pd.read_csv(path)["Symbol"].dropna().tolist()
+            if syms:
+                print(f"[universe] loaded {len(syms)} symbols from {path.name} (fallback)")
+                return syms
+        except Exception:
+            continue
+    return []
+
+DEFAULT_SYMBOLS: list[str] = _load_universe_symbols()
 
 # ============================================================================
 # Helpers
@@ -129,36 +167,30 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 # =============================================================================
 
 def load_structure_symbols() -> list[str]:
-    if not STRUCTURE_MAP_PATH.exists():
-        return DEFAULT_SYMBOLS
+    # Start with the full trading universe so training always covers all candidates.
+    symbols: list[str] = list(DEFAULT_SYMBOLS)
 
-    try:
-        payload = json.loads(STRUCTURE_MAP_PATH.read_text(encoding="utf-8"))
-    except Exception as exc:
-        print(f"[structure] failed to read {STRUCTURE_MAP_PATH}: {exc}")
-        return DEFAULT_SYMBOLS
+    if STRUCTURE_MAP_PATH.exists():
+        try:
+            payload = json.loads(STRUCTURE_MAP_PATH.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                if isinstance(payload.get("long_allowed_symbols"), list):
+                    symbols.extend(payload["long_allowed_symbols"])
+                if isinstance(payload.get("structures"), list):
+                    for item in payload["structures"]:
+                        if isinstance(item, dict):
+                            symbols.append(item.get("symbol") or item.get("ticker") or "")
+                for key in ["symbols", "structure_maps", "intraday_structure_maps"]:
+                    value = payload.get(key)
+                    if isinstance(value, dict):
+                        symbols.extend(value.keys())
+                    elif isinstance(value, list):
+                        symbols.extend(value)
+        except Exception as exc:
+            print(f"[structure] failed to read {STRUCTURE_MAP_PATH}: {exc}")
 
-    symbols: list[str] = []
-
-    if isinstance(payload, dict):
-        if isinstance(payload.get("long_allowed_symbols"), list):
-            symbols.extend(payload["long_allowed_symbols"])
-
-        if isinstance(payload.get("structures"), list):
-            for item in payload["structures"]:
-                if isinstance(item, dict):
-                    symbols.append(item.get("symbol") or item.get("ticker") or "")
-
-        for key in ["symbols", "structure_maps", "intraday_structure_maps"]:
-            value = payload.get(key)
-
-            if isinstance(value, dict):
-                symbols.extend(value.keys())
-            elif isinstance(value, list):
-                symbols.extend(value)
-
-    symbols = sorted(set(normalize_symbol(s) for s in symbols if normalize_symbol(s)))
-    return symbols or DEFAULT_SYMBOLS
+    deduped = sorted(set(normalize_symbol(s) for s in symbols if normalize_symbol(s)))
+    return deduped or DEFAULT_SYMBOLS
 
 
 # =============================================================================

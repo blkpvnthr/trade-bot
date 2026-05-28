@@ -114,40 +114,31 @@ def get_account_cash() -> float:
 
 def resolve_qty(data: dict[str, Any], side: OrderSide) -> float:
     qty_raw = parse_float(data.get("qty"), default=1.0)
+
     if qty_raw is None:
-        raise ValueError(f"Invalid qty: {data.get('qty')}")
+        qty_raw = 0.0
 
     qty = abs(float(qty_raw))
 
-    # TradingView strategy.position_size can be negative on sell/exit. Alpaca qty must be positive.
-    # If TradingView sends a 0-size exit, close the current long position if one exists.
     if qty <= 0:
         if side == OrderSide.SELL:
             symbol = normalize_symbol(data.get("symbol"))
-
             try:
                 position = client.get_open_position(symbol)
-                qty = abs(float(position.qty))
-
-                if qty <= 0:
-                    logger.warning(
-                        "Ignoring SELL webhook with zero qty and empty position | symbol=%s",
-                        symbol,
-                    )
-                    return 0
-
+                position_qty = abs(float(position.qty))
             except Exception:
-                logger.warning(
-                    "Ignoring SELL webhook because no open position exists | symbol=%s",
-                    symbol,
-                )
-                return 0
+                logger.warning("Ignoring SELL webhook because no open position exists | symbol=%s", symbol)
+                return 0.0
 
-        else:
-            qty = 1.0
-        
+            if position_qty <= 0:
+                logger.warning("Ignoring SELL webhook with empty position | symbol=%s", symbol)
+                return 0.0
 
-        return qty
+            return float(position_qty)
+
+        return 1.0
+
+    return float(qty)
 
 def validate_cash_for_buy(symbol: str, qty: float, price: float | None) -> tuple[float, float, float]:
     if price is None or price <= 0:

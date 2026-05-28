@@ -78,11 +78,21 @@ TV_INST_SCREENER_ENABLED: bool = os.getenv("TV_INST_SCREENER_ENABLED", "1").lowe
 TV_INST_LIMIT: int = int(os.getenv("TV_INST_LIMIT", "250"))
 TV_INST_TARGET_UNIVERSE_SIZE: int = int(os.getenv("TV_INST_TARGET_UNIVERSE_SIZE", "30"))
 TV_INST_MAX_SYMBOLS: int = int(os.getenv("TV_INST_MAX_SYMBOLS", "30"))
-TV_INST_MIN_PRICE: float = float(os.getenv("TV_INST_MIN_PRICE", "2"))
-TV_INST_MAX_PRICE: float = float(os.getenv("TV_INST_MAX_PRICE", "300"))
+TV_INST_MIN_PRICE: float = float(os.getenv("TV_INST_MIN_PRICE", "1"))
+TV_INST_MAX_PRICE: float = float(os.getenv("TV_INST_MAX_PRICE", "1500"))
 TV_INST_MIN_MARKET_CAP: float = float(os.getenv("TV_INST_MIN_MARKET_CAP", "50000000"))
 TV_INST_MIN_DOLLAR_VOLUME: float = float(os.getenv("TV_INST_MIN_DOLLAR_VOLUME", "10000000"))
-TV_INST_MIN_REL_VOLUME: float = float(os.getenv("TV_INST_MIN_REL_VOLUME", "1.5"))
+TV_INST_MIN_REL_VOLUME: float = float(os.getenv("TV_INST_MIN_REL_VOLUME", "2.0"))
+TV_INST_MIN_VOLUME: float = float(os.getenv("TV_INST_MIN_VOLUME", "1000000"))
+TV_INST_MIN_VOLATILITY_PCT: float = float(os.getenv("TV_INST_MIN_VOLATILITY_PCT", "5.0"))
+TV_INST_MIN_PERF_1W: float = float(os.getenv("TV_INST_MIN_PERF_1W", "0.0"))
+
+# Multi-screen integration
+TV_PREMARKET_ACTIVE_ENABLED: bool = os.getenv("TV_PREMARKET_ACTIVE_ENABLED", "1").lower() in {"1", "true", "yes"}
+TV_PREMARKET_ACTIVE_TIME_GATED: bool = os.getenv("TV_PREMARKET_ACTIVE_TIME_GATED", "1").lower() in {"1", "true", "yes"}
+TV_VOLUME_LEADERS_ENABLED: bool = os.getenv("TV_VOLUME_LEADERS_ENABLED", "1").lower() in {"1", "true", "yes"}
+TV_UNUSUAL_VOLUME_ENABLED: bool = os.getenv("TV_UNUSUAL_VOLUME_ENABLED", "1").lower() in {"1", "true", "yes"}
+TV_MULTI_SCREEN_LIMIT: int = int(os.getenv("TV_MULTI_SCREEN_LIMIT", "100"))
 TV_INST_EXCLUDE_OTC: bool = os.getenv("TV_INST_EXCLUDE_OTC", "1").lower() in {"1", "true", "yes"}
 TV_INST_INCLUDE_ETFS: bool = os.getenv("TV_INST_INCLUDE_ETFS", "0").lower() in {"1", "true", "yes"}
 TV_INST_MIN_SCORE: float = float(os.getenv("TV_INST_MIN_SCORE", "0.60"))
@@ -134,6 +144,10 @@ TV_FIELDS_FULL: list[str] = [
     "RSI",
     "RSI|5",
     "RSI|15",
+    "Perf.W",
+    "ATR",
+    "SMA50",
+    "SMA200",
 ]
 
 TV_FIELDS_MINIMAL: list[str] = [
@@ -150,6 +164,10 @@ TV_FIELDS_MINIMAL: list[str] = [
     "Recommend.All|5",
     "Recommend.All|15",
     "RSI",
+    "Perf.W",
+    "ATR",
+    "SMA50",
+    "SMA200",
 ]
 
 # ---------------------------------------------------------------------------
@@ -353,7 +371,11 @@ def _score_components(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rec = _clip01(rec_scores[i])
         liq = _clip01(liq_scores[i])
 
-        composite = (
+        # Confluence bonus: +0.05 per additional screen beyond the first, capped at 0.15
+        n_screens = len(r.get("source_screens") or [])
+        confluence_bonus = _clip01(min(0.05 * max(0, n_screens - 1), 0.15))
+
+        composite = _clip01(
             rv   * 0.20
             + dv * 0.15
             + va * 0.15
@@ -362,6 +384,7 @@ def _score_components(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             + mtf * 0.10
             + rec * 0.10
             + liq * 0.05
+            + confluence_bonus
         )
 
         r["_rv_score"] = round(rv, 4)
@@ -388,6 +411,12 @@ def _assign_tags(row: dict[str, Any]) -> list[str]:
     mtf = _to_float(row.get("_mtf_score"), 0.0)
     ps = _to_float(row.get("_ps_score"), 0.0)
     score = _to_float(row.get("institutional_accumulation_score"), 0.0)
+
+    n_screens = len(row.get("source_screens") or [])
+    if n_screens >= 2:
+        tags.append("MULTI_SCREEN_CONFLUENCE")
+    if n_screens >= 3:
+        tags.append("TRIPLE_SCREEN_CONFLUENCE")
 
     if rv >= TV_INST_MIN_REL_VOLUME * 1.5:
         tags.append("AGGRESSIVE_RVOL")
@@ -429,7 +458,10 @@ def _run_tv_query_full() -> pd.DataFrame | None:
                 tv_col("close") >= TV_INST_MIN_PRICE,
                 tv_col("close") <= TV_INST_MAX_PRICE,
                 tv_col("market_cap_basic") >= TV_INST_MIN_MARKET_CAP,
+                tv_col("volume") >= TV_INST_MIN_VOLUME,
                 tv_col("relative_volume_10d_calc") >= TV_INST_MIN_REL_VOLUME,
+                tv_col("Perf.W") > TV_INST_MIN_PERF_1W,
+                tv_col("SMA50") > tv_col("SMA200"),
                 tv_col("MACD.macd|5") >= tv_col("MACD.signal|5"),
                 tv_col("Recommend.All|5") > 0,
                 tv_col("Recommend.All|15") > 0,
@@ -438,7 +470,11 @@ def _run_tv_query_full() -> pd.DataFrame | None:
             .limit(TV_INST_LIMIT)
         )
         count, df = q.get_scanner_data()
-        print(f"[tv-inst] full query: {count} candidates matched ({len(df)} fetched)")
+        # ATR/close volatility filter applied post-fetch (column arithmetic unsupported in query)
+        if TV_INST_MIN_VOLATILITY_PCT > 0 and "ATR" in df.columns and "close" in df.columns:
+            vol_pct = df["ATR"] / df["close"].replace(0, float("nan")) * 100
+            df = df[vol_pct >= TV_INST_MIN_VOLATILITY_PCT]
+        print(f"[tv-inst] full query: {count} candidates matched ({len(df)} after volatility filter)")
         return df
     except Exception as exc:
         print(f"[tv-inst] full query failed: {exc}")
@@ -459,7 +495,10 @@ def _run_tv_query_minimal() -> pd.DataFrame | None:
                 tv_col("close") >= TV_INST_MIN_PRICE,
                 tv_col("close") <= TV_INST_MAX_PRICE,
                 tv_col("market_cap_basic") >= TV_INST_MIN_MARKET_CAP,
+                tv_col("volume") >= TV_INST_MIN_VOLUME,
                 tv_col("relative_volume_10d_calc") >= TV_INST_MIN_REL_VOLUME,
+                tv_col("Perf.W") > TV_INST_MIN_PERF_1W,
+                tv_col("SMA50") > tv_col("SMA200"),
                 tv_col("Recommend.All|5") > 0,
                 tv_col("Recommend.All|15") > 0,
             )
@@ -467,11 +506,180 @@ def _run_tv_query_minimal() -> pd.DataFrame | None:
             .limit(TV_INST_LIMIT)
         )
         count, df = q.get_scanner_data()
-        print(f"[tv-inst] minimal query: {count} candidates matched ({len(df)} fetched)")
+        # ATR/close volatility filter applied post-fetch (column arithmetic unsupported in query)
+        if TV_INST_MIN_VOLATILITY_PCT > 0 and "ATR" in df.columns and "close" in df.columns:
+            vol_pct = df["ATR"] / df["close"].replace(0, float("nan")) * 100
+            df = df[vol_pct >= TV_INST_MIN_VOLATILITY_PCT]
+        print(f"[tv-inst] minimal query: {count} candidates matched ({len(df)} after volatility filter)")
         return df
     except Exception as exc:
         print(f"[tv-inst] minimal query failed: {exc}")
         return None
+
+
+def _is_premarket_window() -> bool:
+    now_et = datetime.now(ET)
+    return (4, 0) <= (now_et.hour, now_et.minute) < (9, 30)
+
+
+def _run_tv_query_premarket_active() -> pd.DataFrame | None:
+    if not TV_PREMARKET_ACTIVE_ENABLED:
+        return None
+    if TV_PREMARKET_ACTIVE_TIME_GATED and not _is_premarket_window():
+        print("[tv-inst] premarket_active query skipped (outside 04:00–09:30 ET window)")
+        return None
+    try:
+        from tradingview_screener import Query, col as tv_col
+    except ImportError:
+        return None
+    try:
+        q = (
+            Query()
+            .select(
+                "name", "description", "exchange", "type",
+                "premarket_close", "premarket_change_abs",
+                "premarket_change", "premarket_volume", "premarket_gap",
+                "close", "change", "volume", "market_cap_basic",
+            )
+            .where(
+                tv_col("exchange").isin(["AMEX", "CBOE", "NASDAQ", "NYSE"]),
+                tv_col("is_primary") == True,
+                tv_col("typespecs").has("common"),
+                tv_col("typespecs").has_none_of("preferred"),
+                tv_col("type") == "stock",
+                tv_col("premarket_volume").not_empty(),
+                tv_col("active_symbol") == True,
+            )
+            .order_by("premarket_volume", ascending=False, nulls_first=False)
+            .limit(TV_MULTI_SCREEN_LIMIT)
+            .set_markets("america")
+            .set_property("symbols", {"query": {"types": ["stock", "fund", "dr", "structured"]}})
+            .set_property("preset", "pre_market_most_active")
+        )
+        count, df = q.get_scanner_data()
+        print(f"[tv-inst] premarket_active: {count} total, {len(df)} fetched")
+        return df
+    except Exception as exc:
+        print(f"[tv-inst] premarket_active query failed: {exc}")
+        return None
+
+
+def _run_tv_query_volume_leaders() -> pd.DataFrame | None:
+    if not TV_VOLUME_LEADERS_ENABLED:
+        return None
+    try:
+        from tradingview_screener import Query, col as tv_col
+    except ImportError:
+        return None
+    try:
+        q = (
+            Query()
+            .select(
+                "name", "description", "exchange", "type",
+                "Value.Traded", "close", "change", "volume",
+                "relative_volume_10d_calc", "market_cap_basic", "sector",
+            )
+            .where(
+                tv_col("exchange").isin(["AMEX", "CBOE", "NASDAQ", "NYSE"]),
+                tv_col("is_primary") == True,
+                tv_col("typespecs").has("common"),
+                tv_col("typespecs").has_none_of("preferred"),
+                tv_col("type") == "stock",
+                tv_col("close").between(TV_INST_MIN_PRICE, TV_INST_MAX_PRICE),
+                tv_col("active_symbol") == True,
+            )
+            .order_by("Value.Traded", ascending=False, nulls_first=False)
+            .limit(TV_MULTI_SCREEN_LIMIT)
+            .set_markets("america")
+            .set_property("symbols", {"query": {"types": ["stock", "fund", "dr", "structured"]}})
+            .set_property("preset", "volume_leaders")
+        )
+        count, df = q.get_scanner_data()
+        print(f"[tv-inst] volume_leaders: {count} total, {len(df)} fetched")
+        return df
+    except Exception as exc:
+        print(f"[tv-inst] volume_leaders query failed: {exc}")
+        return None
+
+
+def _run_tv_query_unusual_volume() -> pd.DataFrame | None:
+    if not TV_UNUSUAL_VOLUME_ENABLED:
+        return None
+    try:
+        from tradingview_screener import Query, col as tv_col
+    except ImportError:
+        return None
+    try:
+        q = (
+            Query()
+            .select(
+                "name", "description", "exchange", "type",
+                "relative_volume_10d_calc", "close", "change",
+                "volume", "market_cap_basic", "sector",
+            )
+            .where(
+                tv_col("exchange").isin(["AMEX", "CBOE", "NASDAQ", "NYSE"]),
+                tv_col("is_primary") == True,
+                tv_col("typespecs").has("common"),
+                tv_col("typespecs").has_none_of("preferred"),
+                tv_col("type") == "stock",
+                tv_col("active_symbol") == True,
+            )
+            .order_by("relative_volume_10d_calc", ascending=False, nulls_first=False)
+            .limit(TV_MULTI_SCREEN_LIMIT)
+            .set_markets("america")
+            .set_property("symbols", {"query": {"types": ["stock", "fund", "dr", "structured"]}})
+            .set_property("preset", "unusual_volume")
+        )
+        count, df = q.get_scanner_data()
+        print(f"[tv-inst] unusual_volume: {count} total, {len(df)} fetched")
+        return df
+    except Exception as exc:
+        print(f"[tv-inst] unusual_volume query failed: {exc}")
+        return None
+
+
+def _merge_multi_screen_candidates(
+    screens: dict[str, pd.DataFrame | None],
+) -> list[dict[str, Any]]:
+    """
+    Merge candidates from multiple screens, deduplicating by symbol.
+    Each row records which screens it appeared on in `source_screens`.
+    Premarket rows may have zero regular volume — use premarket_volume as fallback.
+    """
+    by_symbol: dict[str, dict[str, Any]] = {}
+
+    for screen_name, df in screens.items():
+        if df is None or df.empty:
+            continue
+        for row in _parse_tv_dataframe(df):
+            sym = row.get("symbol", "")
+            if not sym:
+                continue
+            # Use premarket_volume as volume fallback for the premarket screen
+            if screen_name == "premarket_active" and _to_float(row.get("volume"), 0.0) == 0:
+                pm_vol = _to_float(row.get("premarket_volume"), 0.0)
+                pm_close = _to_float(row.get("premarket_close") or row.get("close"), 0.0)
+                row["volume"] = pm_vol
+                if pm_close > 0:
+                    row.setdefault("close", pm_close)
+
+            if sym not in by_symbol:
+                row["source_screens"] = [screen_name]
+                by_symbol[sym] = row
+            else:
+                existing = by_symbol[sym]
+                existing["source_screens"].append(screen_name)
+                # Prefer institutional row data but fill gaps from other screens
+                for k, v in row.items():
+                    if k == "source_screens":
+                        continue
+                    if k not in existing or existing[k] is None or (
+                        isinstance(existing[k], float) and existing[k] == 0.0
+                    ):
+                        existing[k] = v
+
+    return list(by_symbol.values())
 
 
 # ---------------------------------------------------------------------------
@@ -575,7 +783,8 @@ def fetch_institutional_candidates() -> tuple[list[dict[str, Any]], dict[str, An
     diag: dict[str, Any] = {
         "created_at_utc": _now_utc(),
         "data_tag": DATA_TAG,
-        "query_strategy": "full",
+        "query_strategy": "multi_screen",
+        "screens_run": [],
         "raw_count": 0,
         "post_filter_count": 0,
         "selected_count": 0,
@@ -583,19 +792,49 @@ def fetch_institutional_candidates() -> tuple[list[dict[str, Any]], dict[str, An
         "errors": [],
     }
 
-    df = _run_tv_query_full()
-
-    if df is None or df.empty:
+    # --- Primary institutional accumulation query ---
+    df_inst = _run_tv_query_full()
+    if df_inst is None or df_inst.empty:
         print("[tv-inst] full field list failed; retrying with minimal fields")
-        diag["query_strategy"] = "minimal_retry"
-        df = _run_tv_query_minimal()
+        diag["query_strategy"] = "multi_screen_minimal_primary"
+        df_inst = _run_tv_query_minimal()
 
-    rows: list[dict[str, Any]] = []
-    if df is not None and not df.empty:
-        rows = _parse_tv_dataframe(df)
-        diag["raw_count"] = len(rows)
-        rows = _apply_post_filters(rows)
-        diag["post_filter_count"] = len(rows)
+    screens: dict[str, pd.DataFrame | None] = {"institutional": df_inst}
+
+    # --- Supplementary screens ---
+    df_pm = _run_tv_query_premarket_active()
+    if df_pm is not None and not df_pm.empty:
+        screens["premarket_active"] = df_pm
+        diag["screens_run"].append("premarket_active")
+
+    df_vl = _run_tv_query_volume_leaders()
+    if df_vl is not None and not df_vl.empty:
+        screens["volume_leaders"] = df_vl
+        diag["screens_run"].append("volume_leaders")
+
+    df_uv = _run_tv_query_unusual_volume()
+    if df_uv is not None and not df_uv.empty:
+        screens["unusual_volume"] = df_uv
+        diag["screens_run"].append("unusual_volume")
+
+    if df_inst is not None and not df_inst.empty:
+        diag["screens_run"].insert(0, "institutional")
+
+    # --- Merge all screens ---
+    rows = _merge_multi_screen_candidates(screens)
+    diag["raw_count"] = len(rows)
+
+    # --- Apply post-filters (price, dollar volume, OTC exclusion) ---
+    rows = _apply_post_filters(rows)
+    diag["post_filter_count"] = len(rows)
+
+    # --- Log multi-screen confluence ---
+    multi = [r for r in rows if len(r.get("source_screens", [])) > 1]
+    if multi:
+        confluence_syms = ", ".join(
+            f"{r['symbol']}({'|'.join(r['source_screens'])})" for r in multi[:10]
+        )
+        print(f"[tv-inst] multi-screen confluence ({len(multi)} symbols): {confluence_syms}")
 
     if len(rows) < 5:
         print(f"[tv-inst] only {len(rows)} candidates after filters; loading fallback universe")
@@ -611,7 +850,7 @@ def fetch_institutional_candidates() -> tuple[list[dict[str, Any]], dict[str, An
                     "volume": 0,
                     "relative_volume_10d_calc": 0.0,
                     "market_cap_basic": 0.0,
-                    "source": "fallback_locked_universe",
+                    "source_screens": ["fallback_locked_universe"],
                 })
 
     return rows, diag
@@ -650,7 +889,8 @@ def _build_compat_payload(
         if tags:
             parts.append(f"tags: {', '.join(tags)}")
 
-        selections.append({
+        source_screens = r.get("source_screens") or []
+        entry: dict[str, Any] = {
             "rank": rank,
             "symbol": symbol,
             "catalyst_type": catalyst,
@@ -663,8 +903,16 @@ def _build_compat_payload(
             "market_cap": _to_float(r.get("market_cap_basic"), 0.0),
             "institutional_accumulation_score": score,
             "accumulation_tags": tags,
+            "source_screens": source_screens,
+            "screen_count": len(source_screens),
             "source": "tradingview_institutional_screener",
-        })
+        }
+        # Include premarket fields when available
+        for pm_field in ("premarket_close", "premarket_change", "premarket_volume", "premarket_gap"):
+            val = r.get(pm_field)
+            if val is not None:
+                entry[pm_field] = val
+        selections.append(entry)
 
     symbols = [s["symbol"] for s in selections]
     return {
