@@ -1,28 +1,42 @@
 #!/usr/bin/env python3
 """
-alpaca_executor.py
+run.py
 
-Streaming-style paper executor inspired by the ProductionPaperTrader structure.
+Opening-range liquidity sweep + retest + engulfing confirmation executor.
 
-No dry-run mode.
+Strategy:
+    - Read closed TradingView candle / volume-footprint rows from CSV.
+    - Build the regular-session opening range from the 9:30 ET candle.
+    - LONG setup:
+          1) Price sweeps below the 9:30 candle low.
+          2) Price reclaims back inside the opening range.
+          3) A retest candle forms near the swept low.
+          4) The next candle bullish-engulfs the retest candle.
+          5) Enter at the CLOSE of the engulfing candle.
+          6) Stop = sweep wick low.
+          7) Take profit = 3R.
+          8) Optional footprint confirmation: retest delta < 0 and engulfing delta > 0.
+    - SHORT setup, optional:
+          inverse of the long setup. Disabled by default.
 
-Default behavior:
-    python run.py
+Expected default CSV:
+    daily_system_outputs/tradingview_volume_footprint.csv
 
-This executor is designed to be simple to reason about:
-    - polls the existing daily_system_outputs order CSVs
-    - checks Alpaca market clock
-    - logs account equity curve
-    - journals every attempted/placed/skipped trade
-    - sells before buys
-    - respects cash buffer, max exposure, max position, cooldown, daily loss kill switch
-    - avoids duplicate open orders
-    - supports market-hours-only execution
-    - paper account by default; use --live only intentionally
+Required columns:
+    symbol, timestamp, open, high, low, close, delta
 
-Default input files:
-    daily_system_outputs/daily_walkforward_emulated_rebalance_orders.csv
-    daily_system_outputs/daily_walkforward_emulated_exit_orders.csv
+Accepted aliases:
+    symbol: ticker, symbol_name, syminfo.ticker
+    timestamp: time, datetime, bar_time, candle_time
+    delta: volume_delta, footprint_delta, cvd_delta, net_delta, bar_delta
+
+Useful flags:
+    python run.py --once
+    python run.py --live
+    python run.py --footprint-file daily_system_outputs/tradingview_volume_footprint.csv
+    python run.py --universe AAPL,NVDA,AMD
+    python run.py --allow-shorts
+    python run.py --take-profit-r-multiple 3
 """
 
 from __future__ import annotations
@@ -32,70 +46,53 @@ import csv
 import json
 import os
 import time
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone, timedelta
-from io import StringIO
+from dataclasses import dataclass
+from datetime import datetime, time as dtime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
-import numpy as np
 import pandas as pd
-import requests
 from dotenv import load_dotenv
 
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, OrderStatus, OrderType, TimeInForce
-from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.enums import OrderClass, OrderSide, OrderStatus, OrderType, TimeInForce
+from alpaca.trading.requests import MarketOrderRequest, StopLossRequest, TakeProfitRequest
 
-try:
-    from alpaca.data.enums import DataFeed
-    from alpaca.data.historical.stock import StockHistoricalDataClient
-    from alpaca.data.requests import StockBarsRequest
-    from alpaca.data.timeframe import TimeFrame
-except Exception:  # scanner can be disabled if alpaca-data is unavailable
-    DataFeed = None
-    StockHistoricalDataClient = None
-    StockBarsRequest = None
-    TimeFrame = None
-
-
-# =============================================================================
-# Paths / environment
-# =============================================================================
 
 THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 ENV_PATH = PROJECT_ROOT / ".env"
-
 load_dotenv(ENV_PATH)
 
 OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
 LOG_DIR = PROJECT_ROOT / "logs" / "execution"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-DEFAULT_REBALANCE_ORDERS = OUT_DIR / "daily_walkforward_emulated_rebalance_orders.csv"
-DEFAULT_EXIT_ORDERS = OUT_DIR / "daily_walkforward_emulated_exit_orders.csv"
-
-JOURNAL_PATH = LOG_DIR / "executor_journal.csv"
-EQUITY_CURVE_PATH = LOG_DIR / "executor_equity_curve.csv"
-EVENTS_JSONL = LOG_DIR / "execution_events.jsonl"
+DEFAULT_FOOTPRINT_FILE = OUT_DIR / "tradingview_volume_footprint.csv"
+JOURNAL_PATH = LOG_DIR / "orb_sweep_engulf_executor_journal.csv"
+EQUITY_CURVE_PATH = LOG_DIR / "orb_sweep_engulf_equity_curve.csv"
+EVENTS_JSONL = LOG_DIR / "orb_sweep_engulf_events.jsonl"
+SIGNAL_STATE_PATH = LOG_DIR / "orb_sweep_engulf_signal_state.json"
 KILL_SWITCH_PATH = LOG_DIR / "kill_switch_state.json"
 
-# =============================================================================
-# Constants
-# =============================================================================
+DEFAULT_UNIVERSE = [
+    "QQQ", "TQQQ", "SQQQ", "SPY", "DIA", "IWM", "XLK", "SOXX", "SMH",
+    "AMD", "NVDA", "AVGO", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "TSLA",
+    "PLTR", "COIN", "MARA", "RIOT", "RGTI", "QBTS", "QUBT", "IONQ", "SOUN",
+    "OKLO", "APLD", "ALAB", "ARM",
+]
 
 POLL_SECONDS = 30
-ORDER_WAIT_SECONDS = 20
 COOLDOWN_SECONDS = 8
+ORDER_WAIT_SECONDS = 20
+HEARTBEAT_SECONDS = 60
 
 MIN_BUYING_POWER = 250.0
 MIN_NOTIONAL_TO_TRADE = 100.0
-MIN_WEIGHT_DELTA = 0.0075
-
 MIN_CASH_BUFFER = 1_000.0
-MIN_CASH_BUFFER_PCT = 0.01
 DEFAULT_CASH_BUFFER_PCT = 0.08
 
 MAX_GROSS_EXPOSURE = 0.92
@@ -104,39 +101,18 @@ MAX_SINGLE_ORDER_NOTIONAL_PCT = 0.08
 MAX_ORDER_DOLLARS = 15_000.0
 MAX_SINGLE_ORDER_QTY = 10_000
 
-DAILY_DRAWDOWN_LIMIT = -0.025
-KILL_SWITCH_EQUITY_FLOOR = 95_000.0
+RISK_PER_TRADE_PCT = 0.005
+TAKE_PROFIT_R_MULTIPLE = 3.0
 
 MAX_DAILY_LOSS_PCT = 0.02
 MAX_DAILY_LOSS_DOLLARS = 2_000.0
+DAILY_DRAWDOWN_LIMIT = -0.025
+KILL_SWITCH_EQUITY_FLOOR = 95_000.0
 
-HEARTBEAT_SECONDS = 60
-
-
-# =============================================================================
-# Continuous scanner defaults
-# =============================================================================
-
-WIKI_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-SCANNER_STATE_PATH = LOG_DIR / "scanner_state.json"
-SCANNER_SCORES_PATH = OUT_DIR / "latest_scanner_scores.csv"
-
-DEFAULT_SCAN_UNIVERSE = [
-    "QQQ", "TQQQ", "SQQQ", "SPY", "DIA", "IWM", "XLK", "SOXX", "SMH",
-    "AMD", "NVDA", "AVGO", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "TSLA",
-    "PLTR", "COIN", "MARA", "RIOT", "RGTI", "QBTS", "QUBT", "IONQ", "SOUN",
-    "OKLO", "APLD", "ALAB", "ARM",
-]
-
-
-
-# =============================================================================
-# Dataclasses
-# =============================================================================
 
 @dataclass
 class BrokerPosition:
-    symbol: Optional[str] = None
+    symbol: str = ""
     qty: float = 0.0
     market_value: float = 0.0
     avg_entry_price: float = 0.0
@@ -154,62 +130,67 @@ class AccountSnapshot:
 
 
 @dataclass
-class ScannerConfig:
-    enabled: bool = True
-    universe: Optional[list[str]] = None
-    use_sp500_fallback: bool = False
-    max_universe_symbols: int = 30
-    lookback_days: int = 260
-    data_feed: str = "iex"
-
-    top_n: int = 8
-    min_setup_score: float = 0.62
-    min_buy_confidence: float = 0.58
-    min_price: float = 2.0
-    max_price: float = 500.0
-    min_avg_dollar_volume: float = 5_000_000.0
-
-    base_target_weight: float = 0.04
-    max_target_weight: float = 0.14
-    reversal_target_weight_mult: float = 0.75
-
-    stop_loss_pct: float = -0.035
-    stale_position_score_exit: float = 0.45
-    profit_lock_trigger_pct: float = 0.06
-    profit_giveback_pct: float = 0.025
+class ORBSweepEngulfSignal:
+    symbol: str
+    side: Literal["long", "short"]
+    trade_date: str
+    timestamp: str
+    opening_timestamp: str
+    opening_high: float
+    opening_low: float
+    sweep_price: float
+    retest_timestamp: str
+    engulf_timestamp: str
+    retest_delta: float
+    engulf_delta: float
+    entry_price: float
+    stop_loss: float
+    take_profit: float
+    risk_per_share: float
+    reward_per_share: float
+    retest_open: float
+    retest_high: float
+    retest_low: float
+    retest_close: float
+    engulf_open: float
+    engulf_high: float
+    engulf_low: float
+    engulf_close: float
 
 
 @dataclass
 class ExecutorConfig:
     paper: bool = True
     live: bool = False
-
     poll_once: bool = False
     poll_seconds: int = POLL_SECONDS
+    footprint_file: Path = DEFAULT_FOOTPRINT_FILE
+    universe: list[str] | None = None
 
-    rebalance_orders_path: Path = DEFAULT_REBALANCE_ORDERS
-    exit_orders_path: Path = DEFAULT_EXIT_ORDERS
+    session_timezone: str = "America/New_York"
+    opening_candle_time: str = "09:30"
+    max_opening_candle_minutes_late: int = 5
+    retest_tolerance_pct: float = 0.0015
+    require_delta_flip: bool = True
+    allow_shorts: bool = False
 
     require_market_open: bool = True
     wait_for_market_open: bool = False
     allow_closed_market: bool = False
     max_wait_for_open_minutes: int = 180
-
     cancel_open_orders_first: bool = False
-    sell_first: bool = True
 
     cash_buffer_pct: float = DEFAULT_CASH_BUFFER_PCT
     min_cash_buffer: float = MIN_CASH_BUFFER
     min_buying_power: float = MIN_BUYING_POWER
     min_notional_to_trade: float = MIN_NOTIONAL_TO_TRADE
-    min_weight_delta: float = MIN_WEIGHT_DELTA
-
     max_gross_exposure: float = MAX_GROSS_EXPOSURE
     max_position_weight: float = MAX_POSITION_WEIGHT
     max_single_order_notional_pct: float = MAX_SINGLE_ORDER_NOTIONAL_PCT
     max_order_dollars: float = MAX_ORDER_DOLLARS
     max_single_order_qty: int = MAX_SINGLE_ORDER_QTY
-
+    risk_per_trade_pct: float = RISK_PER_TRADE_PCT
+    take_profit_r_multiple: float = TAKE_PROFIT_R_MULTIPLE
     cooldown_seconds: int = COOLDOWN_SECONDS
 
     enable_kill_switch: bool = True
@@ -220,14 +201,8 @@ class ExecutorConfig:
 
     order_wait_seconds: int = ORDER_WAIT_SECONDS
     time_in_force: TimeInForce = TimeInForce.DAY
-    order_tag_prefix: str = "explosive_alpha"
+    order_tag_prefix: str = "orb_sweep_engulf_3r"
 
-    scanner: ScannerConfig = None
-
-
-# =============================================================================
-# General helpers
-# =============================================================================
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -239,14 +214,9 @@ def run_id() -> str:
 
 def to_float(value: Any, default: float = 0.0) -> float:
     try:
+        if value is None or value == "":
+            return default
         return float(value)
-    except Exception:
-        return default
-
-
-def to_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(float(value))
     except Exception:
         return default
 
@@ -265,14 +235,13 @@ def json_default(value: Any) -> Any:
     return str(value)
 
 
+def round_price(value: float) -> float:
+    return round(float(value), 2) if value >= 1 else round(float(value), 4)
+
+
 def write_event(event: str, payload: dict[str, Any] | None = None) -> None:
-    row = {
-        "timestamp_utc": now_utc().isoformat(),
-        "event": event,
-        "payload": payload or {},
-    }
     with EVENTS_JSONL.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row, default=json_default) + "\n")
+        f.write(json.dumps({"timestamp_utc": now_utc().isoformat(), "event": event, "payload": payload or {}}, default=json_default) + "\n")
 
 
 def save_df(df: pd.DataFrame, path: Path) -> None:
@@ -287,78 +256,36 @@ def save_json(obj: dict[str, Any], path: Path) -> None:
     print(f"[saved] {path}")
 
 
-# =============================================================================
-# Logging
-# =============================================================================
-
 class CsvJournal:
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-
         self.columns = [
-            "timestamp_utc",
-            "cycle_id",
-            "event",
-            "market_open",
-            "equity_before",
-            "equity_after",
-            "cash_before",
-            "cash_after",
-            "buying_power_before",
-            "buying_power_after",
-            "gross_exposure_before",
-            "gross_exposure_after",
-            "trade_symbol",
-            "trade_side",
-            "trade_qty",
-            "trade_price",
-            "estimated_notional",
-            "target_weight",
-            "current_weight",
-            "delta_weight",
-            "confidence",
-            "cash_buffer",
-            "max_gross_exposure",
-            "max_position_weight",
-            "max_order_notional",
-            "order_id",
-            "order_status",
-            "filled_qty",
-            "filled_avg_price",
-            "slippage_pct",
-            "message",
+            "timestamp_utc", "cycle_id", "event", "market_open", "equity_before", "equity_after",
+            "cash_before", "cash_after", "buying_power_before", "buying_power_after",
+            "gross_exposure_before", "gross_exposure_after", "symbol", "side", "qty",
+            "opening_high", "opening_low", "sweep_price", "entry_price", "stop_loss", "take_profit",
+            "risk_per_share", "reward_per_share", "risk_multiple", "retest_delta", "engulf_delta",
+            "signal_timestamp", "estimated_notional", "order_id", "order_status", "filled_qty",
+            "filled_avg_price", "message",
         ]
-
         if not self.path.exists():
             with self.path.open("w", newline="") as f:
                 csv.DictWriter(f, fieldnames=self.columns).writeheader()
 
     def append(self, row: dict[str, object]) -> None:
-        safe_row = {k: row.get(k, "") for k in self.columns}
         with self.path.open("a", newline="") as f:
-            csv.DictWriter(f, fieldnames=self.columns).writerow(safe_row)
+            csv.DictWriter(f, fieldnames=self.columns).writerow({k: row.get(k, "") for k in self.columns})
 
-
-# =============================================================================
-# Alpaca broker wrapper
-# =============================================================================
 
 class AlpacaBroker:
     def __init__(self, env_path: Path, paper: bool = True):
         load_dotenv(env_path)
-
-        self.api_key = os.getenv("APCA_API_KEY_ID")
-        self.secret_key = os.getenv("APCA_API_SECRET_KEY")
-
-        if not self.api_key or not self.secret_key:
+        api_key = os.getenv("APCA_API_KEY_ID")
+        secret_key = os.getenv("APCA_API_SECRET_KEY")
+        if not api_key or not secret_key:
             raise RuntimeError(f"Missing APCA_API_KEY_ID / APCA_API_SECRET_KEY in {env_path}")
-
-        self.trading = TradingClient(
-            api_key=self.api_key,
-            secret_key=self.secret_key,
-            paper=paper,
-        )
+        self.trading = TradingClient(api_key=api_key, secret_key=secret_key, paper=paper)
 
     def get_account_snapshot(self) -> AccountSnapshot:
         acct = self.trading.get_account()
@@ -370,38 +297,29 @@ class AlpacaBroker:
         )
 
     def get_all_open_positions(self) -> list[BrokerPosition]:
-        positions: list[BrokerPosition] = []
         try:
             raw_positions = self.trading.get_all_positions()
         except Exception as exc:
             print(f"[broker] failed to fetch positions: {exc}")
-            return positions
+            return []
 
+        positions: list[BrokerPosition] = []
         for pos in raw_positions:
             qty = to_float(getattr(pos, "qty", 0.0))
-            if qty <= 0:
+            if qty == 0:
                 continue
-
             positions.append(
                 BrokerPosition(
                     symbol=safe_symbol(getattr(pos, "symbol", "")),
                     qty=qty,
-                    market_value=to_float(getattr(pos, "market_value", 0.0)),
+                    market_value=abs(to_float(getattr(pos, "market_value", 0.0))),
                     avg_entry_price=to_float(getattr(pos, "avg_entry_price", 0.0)),
                     current_price=to_float(getattr(pos, "current_price", 0.0)),
                     unrealized_pl=to_float(getattr(pos, "unrealized_pl", 0.0)),
                     unrealized_plpc=to_float(getattr(pos, "unrealized_plpc", 0.0)),
                 )
             )
-
         return positions
-
-    def get_position(self, symbol: str) -> BrokerPosition:
-        symbol = safe_symbol(symbol)
-        for pos in self.get_all_open_positions():
-            if pos.symbol == symbol:
-                return pos
-        return BrokerPosition(symbol=symbol)
 
     def list_open_orders(self) -> list:
         try:
@@ -411,23 +329,16 @@ class AlpacaBroker:
 
     def has_open_order_for_symbol(self, symbol: str) -> bool:
         symbol = safe_symbol(symbol)
-
         open_statuses = {
-            OrderStatus.NEW,
-            OrderStatus.ACCEPTED,
-            OrderStatus.PENDING_NEW,
-            OrderStatus.PARTIALLY_FILLED,
-            OrderStatus.ACCEPTED_FOR_BIDDING,
-            OrderStatus.CALCULATED,
+            OrderStatus.NEW, OrderStatus.ACCEPTED, OrderStatus.PENDING_NEW,
+            OrderStatus.PARTIALLY_FILLED, OrderStatus.ACCEPTED_FOR_BIDDING, OrderStatus.CALCULATED,
         }
-
         for order in self.list_open_orders():
             try:
                 if safe_symbol(order.symbol) == symbol and order.status in open_statuses:
                     return True
             except Exception:
                 continue
-
         return False
 
     def cancel_open_orders(self) -> None:
@@ -442,390 +353,286 @@ class AlpacaBroker:
             "next_close": str(getattr(clock, "next_close", "")),
         }
 
-    def submit_market_order(self, symbol: str, side: str, qty: int, client_order_id: str, tif: TimeInForce):
+    def submit_market_bracket_order(
+        self,
+        symbol: str,
+        side: Literal["long", "short"],
+        qty: int,
+        client_order_id: str,
+        tif: TimeInForce,
+        take_profit_price: float,
+        stop_loss_price: float,
+    ):
+        alpaca_side = OrderSide.BUY if side == "long" else OrderSide.SELL
         order = MarketOrderRequest(
             symbol=safe_symbol(symbol),
             qty=int(qty),
-            side=OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL,
+            side=alpaca_side,
             type=OrderType.MARKET,
             time_in_force=tif,
             client_order_id=client_order_id,
+            order_class=OrderClass.BRACKET,
+            take_profit=TakeProfitRequest(limit_price=round_price(take_profit_price)),
+            stop_loss=StopLossRequest(stop_price=round_price(stop_loss_price)),
         )
         return self.trading.submit_order(order_data=order)
-
-    def submit_market_buy(self, symbol: str, qty: int, client_order_id: str, tif: TimeInForce):
-        return self.submit_market_order(symbol=symbol, side="buy", qty=qty, client_order_id=client_order_id, tif=tif)
-
-    def submit_market_sell(self, symbol: str, qty: int, client_order_id: str, tif: TimeInForce):
-        return self.submit_market_order(symbol=symbol, side="sell", qty=qty, client_order_id=client_order_id, tif=tif)
-
-    def wait_until_qty_at_or_below(self, symbol: str, target_qty: float, timeout_seconds: int = ORDER_WAIT_SECONDS) -> None:
-        started = time.time()
-        while time.time() - started < timeout_seconds:
-            if self.get_position(symbol).qty <= target_qty:
-                return
-            time.sleep(0.5)
-        raise TimeoutError(f"{symbol} position did not reach target qty <= {target_qty} within timeout")
-
-    def wait_for_position(self, symbol: str, timeout_seconds: int = ORDER_WAIT_SECONDS) -> BrokerPosition:
-        started = time.time()
-        while time.time() - started < timeout_seconds:
-            pos = self.get_position(symbol)
-            if pos.qty > 0:
-                return pos
-            time.sleep(0.5)
-        return BrokerPosition(symbol=symbol)
 
     def get_order_by_id(self, order_id: str):
         return self.trading.get_order_by_id(order_id)
 
 
-# =============================================================================
-# Continuous setup scanner
-# =============================================================================
-
-def _web_headers() -> dict[str, str]:
-    return {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        )
-    }
-
-
-def normalize_symbol(symbol: Any) -> str:
-    return safe_symbol(symbol)
-
-
-def get_sp500_fallback_symbols() -> list[str]:
-    try:
-        resp = requests.get(WIKI_SP500_URL, headers=_web_headers(), timeout=30)
-        resp.raise_for_status()
-        tables = pd.read_html(StringIO(resp.text))
-        if not tables or "Symbol" not in tables[0].columns:
-            raise RuntimeError("Could not parse S&P 500 symbols from Wikipedia.")
-        return sorted(set(normalize_symbol(x) for x in tables[0]["Symbol"].astype(str)))
-    except Exception as exc:
-        print(f"[scanner] S&P 500 fallback failed: {exc}; using DEFAULT_SCAN_UNIVERSE")
-        return list(DEFAULT_SCAN_UNIVERSE)
-
-
-def _rsi(close: pd.Series, window: int = 14) -> pd.Series:
-    delta = close.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1 / window, adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1 / window, adjust=False).mean()
-    rs = gain / loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
-
-
-def _atr(df: pd.DataFrame, window: int = 14) -> pd.Series:
-    prev_close = df["close"].shift(1)
-    tr = pd.concat(
-        [
-            df["high"] - df["low"],
-            (df["high"] - prev_close).abs(),
-            (df["low"] - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    return tr.ewm(alpha=1 / window, adjust=False).mean()
-
-
-class MomentumSetupScanner:
-    """Builds fresh rebalance/exit CSVs before the executor submits orders."""
-
-    def __init__(self, broker: AlpacaBroker, config: ScannerConfig, executor_config: ExecutorConfig):
-        self.broker = broker
+class ORBSweepEngulfSignalEngine:
+    def __init__(self, config: ExecutorConfig):
         self.config = config
-        self.executor_config = executor_config
+        self.tz = ZoneInfo(config.session_timezone)
 
-        if StockHistoricalDataClient is None:
-            raise RuntimeError("alpaca-py data classes are unavailable. Install alpaca-py or disable scanner.")
+    def _parse_opening_time(self) -> dtime:
+        hh, mm = [int(x) for x in self.config.opening_candle_time.split(":")]
+        return dtime(hh, mm)
 
-        self.data = StockHistoricalDataClient(broker.api_key, broker.secret_key)
-
-    def _load_state(self) -> dict[str, Any]:
-        if not SCANNER_STATE_PATH.exists():
-            return {"high_plpc": {}}
-        try:
-            return json.loads(SCANNER_STATE_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            return {"high_plpc": {}}
-
-    def _save_state(self, state: dict[str, Any]) -> None:
-        SCANNER_STATE_PATH.write_text(json.dumps(state, indent=2, default=json_default) + "\n", encoding="utf-8")
-
-    def _universe(self) -> list[str]:
-        if self.config.universe:
-            symbols = self.config.universe
-        elif self.config.use_sp500_fallback:
-            symbols = get_sp500_fallback_symbols()
-        else:
-            symbols = DEFAULT_SCAN_UNIVERSE
-
-        out: list[str] = []
-        for sym in symbols:
-            sym = normalize_symbol(sym)
-            if sym and sym not in out:
-                out.append(sym)
-        return out[: self.config.max_universe_symbols]
-
-    def _feed(self):
-        if DataFeed is None:
-            return None
-        return DataFeed.IEX if str(self.config.data_feed).lower() == "iex" else DataFeed.SIP
-
-    def _download_bars(self, symbols: list[str]) -> pd.DataFrame:
-        end = now_utc()
-        start = end - timedelta(days=max(30, self.config.lookback_days))
-        req = StockBarsRequest(
-            symbol_or_symbols=symbols,
-            timeframe=TimeFrame.Day,
-            start=start,
-            end=end,
-            feed=self._feed(),
-        )
-        bars = self.data.get_stock_bars(req).df
-        if bars is None or bars.empty:
+    def _read_footprint(self) -> pd.DataFrame:
+        path = self.config.footprint_file
+        if not path.exists():
+            print(f"[footprint] missing file: {path}")
+            return pd.DataFrame()
+        if path.stat().st_size == 0:
+            print(f"[footprint] empty file: {path}")
             return pd.DataFrame()
 
-        df = bars.reset_index()
-        rename = {"level_0": "symbol", "level_1": "timestamp"}
-        df = df.rename(columns=rename)
-        if "symbol" not in df.columns and "Symbol" in df.columns:
-            df = df.rename(columns={"Symbol": "symbol"})
-        if "timestamp" not in df.columns and "Timestamp" in df.columns:
-            df = df.rename(columns={"Timestamp": "timestamp"})
+        try:
+            df = pd.read_csv(path)
+        except pd.errors.EmptyDataError:
+            return pd.DataFrame()
 
-        df["symbol"] = df["symbol"].map(normalize_symbol)
+        if df.empty:
+            return pd.DataFrame()
+
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        rename_map: dict[str, str] = {}
+
+        for candidate in ["ticker", "symbol_name", "syminfo.ticker"]:
+            if candidate in df.columns and "symbol" not in df.columns:
+                rename_map[candidate] = "symbol"
+        for candidate in ["time", "datetime", "bar_time", "candle_time"]:
+            if candidate in df.columns and "timestamp" not in df.columns:
+                rename_map[candidate] = "timestamp"
+        for candidate in ["volume_delta", "footprint_delta", "cvd_delta", "net_delta", "bar_delta"]:
+            if candidate in df.columns and "delta" not in df.columns:
+                rename_map[candidate] = "delta"
+
+        df = df.rename(columns=rename_map)
+
+        required = {"symbol", "timestamp", "open", "high", "low", "close", "delta"}
+        missing = sorted(required - set(df.columns))
+        if missing:
+            print(f"[footprint] missing required columns={missing}; expected symbol,timestamp,open,high,low,close,delta")
+            return pd.DataFrame()
+
+        df["symbol"] = df["symbol"].map(safe_symbol)
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
-        return df.dropna(subset=["symbol", "timestamp", "close"]).sort_values(["symbol", "timestamp"])
+        for col in ["open", "high", "low", "close", "delta"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    def _build_features(self, bars: pd.DataFrame) -> pd.DataFrame:
-        rows: list[pd.DataFrame] = []
-        for symbol, g in bars.groupby("symbol", sort=False):
-            g = g.sort_values("timestamp").copy()
-            c = g["close"].astype(float)
-            v = g["volume"].astype(float)
+        df = df.dropna(subset=["symbol", "timestamp", "open", "high", "low", "close", "delta"])
+        df = df[(df["symbol"] != "") & (df["close"] > 0) & (df["high"] >= df["low"])]
 
-            g["ret_1d"] = c.pct_change(1, fill_method=None)
-            g["ret_3d"] = c.pct_change(3, fill_method=None)
-            g["ret_5d"] = c.pct_change(5, fill_method=None)
-            g["ret_10d"] = c.pct_change(10, fill_method=None)
-            g["sma5"] = c.rolling(5).mean()
-            g["sma20"] = c.rolling(20).mean()
-            g["sma50"] = c.rolling(50).mean()
-            g["sma200"] = c.rolling(200).mean()
-            g["rsi14"] = _rsi(c, 14)
-            g["atr14"] = _atr(g, 14)
-            g["atr_pct"] = g["atr14"] / c.replace(0, np.nan)
-            g["vol20"] = v.rolling(20).mean()
-            g["dollar_volume20"] = (c * v).rolling(20).mean()
-            g["rel_volume"] = v / g["vol20"].replace(0, np.nan)
-            mid = g["sma20"]
-            sd = c.rolling(20).std()
-            g["bb_low"] = mid - 2 * sd
-            g["bb_high"] = mid + 2 * sd
-            g["bb_pos"] = (c - g["bb_low"]) / (g["bb_high"] - g["bb_low"]).replace(0, np.nan)
-            g["high20"] = c.rolling(20).max()
-            g["drawdown_20h"] = c / g["high20"].replace(0, np.nan) - 1.0
-            g["trend_stack"] = ((g["sma5"] > g["sma20"]) & (g["sma50"] > g["sma200"])).astype(float)
-            g["above_sma20"] = (c > g["sma20"]).astype(float)
-            g["above_prev_high"] = (c > g["high"].shift(1)).astype(float)
-            g["lower_band_reclaim"] = ((c.shift(1) < g["bb_low"].shift(1)) & (c > g["bb_low"]) & (g["ret_1d"] > 0)).astype(float)
-            rows.append(g)
-        return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+        universe = {safe_symbol(x) for x in (self.config.universe or DEFAULT_UNIVERSE)}
+        if universe:
+            df = df[df["symbol"].isin(universe)].copy()
 
-    def _score_latest(self, features: pd.DataFrame) -> pd.DataFrame:
-        latest = features.sort_values("timestamp").groupby("symbol", as_index=False).tail(1).copy()
-        if latest.empty:
-            return latest
+        if df.empty:
+            return df
 
-        latest = latest[
-            (latest["close"] >= self.config.min_price)
-            & (latest["close"] <= self.config.max_price)
-            & (latest["dollar_volume20"] >= self.config.min_avg_dollar_volume)
-        ].copy()
-        if latest.empty:
-            return latest
+        df["timestamp_et"] = df["timestamp"].dt.tz_convert(self.config.session_timezone)
+        df["trade_date"] = df["timestamp_et"].dt.date.astype(str)
+        return df.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
 
-        def clip01(s: pd.Series, lo: float, hi: float) -> pd.Series:
-            return ((s - lo) / max(hi - lo, 1e-9)).clip(0, 1)
+    def _signal_key(self, signal: ORBSweepEngulfSignal) -> str:
+        return f"{signal.symbol}|{signal.side}|{signal.engulf_timestamp}"
 
-        momentum = (
-            0.20 * clip01(latest["ret_5d"], -0.02, 0.10)
-            + 0.15 * clip01(latest["ret_10d"], -0.03, 0.18)
-            + 0.15 * latest["trend_stack"].fillna(0)
-            + 0.12 * latest["above_sma20"].fillna(0)
-            + 0.10 * latest["above_prev_high"].fillna(0)
-            + 0.10 * clip01(latest["rel_volume"], 0.8, 2.5)
-            + 0.10 * clip01(latest["atr_pct"], 0.015, 0.09)
-            + 0.08 * clip01(latest["bb_pos"], 0.45, 0.95)
-        )
+    def load_signal_state(self) -> dict[str, Any]:
+        if not SIGNAL_STATE_PATH.exists():
+            return {"processed_signal_keys": []}
+        try:
+            return json.loads(SIGNAL_STATE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {"processed_signal_keys": []}
 
-        reversal = (
-            0.22 * (1 - clip01(latest["rsi14"], 30, 55))
-            + 0.20 * latest["lower_band_reclaim"].fillna(0)
-            + 0.16 * clip01(latest["ret_1d"], -0.01, 0.05)
-            + 0.14 * clip01(latest["rel_volume"], 0.8, 2.8)
-            + 0.14 * (1 - clip01(latest["bb_pos"], 0.15, 0.55))
-            + 0.14 * (1 - clip01(latest["drawdown_20h"], -0.18, -0.03))
-        )
+    def save_signal_state(self, state: dict[str, Any]) -> None:
+        SIGNAL_STATE_PATH.write_text(json.dumps(state, indent=2, default=json_default) + "\n", encoding="utf-8")
 
-        latest["momentum_score"] = momentum.clip(0, 1)
-        latest["reversal_score"] = reversal.clip(0, 1)
-        latest["setup_type"] = np.where(latest["momentum_score"] >= latest["reversal_score"], "momentum", "reversal")
-        latest["setup_score"] = latest[["momentum_score", "reversal_score"]].max(axis=1)
-        latest["trade_confidence"] = latest["setup_score"].clip(0, 1)
-        latest = latest.sort_values(["setup_score", "dollar_volume20"], ascending=[False, False])
-        return latest.reset_index(drop=True)
-
-    def _update_high_water_and_exits(self, scores: pd.DataFrame, equity: float) -> pd.DataFrame:
-        state = self._load_state()
-        high_plpc: dict[str, float] = {k: to_float(v) for k, v in state.get("high_plpc", {}).items()}
-        score_by_symbol = dict(zip(scores.get("symbol", []), scores.get("setup_score", [])))
-        top_symbols = set(scores.head(self.config.top_n).get("symbol", []))
-
-        rows: list[dict[str, Any]] = []
-        for pos in self.broker.get_all_open_positions():
-            symbol = normalize_symbol(pos.symbol)
-            if pos.qty <= 0:
-                continue
-
-            old_high = high_plpc.get(symbol, pos.unrealized_plpc)
-            new_high = max(old_high, pos.unrealized_plpc)
-            high_plpc[symbol] = new_high
-
-            reason = ""
-            if pos.unrealized_plpc <= self.config.stop_loss_pct:
-                reason = "scanner_stop_loss_negative_position"
-            elif new_high >= self.config.profit_lock_trigger_pct and pos.unrealized_plpc <= new_high - self.config.profit_giveback_pct:
-                reason = "scanner_profit_lock_giveback_exit"
-            elif symbol not in top_symbols and to_float(score_by_symbol.get(symbol), 0.0) < self.config.stale_position_score_exit:
-                reason = "scanner_stale_position_no_longer_high_conviction"
-
-            if reason:
-                rows.append(
-                    {
-                        "symbol": symbol,
-                        "side": "sell",
-                        "delta_shares": int(pos.qty),
-                        "delta_dollars": float(pos.market_value),
-                        "price": float(pos.current_price),
-                        "reason": reason,
-                        "target_weight": 0.0,
-                        "current_weight": float(pos.market_value) / max(equity, 1e-9),
-                        "delta_weight": -float(pos.market_value) / max(equity, 1e-9),
-                        "trade_confidence": 1.0,
-                    }
-                )
-                high_plpc.pop(symbol, None)
-
-        state["high_plpc"] = high_plpc
+    def mark_processed(self, signal: ORBSweepEngulfSignal) -> None:
+        state = self.load_signal_state()
+        keys = list(state.get("processed_signal_keys", []))
+        key = self._signal_key(signal)
+        if key not in keys:
+            keys.append(key)
+        state["processed_signal_keys"] = keys[-2000:]
         state["updated_at"] = now_utc().isoformat()
-        self._save_state(state)
-        return pd.DataFrame(rows)
+        self.save_signal_state(state)
 
-    def build_orders(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        symbols = self._universe()
-        print(f"[scanner] scanning universe symbols={len(symbols)}")
-        bars = self._download_bars(symbols)
-        if bars.empty:
-            print("[scanner] no bars downloaded; keeping existing order files")
-            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    def _opening_candle(self, g: pd.DataFrame) -> pd.Series | None:
+        opening_time = self._parse_opening_time()
+        opening_dt = pd.Timestamp.combine(pd.Timestamp(g["timestamp_et"].iloc[-1]).date(), opening_time).tz_localize(self.config.session_timezone)
+        latest_allowed = opening_dt + pd.Timedelta(minutes=self.config.max_opening_candle_minutes_late)
+        candidates = g[(g["timestamp_et"] >= opening_dt) & (g["timestamp_et"] < latest_allowed)]
+        if candidates.empty:
+            return None
+        return candidates.iloc[0]
 
-        features = self._build_features(bars)
-        scores = self._score_latest(features)
-        if scores.empty:
-            print("[scanner] no symbols passed scanner liquidity/price filters")
-            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    def _make_long_signal(self, symbol: str, trade_date: str, opening: pd.Series, session: pd.DataFrame) -> ORBSweepEngulfSignal | None:
+        if len(session) < 4:
+            return None
 
-        OUT_DIR.mkdir(parents=True, exist_ok=True)
-        scores.to_csv(SCANNER_SCORES_PATH, index=False)
-        print("[scanner] top setups:")
-        show_cols = ["symbol", "close", "setup_type", "setup_score", "momentum_score", "reversal_score", "rsi14", "ret_5d", "rel_volume"]
-        print(scores[[c for c in show_cols if c in scores.columns]].head(self.config.top_n).to_string(index=False))
+        retest = session.iloc[-2]
+        engulf = session.iloc[-1]
+        prior = session.iloc[:-1]
+        opening_low = float(opening["low"])
+        opening_high = float(opening["high"])
+        tolerance = opening_low * self.config.retest_tolerance_pct
 
-        acct = self.broker.get_account_snapshot()
-        equity = max(float(acct.equity), 1.0)
-        positions = {normalize_symbol(p.symbol): p for p in self.broker.get_all_open_positions()}
+        swept = prior[prior["low"] < opening_low]
+        if swept.empty:
+            return None
 
-        candidates = scores[
-            (scores["setup_score"] >= self.config.min_setup_score)
-            & (scores["trade_confidence"] >= self.config.min_buy_confidence)
-        ].head(self.config.top_n).copy()
+        sweep_idx = swept["low"].idxmin()
+        sweep_price = float(swept.loc[sweep_idx, "low"])
+        after_sweep = session.loc[sweep_idx:]
+        if after_sweep[after_sweep["close"] > opening_low].empty:
+            return None
 
-        rows: list[dict[str, Any]] = []
-        for _, r in candidates.iterrows():
-            symbol = normalize_symbol(r["symbol"])
-            price = to_float(r["close"])
-            if price <= 0:
+        retest_near_swept_low = float(retest["low"]) <= opening_low + tolerance
+        retest_accepted_inside = float(retest["close"]) >= opening_low
+        bullish_engulf = float(engulf["close"]) > float(retest["high"]) and float(engulf["close"]) > float(engulf["open"])
+
+        if not (retest_near_swept_low and retest_accepted_inside and bullish_engulf):
+            return None
+
+        if self.config.require_delta_flip and not (float(retest["delta"]) < 0 and float(engulf["delta"]) > 0):
+            return None
+
+        entry = float(engulf["close"])
+        stop = sweep_price
+        risk = entry - stop
+        if risk <= 0:
+            return None
+
+        tp = entry + self.config.take_profit_r_multiple * risk
+
+        return ORBSweepEngulfSignal(
+            symbol=symbol, side="long", trade_date=trade_date,
+            timestamp=pd.Timestamp(engulf["timestamp"]).isoformat(),
+            opening_timestamp=pd.Timestamp(opening["timestamp"]).isoformat(),
+            opening_high=round_price(opening_high), opening_low=round_price(opening_low),
+            sweep_price=round_price(sweep_price),
+            retest_timestamp=pd.Timestamp(retest["timestamp"]).isoformat(),
+            engulf_timestamp=pd.Timestamp(engulf["timestamp"]).isoformat(),
+            retest_delta=float(retest["delta"]), engulf_delta=float(engulf["delta"]),
+            entry_price=round_price(entry), stop_loss=round_price(stop), take_profit=round_price(tp),
+            risk_per_share=round_price(risk), reward_per_share=round_price(tp - entry),
+            retest_open=round_price(retest["open"]), retest_high=round_price(retest["high"]),
+            retest_low=round_price(retest["low"]), retest_close=round_price(retest["close"]),
+            engulf_open=round_price(engulf["open"]), engulf_high=round_price(engulf["high"]),
+            engulf_low=round_price(engulf["low"]), engulf_close=round_price(engulf["close"]),
+        )
+
+    def _make_short_signal(self, symbol: str, trade_date: str, opening: pd.Series, session: pd.DataFrame) -> ORBSweepEngulfSignal | None:
+        if not self.config.allow_shorts or len(session) < 4:
+            return None
+
+        retest = session.iloc[-2]
+        engulf = session.iloc[-1]
+        prior = session.iloc[:-1]
+        opening_low = float(opening["low"])
+        opening_high = float(opening["high"])
+        tolerance = opening_high * self.config.retest_tolerance_pct
+
+        swept = prior[prior["high"] > opening_high]
+        if swept.empty:
+            return None
+
+        sweep_idx = swept["high"].idxmax()
+        sweep_price = float(swept.loc[sweep_idx, "high"])
+        after_sweep = session.loc[sweep_idx:]
+        if after_sweep[after_sweep["close"] < opening_high].empty:
+            return None
+
+        retest_near_swept_high = float(retest["high"]) >= opening_high - tolerance
+        retest_accepted_inside = float(retest["close"]) <= opening_high
+        bearish_engulf = float(engulf["close"]) < float(retest["low"]) and float(engulf["close"]) < float(engulf["open"])
+
+        if not (retest_near_swept_high and retest_accepted_inside and bearish_engulf):
+            return None
+
+        if self.config.require_delta_flip and not (float(retest["delta"]) > 0 and float(engulf["delta"]) < 0):
+            return None
+
+        entry = float(engulf["close"])
+        stop = sweep_price
+        risk = stop - entry
+        if risk <= 0:
+            return None
+
+        tp = entry - self.config.take_profit_r_multiple * risk
+
+        return ORBSweepEngulfSignal(
+            symbol=symbol, side="short", trade_date=trade_date,
+            timestamp=pd.Timestamp(engulf["timestamp"]).isoformat(),
+            opening_timestamp=pd.Timestamp(opening["timestamp"]).isoformat(),
+            opening_high=round_price(opening_high), opening_low=round_price(opening_low),
+            sweep_price=round_price(sweep_price),
+            retest_timestamp=pd.Timestamp(retest["timestamp"]).isoformat(),
+            engulf_timestamp=pd.Timestamp(engulf["timestamp"]).isoformat(),
+            retest_delta=float(retest["delta"]), engulf_delta=float(engulf["delta"]),
+            entry_price=round_price(entry), stop_loss=round_price(stop), take_profit=round_price(tp),
+            risk_per_share=round_price(risk), reward_per_share=round_price(entry - tp),
+            retest_open=round_price(retest["open"]), retest_high=round_price(retest["high"]),
+            retest_low=round_price(retest["low"]), retest_close=round_price(retest["close"]),
+            engulf_open=round_price(engulf["open"]), engulf_high=round_price(engulf["high"]),
+            engulf_low=round_price(engulf["low"]), engulf_close=round_price(engulf["close"]),
+        )
+
+    def find_new_signals(self) -> list[ORBSweepEngulfSignal]:
+        df = self._read_footprint()
+        if df.empty:
+            return []
+
+        state = self.load_signal_state()
+        processed = set(state.get("processed_signal_keys", []))
+        signals: list[ORBSweepEngulfSignal] = []
+
+        for (symbol, trade_date), g in df.groupby(["symbol", "trade_date"], sort=False):
+            g = g.sort_values("timestamp").reset_index(drop=True)
+            if trade_date != df["trade_date"].max():
                 continue
 
-            current_mv = positions.get(symbol).market_value if symbol in positions else 0.0
-            current_weight = float(current_mv) / equity
-            type_mult = self.config.reversal_target_weight_mult if r["setup_type"] == "reversal" else 1.0
-            target_weight = min(
-                self.config.max_target_weight,
-                self.config.base_target_weight * (0.50 + 1.50 * float(r["setup_score"])) * type_mult,
-                self.executor_config.max_position_weight,
-            )
-            delta_weight = target_weight - current_weight
-            delta_dollars = delta_weight * equity
-            if delta_dollars < self.executor_config.min_notional_to_trade:
+            opening = self._opening_candle(g)
+            if opening is None:
                 continue
 
-            rows.append(
-                {
-                    "symbol": symbol,
-                    "side": "buy",
-                    "delta_shares": int(delta_dollars // price),
-                    "delta_dollars": float(delta_dollars),
-                    "price": price,
-                    "reason": f"scanner_{r['setup_type']}_high_conviction_large_gain_candidate",
-                    "target_weight": target_weight,
-                    "current_weight": current_weight,
-                    "delta_weight": delta_weight,
-                    "trade_confidence": float(r["trade_confidence"]),
-                    "confidence_score": float(r["setup_score"]),
-                    "momentum_score": float(r["momentum_score"]),
-                    "reversal_score": float(r["reversal_score"]),
-                    "rsi14": to_float(r.get("rsi14")),
-                    "ret_5d": to_float(r.get("ret_5d")),
-                    "rel_volume": to_float(r.get("rel_volume")),
-                }
-            )
+            session = g[g["timestamp"] > opening["timestamp"]].copy()
+            if session.empty:
+                continue
 
-        rebalance = pd.DataFrame(rows)
-        exits = self._update_high_water_and_exits(scores, equity)
+            long_signal = self._make_long_signal(symbol, trade_date, opening, session)
+            short_signal = self._make_short_signal(symbol, trade_date, opening, session)
 
-        rebalance.to_csv(DEFAULT_REBALANCE_ORDERS, index=False)
-        exits.to_csv(DEFAULT_EXIT_ORDERS, index=False)
-        print(f"[scanner] wrote rebalance_orders={DEFAULT_REBALANCE_ORDERS} rows={len(rebalance)}")
-        print(f"[scanner] wrote exit_orders={DEFAULT_EXIT_ORDERS} rows={len(exits)}")
-        return rebalance, exits, scores
+            for signal in [long_signal, short_signal]:
+                if signal is not None and self._signal_key(signal) not in processed:
+                    signals.append(signal)
 
-# =============================================================================
-# Executor
-# =============================================================================
+        return signals
 
-class ProductionOrderExecutor:
+
+class ORBSweepEngulfExecutor:
     def __init__(self, config: ExecutorConfig):
         self.config = config
         self.journal = CsvJournal(JOURNAL_PATH)
         self.broker = AlpacaBroker(ENV_PATH, paper=config.paper)
-        if self.config.scanner is None:
-            self.config.scanner = ScannerConfig()
-        self.scanner = MomentumSetupScanner(self.broker, self.config.scanner, self.config) if self.config.scanner.enabled else None
-
-        self.last_order_time: float = 0.0
-        self.last_heartbeat_time: float = 0.0
+        self.signal_engine = ORBSweepEngulfSignalEngine(config)
+        self.last_order_time = 0.0
+        self.last_heartbeat_time = 0.0
         self.account_history: list[dict[str, float | str]] = []
-
-    # -------------------------------------------------------------------------
-    # State helpers
-    # -------------------------------------------------------------------------
 
     def _in_cooldown(self) -> bool:
         return (time.time() - self.last_order_time) < self.config.cooldown_seconds
@@ -836,13 +643,9 @@ class ProductionOrderExecutor:
     def _record_account_snapshot(self, label: str, cycle_id: str) -> dict[str, float | str]:
         acct = self.broker.get_account_snapshot()
         snapshot = {
-            "label": label,
-            "cycle_id": cycle_id,
-            "timestamp_utc": now_utc().isoformat(),
-            "buying_power": float(acct.buying_power),
-            "equity": float(acct.equity),
-            "cash": float(acct.cash),
-            "portfolio_value": float(acct.portfolio_value),
+            "label": label, "cycle_id": cycle_id, "timestamp_utc": now_utc().isoformat(),
+            "buying_power": float(acct.buying_power), "equity": float(acct.equity),
+            "cash": float(acct.cash), "portfolio_value": float(acct.portfolio_value),
         }
         self.account_history.append(snapshot)
         return snapshot
@@ -857,31 +660,13 @@ class ProductionOrderExecutor:
     def _gross_exposure(self, equity: float) -> float:
         if equity <= 0:
             return 0.0
-        return float(
-            sum(max(0.0, float(p.market_value)) for p in self.broker.get_all_open_positions())
-            / equity
-        )
-
-    def _current_weight(self, symbol: str, equity: float) -> float:
-        if equity <= 0:
-            return 0.0
-        pos = self._positions_by_symbol().get(safe_symbol(symbol))
-        if pos is None:
-            return 0.0
-        return float(pos.market_value) / equity
+        return sum(abs(float(p.market_value)) for p in self.broker.get_all_open_positions()) / equity
 
     def _cash_buffer(self, equity: float) -> float:
         return max(self.config.min_cash_buffer, equity * self.config.cash_buffer_pct)
 
     def _max_order_notional(self, equity: float) -> float:
-        return min(
-            self.config.max_order_dollars,
-            equity * self.config.max_single_order_notional_pct,
-        )
-
-    # -------------------------------------------------------------------------
-    # Market clock / kill switch
-    # -------------------------------------------------------------------------
+        return min(self.config.max_order_dollars, equity * self.config.max_single_order_notional_pct)
 
     def _market_is_open_or_wait(self) -> bool:
         if self.config.allow_closed_market or not self.config.require_market_open:
@@ -889,25 +674,17 @@ class ProductionOrderExecutor:
             return True
 
         info = self.broker.get_clock_info()
-        print(
-            "[clock] "
-            f"is_open={info['is_open']} "
-            f"timestamp={info['timestamp']} "
-            f"next_open={info['next_open']} "
-            f"next_close={info['next_close']}"
-        )
+        print(f"[clock] is_open={info['is_open']} timestamp={info['timestamp']} next_open={info['next_open']} next_close={info['next_close']}")
         write_event("market_clock_checked", info)
 
         if info["is_open"]:
             return True
-
         if not self.config.wait_for_market_open:
             print("[clock] market is closed. Execution skipped.")
             return False
 
         started = time.time()
         max_wait = self.config.max_wait_for_open_minutes * 60
-
         while time.time() - started < max_wait:
             time.sleep(max(5, self.config.poll_seconds))
             info = self.broker.get_clock_info()
@@ -915,7 +692,6 @@ class ProductionOrderExecutor:
             write_event("market_clock_wait_poll", info)
             if info["is_open"]:
                 return True
-
         print("[clock] market did not open within wait limit. Execution skipped.")
         return False
 
@@ -936,741 +712,311 @@ class ProductionOrderExecutor:
 
         today = now_utc().date().isoformat()
         state = self._read_kill_state()
-
         if state.get("date") != today:
-            state = {
-                "date": today,
-                "start_equity": equity,
-                "kill_triggered": False,
-                "triggered_at": "",
-                "reason": "",
-            }
+            state = {"date": today, "start_equity": equity, "kill_triggered": False, "triggered_at": "", "reason": ""}
             self._write_kill_state(state)
 
         start_equity = to_float(state.get("start_equity"), equity)
         pnl = equity - start_equity
         dd_pct = pnl / max(start_equity, 1e-9)
-
-        reason = "ok"
         blocked = False
+        reason = "ok"
 
         if state.get("kill_triggered"):
             blocked = True
             reason = str(state.get("reason", "kill_switch_already_triggered"))
-
         if equity <= self.config.kill_switch_equity_floor:
             blocked = True
             reason = "kill_switch_equity_floor"
-
         if dd_pct <= self.config.daily_drawdown_limit:
             blocked = True
             reason = "daily_drawdown_limit"
-
         if pnl <= -abs(self.config.max_daily_loss_dollars):
             blocked = True
             reason = "max_daily_loss_dollars"
-
         if (-dd_pct) >= abs(self.config.max_daily_loss_pct):
             blocked = True
             reason = "max_daily_loss_pct"
 
-        print(
-            f"[kill-switch] start_equity=${start_equity:,.2f} equity=${equity:,.2f} "
-            f"daily_pnl=${pnl:,.2f} daily_return={dd_pct:.2%} status={reason}"
-        )
+        print(f"[kill-switch] start=${start_equity:,.2f} equity=${equity:,.2f} pnl=${pnl:,.2f} return={dd_pct:.2%} status={reason}")
 
         if blocked:
-            state.update(
-                {
-                    "kill_triggered": True,
-                    "triggered_at": now_utc().isoformat(),
-                    "reason": reason,
-                    "current_equity": equity,
-                    "daily_pnl": pnl,
-                    "daily_return": dd_pct,
-                }
-            )
+            state.update({"kill_triggered": True, "triggered_at": now_utc().isoformat(), "reason": reason, "current_equity": equity, "daily_pnl": pnl, "daily_return": dd_pct})
             self._write_kill_state(state)
             write_event("kill_switch_triggered", state)
             return False, reason, dd_pct
 
         return True, reason, dd_pct
 
-    # -------------------------------------------------------------------------
-    # Order loading / normalization
-    # -------------------------------------------------------------------------
+    def _position_weight(self, symbol: str, equity: float) -> float:
+        pos = self._positions_by_symbol().get(safe_symbol(symbol))
+        if not pos or equity <= 0:
+            return 0.0
+        return abs(float(pos.market_value)) / equity
 
-    def _safe_read_order_csv(self, path: Path, required: bool = False) -> pd.DataFrame:
-        # Read an order CSV safely.
-        # Empty CSVs are common when there are no exit orders. Pandas raises
-        # EmptyDataError on a zero-byte file, so return an empty DataFrame instead.
-        if not path.exists():
-            if required:
-                raise RuntimeError(f"Required order file not found: {path}. Run trade.py first.")
-            return pd.DataFrame()
+    def _size_signal(self, signal: ORBSweepEngulfSignal, acct: dict[str, float | str]) -> tuple[int, float, str]:
+        equity = float(acct["equity"])
+        cash = float(acct["cash"])
+        buying_power = float(acct["buying_power"])
+        gross = self._gross_exposure(equity)
 
-        try:
-            if path.stat().st_size == 0:
-                return pd.DataFrame()
-        except Exception:
-            pass
+        if buying_power < self.config.min_buying_power:
+            return 0, 0.0, "buying_power_below_minimum"
+        if signal.risk_per_share <= 0:
+            return 0, 0.0, "invalid_risk_per_share"
 
-        try:
-            return pd.read_csv(path)
-        except pd.errors.EmptyDataError:
-            return pd.DataFrame()
+        existing_weight = self._position_weight(signal.symbol, equity)
+        if existing_weight >= self.config.max_position_weight:
+            return 0, 0.0, "position_weight_already_at_or_above_max"
 
-    def _load_orders(self) -> tuple[pd.DataFrame, pd.DataFrame]:
-        rebalance = self._safe_read_order_csv(
-            self.config.rebalance_orders_path,
-            required=True,
-        )
-
-        exits = self._safe_read_order_csv(
-            self.config.exit_orders_path,
-            required=False,
-        )
-
-        return rebalance, exits
-
-    def _normalize_order_frame(self, orders: pd.DataFrame | None, default_reason: str = "") -> pd.DataFrame:
-        cols = [
-            "symbol",
-            "side",
-            "delta_shares",
-            "delta_dollars",
-            "price",
-            "reason",
-            "target_weight",
-            "current_weight",
-            "delta_weight",
-            "trade_confidence",
-            "confidence",
-            "confidence_score",
-            "continuation_prob",
-            "continuation_probability",
-            "explosive_alpha_probability",
-        ]
-
-        if orders is None or orders.empty:
-            return pd.DataFrame(columns=cols)
-
-        out = orders.copy()
-
-        defaults = {
-            "symbol": "",
-            "side": "",
-            "delta_shares": 0.0,
-            "delta_dollars": 0.0,
-            "price": 0.0,
-            "reason": default_reason,
-            "target_weight": np.nan,
-            "current_weight": np.nan,
-            "delta_weight": np.nan,
-            "trade_confidence": np.nan,
-            "confidence": np.nan,
-            "confidence_score": np.nan,
-            "continuation_prob": np.nan,
-            "continuation_probability": np.nan,
-            "explosive_alpha_probability": np.nan,
-        }
-
-        for col, default in defaults.items():
-            if col not in out.columns:
-                out[col] = default
-
-        out["symbol"] = out["symbol"].map(safe_symbol)
-        out["side"] = out["side"].astype(str).str.lower().str.strip()
-
-        numeric_cols = [
-            "delta_shares",
-            "delta_dollars",
-            "price",
-            "target_weight",
-            "current_weight",
-            "delta_weight",
-            "trade_confidence",
-            "confidence",
-            "confidence_score",
-            "continuation_prob",
-            "continuation_probability",
-            "explosive_alpha_probability",
-        ]
-
-        for col in numeric_cols:
-            out[col] = pd.to_numeric(out[col], errors="coerce")
-
-        out["reason"] = out["reason"].fillna(default_reason).astype(str)
-        out = out[(out["symbol"] != "") & out["side"].isin(["buy", "sell"])].copy()
-
-        return out.reset_index(drop=True)
-
-    def _confidence_for_row(self, row: pd.Series) -> float:
-        for col in [
-            "trade_confidence",
-            "confidence",
-            "confidence_score",
-            "continuation_prob",
-            "continuation_probability",
-            "explosive_alpha_probability",
-        ]:
-            value = row.get(col, np.nan)
-            if pd.notna(value):
-                val = to_float(value, 0.5)
-                if val > 1:
-                    val /= 100.0
-                return float(np.clip(val, 0.0, 1.0))
-        return 0.5
-
-    def _confidence_multiplier(self, confidence: float) -> float:
-        return float(np.clip(0.50 + confidence, 0.35, 1.25))
-
-    def _build_order_plan(self, rebalance: pd.DataFrame, exits: pd.DataFrame, equity: float) -> pd.DataFrame:
-        rb = self._normalize_order_frame(rebalance)
-        ex = self._normalize_order_frame(exits, default_reason="removed_from_high_conviction_universe")
-
-        plan = pd.concat([ex, rb], ignore_index=True)
-
-        if plan.empty:
-            return pd.DataFrame()
-
-        plan["abs_delta_shares"] = plan["delta_shares"].abs()
-        plan["abs_delta_dollars"] = plan["delta_dollars"].abs()
-
-        plan = plan[
-            (plan["side"] == "sell")
-            | (plan["abs_delta_dollars"] >= self.config.min_notional_to_trade)
-        ].copy()
-
-        if plan.empty:
-            return pd.DataFrame()
-
-        plan["confidence_used"] = plan.apply(self._confidence_for_row, axis=1)
-        plan["confidence_multiplier"] = plan["confidence_used"].map(self._confidence_multiplier)
-
-        buy_mask = plan["side"] == "buy"
-        plan.loc[buy_mask, "abs_delta_dollars"] *= plan.loc[buy_mask, "confidence_multiplier"]
-
-        plan["order_qty"] = plan["abs_delta_shares"].fillna(0).astype(int)
-
-        missing_qty = (plan["order_qty"] <= 0) & (plan["price"] > 0)
-        plan.loc[missing_qty, "order_qty"] = (
-            plan.loc[missing_qty, "abs_delta_dollars"] / plan.loc[missing_qty, "price"]
-        ).fillna(0).astype(int)
-
+        risk_budget = equity * self.config.risk_per_trade_pct
+        risk_qty = int(risk_budget // signal.risk_per_share)
         max_order_notional = self._max_order_notional(equity)
+        max_position_room = max(0.0, (self.config.max_position_weight - existing_weight) * equity)
+        gross_room = max(0.0, (self.config.max_gross_exposure - gross) * equity)
+        cash_room = max(0.0, cash - self._cash_buffer(equity))
+        notional_cap = min(max_order_notional, max_position_room, gross_room, cash_room, buying_power)
+        notional_qty = int(notional_cap // signal.entry_price)
 
-        plan.loc[buy_mask, "capped_dollars"] = plan.loc[buy_mask, "abs_delta_dollars"].clip(
-            upper=max_order_notional
-        )
-        plan.loc[~buy_mask, "capped_dollars"] = plan.loc[~buy_mask, "abs_delta_dollars"]
+        qty = min(risk_qty, notional_qty, self.config.max_single_order_qty)
+        est_notional = qty * signal.entry_price
 
-        plan.loc[buy_mask & (plan["price"] > 0), "order_qty"] = (
-            plan.loc[buy_mask & (plan["price"] > 0), "capped_dollars"]
-            / plan.loc[buy_mask & (plan["price"] > 0), "price"]
-        ).fillna(0).astype(int)
+        if qty <= 0:
+            return 0, 0.0, "sized_to_zero_after_risk_caps"
+        if est_notional < self.config.min_notional_to_trade:
+            return 0, est_notional, "below_min_notional_to_trade"
+        return int(qty), float(est_notional), "ok"
 
-        plan = plan[plan["order_qty"] > 0].copy()
-        plan = plan[plan["order_qty"] <= self.config.max_single_order_qty].copy()
-
-        if plan.empty:
-            return pd.DataFrame()
-
-        sell_first = getattr(self.config, "sell_first", True)
-        side_rank = {"sell": 0, "buy": 1} if sell_first else {"buy": 0, "sell": 1}
-        plan["side_rank"] = plan["side"].map(side_rank).fillna(9)
-        plan = plan.sort_values(["side_rank", "abs_delta_dollars"], ascending=[True, False]).reset_index(drop=True)
-
-        stamp = run_id()
-        plan["client_order_id"] = [
-            f"{self.config.order_tag_prefix}_{stamp}_{idx}_{row.symbol}_{row.side}"[:48]
-            for idx, row in plan.iterrows()
-        ]
-        plan["planned_at"] = now_utc().isoformat()
-
-        return plan
-
-    # -------------------------------------------------------------------------
-    # Submission / fills
-    # -------------------------------------------------------------------------
-
-    def _poll_fill(self, order_id: str, planned_price: float) -> dict[str, Any]:
+    def _poll_fill(self, order_id: str) -> dict[str, Any]:
         last_order = None
-
-        for _ in range(6):
+        for _ in range(max(1, int(self.config.order_wait_seconds // 2))):
             try:
                 last_order = self.broker.get_order_by_id(order_id)
             except Exception as exc:
-                return {
-                    "fill_status": "fill_lookup_error",
-                    "filled_qty": 0.0,
-                    "filled_avg_price": 0.0,
-                    "slippage_pct": 0.0,
-                    "message": str(exc),
-                }
-
+                return {"fill_status": "fill_lookup_error", "filled_qty": 0.0, "filled_avg_price": 0.0, "message": str(exc)}
             status = str(getattr(last_order, "status", ""))
             if status.lower() in {"filled", "partially_filled", "canceled", "rejected", "expired"}:
                 break
-
             time.sleep(2.0)
 
         if last_order is None:
-            return {
-                "fill_status": "unknown",
-                "filled_qty": 0.0,
-                "filled_avg_price": 0.0,
-                "slippage_pct": 0.0,
-            }
-
-        filled_qty = to_float(getattr(last_order, "filled_qty", 0.0))
-        filled_avg_price = to_float(getattr(last_order, "filled_avg_price", 0.0))
-        status = str(getattr(last_order, "status", ""))
-
-        if planned_price > 0 and filled_avg_price > 0:
-            slippage_pct = filled_avg_price / planned_price - 1.0
-        else:
-            slippage_pct = 0.0
+            return {"fill_status": "unknown", "filled_qty": 0.0, "filled_avg_price": 0.0}
 
         return {
-            "fill_status": status,
-            "filled_qty": filled_qty,
-            "filled_avg_price": filled_avg_price,
-            "slippage_pct": slippage_pct,
+            "fill_status": str(getattr(last_order, "status", "")),
+            "filled_qty": to_float(getattr(last_order, "filled_qty", 0.0)),
+            "filled_avg_price": to_float(getattr(last_order, "filled_avg_price", 0.0)),
         }
 
-    def _journal_order(
+    def _journal_signal(
         self,
         cycle_id: str,
         event: str,
-        order_row: pd.Series | dict[str, Any],
+        signal: ORBSweepEngulfSignal,
+        qty: int,
+        est_notional: float,
         acct_before: dict[str, float | str],
         acct_after: dict[str, float | str],
         message: str,
         order_id: str = "",
         order_status: str = "",
         fill_info: dict[str, Any] | None = None,
+        market_open: bool = True,
     ) -> None:
         fill_info = fill_info or {}
+        self.journal.append({
+            "timestamp_utc": now_utc().isoformat(), "cycle_id": cycle_id, "event": event,
+            "market_open": market_open, "equity_before": acct_before.get("equity", ""),
+            "equity_after": acct_after.get("equity", ""), "cash_before": acct_before.get("cash", ""),
+            "cash_after": acct_after.get("cash", ""), "buying_power_before": acct_before.get("buying_power", ""),
+            "buying_power_after": acct_after.get("buying_power", ""), "gross_exposure_before": acct_before.get("gross_exposure", ""),
+            "gross_exposure_after": acct_after.get("gross_exposure", ""), "symbol": signal.symbol,
+            "side": signal.side, "qty": qty, "opening_high": signal.opening_high, "opening_low": signal.opening_low,
+            "sweep_price": signal.sweep_price, "entry_price": signal.entry_price, "stop_loss": signal.stop_loss,
+            "take_profit": signal.take_profit, "risk_per_share": signal.risk_per_share, "reward_per_share": signal.reward_per_share,
+            "risk_multiple": self.config.take_profit_r_multiple, "retest_delta": signal.retest_delta,
+            "engulf_delta": signal.engulf_delta, "signal_timestamp": signal.timestamp, "estimated_notional": est_notional,
+            "order_id": order_id, "order_status": order_status, "filled_qty": fill_info.get("filled_qty", ""),
+            "filled_avg_price": fill_info.get("filled_avg_price", ""), "message": message,
+        })
 
-        if isinstance(order_row, pd.Series):
-            row = order_row.to_dict()
-        else:
-            row = dict(order_row)
+    def _execute_signal(self, signal: ORBSweepEngulfSignal, cycle_id: str) -> dict[str, Any]:
+        acct_before = self._record_account_snapshot("before_signal", cycle_id)
+        acct_before["gross_exposure"] = self._gross_exposure(float(acct_before["equity"]))
 
-        self.journal.append(
-            {
-                "timestamp_utc": now_utc().isoformat(),
-                "cycle_id": cycle_id,
-                "event": event,
-                "market_open": True,
-                "equity_before": acct_before.get("equity", ""),
-                "equity_after": acct_after.get("equity", ""),
-                "cash_before": acct_before.get("cash", ""),
-                "cash_after": acct_after.get("cash", ""),
-                "buying_power_before": acct_before.get("buying_power", ""),
-                "buying_power_after": acct_after.get("buying_power", ""),
-                "gross_exposure_before": acct_before.get("gross_exposure", ""),
-                "gross_exposure_after": acct_after.get("gross_exposure", ""),
-                "trade_symbol": row.get("symbol", ""),
-                "trade_side": str(row.get("side", "")).upper(),
-                "trade_qty": row.get("order_qty", ""),
-                "trade_price": row.get("price", ""),
-                "estimated_notional": row.get("capped_dollars", row.get("abs_delta_dollars", "")),
-                "target_weight": row.get("target_weight", ""),
-                "current_weight": row.get("current_weight", ""),
-                "delta_weight": row.get("delta_weight", ""),
-                "confidence": row.get("confidence_used", ""),
-                "cash_buffer": self._cash_buffer(float(acct_before.get("equity", 0.0))),
-                "max_gross_exposure": self.config.max_gross_exposure,
-                "max_position_weight": self.config.max_position_weight,
-                "max_order_notional": self._max_order_notional(float(acct_before.get("equity", 0.0))),
-                "order_id": order_id,
-                "order_status": order_status,
-                "filled_qty": fill_info.get("filled_qty", ""),
-                "filled_avg_price": fill_info.get("filled_avg_price", ""),
-                "slippage_pct": fill_info.get("slippage_pct", ""),
-                "message": message,
+        if self._in_cooldown():
+            acct_after = self._record_account_snapshot("after_skip", cycle_id)
+            acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
+            self._journal_signal(cycle_id, "SKIP", signal, 0, 0.0, acct_before, acct_after, "cooldown_active")
+            return {"symbol": signal.symbol, "side": signal.side, "status": "skipped_cooldown", "message": "cooldown_active"}
+
+        positions = self._positions_by_symbol()
+        if signal.symbol in positions and abs(positions[signal.symbol].qty) > 0:
+            acct_after = self._record_account_snapshot("after_skip", cycle_id)
+            acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
+            self._journal_signal(cycle_id, "SKIP", signal, 0, 0.0, acct_before, acct_after, "already_in_position")
+            self.signal_engine.mark_processed(signal)
+            return {"symbol": signal.symbol, "side": signal.side, "status": "skipped_position_exists", "message": "already_in_position"}
+
+        if self.broker.has_open_order_for_symbol(signal.symbol):
+            acct_after = self._record_account_snapshot("after_skip", cycle_id)
+            acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
+            self._journal_signal(cycle_id, "SKIP", signal, 0, 0.0, acct_before, acct_after, "existing_open_order")
+            self.signal_engine.mark_processed(signal)
+            return {"symbol": signal.symbol, "side": signal.side, "status": "skipped_open_order", "message": "existing_open_order"}
+
+        qty, est_notional, size_reason = self._size_signal(signal, acct_before)
+        if qty <= 0:
+            acct_after = self._record_account_snapshot("after_skip", cycle_id)
+            acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
+            self._journal_signal(cycle_id, "SKIP", signal, qty, est_notional, acct_before, acct_after, size_reason)
+            self.signal_engine.mark_processed(signal)
+            return {"symbol": signal.symbol, "side": signal.side, "status": "skipped_size", "message": size_reason}
+
+        client_order_id = f"{self.config.order_tag_prefix}_{signal.side}_{run_id()}_{signal.symbol}"[:48]
+
+        try:
+            submitted = self.broker.submit_market_bracket_order(
+                symbol=signal.symbol,
+                side=signal.side,
+                qty=qty,
+                client_order_id=client_order_id,
+                tif=self.config.time_in_force,
+                take_profit_price=signal.take_profit,
+                stop_loss_price=signal.stop_loss,
+            )
+            order_id = str(getattr(submitted, "id", ""))
+            status = str(getattr(submitted, "status", "submitted"))
+            print(f"[submitted] {signal.side.upper()} BRACKET {qty} {signal.symbol} entry_ref={signal.entry_price:.4f} stop={signal.stop_loss:.4f} tp={signal.take_profit:.4f} status={status} id={order_id}")
+
+            self._mark_order()
+            self.signal_engine.mark_processed(signal)
+            fill_info = self._poll_fill(order_id)
+
+            acct_after = self._record_account_snapshot("after_order", cycle_id)
+            acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
+
+            result = {
+                "timestamp_utc": now_utc().isoformat(), "cycle_id": cycle_id, "symbol": signal.symbol,
+                "side": signal.side, "order_class": "bracket", "qty": qty, "entry_reference": signal.entry_price,
+                "stop_loss": signal.stop_loss, "take_profit": signal.take_profit, "risk_per_share": signal.risk_per_share,
+                "risk_multiple": self.config.take_profit_r_multiple, "estimated_notional": est_notional,
+                "opening_high": signal.opening_high, "opening_low": signal.opening_low, "sweep_price": signal.sweep_price,
+                "retest_delta": signal.retest_delta, "engulf_delta": signal.engulf_delta,
+                "signal_timestamp": signal.timestamp, "status": status, "order_id": order_id, **fill_info,
             }
-        )
 
-    def _execute_order_plan(self, plan: pd.DataFrame, cycle_id: str) -> pd.DataFrame:
-        if plan.empty:
-            return pd.DataFrame()
+            self._journal_signal(cycle_id, "ORDER", signal, qty, est_notional, acct_before, acct_after, "orb_sweep_retest_engulf_entry_at_close_3r", order_id, status, fill_info)
+            write_event("orb_sweep_engulf_bracket_order_submitted", result)
+            return result
 
-        results: list[dict[str, Any]] = []
+        except APIError as exc:
+            message = str(exc)
+            print(f"[error] APIError {signal.side.upper()} BRACKET {qty} {signal.symbol}: {message}")
+            acct_after = self._record_account_snapshot("after_error", cycle_id)
+            acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
+            self._journal_signal(cycle_id, "ERROR", signal, qty, est_notional, acct_before, acct_after, message)
+            write_event("orb_sweep_engulf_order_api_error", {"symbol": signal.symbol, "side": signal.side, "error": message})
+            return {"symbol": signal.symbol, "side": signal.side, "status": "api_error", "message": message}
 
-        for _, row in plan.iterrows():
-            symbol = safe_symbol(row.get("symbol"))
-            side = str(row.get("side")).lower()
-            qty = to_int(row.get("order_qty"))
-            price = to_float(row.get("price"))
-            est_notional = to_float(row.get("capped_dollars", row.get("abs_delta_dollars", 0.0)))
-            reason = str(row.get("reason", ""))
-            client_order_id = str(row.get("client_order_id"))
+        except Exception as exc:
+            message = str(exc)
+            print(f"[error] submit failed {signal.side.upper()} BRACKET {qty} {signal.symbol}: {message}")
+            acct_after = self._record_account_snapshot("after_error", cycle_id)
+            acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
+            self._journal_signal(cycle_id, "ERROR", signal, qty, est_notional, acct_before, acct_after, message)
+            write_event("orb_sweep_engulf_order_error", {"symbol": signal.symbol, "side": signal.side, "error": message})
+            return {"symbol": signal.symbol, "side": signal.side, "status": "error", "message": message}
 
-            acct_before = self._record_account_snapshot("before_order", cycle_id)
-            equity = float(acct_before["equity"])
-            cash = float(acct_before["cash"])
-            buying_power = float(acct_before["buying_power"])
-            gross_before = self._gross_exposure(equity)
-            acct_before["gross_exposure"] = gross_before
-
-            if qty <= 0:
-                result = {
-                    "timestamp_utc": now_utc().isoformat(),
-                    "symbol": symbol,
-                    "side": side,
-                    "qty": qty,
-                    "status": "skipped",
-                    "message": "qty <= 0",
-                }
-                results.append(result)
-                acct_after = self._record_account_snapshot("after_skip", cycle_id)
-                acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
-                self._journal_order(cycle_id, "SKIP", row, acct_before, acct_after, "qty <= 0")
-                continue
-
-            if self.broker.has_open_order_for_symbol(symbol):
-                result = {
-                    "timestamp_utc": now_utc().isoformat(),
-                    "symbol": symbol,
-                    "side": side,
-                    "qty": qty,
-                    "status": "skipped_open_order",
-                    "message": "existing open order for symbol",
-                }
-                results.append(result)
-                acct_after = self._record_account_snapshot("after_skip", cycle_id)
-                acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
-                self._journal_order(cycle_id, "SKIP", row, acct_before, acct_after, "existing open order")
-                continue
-
-            if side == "buy":
-                projected_cash = cash - est_notional
-                cash_buffer = self._cash_buffer(equity)
-                max_order_notional = self._max_order_notional(equity)
-                gross_room = max(0.0, (self.config.max_gross_exposure - gross_before) * equity)
-
-                if buying_power < self.config.min_buying_power:
-                    message = "buying_power_below_minimum"
-                    print(f"[skip] BUY {qty} {symbol}: {message}")
-                    result = {
-                        "timestamp_utc": now_utc().isoformat(),
-                        "symbol": symbol,
-                        "side": side,
-                        "qty": qty,
-                        "status": "skipped_buying_power",
-                        "message": message,
-                    }
-                    results.append(result)
-                    acct_after = self._record_account_snapshot("after_skip", cycle_id)
-                    acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
-                    self._journal_order(cycle_id, "SKIP", row, acct_before, acct_after, message)
-                    continue
-
-                if projected_cash < cash_buffer:
-                    message = (
-                        f"cash_buffer_violation cash={cash:.2f} projected={projected_cash:.2f} "
-                        f"required={cash_buffer:.2f}"
-                    )
-                    print(f"[skip] BUY {qty} {symbol}: {message}")
-                    result = {
-                        "timestamp_utc": now_utc().isoformat(),
-                        "symbol": symbol,
-                        "side": side,
-                        "qty": qty,
-                        "status": "skipped_cash_buffer",
-                        "message": message,
-                    }
-                    results.append(result)
-                    acct_after = self._record_account_snapshot("after_skip", cycle_id)
-                    acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
-                    self._journal_order(cycle_id, "SKIP", row, acct_before, acct_after, message)
-                    continue
-
-                if est_notional > max_order_notional:
-                    new_qty = int(max_order_notional // price) if price > 0 else 0
-                    print(f"[clip] BUY {symbol}: qty {qty} -> {new_qty} due to max_order_notional")
-                    qty = new_qty
-                    est_notional = qty * price
-
-                if est_notional > gross_room:
-                    new_qty = int(gross_room // price) if price > 0 else 0
-                    print(f"[clip] BUY {symbol}: qty {qty} -> {new_qty} due to gross exposure room")
-                    qty = new_qty
-                    est_notional = qty * price
-
-                if qty <= 0 or est_notional < self.config.min_notional_to_trade:
-                    message = "buy_clipped_below_min_notional"
-                    print(f"[skip] BUY {symbol}: {message}")
-                    result = {
-                        "timestamp_utc": now_utc().isoformat(),
-                        "symbol": symbol,
-                        "side": side,
-                        "qty": qty,
-                        "status": "skipped_min_notional",
-                        "message": message,
-                    }
-                    results.append(result)
-                    acct_after = self._record_account_snapshot("after_skip", cycle_id)
-                    acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
-                    self._journal_order(cycle_id, "SKIP", row, acct_before, acct_after, message)
-                    continue
-
-            try:
-                if side == "buy":
-                    submitted = self.broker.submit_market_buy(symbol, qty, client_order_id, self.config.time_in_force)
-                else:
-                    submitted = self.broker.submit_market_sell(symbol, qty, client_order_id, self.config.time_in_force)
-
-                order_id = str(getattr(submitted, "id", ""))
-                status = str(getattr(submitted, "status", "submitted"))
-
-                print(f"[submitted] {side.upper()} {qty} {symbol} status={status} id={order_id}")
-                self._mark_order()
-
-                fill_info = self._poll_fill(order_id, price)
-                acct_after = self._record_account_snapshot("after_order", cycle_id)
-                acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
-
-                result = {
-                    "timestamp_utc": now_utc().isoformat(),
-                    "symbol": symbol,
-                    "side": side,
-                    "qty": qty,
-                    "estimated_notional": est_notional,
-                    "price": price,
-                    "reason": reason,
-                    "status": status,
-                    "order_id": order_id,
-                    **fill_info,
-                }
-                results.append(result)
-
-                self._journal_order(
-                    cycle_id=cycle_id,
-                    event="ORDER",
-                    order_row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
-                    acct_before=acct_before,
-                    acct_after=acct_after,
-                    message=reason or "submitted",
-                    order_id=order_id,
-                    order_status=status,
-                    fill_info=fill_info,
-                )
-
-                write_event("order_submitted", result)
-                time.sleep(0.35)
-
-            except APIError as exc:
-                message = str(exc)
-                print(f"[error] APIError {side.upper()} {qty} {symbol}: {message}")
-                acct_after = self._record_account_snapshot("after_error", cycle_id)
-                acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
-
-                result = {
-                    "timestamp_utc": now_utc().isoformat(),
-                    "symbol": symbol,
-                    "side": side,
-                    "qty": qty,
-                    "status": "api_error",
-                    "message": message,
-                    "order_id": "",
-                }
-                results.append(result)
-                self._journal_order(cycle_id, "ERROR", row, acct_before, acct_after, message)
-                write_event("order_api_error", result)
-
-            except Exception as exc:
-                message = str(exc)
-                print(f"[error] submit failed {side.upper()} {qty} {symbol}: {message}")
-                acct_after = self._record_account_snapshot("after_error", cycle_id)
-                acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
-
-                result = {
-                    "timestamp_utc": now_utc().isoformat(),
-                    "symbol": symbol,
-                    "side": side,
-                    "qty": qty,
-                    "status": "error",
-                    "message": message,
-                    "order_id": "",
-                }
-                results.append(result)
-                self._journal_order(cycle_id, "ERROR", row, acct_before, acct_after, message)
-                write_event("order_error", result)
-
-        return pd.DataFrame(results)
-
-    # -------------------------------------------------------------------------
-    # Compatibility wrappers
-    # -------------------------------------------------------------------------
-
-    def run_once_from_frames(self, rebalance_orders: pd.DataFrame, exit_orders: pd.DataFrame | None = None) -> tuple[pd.DataFrame, pd.DataFrame, AccountSnapshot, pd.DataFrame]:
+    def run_cycle(self) -> pd.DataFrame:
         cycle_id = run_id()
-
         acct_start = self._record_account_snapshot("cycle_start", cycle_id)
         equity = float(acct_start["equity"])
-        cash = float(acct_start["cash"])
-        gross = self._gross_exposure(equity)
-        acct_start["gross_exposure"] = gross
+        acct_start["gross_exposure"] = self._gross_exposure(equity)
 
-        positions_before = pd.DataFrame([asdict(p) for p in self.broker.get_all_open_positions()])
-
-        if not self._market_is_open_or_wait():
-            results = pd.DataFrame(
-                [
-                    {
-                        "timestamp_utc": now_utc().isoformat(),
-                        "status": "skipped_market_closed",
-                        "message": "market is closed",
-                    }
-                ]
-            )
-            save_df(pd.DataFrame(), LOG_DIR / f"order_plan_{cycle_id}.csv")
-            save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
+        market_open = self._market_is_open_or_wait()
+        if not market_open:
+            results = pd.DataFrame([{"timestamp_utc": now_utc().isoformat(), "cycle_id": cycle_id, "status": "skipped_market_closed", "message": "market is closed"}])
+            save_df(results, LOG_DIR / f"orb_sweep_engulf_order_results_{cycle_id}.csv")
             self._write_account_equity_curve()
-            return pd.DataFrame(), results, self.broker.get_account_snapshot(), positions_before
+            return results
 
         allowed, kill_reason, daily_return = self._kill_switch_allows_execution(equity)
         if not allowed:
             print(f"[kill-switch] execution blocked: {kill_reason}")
-            results = pd.DataFrame(
-                [
-                    {
-                        "timestamp_utc": now_utc().isoformat(),
-                        "status": "skipped_kill_switch",
-                        "message": kill_reason,
-                        "daily_return": daily_return,
-                    }
-                ]
-            )
-            save_df(pd.DataFrame(), LOG_DIR / f"order_plan_{cycle_id}.csv")
-            save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
+            results = pd.DataFrame([{"timestamp_utc": now_utc().isoformat(), "cycle_id": cycle_id, "status": "skipped_kill_switch", "message": kill_reason, "daily_return": daily_return}])
+            save_df(results, LOG_DIR / f"orb_sweep_engulf_order_results_{cycle_id}.csv")
             self._write_account_equity_curve()
-            return pd.DataFrame(), results, self.broker.get_account_snapshot(), positions_before
-
-        if self._in_cooldown():
-            print("[cooldown] execution blocked by cooldown")
-            results = pd.DataFrame(
-                [
-                    {
-                        "timestamp_utc": now_utc().isoformat(),
-                        "status": "skipped_cooldown",
-                        "message": "cooldown active",
-                    }
-                ]
-            )
-            save_df(pd.DataFrame(), LOG_DIR / f"order_plan_{cycle_id}.csv")
-            save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
-            self._write_account_equity_curve()
-            return pd.DataFrame(), results, self.broker.get_account_snapshot(), positions_before
+            return results
 
         if self.config.cancel_open_orders_first:
             print("[orders] canceling open orders")
             self.broker.cancel_open_orders()
 
-        plan = self._build_order_plan(rebalance_orders, exit_orders if exit_orders is not None else pd.DataFrame(), equity)
-
-        if plan.empty:
-            print("[plan] no valid orders")
-            results = pd.DataFrame()
-            save_df(plan, LOG_DIR / f"order_plan_{cycle_id}.csv")
-            save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
+        signals = self.signal_engine.find_new_signals()
+        if not signals:
+            print("[signal] no new ORB sweep/retest/engulf signals")
+            results = pd.DataFrame([{"timestamp_utc": now_utc().isoformat(), "cycle_id": cycle_id, "status": "no_signal", "message": "no new ORB sweep/retest/engulf signals"}])
+            save_df(results, LOG_DIR / f"orb_sweep_engulf_order_results_{cycle_id}.csv")
             self._write_account_equity_curve()
-            return plan, results, self.broker.get_account_snapshot(), positions_before
+            return results
 
-        print("\n===== ORDER PLAN =====")
-        display_cols = [
-            "symbol",
-            "side",
-            "order_qty",
-            "price",
-            "abs_delta_dollars",
-            "capped_dollars",
-            "confidence_used",
-            "confidence_multiplier",
-            "reason",
-        ]
-        print(plan[[c for c in display_cols if c in plan.columns]].to_string(index=False))
+        print("\n===== ORB SWEEP / RETEST / ENGULF SIGNALS =====")
+        signal_df = pd.DataFrame([s.__dict__ for s in signals])
+        print(signal_df[["symbol", "side", "timestamp", "opening_high", "opening_low", "sweep_price", "entry_price", "stop_loss", "take_profit", "risk_per_share", "retest_delta", "engulf_delta"]].to_string(index=False))
+        save_df(signal_df, LOG_DIR / f"orb_sweep_engulf_signals_{cycle_id}.csv")
 
-        save_df(plan, LOG_DIR / f"order_plan_{cycle_id}.csv")
+        results = []
+        for signal in signals:
+            results.append(self._execute_signal(signal, cycle_id))
+            time.sleep(0.35)
 
-        results = self._execute_order_plan(plan, cycle_id)
-
-        save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
-
-        positions_after = pd.DataFrame([asdict(p) for p in self.broker.get_all_open_positions()])
-        save_df(positions_after, LOG_DIR / f"positions_after_{cycle_id}.csv")
+        results_df = pd.DataFrame(results)
+        save_df(results_df, LOG_DIR / f"orb_sweep_engulf_order_results_{cycle_id}.csv")
 
         acct_after = self._record_account_snapshot("cycle_end", cycle_id)
         acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
         self._write_account_equity_curve()
 
-        summary = {
-            "cycle_id": cycle_id,
-            "timestamp_utc": now_utc().isoformat(),
-            "paper": self.config.paper,
-            "mode": "EXECUTION",
-            "equity_before": equity,
-            "cash_before": cash,
-            "gross_exposure_before": gross,
-            "equity_after": acct_after["equity"],
-            "cash_after": acct_after["cash"],
-            "gross_exposure_after": acct_after["gross_exposure"],
-            "orders_planned": len(plan),
-            "results_rows": len(results),
-        }
-        save_json(summary, LOG_DIR / f"execution_summary_{cycle_id}.json")
+        save_json({
+            "cycle_id": cycle_id, "timestamp_utc": now_utc().isoformat(), "paper": self.config.paper,
+            "mode": "ORB_SWEEP_RETEST_ENGULF_3R_BRACKET_EXECUTION",
+            "footprint_file": str(self.config.footprint_file), "equity_before": equity,
+            "equity_after": acct_after["equity"], "signals_found": len(signals), "results_rows": len(results_df),
+            "entry": "close_of_engulfing_candle", "target": f"{self.config.take_profit_r_multiple}R",
+        }, LOG_DIR / f"orb_sweep_engulf_execution_summary_{cycle_id}.json")
 
-        return plan, results, self.broker.get_account_snapshot(), positions_before
-
-    def run_cycle_from_files(self) -> tuple[pd.DataFrame, pd.DataFrame, AccountSnapshot, pd.DataFrame]:
-        if self.scanner is not None:
-            try:
-                rebalance, exits, _scores = self.scanner.build_orders()
-                if not rebalance.empty or not exits.empty:
-                    return self.run_once_from_frames(rebalance, exits)
-            except Exception as exc:
-                print(f"[scanner] cycle failed; falling back to existing order files: {exc}")
-                write_event("scanner_cycle_error", {"error": str(exc)})
-
-        print(f"[executor] using rebalance_orders={self.config.rebalance_orders_path}")
-        print(f"[executor] using exit_orders={self.config.exit_orders_path if self.config.exit_orders_path.exists() else 'NONE'}")
-
-        rebalance, exits = self._load_orders()
-        return self.run_once_from_frames(rebalance, exits)
+        return results_df
 
     def _print_heartbeat(self) -> None:
         now_ts = time.time()
         if now_ts - self.last_heartbeat_time < HEARTBEAT_SECONDS:
             return
-
         acct = self.broker.get_account_snapshot()
         gross = self._gross_exposure(acct.equity)
-        print(
-            f"[executor] heartbeat | equity=${acct.equity:,.2f} | "
-            f"cash=${acct.cash:,.2f} | buying_power=${acct.buying_power:,.2f} | "
-            f"gross={gross:.2%}"
-        )
+        print(f"[executor] heartbeat | equity=${acct.equity:,.2f} | cash=${acct.cash:,.2f} | buying_power=${acct.buying_power:,.2f} | gross={gross:.2%}")
         self.last_heartbeat_time = now_ts
 
     def run(self) -> None:
-        print("[executor] production order executor starting...")
+        print("[executor] ORB sweep/retest/engulf 3R bracket executor starting...")
+        print(f"[executor] footprint_file={self.config.footprint_file}")
         print(f"[executor] journal={JOURNAL_PATH}")
         print(f"[executor] equity_curve={EQUITY_CURVE_PATH}")
         print(f"[executor] paper={self.config.paper}")
-        print("[executor] mode=EXECUTION")
-        print("[executor] run_policy=FOREVER_UNTIL_INTERRUPTED")
+        print("[executor] mode=ORB_SWEEP_RETEST_ENGULF_3R_BRACKET_EXECUTION")
+        print("[executor] opening_range=9:30 ET candle")
+        print("[executor] entry=close_of_engulfing_candle")
+        print("[executor] long=enabled short=" + ("enabled" if self.config.allow_shorts else "disabled"))
+        print(f"[executor] take_profit={self.config.take_profit_r_multiple}R")
 
         if self.config.poll_once:
-            self.run_cycle_from_files()
+            self.run_cycle()
             return
 
+        print("[executor] run_policy=FOREVER_UNTIL_INTERRUPTED")
         while True:
             try:
-                self.run_cycle_from_files()
+                self.run_cycle()
                 self._print_heartbeat()
             except KeyboardInterrupt:
                 print("[executor] interrupted by user")
@@ -1678,15 +1024,8 @@ class ProductionOrderExecutor:
             except Exception as exc:
                 print(f"[executor] cycle error: {exc}")
                 write_event("cycle_error", {"error": str(exc)})
-
-            # Important: closed market, empty order files, no valid orders, or errors
-            # must not terminate the process. Sleep and poll again.
             time.sleep(max(1, int(self.config.poll_seconds)))
 
-
-# =============================================================================
-# Backward-compatible module functions
-# =============================================================================
 
 def get_trading_client(config: ExecutorConfig | None = None) -> TradingClient:
     config = config or ExecutorConfig()
@@ -1711,159 +1050,93 @@ def get_positions_df(client: TradingClient) -> pd.DataFrame:
         positions = []
 
     for p in positions:
-        rows.append(
-            {
-                "symbol": safe_symbol(getattr(p, "symbol", "")),
-                "qty": to_float(getattr(p, "qty", 0.0)),
-                "avg_entry_price": to_float(getattr(p, "avg_entry_price", 0.0)),
-                "current_price": to_float(getattr(p, "current_price", 0.0)),
-                "market_value": to_float(getattr(p, "market_value", 0.0)),
-                "cost_basis": to_float(getattr(p, "cost_basis", 0.0)),
-                "unrealized_pl": to_float(getattr(p, "unrealized_pl", 0.0)),
-                "unrealized_plpc": to_float(getattr(p, "unrealized_plpc", 0.0)),
-            }
-        )
+        rows.append({
+            "symbol": safe_symbol(getattr(p, "symbol", "")),
+            "qty": to_float(getattr(p, "qty", 0.0)),
+            "avg_entry_price": to_float(getattr(p, "avg_entry_price", 0.0)),
+            "current_price": to_float(getattr(p, "current_price", 0.0)),
+            "market_value": to_float(getattr(p, "market_value", 0.0)),
+            "cost_basis": to_float(getattr(p, "cost_basis", 0.0)),
+            "unrealized_pl": to_float(getattr(p, "unrealized_pl", 0.0)),
+            "unrealized_plpc": to_float(getattr(p, "unrealized_plpc", 0.0)),
+        })
 
-    return pd.DataFrame(
-        rows,
-        columns=[
-            "symbol",
-            "qty",
-            "avg_entry_price",
-            "current_price",
-            "market_value",
-            "cost_basis",
-            "unrealized_pl",
-            "unrealized_plpc",
-        ],
-    )
+    return pd.DataFrame(rows, columns=["symbol", "qty", "avg_entry_price", "current_price", "market_value", "cost_basis", "unrealized_pl", "unrealized_plpc"])
 
-
-def run_execution(
-    rebalance_orders: pd.DataFrame,
-    exit_orders: pd.DataFrame | None = None,
-    config: ExecutorConfig | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame, AccountSnapshot, pd.DataFrame]:
-    config = config or ExecutorConfig(poll_once=True)
-    config.poll_once = True
-    executor = ProductionOrderExecutor(config)
-    return executor.run_once_from_frames(rebalance_orders, exit_orders if exit_orders is not None else pd.DataFrame())
-
-
-def save_execution_results(
-    order_plan: pd.DataFrame,
-    results: pd.DataFrame,
-    output_dir: Path | str | None = None,
-    run_stamp: str | None = None,
-) -> tuple[Path, Path]:
-    output_path = Path(output_dir) if output_dir is not None else LOG_DIR
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    stamp = run_stamp or run_id()
-
-    order_plan_path = output_path / f"order_plan_{stamp}.csv"
-    results_path = output_path / f"order_results_{stamp}.csv"
-
-    save_df(order_plan if order_plan is not None else pd.DataFrame(), order_plan_path)
-    save_df(results if results is not None else pd.DataFrame(), results_path)
-
-    return order_plan_path, results_path
-
-
-# =============================================================================
-# CLI
-# =============================================================================
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Production order executor.")
-
-    parser.add_argument("--rebalance-orders", default=str(DEFAULT_REBALANCE_ORDERS))
-    parser.add_argument("--exit-orders", default=str(DEFAULT_EXIT_ORDERS))
-
+    parser = argparse.ArgumentParser(description="ORB sweep/retest/engulf 3R bracket executor.")
     parser.add_argument("--live", action="store_true")
-
+    parser.add_argument("--once", action="store_true", help="Run one cycle then exit.")
+    parser.add_argument("--loop", action="store_true", help="Compatibility flag. Default is continuous.")
     parser.add_argument("--poll-seconds", type=int, default=POLL_SECONDS)
+    parser.add_argument("--footprint-file", default=str(DEFAULT_FOOTPRINT_FILE))
+    parser.add_argument("--universe", default="", help="Comma-separated symbols. Default uses built-in universe.")
+
+    parser.add_argument("--session-timezone", default="America/New_York")
+    parser.add_argument("--opening-candle-time", default="09:30")
+    parser.add_argument("--max-opening-candle-minutes-late", type=int, default=5)
+    parser.add_argument("--retest-tolerance-pct", type=float, default=0.0015)
+    parser.add_argument("--allow-shorts", action="store_true")
+    parser.add_argument("--disable-delta-flip", action="store_true")
+
     parser.add_argument("--cash-buffer", type=float, default=DEFAULT_CASH_BUFFER_PCT)
     parser.add_argument("--max-gross-exposure", type=float, default=MAX_GROSS_EXPOSURE)
     parser.add_argument("--max-position-weight", type=float, default=MAX_POSITION_WEIGHT)
     parser.add_argument("--max-order-dollars", type=float, default=MAX_ORDER_DOLLARS)
     parser.add_argument("--max-single-order-qty", type=int, default=MAX_SINGLE_ORDER_QTY)
     parser.add_argument("--min-notional-to-trade", type=float, default=MIN_NOTIONAL_TO_TRADE)
+    parser.add_argument("--risk-per-trade-pct", type=float, default=RISK_PER_TRADE_PCT)
+    parser.add_argument("--take-profit-r-multiple", type=float, default=TAKE_PROFIT_R_MULTIPLE)
 
     parser.add_argument("--allow-closed-market", action="store_true")
     parser.add_argument("--wait-for-open", action="store_true")
     parser.add_argument("--cancel-open-orders-first", action="store_true")
-    parser.add_argument("--buy-first", action="store_true", help="Execute buys before sells. Default is sell-first.")
-
     parser.add_argument("--disable-kill-switch", action="store_true")
     parser.add_argument("--max-daily-loss-pct", type=float, default=MAX_DAILY_LOSS_PCT)
     parser.add_argument("--max-daily-loss-dollars", type=float, default=MAX_DAILY_LOSS_DOLLARS)
     parser.add_argument("--kill-switch-equity-floor", type=float, default=KILL_SWITCH_EQUITY_FLOOR)
-    parser.add_argument("--loop", action="store_true", help="Run continuously. Default is one cycle.")
-    parser.add_argument("--once", action="store_true", help="Run one cycle then exit. Default is to run forever.")
-
-    parser.add_argument("--disable-scanner", action="store_true", help="Disable internal universe scanner and only read order CSVs.")
-    parser.add_argument("--universe", default="", help="Comma-separated universe. Default uses DEFAULT_SCAN_UNIVERSE.")
-    parser.add_argument("--use-sp500-fallback", action="store_true", help="Scan S&P 500 symbols from Wikipedia, capped by --max-universe-symbols.")
-    parser.add_argument("--max-universe-symbols", type=int, default=30)
-    parser.add_argument("--scanner-top-n", type=int, default=8)
-    parser.add_argument("--min-setup-score", type=float, default=0.62)
-    parser.add_argument("--min-buy-confidence", type=float, default=0.58)
-    parser.add_argument("--min-avg-dollar-volume", type=float, default=5_000_000.0)
-    parser.add_argument("--scanner-max-target-weight", type=float, default=0.14)
-    parser.add_argument("--scanner-stop-loss", type=float, default=-0.035)
-    parser.add_argument("--profit-lock-trigger", type=float, default=0.06)
-    parser.add_argument("--profit-giveback", type=float, default=0.025)
-
     return parser.parse_args()
 
 
 def build_config(args: argparse.Namespace) -> ExecutorConfig:
-    scanner_universe = [normalize_symbol(x) for x in str(args.universe).split(",") if normalize_symbol(x)] or None
-    scanner_config = ScannerConfig(
-        enabled=not args.disable_scanner,
-        universe=scanner_universe,
-        use_sp500_fallback=args.use_sp500_fallback,
-        max_universe_symbols=args.max_universe_symbols,
-        top_n=args.scanner_top_n,
-        min_setup_score=args.min_setup_score,
-        min_buy_confidence=args.min_buy_confidence,
-        min_avg_dollar_volume=args.min_avg_dollar_volume,
-        max_target_weight=args.scanner_max_target_weight,
-        stop_loss_pct=args.scanner_stop_loss,
-        profit_lock_trigger_pct=args.profit_lock_trigger,
-        profit_giveback_pct=args.profit_giveback,
-    )
+    universe = [safe_symbol(x) for x in str(args.universe).split(",") if safe_symbol(x)] or None
     return ExecutorConfig(
         paper=not args.live,
         live=args.live,
         poll_once=args.once,
         poll_seconds=args.poll_seconds,
-        rebalance_orders_path=Path(args.rebalance_orders),
-        exit_orders_path=Path(args.exit_orders),
+        footprint_file=Path(args.footprint_file),
+        universe=universe,
+        session_timezone=args.session_timezone,
+        opening_candle_time=args.opening_candle_time,
+        max_opening_candle_minutes_late=args.max_opening_candle_minutes_late,
+        retest_tolerance_pct=args.retest_tolerance_pct,
+        require_delta_flip=not args.disable_delta_flip,
+        allow_shorts=args.allow_shorts,
         cash_buffer_pct=args.cash_buffer,
         max_gross_exposure=args.max_gross_exposure,
         max_position_weight=args.max_position_weight,
         max_order_dollars=args.max_order_dollars,
         max_single_order_qty=args.max_single_order_qty,
         min_notional_to_trade=args.min_notional_to_trade,
+        risk_per_trade_pct=args.risk_per_trade_pct,
+        take_profit_r_multiple=args.take_profit_r_multiple,
         allow_closed_market=args.allow_closed_market,
         require_market_open=not args.allow_closed_market,
         wait_for_market_open=args.wait_for_open,
         cancel_open_orders_first=args.cancel_open_orders_first,
-        sell_first=not args.buy_first,
         enable_kill_switch=not args.disable_kill_switch,
         max_daily_loss_pct=args.max_daily_loss_pct,
         max_daily_loss_dollars=args.max_daily_loss_dollars,
         kill_switch_equity_floor=args.kill_switch_equity_floor,
-        scanner=scanner_config,
     )
 
 
 def main() -> None:
     args = parse_args()
     config = build_config(args)
-    trader = ProductionOrderExecutor(config)
+    trader = ORBSweepEngulfExecutor(config)
     trader.run()
 
 
