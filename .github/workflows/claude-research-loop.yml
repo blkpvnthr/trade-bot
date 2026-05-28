@@ -1,0 +1,150 @@
+name: Claude Research Loop
+
+on:
+  # Run nightly after market close (midnight ET = 05:00 UTC)
+  schedule:
+    - cron: "0 5 * * 1-5"   # Mon-Fri at 05:00 UTC
+
+  # Allow manual trigger with optional strategy override
+  workflow_dispatch:
+    inputs:
+      strategy_id:
+        description: "Strategy variant to evaluate (leave blank for all)"
+        required: false
+        default: ""
+      skip_patch_request:
+        description: "Skip generating patch requests"
+        required: false
+        default: "false"
+        type: boolean
+
+jobs:
+  evaluate:
+    name: Evaluate Strategy Variants
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run evaluator
+        env:
+          PAPER_ONLY: "true"
+        run: |
+          python scripts/evaluate_variants.py \
+            --config configs/strategy_experiments.yaml \
+            --lookback-days 30
+
+      - name: Upload rankings artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: variant-rankings-${{ github.run_id }}
+          path: system-data/variant_rankings_*.json
+          if-no-files-found: warn
+
+  diagnose:
+    name: Diagnose & Generate Patch Requests
+    needs: evaluate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.skip_patch_request != 'true' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        strategy_id:
+          - tux_mtf_original
+          - tux_mtf_long_only
+          - pivot_points
+          - orb_8am
+          - liquidity_sweep
+          - flawless_victory
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download rankings
+        uses: actions/download-artifact@v4
+        with:
+          name: variant-rankings-${{ github.run_id }}
+          path: system-data/
+
+      - name: Skip if specific strategy input and not matching
+        if: >
+          github.event.inputs.strategy_id != '' &&
+          github.event.inputs.strategy_id != matrix.strategy_id
+        run: echo "Skipping ${{ matrix.strategy_id }} — not in scope" && exit 0
+
+      - name: Diagnose strategy
+        env:
+          PAPER_ONLY: "true"
+        run: |
+          python scripts/diagnose_strategy.py ${{ matrix.strategy_id }} \
+            --lookback-days 30
+
+      - name: Generate patch request
+        env:
+          PAPER_ONLY: "true"
+        run: |
+          python scripts/generate_claude_patch_request.py ${{ matrix.strategy_id }} \
+            --config configs/strategy_experiments.yaml
+
+      - name: Upload patch request artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-request-${{ matrix.strategy_id }}-${{ github.run_id }}
+          path: research_requests/*${{ matrix.strategy_id }}*
+          if-no-files-found: warn
+
+  summary:
+    name: Post Research Summary
+    needs: [evaluate, diagnose]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Summarize to job output
+        run: |
+          echo "## Research Loop Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Run: ${{ github.run_id }} | Date: $(date -u '+%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          RANKINGS=$(find artifacts/ -name "variant_rankings_*.json" | head -1)
+          if [ -n "$RANKINGS" ]; then
+            echo "### Rankings" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat "$RANKINGS" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+          PATCHES=$(find artifacts/ -name "*_patch_request.md" | wc -l)
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Patch requests generated: $PATCHES" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "_Review patch requests before applying. No auto-promotion to live trading._" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,98 @@
+# k8s/deployment-template.yaml
+#
+# Base deployment template. Each variant in k8s/variants/ overrides
+# STRATEGY_ID and secretRef. Do not apply this file directly.
+#
+# Variant-specific overrides:
+#   env[STRATEGY_ID]      — strategy variant to run
+#   envFrom[secretRef]    — Alpaca paper credential set
+#   metadata.name         — unique deployment name per variant
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: VARIANT_NAME           # replaced per variant
+  namespace: trade-research
+  labels:
+    app: quantumquant
+    strategy: STRATEGY_ID      # replaced per variant
+    environment: paper
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: quantumquant
+      strategy: STRATEGY_ID
+  template:
+    metadata:
+      labels:
+        app: quantumquant
+        strategy: STRATEGY_ID
+    spec:
+      # Explicit non-root security context
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      containers:
+        - name: trader
+          image: quantumquant:latest     # built from Dockerfile in project root
+          imagePullPolicy: IfNotPresent
+
+          # Load shared non-secret config
+          envFrom:
+            - configMapRef:
+                name: quantumquant-config
+            # Load Alpaca paper credentials (per-variant secret)
+            - secretRef:
+                name: SECRET_NAME        # replaced per variant
+
+          env:
+            - name: STRATEGY_ID
+              value: "STRATEGY_ID"       # replaced per variant
+            - name: LOG_DIR
+              value: "/app/logs/execution/STRATEGY_ID"
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+
+          volumeMounts:
+            - name: logs
+              mountPath: /app/logs
+            - name: system-data
+              mountPath: /app/system-data
+
+          # Liveness: heartbeat file written every ~60s by _print_heartbeat()
+          livenessProbe:
+            exec:
+              command:
+                - python3
+                - -c
+                - "import time,sys,os; f='/tmp/trader_heartbeat'; sys.exit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<600 else 1)"
+            initialDelaySeconds: 90
+            periodSeconds: 120
+            failureThreshold: 3
+          # Readiness: heartbeat file exists (main loop has started)
+          readinessProbe:
+            exec:
+              command:
+                - python3
+                - -c
+                - "import sys,os; sys.exit(0 if os.path.exists('/tmp/trader_heartbeat') else 1)"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: system-data
+          emptyDir: {}
+
+      restartPolicy: Always

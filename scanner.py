@@ -52,7 +52,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import requests
-from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
@@ -74,7 +74,7 @@ THIS_FILE = Path(__file__).resolve()
 LIVE_DIR = THIS_FILE.parent
 ENV_PATH = LIVE_DIR / ".env"
 
-load_dotenv(ENV_PATH)
+load_instance_env()
 
 API_KEY = os.getenv("APCA_API_KEY_ID")
 SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
@@ -894,7 +894,11 @@ def rank_candidates(latest: pd.DataFrame, model: Pipeline) -> pd.DataFrame:
 
     if latest.empty:
         return latest
+    if "signal_confidence" not in latest.columns:
+        latest["signal_confidence"] = latest.get("trade_confidence", 0.50)
 
+    if "trade_confidence" not in latest.columns:
+        latest["trade_confidence"] = latest["signal_confidence"]
     latest["model_continuation_prob"] = model.predict_proba(latest[FEATURES])[:, 1]
     
     latest["rank_score"] = (

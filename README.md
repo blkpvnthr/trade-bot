@@ -1,4 +1,81 @@
 # trade-bot
+```bash
+curl https://tv.quantumquant.trade/
+```
+```bash
+python run_optimizer_agent.py --days 1 --write-env-patch
+```
+```bash
+tail -n 120 /root/trade-bot/logs/run.log
+```
+```bash
+sudo systemctl restart tradingview-bot
+```
+```bash
+sudo journalctl -u tradingview-bot -f
+```
+```bash
+curl https://tv.quantumquant.trade/ {"cash":100000.0,"monitor":{"interval_seconds":10.0,"min_cash_floor":0.0,"stop_loss_pct":-1.5,"take_profit_pct":3.0},"ok":true,"paper":true,"service":"tradingview-webhook","timestamp":"2026-05-18T09:56:52.683257+00:00"}
+```
+```bash
+source venv/bin/activate
+
+python3 - <<'PY'
+from alpaca.trading.client import TradingClient
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+client = TradingClient(
+    os.getenv("APCA_API_KEY_ID"),
+    os.getenv("APCA_API_SECRET_KEY"),
+    paper=os.getenv("APCA_PAPER", "true").lower() == "true"
+)
+
+acct = client.get_account()
+print("cash:", acct.cash)
+print("buying_power:", acct.buying_power)
+print("portfolio_value:", acct.portfolio_value)
+print("equity:", acct.equity)
+
+PY  print(o.symbol, o.side, o.qty, o.status, o.submitted_at)_value, "unrealized_plpc=", p.unrealized_plpc)
+Traceback (most recent call last):
+  File "<stdin>", line 5, in <module>
+  File "/root/trade-bot/venv/lib/python3.12/site-packages/dotenv/main.py", line 419, in load_dotenv
+    dotenv_path = find_dotenv()
+                  ^^^^^^^^^^^^^
+  File "/root/trade-bot/venv/lib/python3.12/site-packages/dotenv/main.py", line 367, in find_dotenv
+    assert frame.f_back is not None
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError
+(venv) root@universe-selector:~/trade-bot# source venv/bin/activate
+
+python3 - <<'PY'
+from alpaca.trading.client import TradingClient
+from dotenv import load_dotenv
+from pathlib import Path
+import os
+
+load_dotenv(Path("/root/trade-bot/.env"))
+
+client = TradingClient(
+    os.getenv("APCA_API_KEY_ID"),
+    os.getenv("APCA_API_SECRET_KEY"),
+    paper=os.getenv("APCA_PAPER", "true").lower() == "true"
+)
+
+acct = client.get_account()
+print("cash:", acct.cash)
+print("buying_power:", acct.buying_power)
+print("portfolio_value:", acct.portfolio_value)
+print("equity:", acct.equity)
+
+PY  print(o.symbol, o.side, o.qty, o.status, o.submitted_at)
+```
+```bash
+curl -s https://tv.quantumquant.trade/ | jq
+```
 
 A high-conviction, regime-aware algorithmic trading system designed to identify and execute **momentum continuation and breakout trades** with a focus on:
 

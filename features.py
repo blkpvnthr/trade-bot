@@ -8,11 +8,14 @@ import numpy as np
 import pandas as pd
 import requests
 from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical.stock import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+
+from market_context_builder import TODAY_TAG
 
 
 def normalize_symbol(sym: str) -> str:
@@ -22,13 +25,14 @@ def normalize_symbol(sym: str) -> str:
 THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 ENV_PATH = PROJECT_ROOT / ".env"
+load_instance_env()
 
-OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
+OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-OUT_RAW = OUT_DIR / "daily_raw_bars.csv"
-OUT_FEATURES = OUT_DIR / "daily_features.csv"
-OUT_SYMBOLS = OUT_DIR / "download_universe_symbols.csv"
+OUT_RAW = OUT_DIR / f"{TODAY_TAG}_daily_raw_bars.csv"
+OUT_FEATURES = OUT_DIR / f"{TODAY_TAG}_daily_features.csv"
+OUT_SYMBOLS = OUT_DIR / f"{TODAY_TAG}_download_universe_symbols.csv"
 
 WIKI_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
@@ -42,15 +46,7 @@ REGIME_SYMBOLS = list(dict.fromkeys([
     "VIXY",
 ]))
 
-CORE_SYMBOLS = list(dict.fromkeys([
-    "QQQ",
-    "DIA",
-    "SPY",
-    "IWM",
-    "VIXY",
-    "IBIT",
-    "TLT",
-]))
+CORE_SYMBOLS = pd.read_csv("data/bullish_2026-05-13.csv")["Symbol"].to_list()
 
 # Set to None to use the full combined universe.
 # Use 500/1000 if Alpaca rate limits are an issue.

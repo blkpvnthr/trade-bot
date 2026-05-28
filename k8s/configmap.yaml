@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: quantumquant-config
+  namespace: trade-research
+  labels:
+    app: quantumquant
+data:
+  # ── Shared non-secret configuration ────────────────────────────────────
+  PAPER_ONLY: "true"
+  CONFIG_PATH: "configs/strategy_experiments.yaml"
+
+  # Feed selection (no secrets here)
+  ALPACA_PREMARKET_FEED: "sip"
+  ALPACA_REGULAR_FEED: "iex"
+  ALPACA_FAIL_ON_FEED_ERROR: "0"
+  ALLOW_YFINANCE_MARKET_DATA_FALLBACK: "0"
+
+  # Safety
+  REQUIRE_FRESH_PREMARKET_PLAN_FOR_BUYS: "1"
+  REQUIRE_STRUCTURE_LONG_ALLOWED_FOR_BUYS: "1"
+  SAFE_MODE_ON_PLANNER_FAILURE: "1"
+  BEARISH_MARKET_DISABLE_NEW_LONGS: "1"
+
+  # Screener
+  USE_TRADINGVIEW_SCREENER: "1"
+  TRADINGVIEW_REQUIRE_RVOL: "1.2"
+  TRADINGVIEW_MAX_PLANNER_SYMBOLS: "20"
+
+  # Evaluation
+  LOOKBACK_DAYS: "30"

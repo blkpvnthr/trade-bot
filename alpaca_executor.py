@@ -10,8 +10,8 @@ Default behavior:
     python alpaca_executor.py
 
 Default input files:
-    daily_system_outputs/daily_walkforward_emulated_rebalance_orders.csv
-    daily_system_outputs/daily_walkforward_emulated_exit_orders.csv
+    system-data/daily_walkforward_emulated_rebalance_orders.csv
+    system-data/daily_walkforward_emulated_exit_orders.csv
 
 Paper account is used by default.
 Use --live only when you intentionally want live brokerage execution.
@@ -41,11 +41,14 @@ import os
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 
+from datetime import datetime, timezone, timedelta
+
 import pandas as pd
-from dotenv import load_dotenv
+from config.env_loader import load_instance_env
 
 from alpaca.common.exceptions import APIError
 from alpaca.data.enums import DataFeed
@@ -55,7 +58,10 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, OrderType, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
 
-
+ET = ZoneInfo("America/New_York")
+TODAY_TAG = datetime.now(ET).strftime("%Y%m%d")
+YESTERDAY_TAG = (datetime.now(ET) - timedelta(days=1)).strftime("%Y%m%d")
+DATA_TAG = os.getenv("RL_DATA_DATE", TODAY_TAG)
 # =============================================================================
 # Paths / environment
 # =============================================================================
@@ -64,14 +70,14 @@ THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 ENV_PATH = PROJECT_ROOT / ".env"
 
-load_dotenv(ENV_PATH)
+load_instance_env()
 
-OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
-LOG_DIR = PROJECT_ROOT / "logs" / "execution"
+OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
+LOG_DIR = PROJECT_ROOT / "logs" / "execution" / f"{TODAY_TAG}"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-DEFAULT_REBALANCE_ORDERS = OUT_DIR / "daily_walkforward_emulated_rebalance_orders.csv"
-DEFAULT_EXIT_ORDERS = OUT_DIR / "daily_walkforward_emulated_exit_orders.csv"
+DEFAULT_REBALANCE_ORDERS = OUT_DIR / f"{TODAY_TAG}_daily_walkforward_emulated_rebalance_orders.csv"
+DEFAULT_EXIT_ORDERS = OUT_DIR / f"{TODAY_TAG}_daily_walkforward_emulated_exit_orders.csv"
 
 
 # =============================================================================
@@ -87,8 +93,11 @@ class ExecutorConfig:
     cash_buffer_pct: float = 0.08
     min_cash_dollars: float = 500.0
     min_trade_dollars: float = 100.0
+    # max_order_dollars is dynamically overwritten from account equity unless
+    # dynamic_account_scaling=False.
     max_order_dollars: float = 15_000.0
     max_single_order_qty: int = 10_000
+    dynamic_account_scaling: bool = True
 
     # Execution behavior.
     sell_first: bool = True
@@ -152,6 +161,47 @@ class AccountSnapshot:
     buying_power: float
     portfolio_value: float
     timestamp: str
+
+
+def scale_executor_config_for_account(
+    account: AccountSnapshot | float,
+    config: ExecutorConfig | None = None,
+) -> ExecutorConfig:
+    """
+    Scale execution risk controls from actual account equity.
+
+    This keeps one order, one daily loss, or one cash-buffer rule from being
+    accidentally sized for a $100K account when the broker account is smaller.
+    """
+    cfg = config or ExecutorConfig()
+    equity = float(account.equity if isinstance(account, AccountSnapshot) else account)
+    equity = max(equity, 1.0)
+
+    if not cfg.dynamic_account_scaling:
+        return cfg
+
+    if equity < 15_000:
+        max_order_weight = 0.15
+        cfg.cash_buffer_pct = max(cfg.cash_buffer_pct, 0.12)
+    elif equity < 25_000:
+        max_order_weight = 0.18
+        cfg.cash_buffer_pct = max(cfg.cash_buffer_pct, 0.10)
+    elif equity < 50_000:
+        max_order_weight = 0.20
+        cfg.cash_buffer_pct = max(cfg.cash_buffer_pct, 0.09)
+    else:
+        max_order_weight = 0.25
+        cfg.cash_buffer_pct = max(cfg.cash_buffer_pct, 0.08)
+
+    cfg.min_cash_dollars = max(150.0, min(1_000.0, equity * 0.025))
+    cfg.min_trade_dollars = max(50.0, min(250.0, equity * 0.0075))
+    cfg.max_order_dollars = min(cfg.max_order_dollars, equity * max_order_weight)
+    cfg.max_daily_loss_dollars = min(
+        abs(cfg.max_daily_loss_dollars),
+        equity * abs(cfg.max_daily_loss_pct),
+    )
+
+    return cfg
 
 
 # =============================================================================
@@ -1230,6 +1280,7 @@ def run_execution(
     client = get_trading_client(config)
 
     account_before = get_account_snapshot(client)
+    config = scale_executor_config_for_account(account_before, config)
     positions_before = get_positions_df(client)
 
     print("===== ALPACA EXECUTOR =====")
@@ -1372,8 +1423,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--live", action="store_true")
 
     parser.add_argument("--cash-buffer", type=float, default=0.08)
-    parser.add_argument("--min-trade-dollars", type=float, default=100.0)
+    parser.add_argument("--min-trade-dollars", type=float, default=None)
     parser.add_argument("--max-order-dollars", type=float, default=15_000.0)
+    parser.add_argument("--disable-account-scaling", action="store_true")
     parser.add_argument("--cancel-open-orders-first", action="store_true")
 
     parser.add_argument("--allow-closed-market", action="store_true")
@@ -1432,8 +1484,9 @@ def main() -> None:
     config = ExecutorConfig(
         paper=not args.live,
         cash_buffer_pct=args.cash_buffer,
-        min_trade_dollars=args.min_trade_dollars,
+        min_trade_dollars=args.min_trade_dollars if args.min_trade_dollars is not None else ExecutorConfig().min_trade_dollars,
         max_order_dollars=args.max_order_dollars,
+        dynamic_account_scaling=not args.disable_account_scaling,
         cancel_open_orders_first=args.cancel_open_orders_first,
         require_market_open=not args.allow_closed_market,
         wait_for_market_open=args.wait_for_open,

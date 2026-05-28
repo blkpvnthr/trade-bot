@@ -1,0 +1,52 @@
+# Secrets — never in image
+.env
+.env.*
+*.env
+secrets/
+
+# Runtime artifacts — large, regenerated each run
+system-data/
+daily_system_outputs/
+logs/
+execution_logs/
+rl_models/
+models/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyc
+*.pyo
+
+# Git
+.git/
+.gitignore
+.github/
+
+# Research and docs
+docs/
+research_requests/
+*.md
+!README.md
+
+# Dev artifacts
+.venv/
+venv/
+env/
+*.zip
+*.pkl
+*.pt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CI
+*.log
+*.jsonl
+*.csv

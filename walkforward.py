@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import os
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -59,7 +60,27 @@ NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.tx
 THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parent
 
-INPUT_PATH = PROJECT_ROOT / "daily_system_outputs" / "daily_features.csv"
+_DATA_TAG = os.getenv("RUN_DATA_DATE", os.getenv("RL_DATA_DATE", __import__("datetime").datetime.now().strftime("%Y%m%d")))
+
+
+def _resolve_daily_features_path(date_tag: str = _DATA_TAG) -> Path:
+    env_override = os.getenv("DAILY_FEATURES_PATH", "")
+    if env_override and Path(env_override).exists():
+        return Path(env_override)
+    new_path = PROJECT_ROOT / "system-data" / date_tag / f"{date_tag}_daily_features.csv"
+    if new_path.exists():
+        return new_path
+    old_dated = PROJECT_ROOT / "daily_system_outputs" / f"{date_tag}_daily_features.csv"
+    if old_dated.exists():
+        return old_dated
+    legacy = PROJECT_ROOT / "daily_system_outputs" / "daily_features.csv"
+    if legacy.exists():
+        return legacy
+    return new_path  # canonical; let caller handle missing
+
+
+INPUT_PATH = _resolve_daily_features_path()
+print(f"[features-path] walkforward resolved={INPUT_PATH} exists={INPUT_PATH.exists()}")
 OUT_DIR = PROJECT_ROOT / "daily_system_outputs"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -77,7 +98,15 @@ OUT_MODEL_DIAGNOSTICS = OUT_DIR / "wf_probabilistic_risk_model_diagnostics.csv"
 # =============================================================================
 
 RANDOM_STATE = 42
-STARTING_EQUITY = 100_000.00
+
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except Exception:
+        return default
+
+
+STARTING_EQUITY = env_float("STARTING_EQUITY", env_float("TRADING_ACCOUNT_EQUITY", 100_000.00))
 
 # Sequence model configuration.
 # The Transformer sees rolling per-symbol windows instead of one isolated row.

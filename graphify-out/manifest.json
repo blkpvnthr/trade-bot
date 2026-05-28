@@ -1,0 +1,3462 @@
+{
+  "/Users/blkpvnthr/Desktop/trader/production_regime_sizing_model.py": {
+    "mtime": 1779103956.3046167,
+    "ast_hash": "df0f0bb99c20bc43cdf0b1a17d1d53d1",
+    "semantic_hash": "df0f0bb99c20bc43cdf0b1a17d1d53d1"
+  },
+  "/Users/blkpvnthr/Desktop/trader/market_context_builder.py": {
+    "mtime": 1779076555.932537,
+    "ast_hash": "dd852bbdc8890255f974c8a9e31ca13e",
+    "semantic_hash": "dd852bbdc8890255f974c8a9e31ca13e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/tune_spx_multibar_rl.py": {
+    "mtime": 1778779431.4008543,
+    "ast_hash": "cffced28160dec47bda9b96d6f60e5df",
+    "semantic_hash": "cffced28160dec47bda9b96d6f60e5df"
+  },
+  "/Users/blkpvnthr/Desktop/trader/run.py": {
+    "mtime": 1779315680.6301706,
+    "ast_hash": "4665c4bb8dfd480ad3ce0644db753a4e",
+    "semantic_hash": "4665c4bb8dfd480ad3ce0644db753a4e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/tune_rl_intraday.py": {
+    "mtime": 1778738838.1531682,
+    "ast_hash": "eb3dda04c903f16d54c537f80ee55c3c",
+    "semantic_hash": "eb3dda04c903f16d54c537f80ee55c3c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/scanner.py": {
+    "mtime": 1778600867.9898262,
+    "ast_hash": "ac685989a0735a9d0a2afca4b800b44e",
+    "semantic_hash": "ac685989a0735a9d0a2afca4b800b44e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/tradingview_institutional_screener.py": {
+    "mtime": 1779148299.7662709,
+    "ast_hash": "ab75d0069ea6b2dd2a1121e7c7db71cd",
+    "semantic_hash": "ab75d0069ea6b2dd2a1121e7c7db71cd"
+  },
+  "/Users/blkpvnthr/Desktop/trader/sr_rl_agent.py": {
+    "mtime": 1779149861.9518912,
+    "ast_hash": "bc5fe5031159f7e22b600c6765d6fae5",
+    "semantic_hash": "bc5fe5031159f7e22b600c6765d6fae5"
+  },
+  "/Users/blkpvnthr/Desktop/trader/rl_intraday_structure_trainer.py": {
+    "mtime": 1779308699.4990027,
+    "ast_hash": "6887fe10b520c613a7a7d5a311a5aae3",
+    "semantic_hash": "6887fe10b520c613a7a7d5a311a5aae3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/llm_sentiment_universe_selector.py": {
+    "mtime": 1779142390.9659722,
+    "ast_hash": "5ca46e4f6c09a1380cdf3fcdce569a48",
+    "semantic_hash": "5ca46e4f6c09a1380cdf3fcdce569a48"
+  },
+  "/Users/blkpvnthr/Desktop/trader/portfolio_rebalancer.py": {
+    "mtime": 1778771995.6116867,
+    "ast_hash": "d191422fddf48ec6fbdd2831e5435cb1",
+    "semantic_hash": "d191422fddf48ec6fbdd2831e5435cb1"
+  },
+  "/Users/blkpvnthr/Desktop/trader/trade.py": {
+    "mtime": 1778772000.271286,
+    "ast_hash": "3e46ac55b24cb36685566a023a6480be",
+    "semantic_hash": "3e46ac55b24cb36685566a023a6480be"
+  },
+  "/Users/blkpvnthr/Desktop/trader/webhook.py": {
+    "mtime": 1779095816.2960403,
+    "ast_hash": "518af8da23be481bdf65a6b2d6c1fc37",
+    "semantic_hash": "518af8da23be481bdf65a6b2d6c1fc37"
+  },
+  "/Users/blkpvnthr/Desktop/trader/portfolio_optimizer.py": {
+    "mtime": 1778530206.8537328,
+    "ast_hash": "c1f281c4c0ebd7a0bd67f2e463dc7e55",
+    "semantic_hash": "c1f281c4c0ebd7a0bd67f2e463dc7e55"
+  },
+  "/Users/blkpvnthr/Desktop/trader/options_booster.py": {
+    "mtime": 1779149843.6094487,
+    "ast_hash": "88d2f13153d1a6ac8e592b8498a7e705",
+    "semantic_hash": "88d2f13153d1a6ac8e592b8498a7e705"
+  },
+  "/Users/blkpvnthr/Desktop/trader/walkforward.py": {
+    "mtime": 1778090995.603842,
+    "ast_hash": "8c9cf7ea61f5da28f220a1760e86e52d",
+    "semantic_hash": "8c9cf7ea61f5da28f220a1760e86e52d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/features.py": {
+    "mtime": 1778723463.7598276,
+    "ast_hash": "44205c76c927fd5bb1c01ad4c446db86",
+    "semantic_hash": "44205c76c927fd5bb1c01ad4c446db86"
+  },
+  "/Users/blkpvnthr/Desktop/trader/alpaca_executor.py": {
+    "mtime": 1778771115.2845647,
+    "ast_hash": "90c34fc4c983e42055c079569c93f632",
+    "semantic_hash": "90c34fc4c983e42055c079569c93f632"
+  },
+  "/Users/blkpvnthr/Desktop/trader/model.py": {
+    "mtime": 1779210805.7984602,
+    "ast_hash": "52537d8af7df79fabe70a34e694aa06a",
+    "semantic_hash": "52537d8af7df79fabe70a34e694aa06a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/spx_price_action_layer.py": {
+    "mtime": 1778780966.1788406,
+    "ast_hash": "4b3de1c7b09ddd76c297ddd08691ea6f",
+    "semantic_hash": "4b3de1c7b09ddd76c297ddd08691ea6f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/build_intraday_training_dataset.py": {
+    "mtime": 1779308043.4320636,
+    "ast_hash": "11d2c6efa4a7bb1538c0eb40acbce320",
+    "semantic_hash": "11d2c6efa4a7bb1538c0eb40acbce320"
+  },
+  "/Users/blkpvnthr/Desktop/trader/premarket_trade_planner.py": {
+    "mtime": 1779308013.997929,
+    "ast_hash": "2ba736d0d5cfaa7f476b1b974b200223",
+    "semantic_hash": "2ba736d0d5cfaa7f476b1b974b200223"
+  },
+  "/Users/blkpvnthr/Desktop/trader/stream_confirmed_movement_gate_trade_plan_trailing.py": {
+    "mtime": 1778778088.589063,
+    "ast_hash": "05fb6362391d39dcfc797ded3e5e6fdf",
+    "semantic_hash": "05fb6362391d39dcfc797ded3e5e6fdf"
+  },
+  "/Users/blkpvnthr/Desktop/trader/validation_report.json": {
+    "mtime": 1779210400.6456337,
+    "ast_hash": "d71e61698f0b7b1838da07d7eb927e69",
+    "semantic_hash": "d71e61698f0b7b1838da07d7eb927e69"
+  },
+  "/Users/blkpvnthr/Desktop/trader/improvement_plan.json": {
+    "mtime": 1779210391.1321373,
+    "ast_hash": "b4decd95ab33df7798c46f7ad257ef3f",
+    "semantic_hash": "b4decd95ab33df7798c46f7ad257ef3f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/rl_spx_breakout_trainer.py": {
+    "mtime": 1778739380.8510094,
+    "ast_hash": "f3cb0f7e6b8ca2d4c4955f63ba5ac802",
+    "semantic_hash": "f3cb0f7e6b8ca2d4c4955f63ba5ac802"
+  },
+  "/Users/blkpvnthr/Desktop/trader/visualize_outputs.py": {
+    "mtime": 1777941410.1175513,
+    "ast_hash": "13992a90d4a6d49a9903bd16c8b0b0d2",
+    "semantic_hash": "13992a90d4a6d49a9903bd16c8b0b0d2"
+  },
+  "/Users/blkpvnthr/Desktop/trader/forecast_engine.py": {
+    "mtime": 1779308690.434174,
+    "ast_hash": "c4a9e5e82451990cb0cc0692ccc287d0",
+    "semantic_hash": "c4a9e5e82451990cb0cc0692ccc287d0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/rl_spx_breakout_trainer_long_only_addlong.py": {
+    "mtime": 1778739751.3766806,
+    "ast_hash": "ef2cb35f3a45793cdc9cbcc1bee0e859",
+    "semantic_hash": "ef2cb35f3a45793cdc9cbcc1bee0e859"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system_self_awareness.py": {
+    "mtime": 1779104348.5821579,
+    "ast_hash": "19950c10bf3222ce5d2af60ac1638495",
+    "semantic_hash": "19950c10bf3222ce5d2af60ac1638495"
+  },
+  "/Users/blkpvnthr/Desktop/trader/deeplob_orderbook_direction_layer.py": {
+    "mtime": 1778785668.8462687,
+    "ast_hash": "0b96d678ecf355eb740dfa5c97278b00",
+    "semantic_hash": "0b96d678ecf355eb740dfa5c97278b00"
+  },
+  "/Users/blkpvnthr/Desktop/trader/execution_alpha_gate.py": {
+    "mtime": 1778719036.5174515,
+    "ast_hash": "a4ef4cc772b1dd35e682fc3cce43603a",
+    "semantic_hash": "a4ef4cc772b1dd35e682fc3cce43603a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/tune_sr_rl_agent.py": {
+    "mtime": 1778781593.7625782,
+    "ast_hash": "04605b71b70619d77447154fd1ae6932",
+    "semantic_hash": "04605b71b70619d77447154fd1ae6932"
+  },
+  "/Users/blkpvnthr/Desktop/trader/premarket_data_collector.py": {
+    "mtime": 1778718086.5665824,
+    "ast_hash": "28223c808f1fdf316e3ac2361ff5804d",
+    "semantic_hash": "28223c808f1fdf316e3ac2361ff5804d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/strategies/tux_mtf.py": {
+    "mtime": 1779312296.6737208,
+    "ast_hash": "8d21718f44bb9648777e7be55f0f19d6",
+    "semantic_hash": "8d21718f44bb9648777e7be55f0f19d6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/strategies/registry.py": {
+    "mtime": 1779312624.1490138,
+    "ast_hash": "e590609c37202824bb03e0c95b197a8e",
+    "semantic_hash": "e590609c37202824bb03e0c95b197a8e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/strategies/pivot_points.py": {
+    "mtime": 1779312330.148076,
+    "ast_hash": "f4d2170a69df3ca37773831db4e3f841",
+    "semantic_hash": "f4d2170a69df3ca37773831db4e3f841"
+  },
+  "/Users/blkpvnthr/Desktop/trader/strategies/__init__.py": {
+    "mtime": 1779312260.1367075,
+    "ast_hash": "ff224fb4f8957584ffd6d48bb91ce3e7",
+    "semantic_hash": "ff224fb4f8957584ffd6d48bb91ce3e7"
+  },
+  "/Users/blkpvnthr/Desktop/trader/strategies/liquidity_sweep.py": {
+    "mtime": 1779312396.4593153,
+    "ast_hash": "68bc1934d4447dca16d56660514435f0",
+    "semantic_hash": "68bc1934d4447dca16d56660514435f0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/strategies/orb_8am.py": {
+    "mtime": 1779312366.301487,
+    "ast_hash": "d3f6e2e0dc0cb468440f55db73dbd91a",
+    "semantic_hash": "d3f6e2e0dc0cb468440f55db73dbd91a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/strategies/flawless_victory.py": {
+    "mtime": 1779314584.0354674,
+    "ast_hash": "06f509bdb04044c2c7fef417540d180b",
+    "semantic_hash": "06f509bdb04044c2c7fef417540d180b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/strategies/base.py": {
+    "mtime": 1779312258.5392153,
+    "ast_hash": "29f136d27b6873ead9ab990f4e305a30",
+    "semantic_hash": "29f136d27b6873ead9ab990f4e305a30"
+  },
+  "/Users/blkpvnthr/Desktop/trader/.claude/settings.local.json": {
+    "mtime": 1779210745.8927584,
+    "ast_hash": "cbffedc2f8dbcc32d01c9cb4b80faa4c",
+    "semantic_hash": "cbffedc2f8dbcc32d01c9cb4b80faa4c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180611.json": {
+    "mtime": 1778609171.4280984,
+    "ast_hash": "bd1168c8219d8b54731223822d656f3a",
+    "semantic_hash": "bd1168c8219d8b54731223822d656f3a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_151707.json": {
+    "mtime": 1777994253.3962257,
+    "ast_hash": "8b670f461716252a7983fcb853cb8729",
+    "semantic_hash": "8b670f461716252a7983fcb853cb8729"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_195556.json": {
+    "mtime": 1778615757.0908692,
+    "ast_hash": "eca03565966ee55b2cd421f36b0ee5d9",
+    "semantic_hash": "eca03565966ee55b2cd421f36b0ee5d9"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/account_after_20260505_033534.json": {
+    "mtime": 1777952134.6871953,
+    "ast_hash": "288f30f69706213b2e90c4a4ca4d1aa4",
+    "semantic_hash": "288f30f69706213b2e90c4a4ca4d1aa4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192801.json": {
+    "mtime": 1778614081.6113033,
+    "ast_hash": "fd3ed01a64877ffba1446735ab57acce",
+    "semantic_hash": "fd3ed01a64877ffba1446735ab57acce"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181041.json": {
+    "mtime": 1778609442.0693743,
+    "ast_hash": "b18536e741dd954336569548c87a4119",
+    "semantic_hash": "b18536e741dd954336569548c87a4119"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181942.json": {
+    "mtime": 1778609982.3407211,
+    "ast_hash": "e44f85f3f0a224c1417cc5346ab51d78",
+    "semantic_hash": "e44f85f3f0a224c1417cc5346ab51d78"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181554.json": {
+    "mtime": 1778609754.3365588,
+    "ast_hash": "4f0dadd63af1cc147e2025a18fe893e6",
+    "semantic_hash": "4f0dadd63af1cc147e2025a18fe893e6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184756.json": {
+    "mtime": 1778611677.0439327,
+    "ast_hash": "e3f7d7919cc5a8f33e160e8bf41e0374",
+    "semantic_hash": "e3f7d7919cc5a8f33e160e8bf41e0374"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180555.json": {
+    "mtime": 1778609155.9781086,
+    "ast_hash": "55cb47e31d77fbbdab0a147fbe6d6a9b",
+    "semantic_hash": "55cb47e31d77fbbdab0a147fbe6d6a9b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182138.json": {
+    "mtime": 1778610099.0564327,
+    "ast_hash": "527834de28f3a5a8451afb8245dbf311",
+    "semantic_hash": "527834de28f3a5a8451afb8245dbf311"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260506_193413.json": {
+    "mtime": 1778096091.979047,
+    "ast_hash": "59d951092cc77c253d51c08c1417e761",
+    "semantic_hash": "59d951092cc77c253d51c08c1417e761"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_195827.json": {
+    "mtime": 1778011133.7231596,
+    "ast_hash": "01c7b7274a67ba80ec2dd028e2edd515",
+    "semantic_hash": "01c7b7274a67ba80ec2dd028e2edd515"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185700.json": {
+    "mtime": 1778612220.5221772,
+    "ast_hash": "983bd0f4002f59051f1c525d36122e05",
+    "semantic_hash": "983bd0f4002f59051f1c525d36122e05"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185215.json": {
+    "mtime": 1778611935.766419,
+    "ast_hash": "83055f1911e070b8e113e5282c25336e",
+    "semantic_hash": "83055f1911e070b8e113e5282c25336e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182303.json": {
+    "mtime": 1778610183.3547115,
+    "ast_hash": "cdca74cb36d3a37e8002959718a345d3",
+    "semantic_hash": "cdca74cb36d3a37e8002959718a345d3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183142.json": {
+    "mtime": 1778610703.1729052,
+    "ast_hash": "a803a911a615727cd9da97299dcf4ba6",
+    "semantic_hash": "a803a911a615727cd9da97299dcf4ba6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/session_planning_state.json": {
+    "mtime": 1778679103.6666481,
+    "ast_hash": "867eb68c6810317eed9d1d63ee158595",
+    "semantic_hash": "867eb68c6810317eed9d1d63ee158595"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/account_before_20260505_041008.json": {
+    "mtime": 1777954208.0758266,
+    "ast_hash": "8b65dd69282d7b21aa68d4ef0386d36a",
+    "semantic_hash": "8b65dd69282d7b21aa68d4ef0386d36a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_163615.json": {
+    "mtime": 1778603814.038206,
+    "ast_hash": "328defd2a0c842631292c092747194d6",
+    "semantic_hash": "328defd2a0c842631292c092747194d6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190113.json": {
+    "mtime": 1778612474.2174528,
+    "ast_hash": "8a0c8b43d665db6ade95b20699932345",
+    "semantic_hash": "8a0c8b43d665db6ade95b20699932345"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_144618.json": {
+    "mtime": 1778597368.7614045,
+    "ast_hash": "f31d48a7176135bebd5410cb21abbf19",
+    "semantic_hash": "f31d48a7176135bebd5410cb21abbf19"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185741.json": {
+    "mtime": 1778612262.372894,
+    "ast_hash": "017829cc4a1f58522ea133baa98d780b",
+    "semantic_hash": "017829cc4a1f58522ea133baa98d780b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185254.json": {
+    "mtime": 1778611975.0600421,
+    "ast_hash": "b252bde5cc9fc8e79d0019d65a5a51f1",
+    "semantic_hash": "b252bde5cc9fc8e79d0019d65a5a51f1"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190406.json": {
+    "mtime": 1778612647.249243,
+    "ast_hash": "bf8d6869959ea31fa521830888788f3b",
+    "semantic_hash": "bf8d6869959ea31fa521830888788f3b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183416.json": {
+    "mtime": 1778610856.8346608,
+    "ast_hash": "1dd810fb5952732c6dfba802755e8545",
+    "semantic_hash": "1dd810fb5952732c6dfba802755e8545"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_193524.json": {
+    "mtime": 1778614537.1047535,
+    "ast_hash": "9185aa3c5b49b0fb9983217e74eacfdb",
+    "semantic_hash": "9185aa3c5b49b0fb9983217e74eacfdb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_195809.json": {
+    "mtime": 1778615890.3989878,
+    "ast_hash": "7eea44bd12da5387405be96bafc26c31",
+    "semantic_hash": "7eea44bd12da5387405be96bafc26c31"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185223.json": {
+    "mtime": 1778611943.2956178,
+    "ast_hash": "c35af6535ada02888b2b66f1158e0118",
+    "semantic_hash": "c35af6535ada02888b2b66f1158e0118"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182732.json": {
+    "mtime": 1778610465.7715044,
+    "ast_hash": "26199d6852111ad13db170f52203c04c",
+    "semantic_hash": "26199d6852111ad13db170f52203c04c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180830.json": {
+    "mtime": 1778609311.067837,
+    "ast_hash": "8944fb3fc9b86e79ef280dcab7a281ac",
+    "semantic_hash": "8944fb3fc9b86e79ef280dcab7a281ac"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192724.json": {
+    "mtime": 1778614044.4573565,
+    "ast_hash": "7cac0f25ec22bf95b16b9e629dca82e3",
+    "semantic_hash": "7cac0f25ec22bf95b16b9e629dca82e3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192358.json": {
+    "mtime": 1778613864.4225879,
+    "ast_hash": "bf0f87b1f35f98227a7a3b7271cef6cb",
+    "semantic_hash": "bf0f87b1f35f98227a7a3b7271cef6cb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_151859.json": {
+    "mtime": 1777994365.0618262,
+    "ast_hash": "5b411821f4a924627af19483bbf56d90",
+    "semantic_hash": "5b411821f4a924627af19483bbf56d90"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184234.json": {
+    "mtime": 1778611354.5608099,
+    "ast_hash": "e5c1a8f7e469dc00d037470160d4d12a",
+    "semantic_hash": "e5c1a8f7e469dc00d037470160d4d12a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_152234.json": {
+    "mtime": 1777994555.0616693,
+    "ast_hash": "9cd05f22c790f5e091f8568b1f86bebc",
+    "semantic_hash": "9cd05f22c790f5e091f8568b1f86bebc"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_193158.json": {
+    "mtime": 1778614331.2565982,
+    "ast_hash": "3b01a1c9186c37e013a9c9c1c1cf89c6",
+    "semantic_hash": "3b01a1c9186c37e013a9c9c1c1cf89c6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192821.json": {
+    "mtime": 1778614114.5613267,
+    "ast_hash": "21ce5b859a489a852ce26bf26a513a86",
+    "semantic_hash": "21ce5b859a489a852ce26bf26a513a86"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190959.json": {
+    "mtime": 1778613038.431159,
+    "ast_hash": "42e8f709052fda6db043365bfb869e5a",
+    "semantic_hash": "42e8f709052fda6db043365bfb869e5a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/kill_switch_state.json": {
+    "mtime": 1778716666.701473,
+    "ast_hash": "b1439d7aedf87e2028d0c803c3b54d83",
+    "semantic_hash": "b1439d7aedf87e2028d0c803c3b54d83"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183732.json": {
+    "mtime": 1778611053.0368261,
+    "ast_hash": "a3fe584dbce564a1665fad20db98fccd",
+    "semantic_hash": "a3fe584dbce564a1665fad20db98fccd"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181830.json": {
+    "mtime": 1778609911.057058,
+    "ast_hash": "97b11758ec7940cac3d2e6b6ceb2d05c",
+    "semantic_hash": "97b11758ec7940cac3d2e6b6ceb2d05c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182031.json": {
+    "mtime": 1778610031.4327023,
+    "ast_hash": "2daa78ee414db637532c4923a2e73402",
+    "semantic_hash": "2daa78ee414db637532c4923a2e73402"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_195127.json": {
+    "mtime": 1778615488.5845551,
+    "ast_hash": "22070fcb91132b2397d24f2c6aa80ecf",
+    "semantic_hash": "22070fcb91132b2397d24f2c6aa80ecf"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182532.json": {
+    "mtime": 1778610332.9411297,
+    "ast_hash": "fffbb0b9ad5c5d2063393f2b322c5bca",
+    "semantic_hash": "fffbb0b9ad5c5d2063393f2b322c5bca"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181125.json": {
+    "mtime": 1778609485.8129647,
+    "ast_hash": "79d01abf3f14e937c7c243e6c72de27f",
+    "semantic_hash": "79d01abf3f14e937c7c243e6c72de27f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181430.json": {
+    "mtime": 1778609670.875439,
+    "ast_hash": "ee58b8ef43227865e7693e08b34e3332",
+    "semantic_hash": "ee58b8ef43227865e7693e08b34e3332"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_160554.json": {
+    "mtime": 1777997154.9037118,
+    "ast_hash": "58d2ac959a867a34680c4e390949731a",
+    "semantic_hash": "58d2ac959a867a34680c4e390949731a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183533.json": {
+    "mtime": 1778610934.097883,
+    "ast_hash": "f28bb77ee28c695a631fc83fd2b6de7f",
+    "semantic_hash": "f28bb77ee28c695a631fc83fd2b6de7f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184521.json": {
+    "mtime": 1778611521.4960856,
+    "ast_hash": "4db678bafa331e86427316ea6f436201",
+    "semantic_hash": "4db678bafa331e86427316ea6f436201"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180923.json": {
+    "mtime": 1778609364.0684757,
+    "ast_hash": "12d664379261ffb7f3ea80fec37f7209",
+    "semantic_hash": "12d664379261ffb7f3ea80fec37f7209"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184126.json": {
+    "mtime": 1778611287.1538842,
+    "ast_hash": "fbb1577d06308fad40c6debb5741a978",
+    "semantic_hash": "fbb1577d06308fad40c6debb5741a978"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183102.json": {
+    "mtime": 1778610662.7678509,
+    "ast_hash": "0e4f02bec2817e3b859afae0d2cf56bb",
+    "semantic_hash": "0e4f02bec2817e3b859afae0d2cf56bb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260506_193238.json": {
+    "mtime": 1778096021.9918664,
+    "ast_hash": "50dcbf443cb339a9c95b6da5d120c46c",
+    "semantic_hash": "50dcbf443cb339a9c95b6da5d120c46c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181353.json": {
+    "mtime": 1778609633.779122,
+    "ast_hash": "041cb65945a2e3807a14d5f6d6666f9d",
+    "semantic_hash": "041cb65945a2e3807a14d5f6d6666f9d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185740.json": {
+    "mtime": 1778612260.49652,
+    "ast_hash": "3207b6d6d7b5d82c826775cff95ff862",
+    "semantic_hash": "3207b6d6d7b5d82c826775cff95ff862"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_195717.json": {
+    "mtime": 1778615838.0746856,
+    "ast_hash": "6d47c77dff92168636c6ed372ab2512a",
+    "semantic_hash": "6d47c77dff92168636c6ed372ab2512a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183339.json": {
+    "mtime": 1778610819.5371318,
+    "ast_hash": "2df83d0de99f944ecb27407207a5fc24",
+    "semantic_hash": "2df83d0de99f944ecb27407207a5fc24"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192528.json": {
+    "mtime": 1778613929.2086043,
+    "ast_hash": "dec597cadb116c76196488c78374f1e9",
+    "semantic_hash": "dec597cadb116c76196488c78374f1e9"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180846.json": {
+    "mtime": 1778609326.3694053,
+    "ast_hash": "d387229e5b339c2a0f89aa7cd98627f3",
+    "semantic_hash": "d387229e5b339c2a0f89aa7cd98627f3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/account_before_20260512_162444.json": {
+    "mtime": 1778603084.8312144,
+    "ast_hash": "d84a8e2f1f63b2faae65912d96f31e22",
+    "semantic_hash": "d84a8e2f1f63b2faae65912d96f31e22"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182617.json": {
+    "mtime": 1778610377.751166,
+    "ast_hash": "e20cc3b62c9bfe220dc5425997be7d0e",
+    "semantic_hash": "e20cc3b62c9bfe220dc5425997be7d0e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_151803.json": {
+    "mtime": 1777994309.4210563,
+    "ast_hash": "bb856c1486d4575e1db5a3546acf740e",
+    "semantic_hash": "bb856c1486d4575e1db5a3546acf740e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191312.json": {
+    "mtime": 1778613192.8017907,
+    "ast_hash": "239cd0caa3e2b1f438ae5ba5dd92015e",
+    "semantic_hash": "239cd0caa3e2b1f438ae5ba5dd92015e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190446.json": {
+    "mtime": 1778612686.824659,
+    "ast_hash": "05bc6e8da643f431b9476cc0b658a07b",
+    "semantic_hash": "05bc6e8da643f431b9476cc0b658a07b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_160523.json": {
+    "mtime": 1777997123.9673069,
+    "ast_hash": "e113a0f2b0c11274cb07c644bea463f0",
+    "semantic_hash": "e113a0f2b0c11274cb07c644bea463f0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180807.json": {
+    "mtime": 1778609287.990122,
+    "ast_hash": "1285121f91de9e1f02771743ed041a96",
+    "semantic_hash": "1285121f91de9e1f02771743ed041a96"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181200.json": {
+    "mtime": 1778609520.6066935,
+    "ast_hash": "2a41f1b57f2b74be178f951155b29207",
+    "semantic_hash": "2a41f1b57f2b74be178f951155b29207"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_175715.json": {
+    "mtime": 1778608635.2902265,
+    "ast_hash": "84189312cf5b9527eefccdf22fc20a76",
+    "semantic_hash": "84189312cf5b9527eefccdf22fc20a76"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185541.json": {
+    "mtime": 1778612142.183957,
+    "ast_hash": "a06568af9b32b4e05f059bbd07db333b",
+    "semantic_hash": "a06568af9b32b4e05f059bbd07db333b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_194350.json": {
+    "mtime": 1778615030.8863976,
+    "ast_hash": "4c5698d7a671e4424d93125c90c494db",
+    "semantic_hash": "4c5698d7a671e4424d93125c90c494db"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190651.json": {
+    "mtime": 1778612811.4261298,
+    "ast_hash": "2605206ee7ba192af421a083a60a6783",
+    "semantic_hash": "2605206ee7ba192af421a083a60a6783"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184242.json": {
+    "mtime": 1778611363.0887837,
+    "ast_hash": "89f8ac080d793e5dac41cdb3195dae29",
+    "semantic_hash": "89f8ac080d793e5dac41cdb3195dae29"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180651.json": {
+    "mtime": 1778609211.5174208,
+    "ast_hash": "47b5cbca34f80fa930e0ab6f0705b64c",
+    "semantic_hash": "47b5cbca34f80fa930e0ab6f0705b64c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_193641.json": {
+    "mtime": 1778614601.9623597,
+    "ast_hash": "2dc705c377b768dd72c0d4083fc47d8e",
+    "semantic_hash": "2dc705c377b768dd72c0d4083fc47d8e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192953.json": {
+    "mtime": 1778614193.7274275,
+    "ast_hash": "93b94776f902f85576ab125227f583dd",
+    "semantic_hash": "93b94776f902f85576ab125227f583dd"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182816.json": {
+    "mtime": 1778610496.7036223,
+    "ast_hash": "e1f12beee1bb3253584cec58e4fff199",
+    "semantic_hash": "e1f12beee1bb3253584cec58e4fff199"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180128.json": {
+    "mtime": 1778608901.6407325,
+    "ast_hash": "6f107221511f74480b6719240f406d71",
+    "semantic_hash": "6f107221511f74480b6719240f406d71"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185015.json": {
+    "mtime": 1778611828.387705,
+    "ast_hash": "4e8187ac04ed2fb7bb51230c4610bd81",
+    "semantic_hash": "4e8187ac04ed2fb7bb51230c4610bd81"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184741.json": {
+    "mtime": 1778611661.552732,
+    "ast_hash": "53ace7021a0ffce573883efe3c76c34a",
+    "semantic_hash": "53ace7021a0ffce573883efe3c76c34a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191810.json": {
+    "mtime": 1778613491.7745364,
+    "ast_hash": "54dcdcdbee93b60333e940369c218cdd",
+    "semantic_hash": "54dcdcdbee93b60333e940369c218cdd"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185500.json": {
+    "mtime": 1778612101.1267006,
+    "ast_hash": "15df8799bc974604c7684d4c182e1cf6",
+    "semantic_hash": "15df8799bc974604c7684d4c182e1cf6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_152741.json": {
+    "mtime": 1777994861.8478854,
+    "ast_hash": "cff2f826e85c98ab92ebd5203462497c",
+    "semantic_hash": "cff2f826e85c98ab92ebd5203462497c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181001.json": {
+    "mtime": 1778609402.0328763,
+    "ast_hash": "416a769e3af86ba924aa78b01bb9bf4f",
+    "semantic_hash": "416a769e3af86ba924aa78b01bb9bf4f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181902.json": {
+    "mtime": 1778609943.2189152,
+    "ast_hash": "c3451a3bd469010153c4c6f9e1f1fcce",
+    "semantic_hash": "c3451a3bd469010153c4c6f9e1f1fcce"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185107.json": {
+    "mtime": 1778611867.3676264,
+    "ast_hash": "71326bb810a24b1ed2b589cbfc6e65c2",
+    "semantic_hash": "71326bb810a24b1ed2b589cbfc6e65c2"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181514.json": {
+    "mtime": 1778609714.7196088,
+    "ast_hash": "0375d5ea3874878742e4ac1b3e658ce7",
+    "semantic_hash": "0375d5ea3874878742e4ac1b3e658ce7"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183529.json": {
+    "mtime": 1778610929.9039836,
+    "ast_hash": "2c139dac704015fc022d6323594c928d",
+    "semantic_hash": "2c139dac704015fc022d6323594c928d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181909.json": {
+    "mtime": 1778609949.701311,
+    "ast_hash": "761aa49b744e6cea956b2c3e46d787f0",
+    "semantic_hash": "761aa49b744e6cea956b2c3e46d787f0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180532.json": {
+    "mtime": 1778609132.4999418,
+    "ast_hash": "c727edac0145e5b6bb3cd15843e1f1de",
+    "semantic_hash": "c727edac0145e5b6bb3cd15843e1f1de"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185622.json": {
+    "mtime": 1778612183.8738017,
+    "ast_hash": "818921dbe2ff62e9409f1529a9bd339d",
+    "semantic_hash": "818921dbe2ff62e9409f1529a9bd339d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181948.json": {
+    "mtime": 1778609988.6990771,
+    "ast_hash": "409631b80570727e7ea1f7b9aff2f04e",
+    "semantic_hash": "409631b80570727e7ea1f7b9aff2f04e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191732.json": {
+    "mtime": 1778613453.6282988,
+    "ast_hash": "30d7ee3e671875363e44f7875069ee54",
+    "semantic_hash": "30d7ee3e671875363e44f7875069ee54"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190031.json": {
+    "mtime": 1778612433.156766,
+    "ast_hash": "164a6bd6484fb8566bc314767f3da15e",
+    "semantic_hash": "164a6bd6484fb8566bc314767f3da15e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191437.json": {
+    "mtime": 1778613304.0809948,
+    "ast_hash": "b88d1ec37138c42f282e4fa98ac05599",
+    "semantic_hash": "b88d1ec37138c42f282e4fa98ac05599"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185423.json": {
+    "mtime": 1778612063.6945355,
+    "ast_hash": "c245f940be80c13f6a24502e7186558c",
+    "semantic_hash": "c245f940be80c13f6a24502e7186558c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181319.json": {
+    "mtime": 1778609599.3163018,
+    "ast_hash": "c8ebddadcf8d70438bbdbc13061945b6",
+    "semantic_hash": "c8ebddadcf8d70438bbdbc13061945b6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_193324.json": {
+    "mtime": 1778614404.6582925,
+    "ast_hash": "ff86d692b4feb3dfb5f3b1f4b81d267a",
+    "semantic_hash": "ff86d692b4feb3dfb5f3b1f4b81d267a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183332.json": {
+    "mtime": 1778610813.227395,
+    "ast_hash": "f4a43b29ccd2fa625c3da6830e0ebf39",
+    "semantic_hash": "f4a43b29ccd2fa625c3da6830e0ebf39"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184623.json": {
+    "mtime": 1778611583.7887988,
+    "ast_hash": "9ea3f695ccbca9b82272e656568f7ac7",
+    "semantic_hash": "9ea3f695ccbca9b82272e656568f7ac7"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191708.json": {
+    "mtime": 1778613428.5211754,
+    "ast_hash": "c61aa14fa243ee2280f5702704bf83f7",
+    "semantic_hash": "c61aa14fa243ee2280f5702704bf83f7"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260513_option_booster_state.json": {
+    "mtime": 1778679239.246502,
+    "ast_hash": "e96ecc141ad0509fbdcb6e7f2799b716",
+    "semantic_hash": "e96ecc141ad0509fbdcb6e7f2799b716"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_152204.json": {
+    "mtime": 1777994524.746975,
+    "ast_hash": "1119f7e177d57517b873c50b5b68e3a1",
+    "semantic_hash": "1119f7e177d57517b873c50b5b68e3a1"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_152711.json": {
+    "mtime": 1777994831.51922,
+    "ast_hash": "b1b7218658479340ad4b790d41c8dc54",
+    "semantic_hash": "b1b7218658479340ad4b790d41c8dc54"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/account_after_20260505_034023.json": {
+    "mtime": 1777952423.762612,
+    "ast_hash": "7d3f15b134e14eac3ac0b54ad41bbf9b",
+    "semantic_hash": "7d3f15b134e14eac3ac0b54ad41bbf9b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_175354.json": {
+    "mtime": 1778608535.383419,
+    "ast_hash": "16ebd9e3afd3eae2ae88223f2a97774d",
+    "semantic_hash": "16ebd9e3afd3eae2ae88223f2a97774d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182411.json": {
+    "mtime": 1778610251.8704603,
+    "ast_hash": "089ca21fc7179e08290b08c00c86cb18",
+    "semantic_hash": "089ca21fc7179e08290b08c00c86cb18"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/account_before_20260512_162029.json": {
+    "mtime": 1778602829.9730828,
+    "ast_hash": "e4c04040f4eee580a3f9abdc5906d030",
+    "semantic_hash": "e4c04040f4eee580a3f9abdc5906d030"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190528.json": {
+    "mtime": 1778612728.9418955,
+    "ast_hash": "50cfb1679045bfc44333933608babb75",
+    "semantic_hash": "50cfb1679045bfc44333933608babb75"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190251.json": {
+    "mtime": 1778612572.8759964,
+    "ast_hash": "c8733749d0ddb2226e4caffe18b976d6",
+    "semantic_hash": "c8733749d0ddb2226e4caffe18b976d6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181712.json": {
+    "mtime": 1778609832.9689038,
+    "ast_hash": "df3f523949274ae5ff10fe88f8d9ceab",
+    "semantic_hash": "df3f523949274ae5ff10fe88f8d9ceab"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185301.json": {
+    "mtime": 1778611981.9433973,
+    "ast_hash": "316f6b8dd4344b4289256082af08c555",
+    "semantic_hash": "316f6b8dd4344b4289256082af08c555"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190416.json": {
+    "mtime": 1778612657.3368814,
+    "ast_hash": "09c61334486849b6dcedf40ca9d1af3a",
+    "semantic_hash": "09c61334486849b6dcedf40ca9d1af3a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191745.json": {
+    "mtime": 1778613465.978827,
+    "ast_hash": "396506e9225d129af67a11e8bdea2873",
+    "semantic_hash": "396506e9225d129af67a11e8bdea2873"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182539.json": {
+    "mtime": 1778610339.906624,
+    "ast_hash": "1e1812e29a3246673609628076fc20af",
+    "semantic_hash": "1e1812e29a3246673609628076fc20af"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184951.json": {
+    "mtime": 1778611792.0727787,
+    "ast_hash": "b28034a25593e3c3a8b856eec8cfaae6",
+    "semantic_hash": "b28034a25593e3c3a8b856eec8cfaae6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_193847.json": {
+    "mtime": 1778614727.8522158,
+    "ast_hash": "c639eb0c5d521d7506a9624879037610",
+    "semantic_hash": "c639eb0c5d521d7506a9624879037610"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180338.json": {
+    "mtime": 1778609019.0201998,
+    "ast_hash": "1cfb88d5fd4143f4b04fa82a093fc69a",
+    "semantic_hash": "1cfb88d5fd4143f4b04fa82a093fc69a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_165728.json": {
+    "mtime": 1778605061.5425234,
+    "ast_hash": "d76aa33639e9e0ec9a88736ee9652063",
+    "semantic_hash": "d76aa33639e9e0ec9a88736ee9652063"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_195439.json": {
+    "mtime": 1778615680.1569853,
+    "ast_hash": "dfd8cc7bf3a5a692244c540cd4b9b431",
+    "semantic_hash": "dfd8cc7bf3a5a692244c540cd4b9b431"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190729.json": {
+    "mtime": 1778612850.291455,
+    "ast_hash": "de5f1ab71bfdbd44ab9868a0827c8b91",
+    "semantic_hash": "de5f1ab71bfdbd44ab9868a0827c8b91"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183806.json": {
+    "mtime": 1778611086.3154254,
+    "ast_hash": "af5a25775b2b0616306cc788674575bf",
+    "semantic_hash": "af5a25775b2b0616306cc788674575bf"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180729.json": {
+    "mtime": 1778609250.10501,
+    "ast_hash": "169b236fe5b3c173ebdaba956e713987",
+    "semantic_hash": "169b236fe5b3c173ebdaba956e713987"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_193040.json": {
+    "mtime": 1778614240.3467686,
+    "ast_hash": "48bb8f2f4a8c25b0752ad03239d5326f",
+    "semantic_hash": "48bb8f2f4a8c25b0752ad03239d5326f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183410.json": {
+    "mtime": 1778610851.1772335,
+    "ast_hash": "f218a14f89e19999aa990b1f0bf791d4",
+    "semantic_hash": "f218a14f89e19999aa990b1f0bf791d4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_194507.json": {
+    "mtime": 1778615107.8833568,
+    "ast_hash": "2933c92665cb76806a7e97d49aa8abb5",
+    "semantic_hash": "2933c92665cb76806a7e97d49aa8abb5"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_194854.json": {
+    "mtime": 1778615335.024021,
+    "ast_hash": "cee92d4b8b3f88a22e62c8cf72672eee",
+    "semantic_hash": "cee92d4b8b3f88a22e62c8cf72672eee"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192607.json": {
+    "mtime": 1778613967.7232397,
+    "ast_hash": "d5ebccc061fa06d40c443a4ebfddab4c",
+    "semantic_hash": "d5ebccc061fa06d40c443a4ebfddab4c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183016.json": {
+    "mtime": 1778610617.0919218,
+    "ast_hash": "8f908756da6cf6c1eeba17f9418aef14",
+    "semantic_hash": "8f908756da6cf6c1eeba17f9418aef14"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181752.json": {
+    "mtime": 1778609872.2715802,
+    "ast_hash": "2eaab390a0bd3fbe79eeab7e119ca19e",
+    "semantic_hash": "2eaab390a0bd3fbe79eeab7e119ca19e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185341.json": {
+    "mtime": 1778612021.3654144,
+    "ast_hash": "255e026b7358f456278a4509287941f1",
+    "semantic_hash": "255e026b7358f456278a4509287941f1"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182611.json": {
+    "mtime": 1778610383.824158,
+    "ast_hash": "d010e554dd624b1e75fbef40869d9644",
+    "semantic_hash": "d010e554dd624b1e75fbef40869d9644"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183811.json": {
+    "mtime": 1778611091.3909934,
+    "ast_hash": "30a24f5de662f5aa31e1f69c9fcedc2e",
+    "semantic_hash": "30a24f5de662f5aa31e1f69c9fcedc2e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192216.json": {
+    "mtime": 1778613737.3116364,
+    "ast_hash": "dcd5cdebfe4810251a1dfe95194cc601",
+    "semantic_hash": "dcd5cdebfe4810251a1dfe95194cc601"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_195245.json": {
+    "mtime": 1778615566.0704494,
+    "ast_hash": "e3042aa315c793964264eb7aad8f421e",
+    "semantic_hash": "e3042aa315c793964264eb7aad8f421e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_195402.json": {
+    "mtime": 1778615642.350463,
+    "ast_hash": "a5e336e1a4c40a3f44bb2589dad91cb1",
+    "semantic_hash": "a5e336e1a4c40a3f44bb2589dad91cb1"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183610.json": {
+    "mtime": 1778610970.2277782,
+    "ast_hash": "a13f1f932b2d905e07f11ff5ee55a2d7",
+    "semantic_hash": "a13f1f932b2d905e07f11ff5ee55a2d7"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/market_leadership_state.json": {
+    "mtime": 1778658380.92472,
+    "ast_hash": "1c0015bf1fd295931b2f571972b610a4",
+    "semantic_hash": "1c0015bf1fd295931b2f571972b610a4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180712.json": {
+    "mtime": 1778609233.317079,
+    "ast_hash": "f5546b81fbfd353c0d00d4926ec0c8e3",
+    "semantic_hash": "f5546b81fbfd353c0d00d4926ec0c8e3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183217.json": {
+    "mtime": 1778610737.3210251,
+    "ast_hash": "2fc23b085e6e13da0f150bbd4765fa0a",
+    "semantic_hash": "2fc23b085e6e13da0f150bbd4765fa0a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182739.json": {
+    "mtime": 1778610459.6891453,
+    "ast_hash": "3eecbbacdffbccafdbbbd8554d4879b8",
+    "semantic_hash": "3eecbbacdffbccafdbbbd8554d4879b8"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191115.json": {
+    "mtime": 1778613101.5687442,
+    "ast_hash": "e6e213dbb5bdd12eb0b0798fdcda653d",
+    "semantic_hash": "e6e213dbb5bdd12eb0b0798fdcda653d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_193201.json": {
+    "mtime": 1778614321.985855,
+    "ast_hash": "540aa7982475f41f8eb40944bcc12aee",
+    "semantic_hash": "540aa7982475f41f8eb40944bcc12aee"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184205.json": {
+    "mtime": 1778611325.4296389,
+    "ast_hash": "0c76be1017d9c0a7e2c7816fca9e7d17",
+    "semantic_hash": "0c76be1017d9c0a7e2c7816fca9e7d17"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181512.json": {
+    "mtime": 1778609712.4694169,
+    "ast_hash": "3d251880f726b40a0f5b4704f3d81361",
+    "semantic_hash": "3d251880f726b40a0f5b4704f3d81361"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181709.json": {
+    "mtime": 1778609829.230763,
+    "ast_hash": "3ea355e6290367804fdf2081d32d4243",
+    "semantic_hash": "3ea355e6290367804fdf2081d32d4243"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184858.json": {
+    "mtime": 1778611738.6732724,
+    "ast_hash": "fbd362e30388a955bb02d8e1aacc4c6e",
+    "semantic_hash": "fbd362e30388a955bb02d8e1aacc4c6e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_194622.json": {
+    "mtime": 1778615182.6667008,
+    "ast_hash": "4bf5e6c3ec164f75baf4e3dee72b8bc9",
+    "semantic_hash": "4bf5e6c3ec164f75baf4e3dee72b8bc9"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192021.json": {
+    "mtime": 1778613621.5105429,
+    "ast_hash": "a818ba061aa9d49defab19deee89dd1f",
+    "semantic_hash": "a818ba061aa9d49defab19deee89dd1f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190335.json": {
+    "mtime": 1778612616.0464444,
+    "ast_hash": "62d74250e01d052ffdd87dc36d7ef507",
+    "semantic_hash": "62d74250e01d052ffdd87dc36d7ef507"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180948.json": {
+    "mtime": 1778609389.3812866,
+    "ast_hash": "5996f310d1abf9cc7e0a61646d084026",
+    "semantic_hash": "5996f310d1abf9cc7e0a61646d084026"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184008.json": {
+    "mtime": 1778611208.8284855,
+    "ast_hash": "82e1fb78e629c0d3980d2044d7ea2fba",
+    "semantic_hash": "82e1fb78e629c0d3980d2044d7ea2fba"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184321.json": {
+    "mtime": 1778611401.434213,
+    "ast_hash": "c933ec4861d3907429c66be19ad694ea",
+    "semantic_hash": "c933ec4861d3907429c66be19ad694ea"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184835.json": {
+    "mtime": 1778611715.5791125,
+    "ast_hash": "ffea980273e144ca5cc7368ac6cf7a6b",
+    "semantic_hash": "ffea980273e144ca5cc7368ac6cf7a6b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183923.json": {
+    "mtime": 1778611163.2603064,
+    "ast_hash": "8bffb744a0df056f75f15d34f74bc7ae",
+    "semantic_hash": "8bffb744a0df056f75f15d34f74bc7ae"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185818.json": {
+    "mtime": 1778612298.7954996,
+    "ast_hash": "c91841ffd5189578924b13715d2711a9",
+    "semantic_hash": "c91841ffd5189578924b13715d2711a9"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182109.json": {
+    "mtime": 1778610069.6987798,
+    "ast_hash": "f5ade39ca6786d0cc1cc7eb91491a7eb",
+    "semantic_hash": "f5ade39ca6786d0cc1cc7eb91491a7eb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185336.json": {
+    "mtime": 1778612017.5322049,
+    "ast_hash": "74c24253d3467375e6c8300b70fb175e",
+    "semantic_hash": "74c24253d3467375e6c8300b70fb175e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185859.json": {
+    "mtime": 1778612340.214321,
+    "ast_hash": "1d141ede8c1a02871ac6e34e84bf3802",
+    "semantic_hash": "1d141ede8c1a02871ac6e34e84bf3802"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191549.json": {
+    "mtime": 1778613350.235342,
+    "ast_hash": "36f4e78a1c0661d99ab87014bca1be51",
+    "semantic_hash": "36f4e78a1c0661d99ab87014bca1be51"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_195731.json": {
+    "mtime": 1778615852.2667959,
+    "ast_hash": "7f7aa2797ff0e042014544b75cb5452a",
+    "semantic_hash": "7f7aa2797ff0e042014544b75cb5452a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191322.json": {
+    "mtime": 1778613240.6643815,
+    "ast_hash": "731cadc6bfdbbff3b4206936bee081d4",
+    "semantic_hash": "731cadc6bfdbbff3b4206936bee081d4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_195048.json": {
+    "mtime": 1778615450.311167,
+    "ast_hash": "f238d4d69690fbaef668f886fd838199",
+    "semantic_hash": "f238d4d69690fbaef668f886fd838199"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_194659.json": {
+    "mtime": 1778615220.0362127,
+    "ast_hash": "864c0727e2820305654e554ad13e835a",
+    "semantic_hash": "864c0727e2820305654e554ad13e835a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_193523.json": {
+    "mtime": 1778614523.7727194,
+    "ast_hash": "a9e76a17051f9ad53d03c0c8ad3e50fb",
+    "semantic_hash": "a9e76a17051f9ad53d03c0c8ad3e50fb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192332.json": {
+    "mtime": 1778613812.7457867,
+    "ast_hash": "3f60b7150700c3d323fdb5ee938f5fa4",
+    "semantic_hash": "3f60b7150700c3d323fdb5ee938f5fa4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183222.json": {
+    "mtime": 1778610742.942095,
+    "ast_hash": "4cb7737254c810a2e796a765e7105a80",
+    "semantic_hash": "4cb7737254c810a2e796a765e7105a80"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185030.json": {
+    "mtime": 1778611830.567421,
+    "ast_hash": "0d02c2feaff071793ec99b86767814bd",
+    "semantic_hash": "0d02c2feaff071793ec99b86767814bd"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_195933.json": {
+    "mtime": 1778615974.4614332,
+    "ast_hash": "fedf783ffa629c9f1221cde53de500c6",
+    "semantic_hash": "fedf783ffa629c9f1221cde53de500c6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185933.json": {
+    "mtime": 1778612373.9033303,
+    "ast_hash": "864b90d228f6637ac37e5bb425983c8a",
+    "semantic_hash": "864b90d228f6637ac37e5bb425983c8a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_193808.json": {
+    "mtime": 1778614688.8402452,
+    "ast_hash": "c422791019cfd3ed278dfd866fcaea1f",
+    "semantic_hash": "c422791019cfd3ed278dfd866fcaea1f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_152508.json": {
+    "mtime": 1777994709.3176174,
+    "ast_hash": "b1a5661e8bcbea22b3e209fc098864d1",
+    "semantic_hash": "b1a5661e8bcbea22b3e209fc098864d1"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191618.json": {
+    "mtime": 1778613379.4620483,
+    "ast_hash": "8b32a0774cb6731a81009afaa6180ef8",
+    "semantic_hash": "8b32a0774cb6731a81009afaa6180ef8"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183849.json": {
+    "mtime": 1778611129.3425825,
+    "ast_hash": "54c2455c61bbdd8a3e65a6a97beabcb0",
+    "semantic_hash": "54c2455c61bbdd8a3e65a6a97beabcb0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/account_before_20260505_103629.json": {
+    "mtime": 1777977389.1891425,
+    "ast_hash": "cd4bddd4bee1db3042aa0aceaef92f05",
+    "semantic_hash": "cd4bddd4bee1db3042aa0aceaef92f05"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191823.json": {
+    "mtime": 1778613503.840913,
+    "ast_hash": "78b91f45a91fe7bd9f6b5c598b99b7bf",
+    "semantic_hash": "78b91f45a91fe7bd9f6b5c598b99b7bf"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260506_165830.json": {
+    "mtime": 1778086774.6491513,
+    "ast_hash": "36ea63b0fdab89c83bfb6babdb4b5eaf",
+    "semantic_hash": "36ea63b0fdab89c83bfb6babdb4b5eaf"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_195323.json": {
+    "mtime": 1778615604.2195034,
+    "ast_hash": "943fc01b212c6fc168131caa4002ca8a",
+    "semantic_hash": "943fc01b212c6fc168131caa4002ca8a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_194932.json": {
+    "mtime": 1778615372.3748734,
+    "ast_hash": "8ba6a07f60d22bceed34a9685cdcd62d",
+    "semantic_hash": "8ba6a07f60d22bceed34a9685cdcd62d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184820.json": {
+    "mtime": 1778611700.951947,
+    "ast_hash": "94d04b5e45c590320cf7e70ad106f8d3",
+    "semantic_hash": "94d04b5e45c590320cf7e70ad106f8d3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184436.json": {
+    "mtime": 1778611476.4422643,
+    "ast_hash": "288a0a93f5426dfc93ebddd9ab3f6bc2",
+    "semantic_hash": "288a0a93f5426dfc93ebddd9ab3f6bc2"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182331.json": {
+    "mtime": 1778610211.349116,
+    "ast_hash": "27229d33189f0bc8e3e0bca94689ae1a",
+    "semantic_hash": "27229d33189f0bc8e3e0bca94689ae1a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190619.json": {
+    "mtime": 1778612780.660121,
+    "ast_hash": "dabea9a2a15689eb491c4e5eb268dcc4",
+    "semantic_hash": "dabea9a2a15689eb491c4e5eb268dcc4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181356.json": {
+    "mtime": 1778609636.276457,
+    "ast_hash": "09ec2935820de063a4a9a670454c4a27",
+    "semantic_hash": "09ec2935820de063a4a9a670454c4a27"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182254.json": {
+    "mtime": 1778610174.5529013,
+    "ast_hash": "a41d5776d14e408ace4f654aba5026d1",
+    "semantic_hash": "a41d5776d14e408ace4f654aba5026d1"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192254.json": {
+    "mtime": 1778613775.0793867,
+    "ast_hash": "f9019cf2c7659278958acf99b3390e26",
+    "semantic_hash": "f9019cf2c7659278958acf99b3390e26"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_151955.json": {
+    "mtime": 1777994420.756108,
+    "ast_hash": "ab981404b74640b31b096dbb6936eddd",
+    "semantic_hash": "ab981404b74640b31b096dbb6936eddd"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190455.json": {
+    "mtime": 1778612696.5763526,
+    "ast_hash": "d98e4b38af24a440790a0e30e322d0f8",
+    "semantic_hash": "d98e4b38af24a440790a0e30e322d0f8"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_195207.json": {
+    "mtime": 1778615528.0673254,
+    "ast_hash": "b3ff7605897118a40bdc0ca05ecd2cc8",
+    "semantic_hash": "b3ff7605897118a40bdc0ca05ecd2cc8"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_152050.json": {
+    "mtime": 1777994463.8251793,
+    "ast_hash": "054eee8359ff2f15a719b2e563a6a75a",
+    "semantic_hash": "054eee8359ff2f15a719b2e563a6a75a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180910.json": {
+    "mtime": 1778609350.6050608,
+    "ast_hash": "1b632ba7bf591274a56041e801f90383",
+    "semantic_hash": "1b632ba7bf591274a56041e801f90383"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181747.json": {
+    "mtime": 1778609868.0382829,
+    "ast_hash": "c8f7a61e66144c3418a1a14082f7f540",
+    "semantic_hash": "c8f7a61e66144c3418a1a14082f7f540"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_194816.json": {
+    "mtime": 1778615297.1167576,
+    "ast_hash": "a5c3566e76d1c03057ae76576a8b4c8a",
+    "semantic_hash": "a5c3566e76d1c03057ae76576a8b4c8a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_193404.json": {
+    "mtime": 1778614444.6778946,
+    "ast_hash": "9d0fcff59c8290d702fbf8d9dcd1b032",
+    "semantic_hash": "9d0fcff59c8290d702fbf8d9dcd1b032"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192645.json": {
+    "mtime": 1778614006.2141378,
+    "ast_hash": "2de271db334c1cdc06abfe2e430fb006",
+    "semantic_hash": "2de271db334c1cdc06abfe2e430fb006"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182700.json": {
+    "mtime": 1778610420.925545,
+    "ast_hash": "ba66e9a3504a0b049f5a2d1b0d9024a4",
+    "semantic_hash": "ba66e9a3504a0b049f5a2d1b0d9024a4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191655.json": {
+    "mtime": 1778613416.5328648,
+    "ast_hash": "3bbfcb1cecf8a97b983d5d1a15d1b73c",
+    "semantic_hash": "3bbfcb1cecf8a97b983d5d1a15d1b73c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184640.json": {
+    "mtime": 1778611600.734866,
+    "ast_hash": "79fa8aefd04ab043f23ea2bc5736ebd3",
+    "semantic_hash": "79fa8aefd04ab043f23ea2bc5736ebd3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_152640.json": {
+    "mtime": 1777994801.1675212,
+    "ast_hash": "3fd3cbbb1300158226d06e636d0b50c8",
+    "semantic_hash": "3fd3cbbb1300158226d06e636d0b50c8"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183613.json": {
+    "mtime": 1778610973.8551056,
+    "ast_hash": "aa5838b7d61bea26b799442090e65dff",
+    "semantic_hash": "aa5838b7d61bea26b799442090e65dff"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_193243.json": {
+    "mtime": 1778614363.692369,
+    "ast_hash": "cb45e48325ff99b782bc7a09095beb34",
+    "semantic_hash": "cb45e48325ff99b782bc7a09095beb34"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181045.json": {
+    "mtime": 1778609445.3475041,
+    "ast_hash": "6bff53ab96dae0afb8869cff9b95bf06",
+    "semantic_hash": "6bff53ab96dae0afb8869cff9b95bf06"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185856.json": {
+    "mtime": 1778612336.4526293,
+    "ast_hash": "bec2710e56b6f6eaf0d28074a2c8d6cb",
+    "semantic_hash": "bec2710e56b6f6eaf0d28074a2c8d6cb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_175751.json": {
+    "mtime": 1778608671.4546556,
+    "ast_hash": "591f3a5da3e6a7c5afabdbf1dcb58fdf",
+    "semantic_hash": "591f3a5da3e6a7c5afabdbf1dcb58fdf"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_151611.json": {
+    "mtime": 1777994197.768311,
+    "ast_hash": "8bbbf4759cc49053e3d90a8dc9d11570",
+    "semantic_hash": "8bbbf4759cc49053e3d90a8dc9d11570"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_195010.json": {
+    "mtime": 1778615411.0252135,
+    "ast_hash": "2d4790eadaa3a33ad7fadf7cd7c4e453",
+    "semantic_hash": "2d4790eadaa3a33ad7fadf7cd7c4e453"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180300.json": {
+    "mtime": 1778608980.7432375,
+    "ast_hash": "9675b9ff5babccad129c4be574262b3f",
+    "semantic_hash": "9675b9ff5babccad129c4be574262b3f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181004.json": {
+    "mtime": 1778609404.947976,
+    "ast_hash": "dd4ad69820a7c6cd0d86a462b29f3496",
+    "semantic_hash": "dd4ad69820a7c6cd0d86a462b29f3496"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192628.json": {
+    "mtime": 1778614014.8187323,
+    "ast_hash": "b0fc1b7b214ea84b54fe7cc2557d66b9",
+    "semantic_hash": "b0fc1b7b214ea84b54fe7cc2557d66b9"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192501.json": {
+    "mtime": 1778613915.0484962,
+    "ast_hash": "762feb3685741c3bedeb3926514bd666",
+    "semantic_hash": "762feb3685741c3bedeb3926514bd666"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/no_reentry_state.json": {
+    "mtime": 1778716666.7020853,
+    "ast_hash": "38b53e24e9039215a8918e0bec6e5416",
+    "semantic_hash": "38b53e24e9039215a8918e0bec6e5416"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190028.json": {
+    "mtime": 1778612428.5080779,
+    "ast_hash": "b3bffdc6e016293104333afcd0b2d327",
+    "semantic_hash": "b3bffdc6e016293104333afcd0b2d327"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183254.json": {
+    "mtime": 1778610775.0057037,
+    "ast_hash": "80ece90a55fc6545671e48306163a0fb",
+    "semantic_hash": "80ece90a55fc6545671e48306163a0fb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180751.json": {
+    "mtime": 1778609272.0400708,
+    "ast_hash": "e7f8b76f7476efaac61fea5528b1d9fa",
+    "semantic_hash": "e7f8b76f7476efaac61fea5528b1d9fa"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191510.json": {
+    "mtime": 1778613310.4253163,
+    "ast_hash": "8a68157179750a25eeb13ffc1be26bea",
+    "semantic_hash": "8a68157179750a25eeb13ffc1be26bea"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192412.json": {
+    "mtime": 1778613852.7263834,
+    "ast_hash": "e0da40b44c32bf9a3fd8307ae2eb6bbd",
+    "semantic_hash": "e0da40b44c32bf9a3fd8307ae2eb6bbd"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192042.json": {
+    "mtime": 1778613643.511562,
+    "ast_hash": "493904a298bea719fa01f9bb5f8f6c2c",
+    "semantic_hash": "493904a298bea719fa01f9bb5f8f6c2c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184600.json": {
+    "mtime": 1778611560.6953945,
+    "ast_hash": "bc5d0e15daf0ee6c8bf888741d11e894",
+    "semantic_hash": "bc5d0e15daf0ee6c8bf888741d11e894"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181551.json": {
+    "mtime": 1778609751.7521482,
+    "ast_hash": "f1a016d821cbff5bf3a14a3499cddaa0",
+    "semantic_hash": "f1a016d821cbff5bf3a14a3499cddaa0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190205.json": {
+    "mtime": 1778612526.261843,
+    "ast_hash": "3aa138bbe203a2b6d6d19c39f9f16790",
+    "semantic_hash": "3aa138bbe203a2b6d6d19c39f9f16790"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182146.json": {
+    "mtime": 1778610106.9311924,
+    "ast_hash": "9880cb921bbf66f1e1a6a4f9d48f90d5",
+    "semantic_hash": "9880cb921bbf66f1e1a6a4f9d48f90d5"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182453.json": {
+    "mtime": 1778610293.5824072,
+    "ast_hash": "ce7dcb8ea47a2e734f0a29fc9a9f1165",
+    "semantic_hash": "ce7dcb8ea47a2e734f0a29fc9a9f1165"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/account_before_20260505_033534.json": {
+    "mtime": 1777952134.5571535,
+    "ast_hash": "90d6dbfed121e9bdc6dbf3356b946157",
+    "semantic_hash": "90d6dbfed121e9bdc6dbf3356b946157"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181204.json": {
+    "mtime": 1778609524.6800547,
+    "ast_hash": "ec25b19cb49f156f582799502ca004d6",
+    "semantic_hash": "ec25b19cb49f156f582799502ca004d6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/account_before_20260505_034009.json": {
+    "mtime": 1777952409.4694207,
+    "ast_hash": "5cf12826bf9cd97d85ad068a52faccca",
+    "semantic_hash": "5cf12826bf9cd97d85ad068a52faccca"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180415.json": {
+    "mtime": 1778609056.4467826,
+    "ast_hash": "f91263ebe0e4f657b1fc288ec7611df7",
+    "semantic_hash": "f91263ebe0e4f657b1fc288ec7611df7"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180045.json": {
+    "mtime": 1778608845.8877547,
+    "ast_hash": "d3a6199cdc687e3d2ce2bd5d897e9950",
+    "semantic_hash": "d3a6199cdc687e3d2ce2bd5d897e9950"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183055.json": {
+    "mtime": 1778610656.1010091,
+    "ast_hash": "79da79c2335b6e37f38734435d0f8fa6",
+    "semantic_hash": "79da79c2335b6e37f38734435d0f8fa6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184544.json": {
+    "mtime": 1778611545.1623685,
+    "ast_hash": "3b49960c835445d3cb608bbac08802e2",
+    "semantic_hash": "3b49960c835445d3cb608bbac08802e2"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190157.json": {
+    "mtime": 1778612518.3365996,
+    "ast_hash": "a2ef7fcdc60ce47e58e74dd481dc49a6",
+    "semantic_hash": "a2ef7fcdc60ce47e58e74dd481dc49a6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181316.json": {
+    "mtime": 1778609596.6992111,
+    "ast_hash": "a4d3b5b5bcbea1d60e795e3b923fde80",
+    "semantic_hash": "a4d3b5b5bcbea1d60e795e3b923fde80"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_194544.json": {
+    "mtime": 1778615145.1458342,
+    "ast_hash": "488b2551d813f452f5771da895e39e94",
+    "semantic_hash": "488b2551d813f452f5771da895e39e94"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183844.json": {
+    "mtime": 1778611124.9016929,
+    "ast_hash": "cfd448527ba5138838abca25f0f6bb51",
+    "semantic_hash": "cfd448527ba5138838abca25f0f6bb51"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184047.json": {
+    "mtime": 1778611248.3341131,
+    "ast_hash": "14622e99eca876d3d2889ecb30e0fdce",
+    "semantic_hash": "14622e99eca876d3d2889ecb30e0fdce"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184155.json": {
+    "mtime": 1778611316.111283,
+    "ast_hash": "a9a488ba0fb1792361227e78b12fbffe",
+    "semantic_hash": "a9a488ba0fb1792361227e78b12fbffe"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_193106.json": {
+    "mtime": 1778614267.6304498,
+    "ast_hash": "bf98882580fcadbd4a2893ecf2bbba56",
+    "semantic_hash": "bf98882580fcadbd4a2893ecf2bbba56"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_152437.json": {
+    "mtime": 1777994678.3957918,
+    "ast_hash": "c8ec8a37bb311b4a839db6cf4069953a",
+    "semantic_hash": "c8ec8a37bb311b4a839db6cf4069953a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/pdt_state.json": {
+    "mtime": 1778597368.1686625,
+    "ast_hash": "a5cd12da8708bbca918cff405faf9f41",
+    "semantic_hash": "a5cd12da8708bbca918cff405faf9f41"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192449.json": {
+    "mtime": 1778613890.1444955,
+    "ast_hash": "8f2b7fd2f2a142b1e92ba5c550f8ded0",
+    "semantic_hash": "8f2b7fd2f2a142b1e92ba5c550f8ded0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_175926.json": {
+    "mtime": 1778608766.5817823,
+    "ast_hash": "918211777defa48435ff01024f222dc3",
+    "semantic_hash": "918211777defa48435ff01024f222dc3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185621.json": {
+    "mtime": 1778612181.9575922,
+    "ast_hash": "f3e292ad8da08fe893e9e2732f257079",
+    "semantic_hash": "f3e292ad8da08fe893e9e2732f257079"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190659.json": {
+    "mtime": 1778612821.278499,
+    "ast_hash": "394c3ab5c524469be1f86b177cb9f5a8",
+    "semantic_hash": "394c3ab5c524469be1f86b177cb9f5a8"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190120.json": {
+    "mtime": 1778612481.3302522,
+    "ast_hash": "f1729fa146e25351cda679d249a02d75",
+    "semantic_hash": "f1729fa146e25351cda679d249a02d75"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_195637.json": {
+    "mtime": 1778615797.7877629,
+    "ast_hash": "dc2ba73dd0dca55e58a983dad6a92bc5",
+    "semantic_hash": "dc2ba73dd0dca55e58a983dad6a92bc5"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183649.json": {
+    "mtime": 1778611009.695923,
+    "ast_hash": "871fc36a8db8141dbd7ffee1f67a7d11",
+    "semantic_hash": "871fc36a8db8141dbd7ffee1f67a7d11"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192058.json": {
+    "mtime": 1778613659.2452788,
+    "ast_hash": "c8592b47c181120a8b29f8c1a19ee8ec",
+    "semantic_hash": "c8592b47c181120a8b29f8c1a19ee8ec"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184358.json": {
+    "mtime": 1778611438.753015,
+    "ast_hash": "1fd5af34aed712dccca4ebcbc6cb85d6",
+    "semantic_hash": "1fd5af34aed712dccca4ebcbc6cb85d6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183022.json": {
+    "mtime": 1778610623.0651603,
+    "ast_hash": "902260c58940aa02ddd6be68a3434369",
+    "semantic_hash": "902260c58940aa02ddd6be68a3434369"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182218.json": {
+    "mtime": 1778610138.2210116,
+    "ast_hash": "bbd7938f290f0a25c3bbbfeb261b4cf9",
+    "semantic_hash": "bbd7938f290f0a25c3bbbfeb261b4cf9"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/scanner_state.json": {
+    "mtime": 1778716666.7025785,
+    "ast_hash": "6d30840a32a6a9f2364630639dc2be8b",
+    "semantic_hash": "6d30840a32a6a9f2364630639dc2be8b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181121.json": {
+    "mtime": 1778609481.8375108,
+    "ast_hash": "090bab6670cfd8e31862d24e080786cb",
+    "semantic_hash": "090bab6670cfd8e31862d24e080786cb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_193720.json": {
+    "mtime": 1778614640.34297,
+    "ast_hash": "068933177df61f9c63918d60fafa9cf3",
+    "semantic_hash": "068933177df61f9c63918d60fafa9cf3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185420.json": {
+    "mtime": 1778612060.9039145,
+    "ast_hash": "ace4160be891e868cc7c25cf059e426b",
+    "semantic_hash": "ace4160be891e868cc7c25cf059e426b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182023.json": {
+    "mtime": 1778610024.00592,
+    "ast_hash": "f2cf80c0c7548c06f39f8b548309da79",
+    "semantic_hash": "f2cf80c0c7548c06f39f8b548309da79"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184118.json": {
+    "mtime": 1778611278.5948067,
+    "ast_hash": "dc2f1d0586fd8c7de2a2aca663aa65af",
+    "semantic_hash": "dc2f1d0586fd8c7de2a2aca663aa65af"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191926.json": {
+    "mtime": 1778613566.815237,
+    "ast_hash": "2b945d616eb1d5ba1f8171dd52f846ac",
+    "semantic_hash": "2b945d616eb1d5ba1f8171dd52f846ac"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183448.json": {
+    "mtime": 1778610889.2158446,
+    "ast_hash": "b89f6d4fb6fde917a3009070b6f24a8e",
+    "semantic_hash": "b89f6d4fb6fde917a3009070b6f24a8e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180634.json": {
+    "mtime": 1778609194.7716494,
+    "ast_hash": "962dfbbfe605ff482ae4b8fff1ae3eb4",
+    "semantic_hash": "962dfbbfe605ff482ae4b8fff1ae3eb4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185820.json": {
+    "mtime": 1778612301.725976,
+    "ast_hash": "6a0f4b8d9a9b290e5bb5dc38a5926474",
+    "semantic_hash": "6a0f4b8d9a9b290e5bb5dc38a5926474"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182936.json": {
+    "mtime": 1778610576.8869545,
+    "ast_hash": "572af7a9dc88a88f8d9c6cffda3597e9",
+    "semantic_hash": "572af7a9dc88a88f8d9c6cffda3597e9"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_152335.json": {
+    "mtime": 1777994616.392475,
+    "ast_hash": "1247cf394a5934d09541e4c9ecd3f036",
+    "semantic_hash": "1247cf394a5934d09541e4c9ecd3f036"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191429.json": {
+    "mtime": 1778613269.4213576,
+    "ast_hash": "f0d707007c0e472f1e5dc3b3ad27f002",
+    "semantic_hash": "f0d707007c0e472f1e5dc3b3ad27f002"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184914.json": {
+    "mtime": 1778611754.3104377,
+    "ast_hash": "0307025c1858bba13c6b65c7136d9ef8",
+    "semantic_hash": "0307025c1858bba13c6b65c7136d9ef8"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191350.json": {
+    "mtime": 1778613231.207609,
+    "ast_hash": "76d386cb918bb935f6cd9336270a17a5",
+    "semantic_hash": "76d386cb918bb935f6cd9336270a17a5"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_193443.json": {
+    "mtime": 1778614483.7791634,
+    "ast_hash": "eb67fd3b430196706e825df71b7fd645",
+    "semantic_hash": "eb67fd3b430196706e825df71b7fd645"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180453.json": {
+    "mtime": 1778609093.252188,
+    "ast_hash": "adda9f568af65f76a39d5cdba62640b0",
+    "semantic_hash": "adda9f568af65f76a39d5cdba62640b0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180003.json": {
+    "mtime": 1778608803.4603975,
+    "ast_hash": "1dbb2574600ec7e273c73e750ae6d06e",
+    "semantic_hash": "1dbb2574600ec7e273c73e750ae6d06e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184040.json": {
+    "mtime": 1778611240.903197,
+    "ast_hash": "93fa6ccdc04847947c71fa079585daf5",
+    "semantic_hash": "93fa6ccdc04847947c71fa079585daf5"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181242.json": {
+    "mtime": 1778609562.41422,
+    "ast_hash": "0d10e05ba80604f14baaca82712027a7",
+    "semantic_hash": "0d10e05ba80604f14baaca82712027a7"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_152406.json": {
+    "mtime": 1777994647.4840631,
+    "ast_hash": "8330e4ac1d1bacc5e15505f7e86f34bc",
+    "semantic_hash": "8330e4ac1d1bacc5e15505f7e86f34bc"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185702.json": {
+    "mtime": 1778612223.1574547,
+    "ast_hash": "14b05418aa2c956f9c61056b214e27a8",
+    "semantic_hash": "14b05418aa2c956f9c61056b214e27a8"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184001.json": {
+    "mtime": 1778611201.5083573,
+    "ast_hash": "5b17aa512a60525db319920ad7fec7a5",
+    "semantic_hash": "5b17aa512a60525db319920ad7fec7a5"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190740.json": {
+    "mtime": 1778612861.6457703,
+    "ast_hash": "a27145c4f1e5b6fa53262a1957b22144",
+    "semantic_hash": "a27145c4f1e5b6fa53262a1957b22144"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183300.json": {
+    "mtime": 1778610781.1406963,
+    "ast_hash": "29470bab1d2cd91930ebac4cd2c9b014",
+    "semantic_hash": "29470bab1d2cd91930ebac4cd2c9b014"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192004.json": {
+    "mtime": 1778613606.037485,
+    "ast_hash": "879d21dd81934c0bd5056fadbfaaa14c",
+    "semantic_hash": "879d21dd81934c0bd5056fadbfaaa14c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_192620.json": {
+    "mtime": 1778009193.9392571,
+    "ast_hash": "e8d955ad613df0ea52dee3198912c0d2",
+    "semantic_hash": "e8d955ad613df0ea52dee3198912c0d2"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185145.json": {
+    "mtime": 1778611905.3883638,
+    "ast_hash": "a175264d364452efbf08b3c5b48b34ee",
+    "semantic_hash": "a175264d364452efbf08b3c5b48b34ee"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184312.json": {
+    "mtime": 1778611392.707281,
+    "ast_hash": "5f734d76aaa1545042868a511920872b",
+    "semantic_hash": "5f734d76aaa1545042868a511920872b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_175612.json": {
+    "mtime": 1778608598.1175146,
+    "ast_hash": "c57e8ac8fe04a19d2a5d89c72c4b2673",
+    "semantic_hash": "c57e8ac8fe04a19d2a5d89c72c4b2673"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/account_before_20260505_040725.json": {
+    "mtime": 1777954045.479559,
+    "ast_hash": "bc55693a86ebbdc535b2905bd14acf43",
+    "semantic_hash": "bc55693a86ebbdc535b2905bd14acf43"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181239.json": {
+    "mtime": 1778609559.8122602,
+    "ast_hash": "0c3522597d55b178f7551320a91d82d7",
+    "semantic_hash": "0c3522597d55b178f7551320a91d82d7"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183654.json": {
+    "mtime": 1778611014.6206725,
+    "ast_hash": "45775d4e74255318949c7f8f4a266758",
+    "semantic_hash": "45775d4e74255318949c7f8f4a266758"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_165645.json": {
+    "mtime": 1778605018.285698,
+    "ast_hash": "8e2c34b1b67184d3a30475bea1f72d1f",
+    "semantic_hash": "8e2c34b1b67184d3a30475bea1f72d1f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191901.json": {
+    "mtime": 1778613542.1887405,
+    "ast_hash": "8594f37d38f67bac9c94a4607351000f",
+    "semantic_hash": "8594f37d38f67bac9c94a4607351000f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190243.json": {
+    "mtime": 1778612564.2677317,
+    "ast_hash": "ade9f758d96827cb05c97e95ad7491f9",
+    "semantic_hash": "ade9f758d96827cb05c97e95ad7491f9"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182854.json": {
+    "mtime": 1778610534.7735007,
+    "ast_hash": "3a79e508e56e05ea6f4f9b3991f02bcd",
+    "semantic_hash": "3a79e508e56e05ea6f4f9b3991f02bcd"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182931.json": {
+    "mtime": 1778610571.852889,
+    "ast_hash": "37854d73fe43bcd42b0947fc99ffdea4",
+    "semantic_hash": "37854d73fe43bcd42b0947fc99ffdea4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190849.json": {
+    "mtime": 1778612929.4210138,
+    "ast_hash": "633cc7246342e86c212b600c83e30f90",
+    "semantic_hash": "633cc7246342e86c212b600c83e30f90"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190326.json": {
+    "mtime": 1778612607.0679133,
+    "ast_hash": "e5ec50861e2896a3ad7124e15386f19f",
+    "semantic_hash": "e5ec50861e2896a3ad7124e15386f19f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192248.json": {
+    "mtime": 1778613769.3738623,
+    "ast_hash": "12c52d2ee9c2cfd41613faef638ae34b",
+    "semantic_hash": "12c52d2ee9c2cfd41613faef638ae34b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/account_before_20260505_041102.json": {
+    "mtime": 1777954262.6831884,
+    "ast_hash": "140a3b9ea64febb4a4ef4d5f0d91e88b",
+    "semantic_hash": "140a3b9ea64febb4a4ef4d5f0d91e88b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_180847.json": {
+    "mtime": 1778004617.6408477,
+    "ast_hash": "fcf3fd312345d077a4e135af291e82b4",
+    "semantic_hash": "fcf3fd312345d077a4e135af291e82b4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183727.json": {
+    "mtime": 1778611047.9413998,
+    "ast_hash": "711c515e22d235801011836b83e770d2",
+    "semantic_hash": "711c515e22d235801011836b83e770d2"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_180222.json": {
+    "mtime": 1778608942.9788864,
+    "ast_hash": "7a82b8e23b739e12af094df6e0cf01dc",
+    "semantic_hash": "7a82b8e23b739e12af094df6e0cf01dc"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181825.json": {
+    "mtime": 1778609905.8075557,
+    "ast_hash": "9e0b913c97872c336e1271005594234a",
+    "semantic_hash": "9e0b913c97872c336e1271005594234a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260506_193523.json": {
+    "mtime": 1778096162.133546,
+    "ast_hash": "0920b04a0d53e6331a3e531b6454c040",
+    "semantic_hash": "0920b04a0d53e6331a3e531b6454c040"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184426.json": {
+    "mtime": 1778611466.9833167,
+    "ast_hash": "2aac04160ca47aafbeaa8adc60b65dc0",
+    "semantic_hash": "2aac04160ca47aafbeaa8adc60b65dc0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_152133.json": {
+    "mtime": 1777994494.1946464,
+    "ast_hash": "4e165c52d38b8a61ffceadfcb12712f0",
+    "semantic_hash": "4e165c52d38b8a61ffceadfcb12712f0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183137.json": {
+    "mtime": 1778610697.9470155,
+    "ast_hash": "7d70e72b7568a32c2fa762d34ec712a3",
+    "semantic_hash": "7d70e72b7568a32c2fa762d34ec712a3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182419.json": {
+    "mtime": 1778610259.4274573,
+    "ast_hash": "82e8ea9fffed071296fd04c824310717",
+    "semantic_hash": "82e8ea9fffed071296fd04c824310717"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184934.json": {
+    "mtime": 1778611775.0879662,
+    "ast_hash": "2e5f5068b61c019b769bad4175d2e2ef",
+    "semantic_hash": "2e5f5068b61c019b769bad4175d2e2ef"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182225.json": {
+    "mtime": 1778610145.5793943,
+    "ast_hash": "f56ac2438378ac2d9de3de46a2f6863a",
+    "semantic_hash": "f56ac2438378ac2d9de3de46a2f6863a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181632.json": {
+    "mtime": 1778609792.8194,
+    "ast_hash": "65138d7ee1b840fa6e4d01fae75af770",
+    "semantic_hash": "65138d7ee1b840fa6e4d01fae75af770"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191848.json": {
+    "mtime": 1778613529.0283537,
+    "ast_hash": "8cd0abc20cb2b9fd1600cb2c988d7812",
+    "semantic_hash": "8cd0abc20cb2b9fd1600cb2c988d7812"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184349.json": {
+    "mtime": 1778611430.080327,
+    "ast_hash": "3142aab8c2b96d067351160d7044ca18",
+    "semantic_hash": "3142aab8c2b96d067351160d7044ca18"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185109.json": {
+    "mtime": 1778611870.152105,
+    "ast_hash": "bee19329771b205ed24eae39feef2c7b",
+    "semantic_hash": "bee19329771b205ed24eae39feef2c7b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184718.json": {
+    "mtime": 1778611638.98654,
+    "ast_hash": "3154cb42baacfac31b7713260a824b58",
+    "semantic_hash": "3154cb42baacfac31b7713260a824b58"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190537.json": {
+    "mtime": 1778612738.467166,
+    "ast_hash": "c8abc51433fdc94a5fc8af0456712945",
+    "semantic_hash": "c8abc51433fdc94a5fc8af0456712945"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182859.json": {
+    "mtime": 1778610539.6064205,
+    "ast_hash": "9f6789e6835001847314c7098dd0c187",
+    "semantic_hash": "9f6789e6835001847314c7098dd0c187"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192731.json": {
+    "mtime": 1778614064.755868,
+    "ast_hash": "a18712a945a6c0b7c9676882cadd34e8",
+    "semantic_hash": "a18712a945a6c0b7c9676882cadd34e8"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185148.json": {
+    "mtime": 1778611908.4729927,
+    "ast_hash": "b5ae44257ba39c89524e9d4748f8aded",
+    "semantic_hash": "b5ae44257ba39c89524e9d4748f8aded"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_195518.json": {
+    "mtime": 1778615719.1917315,
+    "ast_hash": "140e53d7a129aa68a5febc11a647e88f",
+    "semantic_hash": "140e53d7a129aa68a5febc11a647e88f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183927.json": {
+    "mtime": 1778611167.2741876,
+    "ast_hash": "467523ca8ff079230343aa2e08f10084",
+    "semantic_hash": "467523ca8ff079230343aa2e08f10084"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190608.json": {
+    "mtime": 1778612769.3637528,
+    "ast_hash": "fb9168cd017beb8624532c008f3b63db",
+    "semantic_hash": "fb9168cd017beb8624532c008f3b63db"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_194427.json": {
+    "mtime": 1778615067.9766698,
+    "ast_hash": "c48a61a04c562743eab90bf096ce6176",
+    "semantic_hash": "c48a61a04c562743eab90bf096ce6176"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182459.json": {
+    "mtime": 1778610299.7119045,
+    "ast_hash": "9580afd655a7dd14e2449eba0e863358",
+    "semantic_hash": "9580afd655a7dd14e2449eba0e863358"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181432.json": {
+    "mtime": 1778609673.0407553,
+    "ast_hash": "81981cd67288b215f743862ed4c23b16",
+    "semantic_hash": "81981cd67288b215f743862ed4c23b16"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_190809.json": {
+    "mtime": 1778612889.624668,
+    "ast_hash": "465ba01ca2f635b6a35430b4003010fe",
+    "semantic_hash": "465ba01ca2f635b6a35430b4003010fe"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192137.json": {
+    "mtime": 1778613697.3549883,
+    "ast_hash": "cef3c5fbc37a963f5d533eba6f9f945e",
+    "semantic_hash": "cef3c5fbc37a963f5d533eba6f9f945e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/account_before_20260505_040704.json": {
+    "mtime": 1777954024.248217,
+    "ast_hash": "7b84c02137acec304b695f514e199410",
+    "semantic_hash": "7b84c02137acec304b695f514e199410"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191218.json": {
+    "mtime": 1778613165.1368868,
+    "ast_hash": "385408c76b40e7a5e8c346d5246785ba",
+    "semantic_hash": "385408c76b40e7a5e8c346d5246785ba"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182822.json": {
+    "mtime": 1778610502.5958905,
+    "ast_hash": "c98055f3b94ca992ef6d4e04a1cdd82d",
+    "semantic_hash": "c98055f3b94ca992ef6d4e04a1cdd82d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_175849.json": {
+    "mtime": 1778608729.3178203,
+    "ast_hash": "1b6120e7aff5011eafc66644a59e30d1",
+    "semantic_hash": "1b6120e7aff5011eafc66644a59e30d1"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_193602.json": {
+    "mtime": 1778614563.321563,
+    "ast_hash": "381b52e0b302644bfc6568e9751d046d",
+    "semantic_hash": "381b52e0b302644bfc6568e9751d046d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192910.json": {
+    "mtime": 1778614151.5058062,
+    "ast_hash": "0bdd01e3f0e273e2d45a966523e47fb9",
+    "semantic_hash": "0bdd01e3f0e273e2d45a966523e47fb9"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192551.json": {
+    "mtime": 1778613952.3450618,
+    "ast_hash": "a93f8d4c83f3f3304443f88461d18fcd",
+    "semantic_hash": "a93f8d4c83f3f3304443f88461d18fcd"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182101.json": {
+    "mtime": 1778610061.3557363,
+    "ast_hash": "0431c67296160c12d5eaaaa1ddc07974",
+    "semantic_hash": "0431c67296160c12d5eaaaa1ddc07974"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192947.json": {
+    "mtime": 1778614188.2920706,
+    "ast_hash": "699968a61eddcbd490bdcedf4a82e44e",
+    "semantic_hash": "699968a61eddcbd490bdcedf4a82e44e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191541.json": {
+    "mtime": 1778613341.9333856,
+    "ast_hash": "d63ab96051df252ccde64daf74c62b80",
+    "semantic_hash": "d63ab96051df252ccde64daf74c62b80"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185502.json": {
+    "mtime": 1778612102.5085328,
+    "ast_hash": "2af414627b0fcae62af40a0a4edb7c42",
+    "semantic_hash": "2af414627b0fcae62af40a0a4edb7c42"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_194313.json": {
+    "mtime": 1778614993.4090722,
+    "ast_hash": "2c050e5b2cb9fea441e8c954bee528d6",
+    "semantic_hash": "2c050e5b2cb9fea441e8c954bee528d6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/account_after_20260512_162029.json": {
+    "mtime": 1778602867.968017,
+    "ast_hash": "804df7f4d4b6872beb549943900d3d15",
+    "semantic_hash": "804df7f4d4b6872beb549943900d3d15"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_152305.json": {
+    "mtime": 1777994585.5059469,
+    "ast_hash": "a275c00e377d304a4a4890b60e99526e",
+    "semantic_hash": "a275c00e377d304a4a4890b60e99526e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_152610.json": {
+    "mtime": 1777994770.8438776,
+    "ast_hash": "fd45158e11d55c40a242a4fb56e53fec",
+    "semantic_hash": "fd45158e11d55c40a242a4fb56e53fec"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/account_before_20260505_034023.json": {
+    "mtime": 1777952423.659487,
+    "ast_hash": "72dbcd97bb9dce0b00fbbf2298e4abaa",
+    "semantic_hash": "72dbcd97bb9dce0b00fbbf2298e4abaa"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_152539.json": {
+    "mtime": 1777994740.2480438,
+    "ast_hash": "40f35de2c3115497740d7de5deef5c57",
+    "semantic_hash": "40f35de2c3115497740d7de5deef5c57"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_195847.json": {
+    "mtime": 1778615927.8168402,
+    "ast_hash": "f57d988e687152252ce7bc445bcc35b4",
+    "semantic_hash": "f57d988e687152252ce7bc445bcc35b4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191941.json": {
+    "mtime": 1778613581.376971,
+    "ast_hash": "7d67f258104d7d349c892b5576d8866b",
+    "semantic_hash": "7d67f258104d7d349c892b5576d8866b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_191629.json": {
+    "mtime": 1778613389.443311,
+    "ast_hash": "751ee6bf84370ab4918440d7d63354b3",
+    "semantic_hash": "751ee6bf84370ab4918440d7d63354b3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_181629.json": {
+    "mtime": 1778609789.9186025,
+    "ast_hash": "076172005c86f5a268f95a11ac2929f2",
+    "semantic_hash": "076172005c86f5a268f95a11ac2929f2"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184702.json": {
+    "mtime": 1778611622.4218047,
+    "ast_hash": "58aafee8fb6bd00d87b31217226f913a",
+    "semantic_hash": "58aafee8fb6bd00d87b31217226f913a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_193028.json": {
+    "mtime": 1778614228.8954692,
+    "ast_hash": "1fc48c3cca57c54a90431116739b4f69",
+    "semantic_hash": "1fc48c3cca57c54a90431116739b4f69"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/market_regime_state.json": {
+    "mtime": 1778658380.9248788,
+    "ast_hash": "c5e4f42f88fa0816b8d936fa18d47af0",
+    "semantic_hash": "c5e4f42f88fa0816b8d936fa18d47af0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_192838.json": {
+    "mtime": 1778614118.9840975,
+    "ast_hash": "2eac934b9afe189385d0ab0da92fb331",
+    "semantic_hash": "2eac934b9afe189385d0ab0da92fb331"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/option_booster_state.json": {
+    "mtime": 1778667001.9263482,
+    "ast_hash": "0f75ce56d05923bcb32a78d8b99a8eef",
+    "semantic_hash": "0f75ce56d05923bcb32a78d8b99a8eef"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_183454.json": {
+    "mtime": 1778610894.4177728,
+    "ast_hash": "8dcd099e9d941a510172a080723de1ab",
+    "semantic_hash": "8dcd099e9d941a510172a080723de1ab"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260505_152811.json": {
+    "mtime": 1777994892.2273896,
+    "ast_hash": "2409b800201ffbf55d6ad75328c9c51c",
+    "semantic_hash": "2409b800201ffbf55d6ad75328c9c51c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_194738.json": {
+    "mtime": 1778615259.0272958,
+    "ast_hash": "31d37732a2d04b8def0ac0716d3c0d6c",
+    "semantic_hash": "31d37732a2d04b8def0ac0716d3c0d6c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/account_before_20260505_102619.json": {
+    "mtime": 1777976779.2619076,
+    "ast_hash": "fafedc7056510a8c34764f67d761bf3c",
+    "semantic_hash": "fafedc7056510a8c34764f67d761bf3c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_184503.json": {
+    "mtime": 1778611504.055916,
+    "ast_hash": "494a44c07b88e981687780a08544d7b3",
+    "semantic_hash": "494a44c07b88e981687780a08544d7b3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182654.json": {
+    "mtime": 1778610415.3627195,
+    "ast_hash": "945e34807cee1e7094d580c28decbc84",
+    "semantic_hash": "945e34807cee1e7094d580c28decbc84"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_185938.json": {
+    "mtime": 1778612379.264555,
+    "ast_hash": "1e968a3a17cfa4d997a912c88ad5788a",
+    "semantic_hash": "1e968a3a17cfa4d997a912c88ad5788a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/execution_summary_20260512_182341.json": {
+    "mtime": 1778610221.3112805,
+    "ast_hash": "7b28fe0bec471e34750d3da672c1de49",
+    "semantic_hash": "7b28fe0bec471e34750d3da672c1de49"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260517/stream_confirmed_movement_state.json": {
+    "mtime": 1779076694.6441548,
+    "ast_hash": "3725ae58516a2035d90eabd40a064451",
+    "semantic_hash": "3725ae58516a2035d90eabd40a064451"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260517/20260517_session_planning_state.json": {
+    "mtime": 1779076446.0034804,
+    "ast_hash": "685ba4b2f62f282392d633d33e11970a",
+    "semantic_hash": "685ba4b2f62f282392d633d33e11970a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_184627.json": {
+    "mtime": 1779216394.1316192,
+    "ast_hash": "7df5f968207a86e6597e0dd69e4e01b7",
+    "semantic_hash": "7df5f968207a86e6597e0dd69e4e01b7"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_182527.json": {
+    "mtime": 1779215128.1319385,
+    "ast_hash": "28db6868c1d9e53e43189ccbac2edf5b",
+    "semantic_hash": "28db6868c1d9e53e43189ccbac2edf5b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_192634.json": {
+    "mtime": 1779218798.2960324,
+    "ast_hash": "15c7b349981ac1408031c68c43ed3b0c",
+    "semantic_hash": "15c7b349981ac1408031c68c43ed3b0c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_192710.json": {
+    "mtime": 1779218834.0135925,
+    "ast_hash": "b61154ef4e6f20660011945baab7b919",
+    "semantic_hash": "b61154ef4e6f20660011945baab7b919"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_190214.json": {
+    "mtime": 1779217338.0048103,
+    "ast_hash": "c3d337dded7edbb88bcac920486745bb",
+    "semantic_hash": "c3d337dded7edbb88bcac920486745bb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_184353.json": {
+    "mtime": 1779216234.0631564,
+    "ast_hash": "a63e709f569d79f382775539470101da",
+    "semantic_hash": "a63e709f569d79f382775539470101da"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_182746.json": {
+    "mtime": 1779215272.7900236,
+    "ast_hash": "12afe405f66739195152b34bf0685adc",
+    "semantic_hash": "12afe405f66739195152b34bf0685adc"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_184431.json": {
+    "mtime": 1779216272.579958,
+    "ast_hash": "7174eabd46ccbb9f0bf21daf9cccd174",
+    "semantic_hash": "7174eabd46ccbb9f0bf21daf9cccd174"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_184945.json": {
+    "mtime": 1779216589.908277,
+    "ast_hash": "a52cb41c3c2ea3cd14b69d13f6ab0c5a",
+    "semantic_hash": "a52cb41c3c2ea3cd14b69d13f6ab0c5a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_184744.json": {
+    "mtime": 1779216471.9993136,
+    "ast_hash": "1bd5fba293a0fa57a817743aafd03af2",
+    "semantic_hash": "1bd5fba293a0fa57a817743aafd03af2"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_190818.json": {
+    "mtime": 1779217698.884778,
+    "ast_hash": "03e2b3f441ef70a5899db121242c794b",
+    "semantic_hash": "03e2b3f441ef70a5899db121242c794b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_182223.json": {
+    "mtime": 1779214944.3846476,
+    "ast_hash": "9e56d6492d9dd4249c1b787b4e95b1ba",
+    "semantic_hash": "9e56d6492d9dd4249c1b787b4e95b1ba"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_183035.json": {
+    "mtime": 1779215442.7537956,
+    "ast_hash": "94342dcf6a658a704de7032f98958026",
+    "semantic_hash": "94342dcf6a658a704de7032f98958026"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_185031.json": {
+    "mtime": 1779216631.7928598,
+    "ast_hash": "286a149dc34fa3848039642761568444",
+    "semantic_hash": "286a149dc34fa3848039642761568444"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_184909.json": {
+    "mtime": 1779216553.4967616,
+    "ast_hash": "bc79f36517ea23e6cf4bd414197b73f9",
+    "semantic_hash": "bc79f36517ea23e6cf4bd414197b73f9"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_185103.json": {
+    "mtime": 1779216667.7416577,
+    "ast_hash": "b58318f646194111d78a3ee303a3a884",
+    "semantic_hash": "b58318f646194111d78a3ee303a3a884"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_184712.json": {
+    "mtime": 1779216432.8343773,
+    "ast_hash": "2734eb5174c580533f80f867a5825c8b",
+    "semantic_hash": "2734eb5174c580533f80f867a5825c8b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_182150.json": {
+    "mtime": 1779214911.4507244,
+    "ast_hash": "30bae13005f6c180fd9100912d4d7873",
+    "semantic_hash": "30bae13005f6c180fd9100912d4d7873"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_184505.json": {
+    "mtime": 1779216309.2948723,
+    "ast_hash": "181d7f1c752ec3928bdb821c624df9d0",
+    "semantic_hash": "181d7f1c752ec3928bdb821c624df9d0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_185139.json": {
+    "mtime": 1779216703.4513977,
+    "ast_hash": "cda96cdfc6fda0edf45be160e0b633c3",
+    "semantic_hash": "cda96cdfc6fda0edf45be160e0b633c3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_182329.json": {
+    "mtime": 1779215009.9399896,
+    "ast_hash": "7fd629511425b34f3a034c9b4bcb0610",
+    "semantic_hash": "7fd629511425b34f3a034c9b4bcb0610"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/20260519_session_planning_state.json": {
+    "mtime": 1779214908.6080415,
+    "ast_hash": "e80801d585fb13b52f4adeefd18ba5ff",
+    "semantic_hash": "e80801d585fb13b52f4adeefd18ba5ff"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_182256.json": {
+    "mtime": 1779214977.2677066,
+    "ast_hash": "f9a4b89c31431ee774adcc9992224dfa",
+    "semantic_hash": "f9a4b89c31431ee774adcc9992224dfa"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_190729.json": {
+    "mtime": 1779217663.0148296,
+    "ast_hash": "8e644fa74cdb9c4a276640a7fc0ffa20",
+    "semantic_hash": "8e644fa74cdb9c4a276640a7fc0ffa20"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/stream_confirmed_movement_state.json": {
+    "mtime": 1779250948.6948304,
+    "ast_hash": "bd1debd5d5bf8fee8b44475cb4562bbc",
+    "semantic_hash": "bd1debd5d5bf8fee8b44475cb4562bbc"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_190135.json": {
+    "mtime": 1779217298.9754386,
+    "ast_hash": "1f87dbdfe9d196ffa35016ac2f205530",
+    "semantic_hash": "1f87dbdfe9d196ffa35016ac2f205530"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_182827.json": {
+    "mtime": 1779215309.3077831,
+    "ast_hash": "e0395d19fee731a6b95bfea374ecaf75",
+    "semantic_hash": "e0395d19fee731a6b95bfea374ecaf75"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_185336.json": {
+    "mtime": 1779216817.2986338,
+    "ast_hash": "9d3ae5b6b98f805f7e79073777e4b54b",
+    "semantic_hash": "9d3ae5b6b98f805f7e79073777e4b54b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_182559.json": {
+    "mtime": 1779215163.967859,
+    "ast_hash": "9e7bcab777fb2664e6df43a0cba61182",
+    "semantic_hash": "9e7bcab777fb2664e6df43a0cba61182"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/20260519_kill_switch_state.json": {
+    "mtime": 1779214910.4431434,
+    "ast_hash": "9388a316e288acb404f33d518f969f05",
+    "semantic_hash": "9388a316e288acb404f33d518f969f05"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_182943.json": {
+    "mtime": 1779215390.4710665,
+    "ast_hash": "e15234d9bd0f6ca0910d8e29df24c018",
+    "semantic_hash": "e15234d9bd0f6ca0910d8e29df24c018"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_190922.json": {
+    "mtime": 1779217763.7116075,
+    "ast_hash": "c9566f8738b29e85942f832becc87736",
+    "semantic_hash": "c9566f8738b29e85942f832becc87736"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/20260519_scanner_state.json": {
+    "mtime": 1779220775.3316526,
+    "ast_hash": "f230742c82598a23caba75a69b62e7c0",
+    "semantic_hash": "f230742c82598a23caba75a69b62e7c0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_182437.json": {
+    "mtime": 1779215082.6355863,
+    "ast_hash": "98753e08fa7df42ee2779a82564f8e89",
+    "semantic_hash": "98753e08fa7df42ee2779a82564f8e89"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_190650.json": {
+    "mtime": 1779217614.378538,
+    "ast_hash": "894a3e898ce04fa7ea99d1fc38c9f74f",
+    "semantic_hash": "894a3e898ce04fa7ea99d1fc38c9f74f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_182401.json": {
+    "mtime": 1779215045.844199,
+    "ast_hash": "17354202e0dccf8c36b9d9f831eea573",
+    "semantic_hash": "17354202e0dccf8c36b9d9f831eea573"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_192745.json": {
+    "mtime": 1779218875.917128,
+    "ast_hash": "6bdcc113f3853028271699e1520b4e93",
+    "semantic_hash": "6bdcc113f3853028271699e1520b4e93"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_185254.json": {
+    "mtime": 1779216778.1831973,
+    "ast_hash": "3238759bc84b1f6bda3e3fb730f9d2cb",
+    "semantic_hash": "3238759bc84b1f6bda3e3fb730f9d2cb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_183115.json": {
+    "mtime": 1779215482.6210613,
+    "ast_hash": "0107b7be424c190824de817aeada4992",
+    "semantic_hash": "0107b7be424c190824de817aeada4992"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_192601.json": {
+    "mtime": 1779218762.5837836,
+    "ast_hash": "cd581602ebbc835ecca5a38d8dd8d53d",
+    "semantic_hash": "cd581602ebbc835ecca5a38d8dd8d53d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_185412.json": {
+    "mtime": 1779216856.5875998,
+    "ast_hash": "213945eca461b6a1a3e69e81c35467ee",
+    "semantic_hash": "213945eca461b6a1a3e69e81c35467ee"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_182904.json": {
+    "mtime": 1779215351.43896,
+    "ast_hash": "970afd9f04f7453ff83856213ca372e0",
+    "semantic_hash": "970afd9f04f7453ff83856213ca372e0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_190256.json": {
+    "mtime": 1779217377.1374686,
+    "ast_hash": "73512a27e98d82ccead65f54ca62609f",
+    "semantic_hash": "73512a27e98d82ccead65f54ca62609f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_185218.json": {
+    "mtime": 1779216742.3316407,
+    "ast_hash": "e52a0de0376ce31d4b44881eecc7afd1",
+    "semantic_hash": "e52a0de0376ce31d4b44881eecc7afd1"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_190958.json": {
+    "mtime": 1779217802.5132024,
+    "ast_hash": "7cfbb2353a5f502e8e2f84fbd5a66842",
+    "semantic_hash": "7cfbb2353a5f502e8e2f84fbd5a66842"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260519/execution_summary_20260519_184833.json": {
+    "mtime": 1779216517.21062,
+    "ast_hash": "89e4b3af17ccac14ef916942047df888",
+    "semantic_hash": "89e4b3af17ccac14ef916942047df888"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_134209.json": {
+    "mtime": 1779111735.6744823,
+    "ast_hash": "c387cb6435bebcc643dbaf8bc5f875f3",
+    "semantic_hash": "c387cb6435bebcc643dbaf8bc5f875f3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_134252.json": {
+    "mtime": 1779111783.2287862,
+    "ast_hash": "2cf09f58cab06f537391e603b2a5f286",
+    "semantic_hash": "2cf09f58cab06f537391e603b2a5f286"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_134100.json": {
+    "mtime": 1779111663.365198,
+    "ast_hash": "8f943d2cea6026af2f70b3cb4426f8a4",
+    "semantic_hash": "8f943d2cea6026af2f70b3cb4426f8a4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_134141.json": {
+    "mtime": 1779111706.148893,
+    "ast_hash": "a79b4e9fb1344fa40801e89493171f5a",
+    "semantic_hash": "a79b4e9fb1344fa40801e89493171f5a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/20260518_scanner_state.json": {
+    "mtime": 1779132288.476922,
+    "ast_hash": "ebd2b07227b8a0dce152ff6833b3228d",
+    "semantic_hash": "ebd2b07227b8a0dce152ff6833b3228d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_134019.json": {
+    "mtime": 1779111626.5541456,
+    "ast_hash": "c28c7f7db2d18a9d7a6a5f217bd87092",
+    "semantic_hash": "c28c7f7db2d18a9d7a6a5f217bd87092"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_135612.json": {
+    "mtime": 1779112575.203238,
+    "ast_hash": "94293cecbc874d15d9c8186520f9848f",
+    "semantic_hash": "94293cecbc874d15d9c8186520f9848f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_135810.json": {
+    "mtime": 1779112691.2351582,
+    "ast_hash": "6f915d6d268136cb638c3e7b1eafeb62",
+    "semantic_hash": "6f915d6d268136cb638c3e7b1eafeb62"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_134217.json": {
+    "mtime": 1779111741.4471738,
+    "ast_hash": "bddd5f5a1d7cb12e00404b98e5e8514a",
+    "semantic_hash": "bddd5f5a1d7cb12e00404b98e5e8514a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/stream_confirmed_movement_state.json": {
+    "mtime": 1779250973.2670875,
+    "ast_hash": "213691ce603470ff2576df61e70718de",
+    "semantic_hash": "213691ce603470ff2576df61e70718de"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_134020.json": {
+    "mtime": 1779111625.5140107,
+    "ast_hash": "cc558eb27f1d7e763d8929ea864829bf",
+    "semantic_hash": "cc558eb27f1d7e763d8929ea864829bf"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_135431.json": {
+    "mtime": 1779112473.227719,
+    "ast_hash": "eaa221cb2059e14f4966d83c8d331082",
+    "semantic_hash": "eaa221cb2059e14f4966d83c8d331082"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_134324.json": {
+    "mtime": 1779111810.484279,
+    "ast_hash": "bae3c1915e0688c7399b4be2c0a97c44",
+    "semantic_hash": "bae3c1915e0688c7399b4be2c0a97c44"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_134056.json": {
+    "mtime": 1779111670.4680007,
+    "ast_hash": "cbcd4d4493b6778c040c18f27e6b64d6",
+    "semantic_hash": "cbcd4d4493b6778c040c18f27e6b64d6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_134451.json": {
+    "mtime": 1779111892.8415797,
+    "ast_hash": "2a3e992ae7be2a19d0b993d7ff5a86a4",
+    "semantic_hash": "2a3e992ae7be2a19d0b993d7ff5a86a4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/20260518_kill_switch_state.json": {
+    "mtime": 1779111067.5480824,
+    "ast_hash": "c8ac9359462856f239956f7d55d15135",
+    "semantic_hash": "c8ac9359462856f239956f7d55d15135"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_134134.json": {
+    "mtime": 1779111697.8352869,
+    "ast_hash": "47b34480df915696f75812e673662c09",
+    "semantic_hash": "47b34480df915696f75812e673662c09"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_134401.json": {
+    "mtime": 1779111844.8136852,
+    "ast_hash": "623f796ff98b88f5d7b9b1f468c5f8e5",
+    "semantic_hash": "623f796ff98b88f5d7b9b1f468c5f8e5"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/20260518_session_planning_state.json": {
+    "mtime": 1779111067.8068392,
+    "ast_hash": "a7fe02b3270fda11a2ddcce170d6a697",
+    "semantic_hash": "a7fe02b3270fda11a2ddcce170d6a697"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_134246.json": {
+    "mtime": 1779111773.3176434,
+    "ast_hash": "ee045b8520a83964ffa0987393da7d82",
+    "semantic_hash": "ee045b8520a83964ffa0987393da7d82"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_134416.json": {
+    "mtime": 1779111860.4510767,
+    "ast_hash": "dd8d21b54047a52cef70345ab927c523",
+    "semantic_hash": "dd8d21b54047a52cef70345ab927c523"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_134436.json": {
+    "mtime": 1779111882.061307,
+    "ast_hash": "25aebcc0fd9fc28a90ca3dce33e06bd9",
+    "semantic_hash": "25aebcc0fd9fc28a90ca3dce33e06bd9"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/execution_summary_20260518_134334.json": {
+    "mtime": 1779111821.9266381,
+    "ast_hash": "bdc4d665b312b61a71f7aea0efb2919b",
+    "semantic_hash": "bdc4d665b312b61a71f7aea0efb2919b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260518/20260518_option_booster_state.json": {
+    "mtime": 1779110750.809456,
+    "ast_hash": "e02e447ece14f33611463613d449e84b",
+    "semantic_hash": "e02e447ece14f33611463613d449e84b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_160137.json": {
+    "mtime": 1778774499.4740965,
+    "ast_hash": "2c761dbadb05cd6774eb7d1c1811c426",
+    "semantic_hash": "2c761dbadb05cd6774eb7d1c1811c426"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_154741.json": {
+    "mtime": 1778773663.5393808,
+    "ast_hash": "17845a52b6286fdae6b4bf779bf7a844",
+    "semantic_hash": "17845a52b6286fdae6b4bf779bf7a844"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_170526.json": {
+    "mtime": 1778778328.0622454,
+    "ast_hash": "06fe7847408024e4a218d6b445539f64",
+    "semantic_hash": "06fe7847408024e4a218d6b445539f64"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_164709.json": {
+    "mtime": 1778777231.5432594,
+    "ast_hash": "acac878b7baab07c2cd6feafc6b1aaa4",
+    "semantic_hash": "acac878b7baab07c2cd6feafc6b1aaa4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_165134.json": {
+    "mtime": 1778777496.819217,
+    "ast_hash": "2ffac351c497acd3d405f0414f0f541a",
+    "semantic_hash": "2ffac351c497acd3d405f0414f0f541a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_165749.json": {
+    "mtime": 1778777872.2114203,
+    "ast_hash": "d424a0a836a04cb4e0ef713c281dae6f",
+    "semantic_hash": "d424a0a836a04cb4e0ef713c281dae6f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_165339.json": {
+    "mtime": 1778777621.6442893,
+    "ast_hash": "1a4b05afd6f0771bdf8a26fd28e30035",
+    "semantic_hash": "1a4b05afd6f0771bdf8a26fd28e30035"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_165544.json": {
+    "mtime": 1778777748.0500972,
+    "ast_hash": "2ba6e522ca6e5d551a8b0133949805a6",
+    "semantic_hash": "2ba6e522ca6e5d551a8b0133949805a6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_155408.json": {
+    "mtime": 1778774049.4364128,
+    "ast_hash": "bda906003590f1a7899410ae7ffb3764",
+    "semantic_hash": "bda906003590f1a7899410ae7ffb3764"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/20260514_session_planning_state.json": {
+    "mtime": 1778770035.6180246,
+    "ast_hash": "307d996fde95852e372e1be161452751",
+    "semantic_hash": "307d996fde95852e372e1be161452751"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_154331.json": {
+    "mtime": 1778773413.9188282,
+    "ast_hash": "211cc6dae3e4dd1265a3b4fa726b4a2a",
+    "semantic_hash": "211cc6dae3e4dd1265a3b4fa726b4a2a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_170747.json": {
+    "mtime": 1778778469.7117286,
+    "ast_hash": "89cbf178e18ec258fcb08c32985e06d1",
+    "semantic_hash": "89cbf178e18ec258fcb08c32985e06d1"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_165031.json": {
+    "mtime": 1778777433.500668,
+    "ast_hash": "feb55c09e6b097ca22179fc096e7d8bf",
+    "semantic_hash": "feb55c09e6b097ca22179fc096e7d8bf"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_154845.json": {
+    "mtime": 1778773726.6654286,
+    "ast_hash": "78114e4c7449f165c12c73f8062b7e03",
+    "semantic_hash": "78114e4c7449f165c12c73f8062b7e03"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_170049.json": {
+    "mtime": 1778778052.4082873,
+    "ast_hash": "759a5bbe13c2d609b773b719dde8a066",
+    "semantic_hash": "759a5bbe13c2d609b773b719dde8a066"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_171048.json": {
+    "mtime": 1778778651.3719864,
+    "ast_hash": "c2d23a422b0e1547c6c1d34c591365d9",
+    "semantic_hash": "c2d23a422b0e1547c6c1d34c591365d9"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_170209.json": {
+    "mtime": 1778778132.2466373,
+    "ast_hash": "5438d40340b119586bbb5e1abb66dd51",
+    "semantic_hash": "5438d40340b119586bbb5e1abb66dd51"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_164525.json": {
+    "mtime": 1778777127.9365563,
+    "ast_hash": "214fd120771d18cf70d10f655b16b5f6",
+    "semantic_hash": "214fd120771d18cf70d10f655b16b5f6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_153958.json": {
+    "mtime": 1778773200.348752,
+    "ast_hash": "d167d38e3ef6de3feb1720f9b64a98f8",
+    "semantic_hash": "d167d38e3ef6de3feb1720f9b64a98f8"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_165240.json": {
+    "mtime": 1778777562.5323315,
+    "ast_hash": "53b4ccae1c5cdadfaba6fbd877502397",
+    "semantic_hash": "53b4ccae1c5cdadfaba6fbd877502397"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_155707.json": {
+    "mtime": 1778774228.3446193,
+    "ast_hash": "9581215b240030c7ff3c358074f58f71",
+    "semantic_hash": "9581215b240030c7ff3c358074f58f71"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_155803.json": {
+    "mtime": 1778774285.0305269,
+    "ast_hash": "ee3113c392e431a5369a391b95a67315",
+    "semantic_hash": "ee3113c392e431a5369a391b95a67315"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_164811.json": {
+    "mtime": 1778777293.682831,
+    "ast_hash": "0c8f1a02a7bf78928cafece301b93746",
+    "semantic_hash": "0c8f1a02a7bf78928cafece301b93746"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_165646.json": {
+    "mtime": 1778777808.3148222,
+    "ast_hash": "bb0e3916e204baf94ce54c24e16697a7",
+    "semantic_hash": "bb0e3916e204baf94ce54c24e16697a7"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_165851.json": {
+    "mtime": 1778777933.045911,
+    "ast_hash": "e8287100452c1567d83ba51fb935427f",
+    "semantic_hash": "e8287100452c1567d83ba51fb935427f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_170410.json": {
+    "mtime": 1778778252.8149319,
+    "ast_hash": "ceb9aeb4f47535e1b9ee79031dfc59cb",
+    "semantic_hash": "ceb9aeb4f47535e1b9ee79031dfc59cb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_155508.json": {
+    "mtime": 1778774109.7517524,
+    "ast_hash": "740e52ab7caa73968061888cc994f78b",
+    "semantic_hash": "740e52ab7caa73968061888cc994f78b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/stream_confirmed_movement_state.json": {
+    "mtime": 1778825204.9369247,
+    "ast_hash": "b14501a396ec711c517a66f2585f85c4",
+    "semantic_hash": "b14501a396ec711c517a66f2585f85c4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_155904.json": {
+    "mtime": 1778774345.4576874,
+    "ast_hash": "428f515cde6730835b01765453fb1d05",
+    "semantic_hash": "428f515cde6730835b01765453fb1d05"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_170309.json": {
+    "mtime": 1778778191.0999923,
+    "ast_hash": "404d5f8f78013c3f6b98f5e72e0ceb88",
+    "semantic_hash": "404d5f8f78013c3f6b98f5e72e0ceb88"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/20260514_kill_switch_state.json": {
+    "mtime": 1778772358.4344258,
+    "ast_hash": "cd5b4765b5eee1ea0b6d1f046847ab5c",
+    "semantic_hash": "cd5b4765b5eee1ea0b6d1f046847ab5c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_153701.json": {
+    "mtime": 1778773022.9561174,
+    "ast_hash": "89625a3f2b1047303271dd8b5f10e4c1",
+    "semantic_hash": "89625a3f2b1047303271dd8b5f10e4c1"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_154640.json": {
+    "mtime": 1778773601.7771447,
+    "ast_hash": "0b73af80d6d210ed8d73ef0229de35eb",
+    "semantic_hash": "0b73af80d6d210ed8d73ef0229de35eb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_160237.json": {
+    "mtime": 1778774558.7630556,
+    "ast_hash": "763f7a25b9ccc518090f27db4ff0a061",
+    "semantic_hash": "763f7a25b9ccc518090f27db4ff0a061"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_160000.json": {
+    "mtime": 1778774403.7885013,
+    "ast_hash": "88166c57908ba145c7fea887b729fe5b",
+    "semantic_hash": "88166c57908ba145c7fea887b729fe5b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_155607.json": {
+    "mtime": 1778774169.2127817,
+    "ast_hash": "cff78b92a4754f601474fffcacaf87e4",
+    "semantic_hash": "cff78b92a4754f601474fffcacaf87e4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_155200.json": {
+    "mtime": 1778773922.4526167,
+    "ast_hash": "5f2aa27fc8e4796c5a15337f5ea2548a",
+    "semantic_hash": "5f2aa27fc8e4796c5a15337f5ea2548a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/20260514_scanner_state.json": {
+    "mtime": 1778781522.4762063,
+    "ast_hash": "f60e8bd31e457b1745a3712b155e7cf8",
+    "semantic_hash": "f60e8bd31e457b1745a3712b155e7cf8"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_164926.json": {
+    "mtime": 1778777368.3145547,
+    "ast_hash": "df72e089a4b3f676230d9f279a0cc71e",
+    "semantic_hash": "df72e089a4b3f676230d9f279a0cc71e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_170904.json": {
+    "mtime": 1778778546.7058196,
+    "ast_hash": "c2d9991fa059b672703224861f0c536a",
+    "semantic_hash": "c2d9991fa059b672703224861f0c536a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_165950.json": {
+    "mtime": 1778777992.8271763,
+    "ast_hash": "9aad67b7af6d27f317f964729acfef83",
+    "semantic_hash": "9aad67b7af6d27f317f964729acfef83"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_165442.json": {
+    "mtime": 1778777684.0710237,
+    "ast_hash": "bb198694fb6561f5d3a99b884b2ac22a",
+    "semantic_hash": "bb198694fb6561f5d3a99b884b2ac22a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_154426.json": {
+    "mtime": 1778773467.7803516,
+    "ast_hash": "7c86a544c8cca059092079566594f0ed",
+    "semantic_hash": "7c86a544c8cca059092079566594f0ed"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_153859.json": {
+    "mtime": 1778773141.0571654,
+    "ast_hash": "e9a9c46b141f31df4d5c7004bd082d07",
+    "semantic_hash": "e9a9c46b141f31df4d5c7004bd082d07"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_154938.json": {
+    "mtime": 1778773780.5618236,
+    "ast_hash": "2eb987e4f0725a5ad1e891e055a6f614",
+    "semantic_hash": "2eb987e4f0725a5ad1e891e055a6f614"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260514/execution_summary_20260514_153802.json": {
+    "mtime": 1778773084.294495,
+    "ast_hash": "b98451a32049724addcdb5bcc037b2fe",
+    "semantic_hash": "b98451a32049724addcdb5bcc037b2fe"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260513/20260514_session_planning_state.json": {
+    "mtime": 1778769621.6164262,
+    "ast_hash": "6eb8ed9dd17aca719608af14b43a4087",
+    "semantic_hash": "6eb8ed9dd17aca719608af14b43a4087"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260513/20260513_session_planning_state.json": {
+    "mtime": 1778718139.2448628,
+    "ast_hash": "e352628cd20644614b95eeacc67fb25b",
+    "semantic_hash": "e352628cd20644614b95eeacc67fb25b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260515/20260515_scanner_state.json": {
+    "mtime": 1778855674.4797084,
+    "ast_hash": "be71259e38ec1723fe8d5cfaa0844502",
+    "semantic_hash": "be71259e38ec1723fe8d5cfaa0844502"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260515/20260515_session_planning_state.json": {
+    "mtime": 1778851901.8738515,
+    "ast_hash": "9f51fa91b43b44384af3dd08a277ae38",
+    "semantic_hash": "9f51fa91b43b44384af3dd08a277ae38"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260515/20260515_option_booster_state.json": {
+    "mtime": 1778851827.847616,
+    "ast_hash": "5108ed69398b0aada3c3aafe93bea1de",
+    "semantic_hash": "5108ed69398b0aada3c3aafe93bea1de"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260515/stream_confirmed_movement_state.json": {
+    "mtime": 1778863917.7584178,
+    "ast_hash": "2d08d6d7c441735f45cbf4d7b07d274f",
+    "semantic_hash": "2d08d6d7c441735f45cbf4d7b07d274f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/logs/execution/20260515/20260515_kill_switch_state.json": {
+    "mtime": 1778851929.7042563,
+    "ast_hash": "8ccb2affad041006f493246ab9791c75",
+    "semantic_hash": "8ccb2affad041006f493246ab9791c75"
+  },
+  "/Users/blkpvnthr/Desktop/trader/scripts/generate_claude_patch_request.py": {
+    "mtime": 1779312769.804012,
+    "ast_hash": "6c14f8ed6fa631738d279bb211af6a8c",
+    "semantic_hash": "6c14f8ed6fa631738d279bb211af6a8c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/scripts/evaluate_variants.py": {
+    "mtime": 1779325971.9511065,
+    "ast_hash": "86a4643949ed716486dbd06f6c156aad",
+    "semantic_hash": "86a4643949ed716486dbd06f6c156aad"
+  },
+  "/Users/blkpvnthr/Desktop/trader/scripts/strategy_activity_report.py": {
+    "mtime": 1779314694.326535,
+    "ast_hash": "80bee9d7c46261f551308337eab1443e",
+    "semantic_hash": "80bee9d7c46261f551308337eab1443e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/scripts/capital_allocator.py": {
+    "mtime": 1779314782.162328,
+    "ast_hash": "07158445531e14a65b9f4dcbe8c9afc4",
+    "semantic_hash": "07158445531e14a65b9f4dcbe8c9afc4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/scripts/replay_market_day.py": {
+    "mtime": 1779314648.3067176,
+    "ast_hash": "44af4cde926205cf6c656ab91415bc1b",
+    "semantic_hash": "44af4cde926205cf6c656ab91415bc1b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/scripts/compare_strategy_overlap.py": {
+    "mtime": 1779314739.4116309,
+    "ast_hash": "30152e171f41f7195ebddf8f85d1b472",
+    "semantic_hash": "30152e171f41f7195ebddf8f85d1b472"
+  },
+  "/Users/blkpvnthr/Desktop/trader/scripts/generate_dashboard.py": {
+    "mtime": 1779315370.767508,
+    "ast_hash": "fcd8cb2383a7fac9e0473eea40aafcea",
+    "semantic_hash": "fcd8cb2383a7fac9e0473eea40aafcea"
+  },
+  "/Users/blkpvnthr/Desktop/trader/scripts/walkforward_strategy.py": {
+    "mtime": 1779317533.0131085,
+    "ast_hash": "c968afff075262d2fc1d702addccb106",
+    "semantic_hash": "c968afff075262d2fc1d702addccb106"
+  },
+  "/Users/blkpvnthr/Desktop/trader/scripts/promote_variant.py": {
+    "mtime": 1779312802.447807,
+    "ast_hash": "00d4cd47b44489b35f2955c4e96b6062",
+    "semantic_hash": "00d4cd47b44489b35f2955c4e96b6062"
+  },
+  "/Users/blkpvnthr/Desktop/trader/scripts/smoke_test_variants.py": {
+    "mtime": 1779314566.8277411,
+    "ast_hash": "840df259a31214a1b2acbfab4ad7cdf9",
+    "semantic_hash": "840df259a31214a1b2acbfab4ad7cdf9"
+  },
+  "/Users/blkpvnthr/Desktop/trader/scripts/diagnose_strategy.py": {
+    "mtime": 1779313807.6049182,
+    "ast_hash": "da4bf43defac2e174415f86596f1c657",
+    "semantic_hash": "da4bf43defac2e174415f86596f1c657"
+  },
+  "/Users/blkpvnthr/Desktop/trader/scripts/strategy_health_monitor.py": {
+    "mtime": 1779314837.7620168,
+    "ast_hash": "f7049f873b0c50dc9d8dbc66d6aba1e9",
+    "semantic_hash": "f7049f873b0c50dc9d8dbc66d6aba1e9"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_latest_llm_sentiment_universe.json": {
+    "mtime": 1779076162.2358267,
+    "ast_hash": "dba9955e7d073e3162e62cf80d413435",
+    "semantic_hash": "dba9955e7d073e3162e62cf80d413435"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_evolution_strategy_models.json": {
+    "mtime": 1779076419.8668063,
+    "ast_hash": "8a80554c91d9fca8acb82f023de02f11",
+    "semantic_hash": "8a80554c91d9fca8acb82f023de02f11"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_evolution_strategy_metrics.json": {
+    "mtime": 1779076419.8669531,
+    "ast_hash": "fee2b836dd90f219a40f661ff11ad6f8",
+    "semantic_hash": "fee2b836dd90f219a40f661ff11ad6f8"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_latest_llm_candidate_discovery.json": {
+    "mtime": 1779076158.87966,
+    "ast_hash": "7ca2fd91ce6f8ab7dcc683d25505413b",
+    "semantic_hash": "7ca2fd91ce6f8ab7dcc683d25505413b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_intraday_structure_map.json": {
+    "mtime": 1779076443.151214,
+    "ast_hash": "6b86fad774acf669f194afcee65c3efc",
+    "semantic_hash": "6b86fad774acf669f194afcee65c3efc"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_premarket_trade_plan.json": {
+    "mtime": 1779076443.1468153,
+    "ast_hash": "bb77b721a4806bf0506c5b67d975314f",
+    "semantic_hash": "bb77b721a4806bf0506c5b67d975314f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_spx_price_action_state.json": {
+    "mtime": 1779076661.5778587,
+    "ast_hash": "ffe1ff3deca14321c924777dcae86bf2",
+    "semantic_hash": "ffe1ff3deca14321c924777dcae86bf2"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_premarket_trade_plan_diagnostics.json": {
+    "mtime": 1779076436.2984858,
+    "ast_hash": "a7f1532eb16b1c3d5d8f8e635d9f8666",
+    "semantic_hash": "a7f1532eb16b1c3d5d8f8e635d9f8666"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_data_validation_state.json": {
+    "mtime": 1779076660.7397459,
+    "ast_hash": "9f06b8b5f77ea766621b2785616d9dbb",
+    "semantic_hash": "9f06b8b5f77ea766621b2785616d9dbb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_evolution_strategy_signals.json": {
+    "mtime": 1779076660.6828272,
+    "ast_hash": "16821cc8823149245701cb5f25ffe2bd",
+    "semantic_hash": "16821cc8823149245701cb5f25ffe2bd"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_pso_lstm_best_params.json": {
+    "mtime": 1779076144.6151156,
+    "ast_hash": "b653375cce38c9ff0cd5eee31c203e62",
+    "semantic_hash": "b653375cce38c9ff0cd5eee31c203e62"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_market_context.json": {
+    "mtime": 1779076434.4301965,
+    "ast_hash": "f034f1bd474cd2420034986e6d1f2754",
+    "semantic_hash": "f034f1bd474cd2420034986e6d1f2754"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_dated/2026-05-17/20260517_premarket_trade_plan_2026-05-17.json": {
+    "mtime": 1779076660.7393067,
+    "ast_hash": "bb77b721a4806bf0506c5b67d975314f",
+    "semantic_hash": "bb77b721a4806bf0506c5b67d975314f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_dated/2026-05-17/20260517_intraday_structure_map_2026-05-17.json": {
+    "mtime": 1779076660.7394001,
+    "ast_hash": "6b86fad774acf669f194afcee65c3efc",
+    "semantic_hash": "6b86fad774acf669f194afcee65c3efc"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_dated/2026-05-17/20260517_latest_llm_candidate_discovery_2026-05-17.json": {
+    "mtime": 1779076660.7391503,
+    "ast_hash": "7ca2fd91ce6f8ab7dcc683d25505413b",
+    "semantic_hash": "7ca2fd91ce6f8ab7dcc683d25505413b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_dated/2026-05-17/20260517_market_context_2026-05-17.json": {
+    "mtime": 1779076660.7392342,
+    "ast_hash": "f034f1bd474cd2420034986e6d1f2754",
+    "semantic_hash": "f034f1bd474cd2420034986e6d1f2754"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260517/20260517_dated/2026-05-17/20260517_latest_llm_sentiment_universe_2026-05-17.json": {
+    "mtime": 1779076660.7390614,
+    "ast_hash": "dba9955e7d073e3162e62cf80d413435",
+    "semantic_hash": "dba9955e7d073e3162e62cf80d413435"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_intraday_structure_map.json": {
+    "mtime": 1779214905.4475908,
+    "ast_hash": "160c972849b1260bcad17ab92ff658f5",
+    "semantic_hash": "160c972849b1260bcad17ab92ff658f5"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_model_scorecard.json": {
+    "mtime": 1779214908.6290064,
+    "ast_hash": "82a06db7884c39fbcee548448880f904",
+    "semantic_hash": "82a06db7884c39fbcee548448880f904"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_pso_lstm_best_params.json": {
+    "mtime": 1779214834.3891406,
+    "ast_hash": "a9145a856dc136831b0814dcf9b48602",
+    "semantic_hash": "a9145a856dc136831b0814dcf9b48602"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_premarket_trade_plan_diagnostics.json": {
+    "mtime": 1779214905.4424076,
+    "ast_hash": "bac239a9d7263b8102cbb40e5889497c",
+    "semantic_hash": "bac239a9d7263b8102cbb40e5889497c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_data_validation_state.json": {
+    "mtime": 1779214908.610115,
+    "ast_hash": "8fcad2524e7e94213003013c2c14af0b",
+    "semantic_hash": "8fcad2524e7e94213003013c2c14af0b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_spx_price_action_signal.json": {
+    "mtime": 1779220197.4363306,
+    "ast_hash": "f0acd14a94efc93624c5bc5281825773",
+    "semantic_hash": "f0acd14a94efc93624c5bc5281825773"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_sr_rl_live_signals.json": {
+    "mtime": 1779250974.1567795,
+    "ast_hash": "4d2c4da85d89cf06288f31c5797733eb",
+    "semantic_hash": "4d2c4da85d89cf06288f31c5797733eb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_tradingview_institutional_accumulation_diagnostics.json": {
+    "mtime": 1779214834.825801,
+    "ast_hash": "aed92ca881abc31986495cd6676dcc95",
+    "semantic_hash": "aed92ca881abc31986495cd6676dcc95"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_self_assessment.json": {
+    "mtime": 1779214908.6290905,
+    "ast_hash": "94a726adf00110d19309fd462fd4df75",
+    "semantic_hash": "94a726adf00110d19309fd462fd4df75"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_spx_max_return_model.json": {
+    "mtime": 1779220194.1488233,
+    "ast_hash": "7bf9b2eef785d1b8d46ff3218cd65ba1",
+    "semantic_hash": "7bf9b2eef785d1b8d46ff3218cd65ba1"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_system_health.json": {
+    "mtime": 1779214908.62889,
+    "ast_hash": "3fdd128714e042db5f12cfe7186572d3",
+    "semantic_hash": "3fdd128714e042db5f12cfe7186572d3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_evolution_strategy_metrics.json": {
+    "mtime": 1779214834.4469595,
+    "ast_hash": "f8eec9dcf29fd790ee632ade13a918f3",
+    "semantic_hash": "f8eec9dcf29fd790ee632ade13a918f3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_llm_universe_sentiment_report.json": {
+    "mtime": 1779214850.4758594,
+    "ast_hash": "be8673be5aea252105a52d73e102e9e7",
+    "semantic_hash": "be8673be5aea252105a52d73e102e9e7"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_market_context.json": {
+    "mtime": 1779214902.8343422,
+    "ast_hash": "6055bcbde207b51cca7c558159962e0f",
+    "semantic_hash": "6055bcbde207b51cca7c558159962e0f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_stream_confirmed_trade_plan.json": {
+    "mtime": 1779216132.1379712,
+    "ast_hash": "4f1fd0bd1e865ab85a1fa0e64374ff93",
+    "semantic_hash": "4f1fd0bd1e865ab85a1fa0e64374ff93"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_evolution_strategy_models.json": {
+    "mtime": 1779214834.4467912,
+    "ast_hash": "8a80554c91d9fca8acb82f023de02f11",
+    "semantic_hash": "8a80554c91d9fca8acb82f023de02f11"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_premarket_trade_plan.json": {
+    "mtime": 1779214905.4458272,
+    "ast_hash": "4d0ed7a055997e1e874b37f89b78e9b5",
+    "semantic_hash": "4d0ed7a055997e1e874b37f89b78e9b5"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_evolution_strategy_signals.json": {
+    "mtime": 1779214834.5057282,
+    "ast_hash": "f07c6b9564cffbbb5072d8c8bfe04c4b",
+    "semantic_hash": "f07c6b9564cffbbb5072d8c8bfe04c4b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_llm_universe_financials_report.json": {
+    "mtime": 1779214850.4767349,
+    "ast_hash": "9cd483fc3df54cce8a3895224b8e33bf",
+    "semantic_hash": "9cd483fc3df54cce8a3895224b8e33bf"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_latest_llm_sentiment_universe.json": {
+    "mtime": 1779214834.8259745,
+    "ast_hash": "c329a52f3c094519e9bf157b0a795882",
+    "semantic_hash": "c329a52f3c094519e9bf157b0a795882"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_spx_price_action_state.json": {
+    "mtime": 1779249601.01028,
+    "ast_hash": "69ee390a736d409b4af3fac3c7ccd277",
+    "semantic_hash": "69ee390a736d409b4af3fac3c7ccd277"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_latest_llm_candidate_discovery.json": {
+    "mtime": 1779214834.8263185,
+    "ast_hash": "baa2e20cfdfa33c26d57b25f7f46215f",
+    "semantic_hash": "baa2e20cfdfa33c26d57b25f7f46215f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_tradingview_institutional_accumulation.json": {
+    "mtime": 1779214834.825667,
+    "ast_hash": "24a8a61d90d2f39110e90750808c18ad",
+    "semantic_hash": "24a8a61d90d2f39110e90750808c18ad"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_dated/2026-05-19/20260519_intraday_structure_map_2026-05-19.json": {
+    "mtime": 1779214908.6096797,
+    "ast_hash": "160c972849b1260bcad17ab92ff658f5",
+    "semantic_hash": "160c972849b1260bcad17ab92ff658f5"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_dated/2026-05-19/20260519_latest_llm_sentiment_universe_2026-05-19.json": {
+    "mtime": 1779214908.6087737,
+    "ast_hash": "c329a52f3c094519e9bf157b0a795882",
+    "semantic_hash": "c329a52f3c094519e9bf157b0a795882"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_dated/2026-05-19/20260519_premarket_trade_plan_2026-05-19.json": {
+    "mtime": 1779214908.6092863,
+    "ast_hash": "4d0ed7a055997e1e874b37f89b78e9b5",
+    "semantic_hash": "4d0ed7a055997e1e874b37f89b78e9b5"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_dated/2026-05-19/20260519_market_context_2026-05-19.json": {
+    "mtime": 1779214908.6091788,
+    "ast_hash": "6055bcbde207b51cca7c558159962e0f",
+    "semantic_hash": "6055bcbde207b51cca7c558159962e0f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260519/20260519_dated/2026-05-19/20260519_latest_llm_candidate_discovery_2026-05-19.json": {
+    "mtime": 1779214908.6090617,
+    "ast_hash": "baa2e20cfdfa33c26d57b25f7f46215f",
+    "semantic_hash": "baa2e20cfdfa33c26d57b25f7f46215f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_stream_confirmed_trade_plan.json": {
+    "mtime": 1779210064.4984417,
+    "ast_hash": "6f848507d2fb0823ec6c6709b73a228d",
+    "semantic_hash": "6f848507d2fb0823ec6c6709b73a228d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_premarket_trade_plan_diagnostics.json": {
+    "mtime": 1779146817.114668,
+    "ast_hash": "c5cdf797271e1778de5f9ee68e93ff9a",
+    "semantic_hash": "c5cdf797271e1778de5f9ee68e93ff9a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_latest_option_booster_summary.json": {
+    "mtime": 1779110750.8099513,
+    "ast_hash": "1824e8dc443f1262994c6424a9609de5",
+    "semantic_hash": "1824e8dc443f1262994c6424a9609de5"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_multitimeframe_context.json": {
+    "mtime": 1779111909.4629796,
+    "ast_hash": "a71d7b0205c4086ab58dcbacbae25662",
+    "semantic_hash": "a71d7b0205c4086ab58dcbacbae25662"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_premarket_trade_plan.json": {
+    "mtime": 1779146817.4963737,
+    "ast_hash": "64a80082e5b620e7c63a99e03dbd22f7",
+    "semantic_hash": "64a80082e5b620e7c63a99e03dbd22f7"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_data_validation_state.json": {
+    "mtime": 1779149895.00883,
+    "ast_hash": "50bfd2449b10806e71975b11a074d997",
+    "semantic_hash": "50bfd2449b10806e71975b11a074d997"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_tradingview_institutional_accumulation.json": {
+    "mtime": 1779144610.848887,
+    "ast_hash": "780d36d81bd7c40ec477cfbfb657b982",
+    "semantic_hash": "780d36d81bd7c40ec477cfbfb657b982"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_llm_universe_financials_report.json": {
+    "mtime": 1779144172.1551235,
+    "ast_hash": "f8b776780d0a3d32c8ddd70ab4e142c0",
+    "semantic_hash": "f8b776780d0a3d32c8ddd70ab4e142c0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_intraday_structure_map.json": {
+    "mtime": 1779146817.497314,
+    "ast_hash": "996665b8b612b4a27d78c95680ddc2b3",
+    "semantic_hash": "996665b8b612b4a27d78c95680ddc2b3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_evolution_strategy_signals.json": {
+    "mtime": 1779149894.903826,
+    "ast_hash": "be2514e081475fff8b69df965deb47c3",
+    "semantic_hash": "be2514e081475fff8b69df965deb47c3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_latest_llm_candidate_discovery.json": {
+    "mtime": 1779144610.8493528,
+    "ast_hash": "4a4e2556cba58c8a3be7c06227ae4cf0",
+    "semantic_hash": "4a4e2556cba58c8a3be7c06227ae4cf0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_sr_rl_live_signals.json": {
+    "mtime": 1779250940.1363597,
+    "ast_hash": "61738f334d756a882f5ecad383a56df5",
+    "semantic_hash": "61738f334d756a882f5ecad383a56df5"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_market_context.json": {
+    "mtime": 1779111055.273031,
+    "ast_hash": "dcbf8c8918b5180e0949fc734665775a",
+    "semantic_hash": "dcbf8c8918b5180e0949fc734665775a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_latest_llm_sentiment_universe.json": {
+    "mtime": 1779144610.8491936,
+    "ast_hash": "459a05b1e2ec7c5007746ea535e5f075",
+    "semantic_hash": "459a05b1e2ec7c5007746ea535e5f075"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_spx_max_return_model.json": {
+    "mtime": 1779198329.6365156,
+    "ast_hash": "cd3d5a943c3af6b4ad33be8482160c2d",
+    "semantic_hash": "cd3d5a943c3af6b4ad33be8482160c2d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_spx_price_action_state.json": {
+    "mtime": 1779163208.4894161,
+    "ast_hash": "cb87e7bcfd577319e35510e9a38edca5",
+    "semantic_hash": "cb87e7bcfd577319e35510e9a38edca5"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_evolution_strategy_metrics.json": {
+    "mtime": 1779076896.2524004,
+    "ast_hash": "0fff52c1db057e9f32294a367bd5c859",
+    "semantic_hash": "0fff52c1db057e9f32294a367bd5c859"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_intraday_dataset_summary.json": {
+    "mtime": 1779111916.4232798,
+    "ast_hash": "e7daec3e3a38652e2f20a3fdcaa6a673",
+    "semantic_hash": "e7daec3e3a38652e2f20a3fdcaa6a673"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_llm_universe_sentiment_report.json": {
+    "mtime": 1779144172.154512,
+    "ast_hash": "182cc6df735415fe22c5f7b108cf4fd1",
+    "semantic_hash": "182cc6df735415fe22c5f7b108cf4fd1"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_tradingview_institutional_accumulation_diagnostics.json": {
+    "mtime": 1779144610.84902,
+    "ast_hash": "64c1062b3e1d7b27b7bb0ee3b20a77d6",
+    "semantic_hash": "64c1062b3e1d7b27b7bb0ee3b20a77d6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_spx_price_action_signal.json": {
+    "mtime": 1779197962.3287828,
+    "ast_hash": "f8c8a1386e07529911436ae6690469d3",
+    "semantic_hash": "f8c8a1386e07529911436ae6690469d3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_pso_lstm_best_params.json": {
+    "mtime": 1779076896.1941295,
+    "ast_hash": "5cccb27a1cce79a0a19be25f3346a91b",
+    "semantic_hash": "5cccb27a1cce79a0a19be25f3346a91b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_evolution_strategy_models.json": {
+    "mtime": 1779076896.2522144,
+    "ast_hash": "8a80554c91d9fca8acb82f023de02f11",
+    "semantic_hash": "8a80554c91d9fca8acb82f023de02f11"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_dated/2026-05-18/20260518_latest_llm_candidate_discovery_2026-05-18.json": {
+    "mtime": 1779149895.007027,
+    "ast_hash": "4a4e2556cba58c8a3be7c06227ae4cf0",
+    "semantic_hash": "4a4e2556cba58c8a3be7c06227ae4cf0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_dated/2026-05-18/20260518_latest_llm_sentiment_universe_2026-05-18.json": {
+    "mtime": 1779149895.0068972,
+    "ast_hash": "459a05b1e2ec7c5007746ea535e5f075",
+    "semantic_hash": "459a05b1e2ec7c5007746ea535e5f075"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_dated/2026-05-18/20260518_premarket_trade_plan_2026-05-18.json": {
+    "mtime": 1779149895.0072207,
+    "ast_hash": "64a80082e5b620e7c63a99e03dbd22f7",
+    "semantic_hash": "64a80082e5b620e7c63a99e03dbd22f7"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_dated/2026-05-18/20260518_intraday_structure_map_2026-05-18.json": {
+    "mtime": 1779149895.0073304,
+    "ast_hash": "996665b8b612b4a27d78c95680ddc2b3",
+    "semantic_hash": "996665b8b612b4a27d78c95680ddc2b3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_dated/2026-05-18/20260518_market_context_2026-05-18.json": {
+    "mtime": 1779149895.0071466,
+    "ast_hash": "dcbf8c8918b5180e0949fc734665775a",
+    "semantic_hash": "dcbf8c8918b5180e0949fc734665775a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260518/20260518_Feature_stream/20260518_symbol_state.json": {
+    "mtime": 1779111916.4189234,
+    "ast_hash": "a3fa62d0ea3724d5563f519ffb165869",
+    "semantic_hash": "a3fa62d0ea3724d5563f519ffb165869"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514_SPX/20260514_spx_rl_training_metrics.json": {
+    "mtime": 1778775982.8000917,
+    "ast_hash": "77c878a1740581c092f51359f2dd29bf",
+    "semantic_hash": "77c878a1740581c092f51359f2dd29bf"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514_SPX/20260514_spx_intraday_breakout_plan.json": {
+    "mtime": 1778775982.8251393,
+    "ast_hash": "d750d1f2589208f53d68501c790e1a2d",
+    "semantic_hash": "d750d1f2589208f53d68501c790e1a2d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_spx_price_action_signal.json": {
+    "mtime": 1778781592.3832033,
+    "ast_hash": "173e759a7fa954d941e8e9a2524f6d51",
+    "semantic_hash": "173e759a7fa954d941e8e9a2524f6d51"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_stream_confirmed_trade_plan.json": {
+    "mtime": 1778781305.064,
+    "ast_hash": "c893e75fcac65df222d877bdbaec6f73",
+    "semantic_hash": "c893e75fcac65df222d877bdbaec6f73"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_spx_max_return_model.json": {
+    "mtime": 1778781591.9505138,
+    "ast_hash": "d9710abf4f82faf1b9046fe9d30f614e",
+    "semantic_hash": "d9710abf4f82faf1b9046fe9d30f614e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_latest_llm_candidate_discovery.json": {
+    "mtime": 1778770445.7804122,
+    "ast_hash": "c7ea764f41319f0d73eaee806e4b4176",
+    "semantic_hash": "c7ea764f41319f0d73eaee806e4b4176"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_data_validation_state.json": {
+    "mtime": 1778800661.1504178,
+    "ast_hash": "98f827704ea548d9bd62d876edbe5965",
+    "semantic_hash": "98f827704ea548d9bd62d876edbe5965"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_pso_lstm_best_params.json": {
+    "mtime": 1778800660.9384253,
+    "ast_hash": "a16fbb500b660a686d1d613a6cd7eb26",
+    "semantic_hash": "a16fbb500b660a686d1d613a6cd7eb26"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_spx_price_action_state.json": {
+    "mtime": 1778817606.9860537,
+    "ast_hash": "42fdf218e6713bbee1bfd1a76d7986e3",
+    "semantic_hash": "42fdf218e6713bbee1bfd1a76d7986e3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_sr_rl_best_params.json": {
+    "mtime": 1778782642.7924418,
+    "ast_hash": "cb8e52f747f8dba57d6186fe09e0901f",
+    "semantic_hash": "cb8e52f747f8dba57d6186fe09e0901f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_intraday_structure_map.json": {
+    "mtime": 1778770492.0865862,
+    "ast_hash": "0ff06ff9af7b1b385469d2a8ce213f5b",
+    "semantic_hash": "0ff06ff9af7b1b385469d2a8ce213f5b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_premarket_trade_plan_diagnostics.json": {
+    "mtime": 1778770482.741863,
+    "ast_hash": "2b4261030fd69b185efebada1224e3cb",
+    "semantic_hash": "2b4261030fd69b185efebada1224e3cb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_spx_multibar_gain_best_params.json": {
+    "mtime": 1778780622.7655568,
+    "ast_hash": "810bca207514bb3666e33a03d8f04910",
+    "semantic_hash": "810bca207514bb3666e33a03d8f04910"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_premarket_trade_plan.json": {
+    "mtime": 1778770492.0784192,
+    "ast_hash": "ae50979d120818f5b7c3faf557cdf58d",
+    "semantic_hash": "ae50979d120818f5b7c3faf557cdf58d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_latest_llm_sentiment_universe.json": {
+    "mtime": 1778770449.18937,
+    "ast_hash": "01084ea81be68959434dfcd97ceea7f8",
+    "semantic_hash": "01084ea81be68959434dfcd97ceea7f8"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_spx_multibar_gain_rl_metrics.json": {
+    "mtime": 1778780621.900197,
+    "ast_hash": "65ccf85e440d30d46fd2d6a8fffc03e6",
+    "semantic_hash": "65ccf85e440d30d46fd2d6a8fffc03e6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_sr_rl_live_signals.json": {
+    "mtime": 1778825198.22829,
+    "ast_hash": "ecc986ce858970085bb33b4733d5abe5",
+    "semantic_hash": "ecc986ce858970085bb33b4733d5abe5"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_dated/2026-05-14/20260514_premarket_trade_plan_2026-05-14.json": {
+    "mtime": 1778800661.1497645,
+    "ast_hash": "ae50979d120818f5b7c3faf557cdf58d",
+    "semantic_hash": "ae50979d120818f5b7c3faf557cdf58d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_dated/2026-05-14/20260514_latest_llm_sentiment_universe_2026-05-14.json": {
+    "mtime": 1778800661.1495912,
+    "ast_hash": "01084ea81be68959434dfcd97ceea7f8",
+    "semantic_hash": "01084ea81be68959434dfcd97ceea7f8"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_dated/2026-05-14/20260514_latest_llm_candidate_discovery_2026-05-14.json": {
+    "mtime": 1778800661.149674,
+    "ast_hash": "c7ea764f41319f0d73eaee806e4b4176",
+    "semantic_hash": "c7ea764f41319f0d73eaee806e4b4176"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260514/20260514_dated/2026-05-14/20260514_intraday_structure_map_2026-05-14.json": {
+    "mtime": 1778800661.1498675,
+    "ast_hash": "0ff06ff9af7b1b385469d2a8ce213f5b",
+    "semantic_hash": "0ff06ff9af7b1b385469d2a8ce213f5b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260513/20260513_intraday_dataset_summary.json": {
+    "mtime": 1778721538.15263,
+    "ast_hash": "c7bbe4f111d2c636da03ee68d7e2dcdd",
+    "semantic_hash": "c7bbe4f111d2c636da03ee68d7e2dcdd"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260513/20260513_intraday_structure_map.json": {
+    "mtime": 1778725188.4809606,
+    "ast_hash": "a62af44767b6226d0d584a2c4aba3664",
+    "semantic_hash": "a62af44767b6226d0d584a2c4aba3664"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260513/20260513_multitimeframe_context.json": {
+    "mtime": 1778723527.4915416,
+    "ast_hash": "425da52f36da00486d998c67a38968cf",
+    "semantic_hash": "425da52f36da00486d998c67a38968cf"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260513/20260514_data_validation_state.json": {
+    "mtime": 1778769859.1568334,
+    "ast_hash": "5c7e791656291b3bdaee8a0b24e240ad",
+    "semantic_hash": "5c7e791656291b3bdaee8a0b24e240ad"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260513/20260513_data_validation_state.json": {
+    "mtime": 1778718223.166854,
+    "ast_hash": "13fa082a97d4936ba144160657cd71b2",
+    "semantic_hash": "13fa082a97d4936ba144160657cd71b2"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260513/intraday_structure_map.json": {
+    "mtime": 1778725077.0625856,
+    "ast_hash": "29cabe97a807533bb22758920ed35cb4",
+    "semantic_hash": "29cabe97a807533bb22758920ed35cb4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260513/20260513_latest_llm_candidate_discovery.json": {
+    "mtime": 1778723605.1795638,
+    "ast_hash": "243e7ec786762d79d87ebbf0d37ec407",
+    "semantic_hash": "243e7ec786762d79d87ebbf0d37ec407"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260513/20260513_latest_llm_sentiment_universe.json": {
+    "mtime": 1778723609.8982072,
+    "ast_hash": "51595481a34d7ea8c4a3deef2b9b0ef6",
+    "semantic_hash": "51595481a34d7ea8c4a3deef2b9b0ef6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260513/20260513_premarket_trade_plan_diagnostics.json": {
+    "mtime": 1778725178.9928079,
+    "ast_hash": "de6505290f9b2153909238bc8a9e140b",
+    "semantic_hash": "de6505290f9b2153909238bc8a9e140b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260513/20260513_rl_intraday_training_metrics.json": {
+    "mtime": 1778740244.256834,
+    "ast_hash": "a602169a450b2c51349b488f137e1f69",
+    "semantic_hash": "a602169a450b2c51349b488f137e1f69"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260513/20260513_premarket_trade_plan.json": {
+    "mtime": 1778725188.4729106,
+    "ast_hash": "1097e387afc623520a04e65560babfb3",
+    "semantic_hash": "1097e387afc623520a04e65560babfb3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260513/20260513_Feature_stream/20260513_symbol_state.json": {
+    "mtime": 1778721538.1442525,
+    "ast_hash": "5e7f78abaf5d4f99ae62f5d004c3c05a",
+    "semantic_hash": "5e7f78abaf5d4f99ae62f5d004c3c05a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260513/20260514_dated/2026-05-14/20260513_intraday_structure_map_2026-05-14.json": {
+    "mtime": 1778769859.153965,
+    "ast_hash": "a62af44767b6226d0d584a2c4aba3664",
+    "semantic_hash": "a62af44767b6226d0d584a2c4aba3664"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260513/20260514_dated/2026-05-14/20260513_premarket_trade_plan_2026-05-14.json": {
+    "mtime": 1778769859.153821,
+    "ast_hash": "1097e387afc623520a04e65560babfb3",
+    "semantic_hash": "1097e387afc623520a04e65560babfb3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260513/20260514_dated/2026-05-14/20260513_latest_llm_sentiment_universe_2026-05-14.json": {
+    "mtime": 1778769859.1535878,
+    "ast_hash": "51595481a34d7ea8c4a3deef2b9b0ef6",
+    "semantic_hash": "51595481a34d7ea8c4a3deef2b9b0ef6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260513/20260514_dated/2026-05-14/20260513_latest_llm_candidate_discovery_2026-05-14.json": {
+    "mtime": 1778769859.1537106,
+    "ast_hash": "243e7ec786762d79d87ebbf0d37ec407",
+    "semantic_hash": "243e7ec786762d79d87ebbf0d37ec407"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_spx_price_action_state.json": {
+    "mtime": 1778825213.6026206,
+    "ast_hash": "923b91395edb10f6aee4476a4342bb1a",
+    "semantic_hash": "923b91395edb10f6aee4476a4342bb1a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_data_validation_state.json": {
+    "mtime": 1778851901.8782718,
+    "ast_hash": "b1ab6d5b1b212b578fd0cad6343b613b",
+    "semantic_hash": "b1ab6d5b1b212b578fd0cad6343b613b"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_premarket_trade_plan.json": {
+    "mtime": 1778851898.75346,
+    "ast_hash": "e0e1c23156a7090dd06f23bdb137d81e",
+    "semantic_hash": "e0e1c23156a7090dd06f23bdb137d81e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_dataset_summary.json": {
+    "mtime": 1778852713.5094888,
+    "ast_hash": "86f8a4c7b6b8ffca1ff169a13ef07060",
+    "semantic_hash": "86f8a4c7b6b8ffca1ff169a13ef07060"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_option_booster_summary.json": {
+    "mtime": 1778851827.8478901,
+    "ast_hash": "72c178da530e2aa819125e7e211096e6",
+    "semantic_hash": "72c178da530e2aa819125e7e211096e6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_stream_confirmed_trade_plan.json": {
+    "mtime": 1778860382.8554537,
+    "ast_hash": "f2f138abd2ad0707ad3a2b526c380e2f",
+    "semantic_hash": "f2f138abd2ad0707ad3a2b526c380e2f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_sentiment_universe.json": {
+    "mtime": 1778851845.1136582,
+    "ast_hash": "4e9d263c7309c471c3a978077b3162b6",
+    "semantic_hash": "4e9d263c7309c471c3a978077b3162b6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_premarket_trade_plan_diagnostics.json": {
+    "mtime": 1778851890.8550134,
+    "ast_hash": "0a20da50bbbb7d382ab6b2ecf66762f9",
+    "semantic_hash": "0a20da50bbbb7d382ab6b2ecf66762f9"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_pso_lstm_best_params.json": {
+    "mtime": 1778825212.291402,
+    "ast_hash": "cfdff4cb07108c613173ff139a29765e",
+    "semantic_hash": "cfdff4cb07108c613173ff139a29765e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_spx_max_return_model.json": {
+    "mtime": 1778863868.1343043,
+    "ast_hash": "afd0aabf4970a1565d7d192f119ed2dc",
+    "semantic_hash": "afd0aabf4970a1565d7d192f119ed2dc"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_latest_llm_candidate_discovery.json": {
+    "mtime": 1778851841.910604,
+    "ast_hash": "70c3252a72c370cc46c31d226170bbf7",
+    "semantic_hash": "70c3252a72c370cc46c31d226170bbf7"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_intraday_structure_map.json": {
+    "mtime": 1778851898.7589056,
+    "ast_hash": "1c0253a36467097bab5c770c0612f3de",
+    "semantic_hash": "1c0253a36467097bab5c770c0612f3de"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_multitimeframe_context.json": {
+    "mtime": 1778852706.5897427,
+    "ast_hash": "339189228505dfd37578bd1a6590212a",
+    "semantic_hash": "339189228505dfd37578bd1a6590212a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_spx_price_action_signal.json": {
+    "mtime": 1778863827.1031725,
+    "ast_hash": "a6043b4ab82e8057b13a0ae91ceff6b4",
+    "semantic_hash": "a6043b4ab82e8057b13a0ae91ceff6b4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_Feature_stream/20260515_symbol_state.json": {
+    "mtime": 1778852713.5071785,
+    "ast_hash": "2c869b821e6588264b90341c874ed90c",
+    "semantic_hash": "2c869b821e6588264b90341c874ed90c"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_dated/2026-05-15/20260515_premarket_trade_plan_2026-05-15.json": {
+    "mtime": 1778851901.8760848,
+    "ast_hash": "e0e1c23156a7090dd06f23bdb137d81e",
+    "semantic_hash": "e0e1c23156a7090dd06f23bdb137d81e"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_dated/2026-05-15/20260515_intraday_structure_map_2026-05-15.json": {
+    "mtime": 1778851901.8762307,
+    "ast_hash": "1c0253a36467097bab5c770c0612f3de",
+    "semantic_hash": "1c0253a36467097bab5c770c0612f3de"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_dated/2026-05-15/20260515_latest_llm_candidate_discovery_2026-05-15.json": {
+    "mtime": 1778851901.8759482,
+    "ast_hash": "70c3252a72c370cc46c31d226170bbf7",
+    "semantic_hash": "70c3252a72c370cc46c31d226170bbf7"
+  },
+  "/Users/blkpvnthr/Desktop/trader/system-data/20260515/20260515_dated/2026-05-15/20260515_latest_llm_sentiment_universe_2026-05-15.json": {
+    "mtime": 1778851901.8756208,
+    "ast_hash": "4e9d263c7309c471c3a978077b3162b6",
+    "semantic_hash": "4e9d263c7309c471c3a978077b3162b6"
+  },
+  "/Users/blkpvnthr/Desktop/trader/20260513_daily_system_outputs/runtime/20260513/20260513_premarket_collector_state.json": {
+    "mtime": 1778716730.2684429,
+    "ast_hash": "6a5cb964bffe819e222f94c64ce4a995",
+    "semantic_hash": "6a5cb964bffe819e222f94c64ce4a995"
+  },
+  "/Users/blkpvnthr/Desktop/trader/20260513_daily_system_outputs/runtime/20260513/20260513_market_context.json": {
+    "mtime": 1778724682.243247,
+    "ast_hash": "968d13cf6c724092ae1ae66f80ecaff4",
+    "semantic_hash": "968d13cf6c724092ae1ae66f80ecaff4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/latest_option_booster_summary.json": {
+    "mtime": 1778667001.9267848,
+    "ast_hash": "3e19087756e9fcb91d730efc772e846a",
+    "semantic_hash": "3e19087756e9fcb91d730efc772e846a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/health_report.json": {
+    "mtime": 1779314842.039678,
+    "ast_hash": "593f75579c8d7880399844130576000a",
+    "semantic_hash": "593f75579c8d7880399844130576000a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/capital_allocation.json": {
+    "mtime": 1779314785.2437928,
+    "ast_hash": "0f6b2eede8f4c5a29c5c0f3a68ae71f0",
+    "semantic_hash": "0f6b2eede8f4c5a29c5c0f3a68ae71f0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260513_latest_option_booster_summary.json": {
+    "mtime": 1778716666.695325,
+    "ast_hash": "ad4b436251f275d2bfd72860b1b308a2",
+    "semantic_hash": "ad4b436251f275d2bfd72860b1b308a2"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/premarket_trade_plan.json": {
+    "mtime": 1778716669.0706697,
+    "ast_hash": "31ba6d68a9ecdf8b2f01fb18f6c6f0f0",
+    "semantic_hash": "31ba6d68a9ecdf8b2f01fb18f6c6f0f0"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/strategy_overlap.json": {
+    "mtime": 1779314742.6638339,
+    "ast_hash": "95f8016a048bbb97f2bf02a15605de3a",
+    "semantic_hash": "95f8016a048bbb97f2bf02a15605de3a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/regime_sizing_diagnostics.json": {
+    "mtime": 1778662238.3135931,
+    "ast_hash": "fcef445b9c77aa020de188db57738f08",
+    "semantic_hash": "fcef445b9c77aa020de188db57738f08"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/intraday_structure_map.json": {
+    "mtime": 1778716669.0702946,
+    "ast_hash": "29cabe97a807533bb22758920ed35cb4",
+    "semantic_hash": "29cabe97a807533bb22758920ed35cb4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/latest_llm_candidate_discovery.json": {
+    "mtime": 1778667313.0251853,
+    "ast_hash": "a5992cb534bb9fa38dafc8fa4c02f1e7",
+    "semantic_hash": "a5992cb534bb9fa38dafc8fa4c02f1e7"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260513_latest_llm_candidate_discovery.json": {
+    "mtime": 1778716666.6927958,
+    "ast_hash": "6dea67da0abe266c6fa24679517f5a3f",
+    "semantic_hash": "6dea67da0abe266c6fa24679517f5a3f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/dashboard.json": {
+    "mtime": 1779315373.5672755,
+    "ast_hash": "b6405e483813c6cb39392e1ea5e332d3",
+    "semantic_hash": "b6405e483813c6cb39392e1ea5e332d3"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/premarket_trade_plan_diagnostics.json": {
+    "mtime": 1778716669.0710614,
+    "ast_hash": "2abd120ce945a075049bbcc33d8da592",
+    "semantic_hash": "2abd120ce945a075049bbcc33d8da592"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/spx_intraday_breakout_plan.json": {
+    "mtime": 1778646091.0402558,
+    "ast_hash": "cdb981f55c4ac90f2b036fd7c2e3b0d4",
+    "semantic_hash": "cdb981f55c4ac90f2b036fd7c2e3b0d4"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260513_latest_llm_sentiment_universe.json": {
+    "mtime": 1778716730.2687945,
+    "ast_hash": "12bcd9ec76f56c3a8d93bebfb5ccc81a",
+    "semantic_hash": "12bcd9ec76f56c3a8d93bebfb5ccc81a"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/replay_results.json": {
+    "mtime": 1779314653.91339,
+    "ast_hash": "3061e1e1c3c6daac16470a04db3fb512",
+    "semantic_hash": "3061e1e1c3c6daac16470a04db3fb512"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/rl_intraday_training_metrics.json": {
+    "mtime": 1778653120.921125,
+    "ast_hash": "e49b11f5d79625fbd4cd69c95425a647",
+    "semantic_hash": "e49b11f5d79625fbd4cd69c95425a647"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/strategy_activity_report.json": {
+    "mtime": 1779314697.4360273,
+    "ast_hash": "5e84570b42b9bd43e62c6ec9da5f95cb",
+    "semantic_hash": "5e84570b42b9bd43e62c6ec9da5f95cb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/market_context.json": {
+    "mtime": 1778716669.07046,
+    "ast_hash": "14328a5fbad8d56adba4d4ab255e0f23",
+    "semantic_hash": "14328a5fbad8d56adba4d4ab255e0f23"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/latest_llm_sentiment_universe.json": {
+    "mtime": 1778667315.5063908,
+    "ast_hash": "6ef77850d18fef3649f220f145557efa",
+    "semantic_hash": "6ef77850d18fef3649f220f145557efa"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/premarket_collector_state.json": {
+    "mtime": 1778667660.0435643,
+    "ast_hash": "fb5a7559cf626d93cb2ffd7cc577c8c1",
+    "semantic_hash": "fb5a7559cf626d93cb2ffd7cc577c8c1"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260517/20260517_market_context.json": {
+    "mtime": 1779076434.3323836,
+    "ast_hash": "6a8e3a790c8c2ad00b24a9afe2550878",
+    "semantic_hash": "6a8e3a790c8c2ad00b24a9afe2550878"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260519/20260519_market_context.json": {
+    "mtime": 1779214902.7211442,
+    "ast_hash": "b185cad5e51aeb83aefa070a2103408f",
+    "semantic_hash": "b185cad5e51aeb83aefa070a2103408f"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260518/20260518_premarket_collector_state.json": {
+    "mtime": 1779110902.3593135,
+    "ast_hash": "588d6d057a9ebc1db8c86b2957c76d1d",
+    "semantic_hash": "588d6d057a9ebc1db8c86b2957c76d1d"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260518/20260518_market_context.json": {
+    "mtime": 1779111058.6557117,
+    "ast_hash": "dc9b7cba9ef10e11fa2f5fa92c020fbb",
+    "semantic_hash": "dc9b7cba9ef10e11fa2f5fa92c020fbb"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260514/20260514_market_context.json": {
+    "mtime": 1778781520.6472208,
+    "ast_hash": "b9bd2e22fbc06b4318612525b0e396e1",
+    "semantic_hash": "b9bd2e22fbc06b4318612525b0e396e1"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260515/20260515_premarket_collector_state.json": {
+    "mtime": 1778851827.915018,
+    "ast_hash": "97160b7dfc7ebb13069c10182fdb2efe",
+    "semantic_hash": "97160b7dfc7ebb13069c10182fdb2efe"
+  },
+  "/Users/blkpvnthr/Desktop/trader/daily_system_outputs/20260515/20260515_market_context.json": {
+    "mtime": 1778855673.9906175,
+    "ast_hash": "791e8c807fae7650f4bcb0bc3abf0d4f",
+    "semantic_hash": "791e8c807fae7650f4bcb0bc3abf0d4f"
+  }
+}
