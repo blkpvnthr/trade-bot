@@ -1,5 +1,7 @@
 import types
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import pandas as pd
@@ -20,6 +22,9 @@ class _BrokerStub:
         return False
 
     def submit_market_buy(self, symbol, qty, client_order_id, time_in_force):
+        return _SubmittedOrder()
+
+    def submit_bracket_buy(self, symbol, qty, stop_price, target_price, client_order_id, time_in_force):
         return _SubmittedOrder()
 
     def cancel_open_orders_for_symbol(self, symbol):
@@ -81,6 +86,8 @@ class LiveExperienceLoggingTests(unittest.TestCase):
                     "side": "buy",
                     "order_qty": 10,
                     "price": 10.0,
+                    "stop_price": 9.80,
+                    "target_price": 10.60,
                     "capped_dollars": 100.0,
                     "reason": "test_entry",
                     "client_order_id": "client-1",
@@ -97,6 +104,45 @@ class LiveExperienceLoggingTests(unittest.TestCase):
         self.assertEqual(stages, ["decision", "submitted"])
         self.assertEqual(list(results["status"]), ["filled"])
         self.assertEqual(list(results["symbol"]), ["HPE"])
+
+    def test_append_live_experience_writes_parquet_when_numeric_fields_are_missing(self):
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            with patch.multiple(
+                run,
+                LIVE_EXPERIENCE_JSONL_PATH=tmp / "live.jsonl",
+                LIVE_EXPERIENCE_CSV_PATH=tmp / "live.csv",
+                LIVE_EXPERIENCE_PARQUET_PATH=tmp / "live.parquet",
+                write_event=lambda *args, **kwargs: None,
+            ):
+                run.append_live_experience(
+                    {
+                        "cycle_id": "cycle-1",
+                        "stage": "decision",
+                        "symbol": "HPE",
+                        "account_equity_after": "",
+                        "filled_avg_price": "",
+                    },
+                    write_parquet=True,
+                )
+                run.append_live_experience(
+                    {
+                        "cycle_id": "cycle-2",
+                        "stage": "submitted",
+                        "symbol": "HPE",
+                        "account_equity_after": 100000.0,
+                        "filled_avg_price": 37.91,
+                    },
+                    write_parquet=True,
+                )
+
+                parquet = pd.read_parquet(tmp / "live.parquet")
+
+        self.assertEqual(len(parquet), 2)
+        self.assertTrue(pd.isna(parquet.loc[0, "account_equity_after"]))
+        self.assertEqual(float(parquet.loc[1, "account_equity_after"]), 100000.0)
+        self.assertTrue(pd.isna(parquet.loc[0, "filled_avg_price"]))
+        self.assertEqual(float(parquet.loc[1, "filled_avg_price"]), 37.91)
 
 
 if __name__ == "__main__":
