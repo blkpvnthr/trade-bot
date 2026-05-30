@@ -61,6 +61,7 @@ ALPHA_EXPECTANCY_REPORT = "alpha_expectancy_report.json"
 BUFFETT_PERFORMANCE_REPORT = "buffett_performance_report.json"
 CAPITAL_WATERFALL_PERFORMANCE = "capital_waterfall_performance.json"
 WALKFORWARD_REPORT = "walkforward_report.json"
+PROBABILITY_WEIGHTING_REPORT = "probability_weighting_report.json"
 
 EVENT_TYPES = {
     "alpha_entry", "alpha_exit", "alpha_rejection",
@@ -129,20 +130,40 @@ def record_alpha_signal(sig: dict, market_context: dict | None = None, placed: b
                         gamma_theta_efficiency=sig.get("gamma_theta_efficiency"),
                         black_scholes_score=sig.get("black_scholes_score"),
                         contracts=sig.get("contracts"), premium_cost=sig.get("premium_cost"),
-                        reject_reason=sig.get("reject_reason", ""))
+                        reject_reason=sig.get("reject_reason", ""),
+                        probability_of_profit=sig.get("probability_of_profit"),
+                        probability_band=sig.get("probability_band", ""),
+                        expected_R=sig.get("expected_R"),
+                        probability_confidence=sig.get("probability_confidence"),
+                        probability_source=sig.get("probability_source", ""),
+                        size_multiplier=sig.get("probability_size_multiplier"),
+                        management_style=sig.get("management_style", ""))
 
 
 def record_alpha_exit(exit_order: dict, market_context: dict | None = None,
                       date_tag: str | None = None) -> dict:
     eo = dict(exit_order or {})
+    realized_pnl = eo.get("realized_pnl")
+    r_mult = eo.get("r_multiple")
+    win = None if realized_pnl is None else realized_pnl > 0
+    # Was the probability estimate accurate? A predicted-likely trade (band >= 60 or
+    # p>=0.5) should win; a predicted-unlikely trade should lose. None when unknown.
+    pop = eo.get("probability_of_profit")
+    band = eo.get("probability_band", "")
+    accurate = None
+    if win is not None and (pop is not None or band):
+        predicted_win = (float(pop) >= 0.5) if pop is not None else (band in ("60-69", "70-79", "80-100"))
+        accurate = bool(predicted_win == win)
     return record_event("alpha_exit", eo.get("underlying") or eo.get("symbol", ""), date_tag=date_tag,
                         regime=_regime(market_context), sector=eo.get("sector", ""),
                         setup_type=eo.get("setup_type", ""), vol_regime=_vol_regime(market_context),
                         source=eo.get("source", ""), reason=eo.get("reason", ""),
-                        pnl=eo.get("realized_pnl"), r_multiple=eo.get("r_multiple"),
+                        pnl=realized_pnl, r_multiple=r_mult, realized_R=r_mult,
                         return_pct=eo.get("return_pct"),
                         holding_period_days=eo.get("holding_period_days"),
-                        win=(None if eo.get("realized_pnl") is None else eo["realized_pnl"] > 0))
+                        probability_band=band, probability_of_profit=pop,
+                        management_style=eo.get("management_style", ""),
+                        probability_accurate=accurate, win=win)
 
 
 def record_bal_order(order: dict, market_context: dict | None = None,
@@ -334,6 +355,37 @@ def alpha_analytics(events: list[dict]) -> dict:
     }
 
 
+# ── Probability-weighting analytics ──────────────────────────────────────────────
+def probability_analytics(events: list[dict]) -> dict:
+    """
+    Did the probability layer help? Group realized Alpha exits by probability band and
+    measure per-band performance + estimate accuracy (predicted-likely → won?).
+    """
+    exits = [e for e in events if e.get("event_type") == "alpha_exit"]
+    entries = [e for e in events if e.get("event_type") == "alpha_entry"]
+    by_band = group_metrics(exits, lambda e: e.get("probability_band") or "unknown")
+    band_accuracy = {}
+    for band in sorted({(e.get("probability_band") or "unknown") for e in exits}):
+        grp = [e for e in exits if (e.get("probability_band") or "unknown") == band]
+        judged = [e for e in grp if e.get("probability_accurate") is not None]
+        correct = sum(1 for e in judged if e.get("probability_accurate"))
+        band_accuracy[band] = {
+            "exits": len(grp), "judged": len(judged),
+            "accuracy": round(correct / len(judged), 4) if judged else 0.0,
+        }
+    entry_bands = {}
+    for band in sorted({(e.get("probability_band") or "unknown") for e in entries}):
+        grp = [e for e in entries if (e.get("probability_band") or "unknown") == band]
+        mults = [float(e["size_multiplier"]) for e in grp if e.get("size_multiplier") is not None]
+        entry_bands[band] = {"entries": len(grp),
+                             "avg_size_multiplier": round(sum(mults) / len(mults), 3) if mults else None}
+    judged_all = [e for e in exits if e.get("probability_accurate") is not None]
+    overall_acc = round(sum(1 for e in judged_all if e["probability_accurate"]) / len(judged_all), 4) \
+        if judged_all else 0.0
+    return {"by_band": by_band, "band_accuracy": band_accuracy, "entry_bands": entry_bands,
+            "overall_accuracy": overall_acc, "entries": len(entries), "exits": len(exits)}
+
+
 # ── Buffett analytics ────────────────────────────────────────────────────────────
 def buffett_analytics(events: list[dict]) -> dict:
     bal = [e for e in events if e.get("event_type") in ("bal_buy", "bal_dca")]
@@ -513,6 +565,7 @@ def generate_all_reports(events: list[dict] | None = None, market_context: dict 
     alpha_an = alpha_analytics(events)
     buffett_an = buffett_analytics(events)
     waterfall_an = waterfall_analytics(events, wf_json, bal_current_value)
+    probability_an = probability_analytics(events)
     rank = rankings(alpha_an, buffett_an)
     wf_sim = walk_forward(events, start_equity=start_equity)
 
@@ -527,8 +580,10 @@ def generate_all_reports(events: list[dict] | None = None, market_context: dict 
                                 "alpha_expectancy": alpha_an["totals"].get("expectancy", 0.0),
                                 "buffett_expectancy": buffett_an["totals"].get("expectancy", 0.0),
                                 "capital_waterfall": waterfall_an}, date_tag)
+    _write(PROBABILITY_WEIGHTING_REPORT, {**meta, "probability_weighting": probability_an}, date_tag)
     research_lab = {**meta, "alpha": alpha_an, "buffett": buffett_an,
-                    "capital_waterfall": waterfall_an, "rankings": rank, "walkforward": wf_sim}
+                    "capital_waterfall": waterfall_an, "probability_weighting": probability_an,
+                    "rankings": rank, "walkforward": wf_sim}
     _write(RESEARCH_LAB, research_lab, date_tag)
     return research_lab
 

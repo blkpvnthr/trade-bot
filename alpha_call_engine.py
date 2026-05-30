@@ -35,6 +35,8 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
+import alpha_probability_model as apm
+
 # ── paths ─────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent
 ET = ZoneInfo("America/New_York")
@@ -182,6 +184,21 @@ class CallSignal:
     gamma_theta_efficiency: float = 0.0 # convexity-per-1R / theta-per-day (= gamma_theta_ratio)
     iv_crush_risk: float = 0.0          # 0-100
     volatility_regime_score: float = 0.0  # 0-100 (higher = friendlier for long convexity)
+    # ── Probability-weighted management (adapts size + management; NEVER blocks) ──
+    probability_of_profit: float = 0.0
+    expected_R: float = 0.0
+    probability_confidence: float = 0.0
+    probability_source: str = ""
+    probability_band: str = ""
+    probability_size_multiplier: float = 1.0
+    management_style: str = "standard"
+    partial_profit_trigger: float = 0.0
+    trailing_tightness: str = "normal"
+    overnight_allowed_by_probability: bool = False
+    # internal effective management applied at fill (probability tightens these only)
+    stop_loss_pct_eff: float = 0.0
+    partial_profit_pct_eff: float = 0.0
+    trail_tightness_mult: float = 1.0
     # Sizing
     contracts: int = 0
     premium_cost: float = 0.0
@@ -220,6 +237,12 @@ class ActiveCall:
     opened_at_utc: str = ""
     setup_type: str = ""
     setup_score: float = 0.0
+    # Probability-weighted management (protective-direction only).
+    management_style: str = "standard"
+    trail_tightness_mult: float = 1.0   # <=1.0 → trails closer to peak (more protective)
+    overnight_allowed: bool = False
+    probability_of_profit: float = 0.0
+    probability_band: str = ""
 
 
 # ── event logging ──────────────────────────────────────────────────────────────
@@ -1217,6 +1240,7 @@ class AlphaCallEngine:
         self.config = config or AlphaCallConfig()
         self._active: dict[str, ActiveCall] = self._load_state()
         self._signals_today: list[dict] = []
+        self._prob_cfg = apm.ProbabilityConfig()   # probability-weighted management layer
 
     # ── state persistence ─────────────────────────────────────────────────────
     def _load_state(self) -> dict[str, ActiveCall]:
@@ -1303,6 +1327,9 @@ class AlphaCallEngine:
                     "underlying": call.symbol, "setup_type": call.setup_type,
                     "realized_pnl": round(_pnl, 2),
                     "r_multiple": round(_pnl / call.entry_cost, 3) if call.entry_cost else 0.0,
+                    "probability_band": call.probability_band,
+                    "probability_of_profit": call.probability_of_profit,
+                    "management_style": call.management_style,
                 })
                 _alpha_event("call_hard_stop", {
                     "symbol": call.symbol, "contract": call.contract_symbol,
@@ -1322,6 +1349,9 @@ class AlphaCallEngine:
                     "underlying": call.symbol, "setup_type": call.setup_type,
                     "realized_pnl": round(_pnl, 2),
                     "r_multiple": round(_pnl / call.entry_cost, 3) if call.entry_cost else 0.0,
+                    "probability_band": call.probability_band,
+                    "probability_of_profit": call.probability_of_profit,
+                    "management_style": call.management_style,
                 })
                 realized = current_value
                 _alpha_event("call_3R_exit", {
@@ -1359,8 +1389,11 @@ class AlphaCallEngine:
             trail_activate_value = call.entry_cost * (1 + self.config.r_trail_activate)
             if current_value >= trail_activate_value:
                 call.trail_active = True
-                # Trail stop sits r_trail_offset × R below current peak
-                trail_stop = call.peak_value - (self.config.r_trail_offset * r_amount)
+                # Trail stop sits (r_trail_offset × trail_tightness) × R below the peak.
+                # trail_tightness_mult <= 1.0 ⇒ stop sits CLOSER to the peak (more
+                # protective). Probability can only tighten this, never loosen it.
+                offset_mult = min(getattr(call, "trail_tightness_mult", 1.0) or 1.0, 1.0)
+                trail_stop = call.peak_value - (self.config.r_trail_offset * offset_mult * r_amount)
                 # Never lower the trail stop once set
                 if trail_stop > call.trail_stop_value:
                     call.trail_stop_value = trail_stop
@@ -1381,6 +1414,9 @@ class AlphaCallEngine:
                     "underlying": call.symbol, "setup_type": call.setup_type,
                     "realized_pnl": round(_pnl, 2),
                     "r_multiple": round(_pnl / call.entry_cost, 3) if call.entry_cost else 0.0,
+                    "probability_band": call.probability_band,
+                    "probability_of_profit": call.probability_of_profit,
+                    "management_style": call.management_style,
                 })
                 realized_gain = current_value - call.entry_cost * (1 - self.config.partial_size if call.partial_taken else 1)
                 _alpha_event("call_trail_stop_hit", {
@@ -1457,6 +1493,13 @@ class AlphaCallEngine:
         universe_rows: list[dict] = []
         signals: list[CallSignal] = []
         vol_rows: list[dict] = []
+        # Empirical per-setup history for the probability-weighted management layer.
+        setup_history = {}
+        if self._prob_cfg.enabled:
+            try:
+                setup_history = apm.load_setup_history()
+            except Exception:
+                setup_history = {}
 
         # Engine-level pre-gates. A universe file is still written (so the screener
         # output is always produced) but no entries are emitted when blocked.
@@ -1563,9 +1606,46 @@ class AlphaCallEngine:
                 urow["reject_reason"] = sig.reject_reason
                 universe_rows.append(urow); signals.append(sig); continue
 
+            # ── Probability-Weighted Management Layer ───────────────────────────
+            # Adapts SIZE + MANAGEMENT to estimated probability of profit. It NEVER
+            # rejects the trade and only moves in the protective direction (reduce size,
+            # tighten stop/trail, earlier partial). RiskManager still makes final approval.
+            stop_pct_eff = self.config.stop_loss_pct
+            partial_pct_eff = self.config.partial_profit_pct
+            if self._prob_cfg.enabled:
+                try:
+                    prob = apm.evaluate(
+                        ev.setup_type, ev.setup_score, ev.grade,
+                        expected_r_bs=float(contract.get("expected_r_multiple", 1.0) or 1.0),
+                        bs_score=float(sig.black_scholes_score or 0.0),
+                        iv_crush_risk=float(getattr(sig, "iv_crush_risk", 0.0) or 0.0),
+                        setup_history=setup_history, config=self._prob_cfg)
+                    # Reduce size only — clamp to ≥1 contract so probability NEVER blocks.
+                    contracts = max(1, min(contracts, int(round(contracts * prob["size_multiplier"]))))
+                    premium = contracts * sig.mid * 100.0
+                    max_risk = premium
+                    stop_pct_eff = self.config.stop_loss_pct * prob["stop_tightness"]          # ≤ base (tighter)
+                    partial_pct_eff = min(self.config.partial_profit_pct,
+                                          prob["partial_profit_trigger"])                      # ≤ base (earlier)
+                    sig.probability_of_profit = prob["probability_of_profit"]
+                    sig.expected_R = prob["expected_R"]
+                    sig.probability_confidence = prob["confidence"]
+                    sig.probability_source = prob["source"]
+                    sig.probability_band = prob["probability_band"]
+                    sig.probability_size_multiplier = prob["size_multiplier"]
+                    sig.management_style = prob["management_style"]
+                    sig.partial_profit_trigger = prob["partial_profit_trigger"]
+                    sig.trailing_tightness = prob["trailing_tightness"]
+                    sig.overnight_allowed_by_probability = bool(prob["overnight_allowed"])
+                    sig.trail_tightness_mult = prob["trail_tightness_mult"]
+                except Exception as _pe:
+                    _alpha_event("probability_layer_error", {"symbol": symbol, "error": str(_pe)[:160]})
+            sig.stop_loss_pct_eff = stop_pct_eff
+            sig.partial_profit_pct_eff = partial_pct_eff
+
             sig.contracts = contracts; sig.premium_cost = premium; sig.max_risk = max_risk
-            sig.stop_value = premium * (1 - self.config.stop_loss_pct)
-            sig.partial_value = premium * (1 + self.config.partial_profit_pct)
+            sig.stop_value = premium * (1 - stop_pct_eff)
+            sig.partial_value = premium * (1 + partial_pct_eff)
             sig.status = "ready"
             universe_rows.append(urow); signals.append(sig)
             _alpha_event("call_signal_generated", {"symbol": symbol, "setup": ev.setup_type, "grade": ev.grade,
@@ -1699,14 +1779,20 @@ class AlphaCallEngine:
             contracts_original=sig.contracts,
             entry_mid=sig.mid,
             entry_cost=cost,
-            hard_stop_value=cost * (1 - self.config.stop_loss_pct),
-            r_target_value=cost * (1 + self.config.r_target),      # 3R exit
-            partial_value=cost * (1 + self.config.partial_profit_pct),   # partial at +partial_profit_pct (default +50%)
+            # Probability layer may only TIGHTEN these (protective). Falls back to config.
+            hard_stop_value=cost * (1 - (sig.stop_loss_pct_eff or self.config.stop_loss_pct)),
+            r_target_value=cost * (1 + self.config.r_target),      # 3R exit (never weakened)
+            partial_value=cost * (1 + (sig.partial_profit_pct_eff or self.config.partial_profit_pct)),
             peak_value=cost,
             trail_stop_value=0.0,
             opened_at_utc=datetime.now(timezone.utc).isoformat(),
             setup_type=sig.setup_type,
             setup_score=sig.setup_score,
+            management_style=getattr(sig, "management_style", "standard"),
+            trail_tightness_mult=getattr(sig, "trail_tightness_mult", 1.0) or 1.0,
+            overnight_allowed=bool(getattr(sig, "overnight_allowed_by_probability", False)),
+            probability_of_profit=float(getattr(sig, "probability_of_profit", 0.0) or 0.0),
+            probability_band=str(getattr(sig, "probability_band", "") or ""),
         )
         self._save_state()
         _alpha_event("call_position_opened", {
