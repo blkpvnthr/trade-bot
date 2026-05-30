@@ -141,6 +141,7 @@ SKIP_REASONS = {
     "rejected_by_daily_loss",
     "rejected_by_drawdown",
     "rejected_by_order_size",
+    "rejected_by_data_unavailable",
 }
 
 
@@ -493,13 +494,66 @@ class AlpacaGateway:
         return list(contracts.values())
 
     # ── order submission ───────────────────────────────────────────────────────
+    def _resolve_reference_price(self, symbol: str) -> float:
+        """
+        Resolve a real per-share/contract price for exposure/notional. Order: latest
+        trade → latest quote mid → most recent daily close. Returns 0.0 only when no
+        market data is available. Used so RiskManager never gates on qty × 0.0.
+        """
+        if not self._available or self._mode != "alpaca_py":
+            return 0.0
+        try:
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import (StockLatestTradeRequest,
+                                              StockLatestQuoteRequest, StockBarsRequest)
+            from alpaca.data.timeframe import TimeFrame
+            from datetime import timedelta
+            dc = StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET)
+            # 1. latest trade
+            try:
+                t = dc.get_stock_latest_trade(StockLatestTradeRequest(symbol_or_symbols=symbol))
+                px = float(getattr(t.get(symbol), "price", 0) or 0)
+                if px > 0:
+                    return px
+            except Exception:
+                pass
+            # 2. latest quote mid
+            try:
+                q = dc.get_stock_latest_quote(StockLatestQuoteRequest(symbol_or_symbols=symbol)).get(symbol)
+                bid = float(getattr(q, "bid_price", 0) or 0)
+                ask = float(getattr(q, "ask_price", 0) or 0)
+                if bid > 0 and ask > 0:
+                    return (bid + ask) / 2.0
+                if ask > 0:
+                    return ask
+            except Exception:
+                pass
+            # 3. most recent daily close
+            try:
+                end = datetime.now(timezone.utc)
+                req = StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Day,
+                                       start=end - timedelta(days=7), end=end)
+                df = dc.get_stock_bars(req).df
+                if df is not None and not df.empty:
+                    return float(df["close"].iloc[-1])
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug("_resolve_reference_price(%s) failed: %s", symbol, e)
+        return 0.0
+
     def submit_market_order(self, symbol: str, side: str, qty: int,
                             reason: str = "", limit_price: float = 0.0,
-                            order_type: str = "market") -> Optional[Dict]:
+                            order_type: str = "market", reference_price: float = 0.0) -> Optional[Dict]:
         """
         Risk-gated order submission for equities AND options (OCC symbols).
         Options are always routed as DAY limit orders (market options orders are
         commonly rejected); equities use market unless a limit_price is supplied.
+
+        `reference_price` (or limit_price, or a resolved market price) is used ONLY for
+        the RiskManager exposure/notional check — it never changes the order TYPE. A BUY
+        is rejected when no real reference price can be found, so exposure is never
+        computed on qty × 0.0.
         Returns the broker response (or {"sim": True}) on success, None if blocked.
         """
         qty = int(qty)
@@ -507,7 +561,16 @@ class AlpacaGateway:
             return None
         opt = is_option_symbol(symbol)
         asset_class = "option" if opt else "equity"
-        ref_price = limit_price or 0.0
+
+        # Notional reference price: explicit limit → caller-supplied reference → live
+        # market lookup. Must be > 0 for BUYs (exits never depend on notional).
+        ref_price = float(limit_price or reference_price or 0.0)
+        if ref_price <= 0:
+            ref_price = self._resolve_reference_price(symbol)
+        if ref_price <= 0 and side == "buy":
+            log_skip(symbol, "rejected_by_data_unavailable:no_reference_price",
+                     side=side, qty=qty, source=reason or "broker")
+            return None
 
         allowed, gate_reason = self.risk.gate(symbol, side, qty, ref_price, asset_class=asset_class)
         if not allowed:
@@ -770,6 +833,16 @@ def _alpha_waterfall_cb(waterfall):
     return cb
 
 
+# ── Research layer (Evidence System) — fully fail-safe, never affects trading ─────
+def _research(method: str, *args, **kwargs) -> None:
+    """Call a portfolio_research_lab recorder/report fn, swallowing any error."""
+    try:
+        import portfolio_research_lab as prl
+        getattr(prl, method)(*args, **kwargs)
+    except Exception as e:
+        logger.debug("research layer (%s) skipped: %s", method, e)
+
+
 # ── Alpha: EXIT pass (runs every cycle, independent of regime/entries/screeners) ──
 def run_alpha_exits(engine, gateway: AlpacaGateway, waterfall,
                     option_positions: List[Dict], market_context: dict) -> int:
@@ -783,6 +856,7 @@ def run_alpha_exits(engine, gateway: AlpacaGateway, waterfall,
     for ex in exits:
         gateway.submit_market_order(ex["symbol"], ex["side"], ex["qty"],
                                     reason=ex.get("source", "alpha_exit"))
+        _research("record_alpha_exit_safe", ex, market_context)   # evidence: realized result
     return len(exits)
 
 
@@ -812,6 +886,7 @@ def run_alpha_entries(engine, gateway: AlpacaGateway, waterfall, risk: RiskManag
             if sig.reject_reason:
                 log_skip(sig.symbol, sig.reject_reason, engine="alpha",
                          grade=sig.grade, score=sig.setup_score)
+                _research("record_alpha_signal_safe", getattr(sig, "__dict__", {}), market_context, False)
             continue
         limit_px = sig.ask or sig.mid
         resp = gateway.submit_market_order(sig.contract_symbol, "buy", sig.contracts,
@@ -819,6 +894,7 @@ def run_alpha_entries(engine, gateway: AlpacaGateway, waterfall, risk: RiskManag
                                            limit_price=limit_px, order_type="limit")
         if resp is not None:
             placed += 1
+            _research("record_alpha_signal_safe", getattr(sig, "__dict__", {}), market_context, True)
             try:
                 engine.register_filled(sig)
                 waterfall.consume_alpha(sig.premium_cost)
@@ -909,14 +985,27 @@ def run_bal_entries(bal, gateway: AlpacaGateway, waterfall, risk: RiskManager,
         return 0
     placed = 0
     for o in orders:
+        # Pass the BAL-evaluated price as the notional reference so RiskManager gates on
+        # real exposure (never qty × 0.0). It does NOT make this a limit order.
         resp = gateway.submit_market_order(o["symbol"], "buy", int(o["qty"]),
-                                           reason=o.get("reason", "buffett_accumulation"))
+                                           reason=o.get("reason", "buffett_accumulation"),
+                                           reference_price=float(o.get("price", 0.0) or 0.0))
         if resp is not None:
             placed += 1
+            _research("record_bal_order_safe", o, market_context)   # evidence: tranche/conviction
             try:
                 waterfall.consume_bal(float(o.get("order_dollars", 0.0)))
             except Exception:
                 pass
+    # Evidence: record BAL rejections from the just-written DCA signals file.
+    try:
+        from buffett_accumulation_layer import BUFFETT_DCA_SIGNALS_PATH
+        sigs = json.loads(BUFFETT_DCA_SIGNALS_PATH.read_text()).get("signals", [])
+        for s in sigs:
+            if not s.get("risk_limits_passed", False):
+                _research("record_bal_rejection_safe", s, market_context)
+    except Exception:
+        pass
     return placed
 
 
@@ -1073,6 +1162,8 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
             import sec_form4_feed
             sec_res = sec_form4_feed.run_sec_form4_discovery()
             insider_data = sec_form4_feed.insider_data_for_layer()
+            for _cand in sec_res.get("candidates", []):
+                _research("record_insider_discovery_safe", _cand)   # evidence: discoveries
             logger.info("SEC Form 4 discovery: %d candidates, %d errors",
                         len(sec_res.get("candidates", [])), len(sec_res.get("errors", [])))
         except Exception as e:
@@ -1108,6 +1199,10 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     if waterfall is not None:
         write_capital_waterfall(waterfall)
     write_screener_funnel_report(alpha_scr.get("funnel", {}), buffett_res, market_context)
+    # 6. Evidence System — regenerate research analytics from the recorded events.
+    bal_value = sum(float(getattr(p, "market_value", 0) or 0) for p in equity_positions.values())
+    _research("generate_all_reports_safe", market_context=market_context,
+              start_equity=STARTING_EQUITY, bal_current_value=bal_value)
     return summary
 
 

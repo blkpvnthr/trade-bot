@@ -1293,12 +1293,16 @@ class AlphaCallEngine:
 
             # ── Hard stop ─────────────────────────────────────────────────────
             if current_value <= call.hard_stop_value:
+                _pnl = current_value - call.entry_cost
                 exit_orders.append({
                     "symbol": call.contract_symbol,
                     "side": "sell",
                     "qty": qty_held,
                     "source": "alpha_call_hard_stop",
                     "reason": f"hard_stop:value={current_value:.0f}<=stop={call.hard_stop_value:.0f}",
+                    "underlying": call.symbol, "setup_type": call.setup_type,
+                    "realized_pnl": round(_pnl, 2),
+                    "r_multiple": round(_pnl / call.entry_cost, 3) if call.entry_cost else 0.0,
                 })
                 _alpha_event("call_hard_stop", {
                     "symbol": call.symbol, "contract": call.contract_symbol,
@@ -1308,12 +1312,16 @@ class AlphaCallEngine:
 
             # ── 3R full target ────────────────────────────────────────────────
             if current_value >= call.r_target_value:
+                _pnl = current_value - call.entry_cost
                 exit_orders.append({
                     "symbol": call.contract_symbol,
                     "side": "sell",
                     "qty": qty_held,
                     "source": "alpha_call_3R_target",
                     "reason": f"3R_target:value={current_value:.0f}>=target={call.r_target_value:.0f}",
+                    "underlying": call.symbol, "setup_type": call.setup_type,
+                    "realized_pnl": round(_pnl, 2),
+                    "r_multiple": round(_pnl / call.entry_cost, 3) if call.entry_cost else 0.0,
                 })
                 realized = current_value
                 _alpha_event("call_3R_exit", {
@@ -1360,6 +1368,7 @@ class AlphaCallEngine:
 
             if call.trail_active and call.trail_stop_value > 0 and current_value <= call.trail_stop_value:
                 remaining_qty = call.contracts_held
+                _pnl = current_value - call.entry_cost
                 exit_orders.append({
                     "symbol": call.contract_symbol,
                     "side": "sell",
@@ -1369,6 +1378,9 @@ class AlphaCallEngine:
                         f"trail_stop:value={current_value:.0f}"
                         f"<=trail={call.trail_stop_value:.0f} peak={call.peak_value:.0f}"
                     ),
+                    "underlying": call.symbol, "setup_type": call.setup_type,
+                    "realized_pnl": round(_pnl, 2),
+                    "r_multiple": round(_pnl / call.entry_cost, 3) if call.entry_cost else 0.0,
                 })
                 realized_gain = current_value - call.entry_cost * (1 - self.config.partial_size if call.partial_taken else 1)
                 _alpha_event("call_trail_stop_hit", {
@@ -1389,10 +1401,14 @@ class AlphaCallEngine:
                     dte_rem = 999
                 guide = self.black_scholes_exit_optimizer(call, current_value, dte_rem)
                 if guide.get("action") in ("exit_theta_decay", "exit_iv_crush"):
+                    _pnl = current_value - call.entry_cost
                     exit_orders.append({
                         "symbol": call.contract_symbol, "side": "sell", "qty": call.contracts_held,
                         "source": f"alpha_call_{guide.get('action', 'theta_decay')}",
                         "reason": guide.get("rationale", "theta_decay"),
+                        "underlying": call.symbol, "setup_type": call.setup_type,
+                        "realized_pnl": round(_pnl, 2),
+                        "r_multiple": round(_pnl / call.entry_cost, 3) if call.entry_cost else 0.0,
                     })
                     _alpha_event("call_theta_decay_exit", {
                         "symbol": call.symbol, "contract": call.contract_symbol,
