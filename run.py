@@ -96,6 +96,8 @@ ENABLE_BAL_COMPOSITE_DCA        = os.environ.get("ENABLE_BAL_COMPOSITE_DCA", "tr
 # SEC EDGAR Form 4 insider-buy DISCOVERY (expands the Buffett review universe only —
 # never generates orders, never bypasses any gate).
 ENABLE_SEC_FORM4_FEED           = os.environ.get("ENABLE_SEC_FORM4_FEED", "true").lower() in {"1", "true"}
+# Adaptive Capital Allocation (evidence-driven sizing PLAN; advisory, within caps).
+ENABLE_ADAPTIVE_ALLOCATION      = os.environ.get("ENABLE_ADAPTIVE_ALLOCATION", "true").lower() in {"1", "true"}
 OPTIONS_PROFIT_TO_BAL_PCT       = float(os.environ.get("OPTIONS_PROFIT_TO_BAL_PCT", 0.60))
 OPTIONS_PROFIT_TO_ALPHA_PCT     = float(os.environ.get("OPTIONS_PROFIT_TO_ALPHA_PCT", 0.30))
 OPTIONS_PROFIT_TO_CASH_PCT      = float(os.environ.get("OPTIONS_PROFIT_TO_CASH_PCT", 0.10))
@@ -1203,6 +1205,15 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     bal_value = sum(float(getattr(p, "market_value", 0) or 0) for p in equity_positions.values())
     _research("generate_all_reports_safe", market_context=market_context,
               start_equity=STARTING_EQUITY, bal_current_value=bal_value)
+    # 7. Adaptive Capital Allocation — turn the evidence into an allocation PLAN.
+    # Advisory only: it never submits orders, never overrides RiskManager, and all
+    # recommended sizes are clamped to the configured caps. Fully fail-safe.
+    if ENABLE_ADAPTIVE_ALLOCATION:
+        try:
+            import adaptive_capital_allocator as aca
+            aca.build_allocation_plan_safe(market_context=market_context)
+        except Exception as e:
+            logger.debug("adaptive allocator skipped: %s", e)
     return summary
 
 
