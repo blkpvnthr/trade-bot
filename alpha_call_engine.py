@@ -36,6 +36,7 @@ import numpy as np
 import pandas as pd
 
 import alpha_probability_model as apm
+import oops_option_optimizer as oops_opt
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -199,6 +200,20 @@ class CallSignal:
     stop_loss_pct_eff: float = 0.0
     partial_profit_pct_eff: float = 0.0
     trail_tightness_mult: float = 1.0
+    # ── OOPS utility optimization (advisory; chooses the best option expression) ──
+    oops_score: float = 0.0
+    expected_utility: float = 0.0
+    certainty_equivalent: float = 0.0
+    probability_profit: float = 0.0
+    probability_total_loss: float = 0.0
+    expected_return: float = 0.0
+    median_return: float = 0.0
+    downside_tail_risk: float = 0.0
+    skew: float = 0.0
+    kurtosis: float = 0.0
+    combined_option_score: float = 0.0
+    selected_by_oops: bool = False
+    oops_reject_reason: str = ""
     # Sizing
     contracts: int = 0
     premium_cost: float = 0.0
@@ -938,6 +953,25 @@ def _apply_vol_fields(sig: "CallSignal", vol_diag: dict) -> None:
     sig.volatility_regime_score = float(vol_diag.get("volatility_regime_score", 0.0) or 0.0)
 
 
+def _apply_oops_fields(sig: "CallSignal", contract: dict, selected_by_oops: bool) -> None:
+    """Copy OOPS utility-optimization fields onto a signal (advisory diagnostics)."""
+    sig.selected_by_oops = bool(selected_by_oops)
+    if "oops_score" not in contract:
+        sig.oops_reject_reason = "oops_unavailable_bs_fallback"
+        return
+    sig.oops_score = float(contract.get("oops_score", 0.0) or 0.0)
+    sig.expected_utility = float(contract.get("expected_utility", 0.0) or 0.0)
+    sig.certainty_equivalent = float(contract.get("certainty_equivalent", 0.0) or 0.0)
+    sig.probability_profit = float(contract.get("probability_profit", 0.0) or 0.0)
+    sig.probability_total_loss = float(contract.get("probability_total_loss", 0.0) or 0.0)
+    sig.expected_return = float(contract.get("expected_return", 0.0) or 0.0)
+    sig.median_return = float(contract.get("median_return", 0.0) or 0.0)
+    sig.downside_tail_risk = float(contract.get("downside_tail_risk", 0.0) or 0.0)
+    sig.skew = float(contract.get("skew", 0.0) or 0.0)
+    sig.kurtosis = float(contract.get("kurtosis", 0.0) or 0.0)
+    sig.combined_option_score = float(contract.get("combined_option_score", 0.0) or 0.0)
+
+
 # ── contract selection ─────────────────────────────────────────────────────────
 
 def evaluate_call_contracts(
@@ -1241,6 +1275,7 @@ class AlphaCallEngine:
         self._active: dict[str, ActiveCall] = self._load_state()
         self._signals_today: list[dict] = []
         self._prob_cfg = apm.ProbabilityConfig()   # probability-weighted management layer
+        self._oops_cfg = oops_opt.OOPSConfig()      # OOPS options utility optimizer (advisory)
 
     # ── state persistence ─────────────────────────────────────────────────────
     def _load_state(self) -> dict[str, ActiveCall]:
@@ -1456,6 +1491,43 @@ class AlphaCallEngine:
                         waterfall_callback(realized, source="alpha_theta_exit")
                     del self._active[key]; self._save_state()
 
+            # ── OOPS exit assessment (ADVISORY; runs ONLY after all hard rules) ──
+            # The hard stop / 3R / trailing / kill switch / RiskManager are all checked
+            # above and `continue`/`del` before this point, so OOPS can NEVER override a
+            # protective exit. It may only cut a deteriorating position early or tighten
+            # the trail (both reduce risk). A "runner"/"hold" recommendation is advisory.
+            if key in self._active and self._oops_cfg.enabled:
+                try:
+                    rec = oops_opt.oops_exit_recommendation(
+                        current_value, call.entry_cost, dte_rem,
+                        partial_taken=call.partial_taken, cfg=self._oops_cfg)
+                except Exception:
+                    rec = {"action": "hold"}
+                if rec.get("action") == "exit":
+                    _pnl = current_value - call.entry_cost
+                    exit_orders.append({
+                        "symbol": call.contract_symbol, "side": "sell", "qty": call.contracts_held,
+                        "source": "alpha_call_oops_exit", "reason": rec.get("rationale", "oops_eu_decay"),
+                        "underlying": call.symbol, "setup_type": call.setup_type,
+                        "realized_pnl": round(_pnl, 2),
+                        "r_multiple": round(_pnl / call.entry_cost, 3) if call.entry_cost else 0.0,
+                        "probability_band": call.probability_band,
+                        "probability_of_profit": call.probability_of_profit,
+                        "management_style": call.management_style,
+                    })
+                    _alpha_event("call_oops_exit", {"symbol": call.symbol, "contract": call.contract_symbol,
+                                                    "rationale": rec.get("rationale"), "value": current_value})
+                    if waterfall_callback and _pnl > 0:
+                        waterfall_callback(_pnl, source="alpha_oops_exit")
+                    del self._active[key]; self._save_state()
+                elif rec.get("action") == "tighten":
+                    # Protective only: tighten the trail (never loosen).
+                    new_mult = min(getattr(call, "trail_tightness_mult", 1.0) or 1.0,
+                                   float(rec.get("trail_tightness_mult", 1.0)))
+                    if new_mult < (call.trail_tightness_mult or 1.0):
+                        call.trail_tightness_mult = new_mult
+                        self._save_state()
+
         return exit_orders
 
     # ── scan and signal ───────────────────────────────────────────────────────
@@ -1493,6 +1565,8 @@ class AlphaCallEngine:
         universe_rows: list[dict] = []
         signals: list[CallSignal] = []
         vol_rows: list[dict] = []
+        oops_all_rows: list[dict] = []     # OOPS-scored contracts across all symbols (diagnostic)
+        oops_by_symbol: dict[str, dict] = {}
         # Empirical per-setup history for the probability-weighted management layer.
         setup_history = {}
         if self._prob_cfg.enabled:
@@ -1572,9 +1646,46 @@ class AlphaCallEngine:
             # Authoritative contract selection with the ENGINE's tight band (0.45-0.70).
             engine_eval = evaluate_call_contracts(symbol, ev.price, chain, self.config, rfr, ev.rvol)
             contract = engine_eval["best"]
+            # ── OOPS utility optimization (ADVISORY) ────────────────────────────
+            # Re-rank the Black-Scholes-qualified contracts by expected utility of the
+            # simulated payoff distribution and select by a combined score. Falls back
+            # to the Black-Scholes pick when OOPS is unavailable/empty. Never places
+            # orders; RiskManager remains the only execution authority.
+            oops_selected = False
+            if self._oops_cfg.enabled and engine_eval.get("qualified") and contract is not None:
+                try:
+                    oops_rows = oops_opt.optimize_option_candidates(
+                        engine_eval["qualified"], ev.price, vol_annual_default=0.30,
+                        hist_daily_returns=None, cfg=self._oops_cfg,
+                        iv_crush_risk=float(vol_diag.get("iv_crush_risk", 0.0) or 0.0))
+                    for c in oops_rows:
+                        liq = oops_opt._liquidity_score(c, self._oops_cfg)
+                        c["combined_option_score"] = round(
+                            self._oops_cfg.combined_bs_weight * float(c.get("black_scholes_score", 0.0))
+                            + self._oops_cfg.combined_oops_weight * float(c.get("oops_score", 0.0))
+                            + self._oops_cfg.combined_liq_weight * liq, 3)
+                    if oops_rows:
+                        best_combined = max(oops_rows, key=lambda c: c.get("combined_option_score", 0.0))
+                        contract = best_combined
+                        oops_selected = True
+                        ces = [float(c.get("certainty_equivalent_return", 0.0) or 0.0) for c in oops_rows]
+                        mean_ce = sum(ces) / len(ces) if ces else 0.0
+                        oops_all_rows.extend(oops_rows)
+                        oops_by_symbol[symbol] = {
+                            "oops_utility_edge": round(float(best_combined.get("certainty_equivalent_return", 0.0)) - mean_ce, 4),
+                            "oops_best_contract": best_combined.get("contract_symbol"),
+                            "oops_contract_rankings": [
+                                {"contract": r.get("contract_symbol"), "oops_score": r.get("oops_score"),
+                                 "combined_option_score": r.get("combined_option_score")}
+                                for r in oops_rows[:5]],
+                        }
+                except Exception as _oe:
+                    _alpha_event("oops_optimizer_error", {"symbol": symbol, "error": str(_oe)[:160]})
             sig = CallSignal(symbol=symbol, setup_type=ev.setup_type, setup_score=ev.setup_score,
                              grade=ev.grade, signal_at_utc=datetime.now(timezone.utc).isoformat())
             _apply_vol_fields(sig, vol_diag)
+            if contract is not None:
+                _apply_oops_fields(sig, contract, oops_selected)
 
             if contract is None:
                 br = engine_eval.get("best_rejected")
@@ -1654,9 +1765,19 @@ class AlphaCallEngine:
 
         signals.sort(key=lambda s: s.setup_score, reverse=True)
         self._signals_today.extend([asdict(s) for s in signals if s.status == "ready"])
+        # Merge OOPS summary into the volatility diagnostic rows.
+        for vr in vol_rows:
+            osum = oops_by_symbol.get(vr.get("symbol"))
+            if osum:
+                vr.update(osum)
         self._save_signals()
         self._save_alpha_universe(universe_rows, market_context)
         self._save_volatility_diagnostic(vol_rows, market_context)
+        if self._oops_cfg.enabled:
+            try:
+                oops_opt.write_oops_diagnostic(oops_all_rows, market_context)
+            except Exception as _oe:
+                _alpha_event("oops_report_error", {"error": str(_oe)[:160]})
         return signals
 
     def _save_volatility_diagnostic(self, rows: list[dict], market_context: dict) -> None:

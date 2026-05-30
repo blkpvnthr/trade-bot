@@ -137,7 +137,12 @@ def record_alpha_signal(sig: dict, market_context: dict | None = None, placed: b
                         probability_confidence=sig.get("probability_confidence"),
                         probability_source=sig.get("probability_source", ""),
                         size_multiplier=sig.get("probability_size_multiplier"),
-                        management_style=sig.get("management_style", ""))
+                        management_style=sig.get("management_style", ""),
+                        oops_score=sig.get("oops_score"),
+                        certainty_equivalent=sig.get("certainty_equivalent"),
+                        probability_total_loss=sig.get("probability_total_loss"),
+                        selected_by_oops=sig.get("selected_by_oops"),
+                        combined_option_score=sig.get("combined_option_score"))
 
 
 def record_alpha_exit(exit_order: dict, market_context: dict | None = None,
