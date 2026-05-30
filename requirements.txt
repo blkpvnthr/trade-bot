@@ -27,3 +27,4 @@ sb3-contrib
 rookiepy
 pywavelets
 pyarrow  # live-experience replay parquet store (append_live_experience)
+pyportfolioopt  # Black-Litterman + efficient-frontier Buffett optimizer (optional; falls back to conviction allocation)

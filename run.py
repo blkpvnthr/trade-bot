@@ -98,6 +98,8 @@ ENABLE_BAL_COMPOSITE_DCA        = os.environ.get("ENABLE_BAL_COMPOSITE_DCA", "tr
 ENABLE_SEC_FORM4_FEED           = os.environ.get("ENABLE_SEC_FORM4_FEED", "true").lower() in {"1", "true"}
 # Adaptive Capital Allocation (evidence-driven sizing PLAN; advisory, within caps).
 ENABLE_ADAPTIVE_ALLOCATION      = os.environ.get("ENABLE_ADAPTIVE_ALLOCATION", "true").lower() in {"1", "true"}
+# Black-Litterman + Efficient-Frontier Buffett optimizer (target weights; advisory).
+ENABLE_BUFFETT_OPTIMIZER        = os.environ.get("ENABLE_BUFFETT_OPTIMIZER", "true").lower() in {"1", "true"}
 OPTIONS_PROFIT_TO_BAL_PCT       = float(os.environ.get("OPTIONS_PROFIT_TO_BAL_PCT", 0.60))
 OPTIONS_PROFIT_TO_ALPHA_PCT     = float(os.environ.get("OPTIONS_PROFIT_TO_ALPHA_PCT", 0.30))
 OPTIONS_PROFIT_TO_CASH_PCT      = float(os.environ.get("OPTIONS_PROFIT_TO_CASH_PCT", 0.10))
@@ -955,7 +957,8 @@ def run_bal_exits(bal, gateway: AlpacaGateway, equity_positions: Dict[str, Any],
 def run_bal_entries(bal, gateway: AlpacaGateway, waterfall, risk: RiskManager,
                     symbols: List[str], market_context: dict,
                     bars_ctx_by_symbol: Dict[str, Dict], equity_positions: Dict[str, Any],
-                    insider_data_by_symbol: Optional[Dict[str, Dict]] = None) -> int:
+                    insider_data_by_symbol: Optional[Dict[str, Dict]] = None,
+                    target_weights_by_symbol: Optional[Dict[str, float]] = None) -> int:
     if not symbols:
         return 0
     stock_room = max(0.0, risk.equity * MAX_STOCK_EXPOSURE_PCT - risk.stock_exposure)
@@ -975,6 +978,7 @@ def run_bal_entries(bal, gateway: AlpacaGateway, waterfall, risk: RiskManager,
                 bars_ctx_by_symbol=bars_ctx_by_symbol, equity=risk.equity,
                 positions=equity_positions, available_capital=available_capital,
                 insider_data_by_symbol=insider_data_by_symbol or {},
+                target_weights_by_symbol=target_weights_by_symbol or {},
             )
         else:
             orders = bal.scan(
@@ -1183,6 +1187,22 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
             alpha, gateway, waterfall, risk,
             alpha_scr["base"], alpha_scr["bars"], alpha_scr["chains"],
             market_context, positions=equity_positions)
+    # Black-Litterman + Efficient-Frontier optimizer: produce DESIRED target weights
+    # (how much to own). Composite DCA decides WHEN; RiskManager decides whether ALLOWED.
+    # Fully fail-safe — any failure leaves target_weights empty and BAL uses conviction.
+    target_weights: Dict[str, float] = {}
+    if bal is not None and ENABLE_BUFFETT_OPTIMIZER:
+        try:
+            import buffett_portfolio_optimizer as bopt
+            opt_signals = [r for r in (buffett_res.get("detail", []) or []) if r.get("is_candidate")]
+            if opt_signals:
+                caps = {r["symbol"]: r.get("market_cap", 0.0) for r in opt_signals if r.get("symbol")}
+                opt_res = bopt.run_optimizer_safe(opt_signals, market_caps=caps,
+                                                  current_weights=None, write=True)
+                target_weights = opt_res.get("target_weights", {}) or {}
+        except Exception as e:
+            logger.error("Buffett optimizer failed (BAL uses conviction): %s", e)
+
     # BAL buys are hard-gated on regime permission (halt_new_buys / crisis).
     if bal is not None and new_buys_allowed:
         try:
@@ -1191,7 +1211,8 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
             bal_ctx = build_bars_ctx(bal_bars)
             summary["bal_entries"] = run_bal_entries(bal, gateway, waterfall, risk,
                                                      bcands, market_context, bal_ctx, equity_positions,
-                                                     insider_data_by_symbol=insider_data)
+                                                     insider_data_by_symbol=insider_data,
+                                                     target_weights_by_symbol=target_weights)
         except Exception as e:
             logger.error("BAL entries failed (Alpha unaffected): %s", e)
 

@@ -1647,6 +1647,7 @@ class BuffettAccumulationLayer:
         available_capital: float,
         fd_by_symbol: dict[str, FundamentalData] | None = None,
         insider_data_by_symbol: dict[str, dict] | None = None,
+        target_weights_by_symbol: dict[str, float] | None = None,
     ) -> list[dict]:
         """
         Composite DCA evaluation with multi-model valuation, conviction-driven
@@ -1724,6 +1725,15 @@ class BuffettAccumulationLayer:
                                             insider_for_conviction, eq_s, prof_s)
             conviction = conv["conviction_score"]
             target_pct, max_alloc_pct, alloc_reason = self._target_allocation_from_conviction(conviction)
+            # Optimizer override: the Black-Litterman/Efficient-Frontier optimizer sets the
+            # DESIRED target weight (capped at the single-stock limit). Composite DCA still
+            # decides WHEN to buy and RiskManager still decides whether allowed. Conviction
+            # is the fallback when no optimizer weight is available.
+            if target_weights_by_symbol and symbol in target_weights_by_symbol:
+                opt_w = float(target_weights_by_symbol.get(symbol) or 0.0)
+                if opt_w > 0:
+                    target_pct = round(min(opt_w, cfg.max_single_stock_weight), 4)
+                    alloc_reason = f"optimizer_target_weight:{target_pct:.4f}"
 
             rec = self._ownership.get(symbol, {})
             dca_count = int(rec.get("dca_count", 0) or 0)
