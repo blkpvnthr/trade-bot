@@ -63,6 +63,21 @@ except Exception:  # scanner/options can be disabled if alpaca-data is unavailab
     OptionChainRequest = None
     TimeFrame = None
 
+try:
+    import threading
+except ImportError:
+    pass
+
+try:
+    import msgpack as _msgpack_mod
+except ImportError:
+    _msgpack_mod = None
+
+try:
+    import websocket as _websocket_mod
+except ImportError:
+    _websocket_mod = None
+
 
 # =============================================================================
 # Paths / environment
@@ -100,11 +115,11 @@ MIN_WEIGHT_DELTA = 0.0075
 
 MIN_CASH_BUFFER = 1_000.0
 MIN_CASH_BUFFER_PCT = 0.01
-DEFAULT_CASH_BUFFER_PCT = 0.08
+DEFAULT_CASH_BUFFER_PCT = 0.05
 
 MAX_GROSS_EXPOSURE = 0.92
-MAX_POSITION_WEIGHT = 0.18
-MAX_SINGLE_ORDER_NOTIONAL_PCT = 0.08
+MAX_POSITION_WEIGHT = 0.25
+MAX_SINGLE_ORDER_NOTIONAL_PCT = 0.1
 MAX_ORDER_DOLLARS = 15_000.0
 MAX_SINGLE_ORDER_QTY = 10_000
 
@@ -132,8 +147,8 @@ LARGE_ACCOUNT_MAX_GROSS_EXPOSURE = MAX_GROSS_EXPOSURE
 SMALL_ACCOUNT_MAX_POSITION_WEIGHT = 0.12
 MID_ACCOUNT_MAX_POSITION_WEIGHT = 0.15
 LARGE_ACCOUNT_MAX_POSITION_WEIGHT = MAX_POSITION_WEIGHT
-SMALL_ACCOUNT_MAX_ORDER_PCT = 0.12
-MID_ACCOUNT_MAX_ORDER_PCT = 0.10
+SMALL_ACCOUNT_MAX_ORDER_PCT = 0.15
+MID_ACCOUNT_MAX_ORDER_PCT = 0.12
 LARGE_ACCOUNT_MAX_ORDER_PCT = MAX_SINGLE_ORDER_NOTIONAL_PCT
 SMALL_ACCOUNT_DAILY_LOSS_PCT = 0.015
 MID_ACCOUNT_DAILY_LOSS_PCT = 0.018
@@ -154,16 +169,22 @@ WIKI_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 SCANNER_STATE_PATH = LOG_DIR / "scanner_state.json"
 SCANNER_SCORES_PATH = OUT_DIR / "latest_scanner_scores.csv"
 OPTION_BOOSTER_CANDIDATES_PATH = OUT_DIR / "latest_option_booster_candidates.csv"
+OPTION_CANDIDATES_PATH = OUT_DIR / "latest_realtime_options_candidates.csv"
+SCANNER_STATE_PATH_V2 = LOG_DIR / "scanner_state.json"
 
-DEFAULT_SCAN_UNIVERSE = [
-    "QQQ", "TQQQ", "SQQQ", "SPY", "DIA", "IWM", "XLK", "SOXX", "SMH",
-    "AMD", "NVDA", "AVGO", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "TSLA",
-    "PLTR", "COIN", "MARA", "RIOT", "RGTI", "QBTS", "QUBT", "IONQ", "SOUN",
-    "OKLO", "APLD", "ALAB", "ARM",
-]
-
-
-
+DEFAULT_SCAN_UNIVERSE = (
+    pd.read_csv("tv_screener_tickers.csv", header=None)
+    .iloc[0]
+    .loc[lambda s: s != "HPE/PC"]
+    .head(30)
+    .tolist()
+)
+#[
+ #   "QQQ", "TQQQ", "SQQQ", "SPY", "DIA", "IWM", "XLK", "SOXX", "SMH",
+  #  "AMD", "NVDA", "AVGO", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "TSLA",
+   # "PLTR", "COIN", "MARA", "RIOT", "RGTI", "QBTS", "QUBT", "IONQ", "SOUN",
+    #"OKLO", "APLD", "ALAB", "ARM",
+#]
 # =============================================================================
 # Dataclasses
 # =============================================================================
@@ -214,43 +235,293 @@ class ScannerConfig:
 
 
 @dataclass
-class OptionsBoosterConfig:
-    # Long-call-only booster. This never shorts options. It only buys calls after
-    # the underlying stock position is already open and profitable.
-    enabled: bool = False
-    feed: str = "indicative"
+class OptionsTradingConfig:
+    enabled: bool = True
+    feed: str = "opra"
 
-    min_continuation_confidence: float = 0.68
-    min_underlying_unrealized_plpc: float = 0.003
-    require_momentum_setup: bool = True
+    # Position types
+    enable_long_calls: bool = True
+    enable_long_puts: bool = False
 
-    min_dte: int = 14
+    # DTE
+    min_dte: int = 7
+    preferred_dte_min: int = 14
+    preferred_dte_max: int = 30
     max_dte: int = 45
-    target_delta_min: float = 0.40
-    target_delta_max: float = 0.65
-    ideal_delta: float = 0.52
 
-    max_spread_pct: float = 0.15
-    min_open_interest: int = 50
-    min_volume: int = 5
-    max_contract_mid_price: float = 5.00
+    # Delta ranges
+    call_delta_min: float = 0.35
+    call_delta_max: float = 0.65
+    call_ideal_delta: float = 0.50
+    put_delta_min: float = -0.65
+    put_delta_max: float = -0.35
+    put_ideal_delta: float = -0.50
 
-    max_risk_per_trade_pct: float = 0.010
-    max_risk_per_trade_dollars: float = 250.0
+    # Hard contract filters
+    max_spread_pct: float = 0.12
+    min_open_interest: int = 100
+    min_volume: int = 20
+
+    # Risk sizing
+    risk_per_trade_pct: float = 0.015
+    max_options_exposure: float = 0.40
     max_contracts_per_underlying: int = 2
     max_open_option_positions: int = 4
 
+    # Limit order execution
+    allow_option_market_orders: bool = False
+    limit_entry_improvement: float = 0.01
+    limit_exit_offset: float = 0.01
+
+    # Profit/loss
     take_profit_pct: float = 0.60
     hard_stop_pct: float = -0.35
     profit_lock_trigger_pct: float = 0.40
     profit_giveback_pct: float = 0.25
 
-    # Expiration protection. Long calls are closed before expiration so the
-    # account does not carry exercise/assignment-style settlement risk into
-    # expiration. New entries also require enough remaining DTE after this
-    # buffer.
+    # Expiration protection
     close_before_expiration_days: int = 3
     block_new_entries_within_expiration_days: int = 5
+
+    # Alpha Vantage sentiment thresholds
+    pcr_bullish_threshold: float = 0.75
+    pcr_bearish_threshold: float = 1.00
+    pcr_contrarian_bullish_threshold: float = 1.50
+
+
+# Backward-compat alias so old code using OptionsBoosterConfig still works
+OptionsBoosterConfig = OptionsTradingConfig
+
+
+class OptionsContractRanker:
+    def __init__(self, config: OptionsTradingConfig):
+        self.cfg = config
+
+    def _score_pcr_sentiment(self, pcr: float | None, option_type: str) -> float:
+        if pcr is None:
+            return 0.5
+        cfg = self.cfg
+        if option_type == "call":
+            if pcr < 0.1:
+                return 0.3
+            if pcr <= cfg.pcr_bullish_threshold:
+                ratio = pcr / cfg.pcr_bullish_threshold
+                return 1.0 - 0.15 * ratio
+            if pcr >= cfg.pcr_contrarian_bullish_threshold:
+                return 0.35
+            if pcr >= cfg.pcr_bearish_threshold:
+                span = cfg.pcr_contrarian_bullish_threshold - cfg.pcr_bearish_threshold
+                if span <= 0:
+                    return 0.10
+                t = (pcr - cfg.pcr_bearish_threshold) / span
+                return 0.15 - 0.10 * t
+            span = cfg.pcr_bearish_threshold - cfg.pcr_bullish_threshold
+            if span <= 0:
+                return 0.5
+            t = (pcr - cfg.pcr_bullish_threshold) / span
+            return 0.85 - 0.70 * t
+        else:
+            if pcr is None:
+                return 0.5
+            if pcr >= cfg.pcr_contrarian_bullish_threshold:
+                return 0.6
+            if pcr >= cfg.pcr_bearish_threshold:
+                span = cfg.pcr_contrarian_bullish_threshold - cfg.pcr_bearish_threshold
+                if span <= 0:
+                    return 0.85
+                t = (pcr - cfg.pcr_bearish_threshold) / span
+                return 0.75 + 0.25 * (1.0 - t)
+            if pcr <= cfg.pcr_bullish_threshold:
+                return 0.10
+            span = cfg.pcr_bearish_threshold - cfg.pcr_bullish_threshold
+            if span <= 0:
+                return 0.4
+            t = (pcr - cfg.pcr_bullish_threshold) / span
+            return 0.10 + 0.65 * t
+
+    def _score_volume_oi(self, vol_oi_ratio: float | None, volume: float, open_interest: float) -> float:
+        if vol_oi_ratio is not None:
+            ratio = vol_oi_ratio
+        else:
+            if open_interest <= 0:
+                return 0.15
+            ratio = volume / open_interest
+
+        if ratio > 20.0:
+            return 0.2
+        if ratio > 5.0:
+            t = (ratio - 5.0) / 15.0
+            return 1.0 - 0.5 * t
+        if ratio < 0.05:
+            return 0.15
+        if 0.10 <= ratio <= 2.0:
+            t = (ratio - 0.10) / 1.90
+            return 0.65 + 0.35 * t
+        if ratio < 0.10:
+            t = (ratio - 0.05) / 0.05
+            return 0.15 + 0.50 * t
+        t = (ratio - 2.0) / 3.0
+        return 1.0 - 0.5 * t
+
+    def _score_liquidity(self, volume: float, open_interest: float, bid_size: float, ask_size: float) -> float:
+        cfg = self.cfg
+        min_vol_10 = max(cfg.min_volume * 10, 1)
+        min_oi_10 = max(cfg.min_open_interest * 10, 1)
+        vol_score = min(volume / min_vol_10, 1.0)
+        oi_score = min(open_interest / min_oi_10, 1.0)
+        size_score = min((bid_size + ask_size) / 20.0, 1.0)
+        return 0.45 * vol_score + 0.45 * oi_score + 0.10 * size_score
+
+    def _score_delta_fit(self, delta: float, option_type: str) -> float:
+        if delta is None or (isinstance(delta, float) and np.isnan(delta)):
+            return 0.4
+        cfg = self.cfg
+        if option_type == "call":
+            ideal = cfg.call_ideal_delta
+            low = cfg.call_delta_min
+            high = cfg.call_delta_max
+        else:
+            ideal = cfg.put_ideal_delta
+            low = cfg.put_delta_min
+            high = cfg.put_delta_max
+        half_range = (high - low) / 2.0
+        if half_range <= 0:
+            return 0.4
+        score = 1.0 - abs(delta - ideal) / half_range
+        return float(np.clip(score, 0.0, 1.0))
+
+    def _score_spread(self, spread_pct: float) -> float:
+        cfg = self.cfg
+        if cfg.max_spread_pct <= 0:
+            return 0.0
+        score = 1.0 - spread_pct / cfg.max_spread_pct
+        return float(np.clip(score, 0.0, 1.0))
+
+    def _score_dte_fit(self, dte: int) -> float:
+        cfg = self.cfg
+        pmin = cfg.preferred_dte_min
+        pmax = cfg.preferred_dte_max
+        dmin = cfg.min_dte
+        dmax = cfg.max_dte
+        if pmin <= dte <= pmax:
+            return 1.0
+        if dte < dmin or dte > dmax:
+            return 0.0
+        if dte < pmin:
+            span = pmin - dmin
+            if span <= 0:
+                return 0.0
+            return (dte - dmin) / span
+        span = dmax - pmax
+        if span <= 0:
+            return 0.0
+        return (dmax - dte) / span
+
+    def _score_iv_moneyness(self, iv: float, strike: float, underlying_price: float) -> float:
+        if iv is None or (isinstance(iv, float) and np.isnan(iv)) or iv <= 0 or iv > 5.0:
+            iv_score = 0.15
+        elif iv < 0.10:
+            iv_score = 0.35
+        elif 0.15 <= iv <= 1.5:
+            t = (iv - 0.15) / (1.5 - 0.15)
+            iv_score = 0.5 + 0.5 * t
+        else:
+            iv_score = 0.5
+
+        if underlying_price <= 0:
+            moneyness_score = 0.5
+        else:
+            moneyness_raw = abs(strike / underlying_price - 1.0) / 0.15
+            moneyness_score = 1.0 - float(np.clip(moneyness_raw, 0.0, 1.0))
+
+        return 0.6 * iv_score + 0.4 * moneyness_score
+
+    def filter_contracts(self, contracts: list[dict]) -> list[dict]:
+        cfg = self.cfg
+        passing = []
+        for c in contracts:
+            bid = to_float(c.get("bid"), 0.0)
+            ask = to_float(c.get("ask"), 0.0)
+            mid = to_float(c.get("mid"), 0.0)
+            spread_pct = to_float(c.get("spread_pct"), 999.0)
+            oi = to_float(c.get("open_interest"), 0.0)
+            vol = to_float(c.get("volume"), 0.0)
+            iv = c.get("iv")
+            dte = to_int(c.get("dte"), 0)
+
+            if bid <= 0 or ask <= 0 or mid <= 0:
+                continue
+            if spread_pct > cfg.max_spread_pct:
+                continue
+            if oi < cfg.min_open_interest:
+                continue
+            if vol < cfg.min_volume:
+                continue
+            iv_val = to_float(iv, float("nan"))
+            if np.isnan(iv_val) or iv_val <= 0 or iv_val > 5.0:
+                continue
+            if dte <= cfg.close_before_expiration_days:
+                continue
+            passing.append(c)
+        return passing
+
+    def score_contract(self, contract: dict, underlying_momentum_score: float,
+                       pcr: float | None, vol_oi_ratio: float | None) -> float:
+        c = contract
+        option_type = str(c.get("option_type", "call")).lower()
+        delta = to_float(c.get("delta"), float("nan"))
+        if delta == 0.0 and "delta" in c and c["delta"] is None:
+            delta = float("nan")
+        spread_pct = to_float(c.get("spread_pct"), 1.0)
+        volume = to_float(c.get("volume"), 0.0)
+        oi = to_float(c.get("open_interest"), 0.0)
+        bid_size = to_float(c.get("bid_size"), 0.0)
+        ask_size = to_float(c.get("ask_size"), 0.0)
+        iv = to_float(c.get("iv"), float("nan"))
+        strike = to_float(c.get("strike"), 0.0)
+        underlying_price = to_float(c.get("underlying_price"), 0.0)
+        dte = to_int(c.get("dte"), 0)
+
+        s_momentum = float(np.clip(underlying_momentum_score, 0.0, 1.0))
+        s_pcr = self._score_pcr_sentiment(pcr, option_type)
+        s_vol_oi = self._score_volume_oi(vol_oi_ratio, volume, oi)
+        s_liquidity = self._score_liquidity(volume, oi, bid_size, ask_size)
+        s_delta = self._score_delta_fit(delta, option_type)
+        s_spread = self._score_spread(spread_pct)
+        s_dte = self._score_dte_fit(dte)
+        s_iv = self._score_iv_moneyness(iv, strike, underlying_price)
+
+        score = (
+            0.20 * s_momentum
+            + 0.18 * s_pcr
+            + 0.18 * s_vol_oi
+            + 0.14 * s_liquidity
+            + 0.12 * s_delta
+            + 0.08 * s_spread
+            + 0.06 * s_dte
+            + 0.04 * s_iv
+        )
+        return float(np.clip(score, 0.0, 1.0))
+
+    def rank(self, contracts: list[dict], underlying_momentum_score: float,
+             pcr: float | None, vol_oi_ratio: float | None,
+             option_type: str = "call") -> pd.DataFrame:
+        filtered = self.filter_contracts(contracts)
+        if not filtered:
+            return pd.DataFrame()
+
+        rows = []
+        for c in filtered:
+            score = self.score_contract(c, underlying_momentum_score, pcr, vol_oi_ratio)
+            row = dict(c)
+            row["contract_score"] = score
+            row["put_call_ratio"] = pcr
+            row["volume_oi_ratio"] = vol_oi_ratio
+            rows.append(row)
+
+        df = pd.DataFrame(rows)
+        df = df.sort_values("contract_score", ascending=False).reset_index(drop=True)
+        return df
 
 
 @dataclass
@@ -300,7 +571,7 @@ class ExecutorConfig:
     order_tag_prefix: str = "explosive_alpha"
 
     scanner: ScannerConfig = None
-    options_booster: OptionsBoosterConfig = None
+    options_booster: OptionsTradingConfig = None  # OptionsTradingConfig or legacy alias
 
 
 # =============================================================================
@@ -545,6 +816,52 @@ class AlpacaBroker:
             time.sleep(0.5)
         raise TimeoutError(f"{symbol} position did not reach target qty <= {target_qty} within timeout")
 
+    def submit_limit_order(self, symbol: str, side: str, qty: int, limit_price: float,
+                           client_order_id: str, tif: TimeInForce):
+        """Submit a limit order. Options require whole-number qty and no notional."""
+        from alpaca.trading.requests import LimitOrderRequest
+        order = LimitOrderRequest(
+            symbol=safe_symbol(symbol),
+            qty=int(qty),
+            side=OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL,
+            type=OrderType.LIMIT,
+            time_in_force=tif,
+            limit_price=round(float(limit_price), 2),
+            client_order_id=client_order_id,
+        )
+        return self.trading.submit_order(order_data=order)
+
+    def submit_limit_buy(self, symbol: str, qty: int, limit_price: float,
+                         client_order_id: str, tif: TimeInForce):
+        return self.submit_limit_order(symbol, "buy", qty, limit_price, client_order_id, tif)
+
+    def submit_limit_sell(self, symbol: str, qty: int, limit_price: float,
+                          client_order_id: str, tif: TimeInForce):
+        return self.submit_limit_order(symbol, "sell", qty, limit_price, client_order_id, tif)
+
+    def verify_options_eligibility(self) -> dict:
+        """Check if account has options trading approval (level >= 1 = long calls/puts)."""
+        try:
+            acct = self.trading.get_account()
+            level = to_int(getattr(acct, "options_approved_level", 0), 0)
+            return {
+                "eligible": level >= 1,
+                "level": level,
+                "details": str(getattr(acct, "options_approved_level", "unknown")),
+            }
+        except Exception as exc:
+            print(f"[broker] options eligibility check failed: {exc}")
+            return {"eligible": False, "level": 0, "details": str(exc)}
+
+    def cancel_order_by_id(self, order_id: str) -> bool:
+        """Cancel a specific order by ID. Returns True if successful."""
+        try:
+            self.trading.cancel_order_by_id(order_id)
+            return True
+        except Exception as exc:
+            print(f"[broker] cancel_order_by_id {order_id} failed: {exc}")
+            return False
+
     def wait_for_position(self, symbol: str, timeout_seconds: int = ORDER_WAIT_SECONDS) -> BrokerPosition:
         started = time.time()
         while time.time() - started < timeout_seconds:
@@ -556,6 +873,409 @@ class AlpacaBroker:
 
     def get_order_by_id(self, order_id: str):
         return self.trading.get_order_by_id(order_id)
+
+
+class AlphaVantageOptionsSentimentClient:
+    BASE_URL = "https://www.alphavantage.co/query"
+    RATE_LIMIT = 5
+    RATE_WINDOW = 60.0
+    TTL = 300.0
+
+    def __init__(self, api_key: str) -> None:
+        from collections import deque
+        self._api_key = api_key
+        self._call_times: deque = deque()
+        self._cache: dict[str, tuple[float, Any]] = {}
+
+    def _rate_limit(self) -> None:
+        now = time.monotonic()
+        while self._call_times and now - self._call_times[0] >= self.RATE_WINDOW:
+            self._call_times.popleft()
+        if len(self._call_times) >= self.RATE_LIMIT:
+            oldest = self._call_times[0]
+            sleep_for = self.RATE_WINDOW - (now - oldest)
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            now = time.monotonic()
+            while self._call_times and now - self._call_times[0] >= self.RATE_WINDOW:
+                self._call_times.popleft()
+        self._call_times.append(time.monotonic())
+
+    def _fetch(self, function: str, symbol: str, retries: int = 3) -> dict | None:
+        cache_key = f"{function}:{symbol}"
+        now = time.time()
+        if cache_key in self._cache:
+            ts, data = self._cache[cache_key]
+            if now - ts < self.TTL:
+                return data
+        params = {
+            "function": function,
+            "symbol": symbol,
+            "apikey": self._api_key,
+        }
+        for attempt in range(retries):
+            try:
+                self._rate_limit()
+                resp = requests.get(self.BASE_URL, params=params, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                for bad_key in ("Error Message", "Note", "Information"):
+                    if bad_key in data:
+                        return None
+                self._cache[cache_key] = (time.time(), data)
+                return data
+            except Exception:
+                backoff = (2 ** attempt) * 0.5
+                time.sleep(backoff)
+        return None
+
+    def _get_latest_value(self, data: dict, *keys: str) -> float | None:
+        if not isinstance(data, dict):
+            return None
+        records = None
+        for v in data.values():
+            if isinstance(v, list) and len(v) > 0:
+                records = v
+                break
+            if isinstance(v, dict):
+                for inner_v in v.values():
+                    if isinstance(inner_v, list) and len(inner_v) > 0:
+                        records = inner_v
+                        break
+            if records is not None:
+                break
+        if records is None:
+            record = data
+        else:
+            record = records[0]
+        if not isinstance(record, dict):
+            return None
+        for key in keys:
+            if key in record:
+                val = to_float(record[key], default=None)
+                if val is not None:
+                    return val
+        return None
+
+    def get_put_call_ratio(self, symbol: str) -> float | None:
+        try:
+            data = self._fetch("REALTIME_PUT_CALL_RATIO", symbol)
+            if data is None:
+                return None
+            return self._get_latest_value(
+                data,
+                "put_call_ratio",
+                "value",
+                "put_call_ratio_60day",
+            )
+        except Exception:
+            return None
+
+    def get_volume_oi_ratio(self, symbol: str) -> float | None:
+        try:
+            data = self._fetch("REALTIME_VOLUME_OPEN_INTEREST_RATIO", symbol)
+            if data is None:
+                return None
+            return self._get_latest_value(
+                data,
+                "volume_open_interest_ratio",
+                "value",
+            )
+        except Exception:
+            return None
+
+
+class AlpacaOptionChainDiscovery:
+    """Discovers option contracts via Alpaca REST API."""
+
+    def __init__(self, api_key: str, secret_key: str, paper: bool = True):
+        self.base_url = "https://paper-api.alpaca.markets" if paper else "https://api.alpaca.markets"
+        self._data_url = "https://data.alpaca.markets"
+        self._headers = {
+            "APCA-API-KEY-ID": api_key,
+            "APCA-API-SECRET-KEY": secret_key,
+            "accept": "application/json",
+        }
+
+    def get_contracts(
+        self,
+        underlying: str,
+        expiration_date_gte: str | None = None,
+        expiration_date_lte: str | None = None,
+        option_type: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        params: dict[str, Any] = {
+            "underlying_symbols": underlying,
+            "status": "active",
+            "limit": limit,
+        }
+        if expiration_date_gte:
+            params["expiration_date_gte"] = expiration_date_gte
+        if expiration_date_lte:
+            params["expiration_date_lte"] = expiration_date_lte
+        if option_type:
+            params["type"] = option_type
+        try:
+            resp = requests.get(
+                f"{self.base_url}/v2/options/contracts",
+                headers=self._headers,
+                params=params,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("option_contracts", [])
+        except Exception as exc:
+            print(f"[AlpacaOptionChainDiscovery.get_contracts] error: {exc}")
+            return []
+
+    def get_snapshots_bulk(self, symbols: list[str], feed: str = "indicative") -> dict[str, dict]:
+        results: dict[str, dict] = {}
+        chunk_size = 50
+        for i in range(0, len(symbols), chunk_size):
+            chunk = symbols[i : i + chunk_size]
+            try:
+                resp = requests.get(
+                    f"{self._data_url}/v1beta1/options/snapshots",
+                    headers=self._headers,
+                    params={"symbols": ",".join(chunk), "feed": feed},
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                snapshots = data.get("snapshots", data)
+                if isinstance(snapshots, dict):
+                    results.update(snapshots)
+            except Exception as exc:
+                print(f"[AlpacaOptionChainDiscovery.get_snapshots_bulk] chunk error: {exc}")
+        return results
+
+    def discover_contracts_for_underlying(
+        self,
+        underlying: str,
+        min_dte: int = 7,
+        max_dte: int = 45,
+        option_type: str | None = None,
+        feed: str = "indicative",
+    ) -> list[dict]:
+        try:
+            today = now_utc().date()
+            exp_gte = (today + timedelta(days=min_dte)).isoformat()
+            exp_lte = (today + timedelta(days=max_dte)).isoformat()
+        except Exception as exc:
+            print(f"[discover_contracts_for_underlying] date error: {exc}")
+            return []
+
+        try:
+            contracts = self.get_contracts(
+                underlying=underlying,
+                expiration_date_gte=exp_gte,
+                expiration_date_lte=exp_lte,
+                option_type=option_type,
+            )
+        except Exception as exc:
+            print(f"[discover_contracts_for_underlying] get_contracts error: {exc}")
+            return []
+
+        try:
+            symbols = [c.get("symbol", "") for c in contracts if c.get("symbol")]
+        except Exception as exc:
+            print(f"[discover_contracts_for_underlying] symbol extraction error: {exc}")
+            return []
+
+        try:
+            snapshots = self.get_snapshots_bulk(symbols, feed=feed) if symbols else {}
+        except Exception as exc:
+            print(f"[discover_contracts_for_underlying] get_snapshots_bulk error: {exc}")
+            snapshots = {}
+
+        results: list[dict] = []
+        today = now_utc().date()
+        for contract in contracts:
+            sym = contract.get("symbol", "")
+            if not sym:
+                continue
+            try:
+                parsed = parse_occ_option_symbol(sym) or {}
+                snapshot = snapshots.get(sym, {})
+                metrics = _option_quote_metrics(snapshot)
+                exp_str = parsed.get("expiration") or contract.get("expiration_date", "")
+                try:
+                    from datetime import date as _date
+                    if exp_str:
+                        exp_date = _date.fromisoformat(str(exp_str)[:10])
+                        dte = (exp_date - today).days
+                    else:
+                        dte = 0
+                except Exception:
+                    dte = 0
+                results.append(
+                    {
+                        "symbol": sym,
+                        "underlying": parsed.get("underlying") or contract.get("underlying_symbol", underlying),
+                        "expiration": str(exp_str)[:10] if exp_str else "",
+                        "dte": dte,
+                        "strike": to_float(parsed.get("strike") or contract.get("strike_price"), 0.0),
+                        "type": parsed.get("option_type") or contract.get("type", ""),
+                        "bid": metrics.get("bid", 0.0),
+                        "ask": metrics.get("ask", 0.0),
+                        "bid_size": to_int(snapshot.get("latestQuote", {}).get("bs", 0), 0),
+                        "ask_size": to_int(snapshot.get("latestQuote", {}).get("as", 0), 0),
+                        "mid": metrics.get("mid", 0.0),
+                        "spread_pct": metrics.get("spread_pct", 0.0),
+                        "delta": metrics.get("delta", 0.0),
+                        "gamma": metrics.get("gamma", 0.0),
+                        "iv": metrics.get("iv", 0.0),
+                        "volume": metrics.get("volume", 0),
+                        "open_interest": metrics.get("open_interest", 0),
+                    }
+                )
+            except Exception as exc:
+                print(f"[discover_contracts_for_underlying] contract processing error for {sym}: {exc}")
+                continue
+        return results
+
+
+class AlpacaRealtimeOptionStream:
+    """Thread-safe WebSocket stream for Alpaca options data using MsgPack.
+    NEVER subscribes to wildcard (*)."""
+
+    def __init__(self, api_key: str, secret_key: str, feed: str = "opra"):
+        self.api_key = api_key
+        self.secret_key = secret_key
+        self.feed = feed
+        self.url = f"wss://stream.data.alpaca.markets/v1beta1/{feed}"
+        self._quotes: dict[str, dict] = {}
+        self._trades: dict[str, dict] = {}
+        self._lock = threading.Lock()
+        self._ws = None
+        self._thread: threading.Thread | None = None
+        self._subscribed: set[str] = set()
+        self._running = False
+
+    def _on_open(self, ws):
+        if _msgpack_mod is None:
+            print("[stream] msgpack not available, cannot send auth")
+            return
+        try:
+            auth_msg = _msgpack_mod.packb(
+                {"action": "auth", "key": self.api_key, "secret": self.secret_key},
+                use_bin_type=True,
+            )
+            ws.send(auth_msg, opcode=0x2)
+        except Exception as exc:
+            print(f"[stream] auth send error: {exc}")
+
+    def _on_message(self, _ws, message):
+        if _msgpack_mod is None:
+            return
+        try:
+            msgs = _msgpack_mod.unpackb(message, raw=False)
+            if not isinstance(msgs, list):
+                msgs = [msgs]
+            with self._lock:
+                for msg in msgs:
+                    if not isinstance(msg, dict):
+                        continue
+                    msg_type = msg.get("T")
+                    sym = msg.get("S", "")
+                    if not sym:
+                        continue
+                    if msg_type == "q":
+                        self._quotes[sym] = {
+                            "bid": to_float(msg.get("bp"), 0.0),
+                            "ask": to_float(msg.get("ap"), 0.0),
+                            "bid_size": to_int(msg.get("bs"), 0),
+                            "ask_size": to_int(msg.get("as"), 0),
+                            "timestamp": msg.get("t"),
+                        }
+                    elif msg_type == "t":
+                        self._trades[sym] = {
+                            "price": to_float(msg.get("p"), 0.0),
+                            "size": to_int(msg.get("s"), 0),
+                            "exchange": msg.get("x", ""),
+                            "condition": msg.get("c", ""),
+                            "timestamp": msg.get("t"),
+                        }
+        except Exception as exc:
+            print(f"[stream] message parse error: {exc}")
+
+    def _on_error(self, _ws, error):
+        print(f"[stream] error: {error}")
+
+    def _on_close(self, _ws, close_status_code, close_msg):
+        print(f"[stream] closed: {close_status_code} {close_msg}")
+        self._running = False
+
+    def start(self) -> bool:
+        if _msgpack_mod is None:
+            print("[stream] msgpack not installed — cannot start stream")
+            return False
+        if _websocket_mod is None:
+            print("[stream] websocket-client not installed — cannot start stream")
+            return False
+        self._running = True
+        self._ws = _websocket_mod.WebSocketApp(
+            self.url,
+            on_open=self._on_open,
+            on_message=self._on_message,
+            on_error=self._on_error,
+            on_close=self._on_close,
+        )
+        self._thread = threading.Thread(
+            target=self._ws.run_forever,
+            daemon=True,
+            name="alpaca-option-stream",
+        )
+        self._thread.start()
+        return True
+
+    def stop(self):
+        self._running = False
+        if self._ws is not None:
+            try:
+                self._ws.close()
+            except Exception as exc:
+                print(f"[stream] stop error: {exc}")
+
+    def subscribe(self, symbols: list[str]):
+        if _msgpack_mod is None or self._ws is None:
+            return
+        new_syms = [s for s in symbols if s and s != "*" and s not in self._subscribed]
+        if not new_syms:
+            return
+        try:
+            sub_msg = _msgpack_mod.packb(
+                {"action": "subscribe", "quotes": new_syms, "trades": new_syms},
+                use_bin_type=True,
+            )
+            self._ws.send(sub_msg, opcode=0x2)
+            self._subscribed.update(new_syms)
+        except Exception as exc:
+            print(f"[stream] subscribe error: {exc}")
+
+    def get_quote(self, symbol: str) -> dict | None:
+        with self._lock:
+            return self._quotes.get(symbol)
+
+    def get_trade(self, symbol: str) -> dict | None:
+        with self._lock:
+            return self._trades.get(symbol)
+
+    def get_mid(self, symbol: str) -> float | None:
+        with self._lock:
+            q = self._quotes.get(symbol)
+        if q is None:
+            return None
+        bid = q.get("bid")
+        ask = q.get("ask")
+        if bid is None or ask is None:
+            return None
+        try:
+            return (float(bid) + float(ask)) / 2.0
+        except Exception:
+            return None
 
 
 # =============================================================================
@@ -690,12 +1410,25 @@ class MomentumSetupScanner:
             raise RuntimeError("alpaca-py data classes are unavailable. Install alpaca-py or disable scanner.")
 
         self.data = StockHistoricalDataClient(broker.api_key, broker.secret_key)
-        self.options_config = executor_config.options_booster or OptionsBoosterConfig(enabled=False)
+        self.options_config: OptionsTradingConfig = (
+            executor_config.options_booster or OptionsTradingConfig(enabled=False)
+        )
         self.option_data = (
             OptionHistoricalDataClient(broker.api_key, broker.secret_key)
             if OptionHistoricalDataClient is not None
             else None
         )
+        self.chain_discovery = AlpacaOptionChainDiscovery(
+            api_key=broker.api_key,
+            secret_key=broker.secret_key,
+            paper=executor_config.paper,
+        )
+        self.ranker = OptionsContractRanker(self.options_config)
+        _av_key = os.getenv("ALPHA_VANTAGE_API_KEY", "")
+        self.av_client: AlphaVantageOptionsSentimentClient | None = (
+            AlphaVantageOptionsSentimentClient(_av_key) if _av_key else None
+        )
+        self.option_stream: AlpacaRealtimeOptionStream | None = None
 
     def _load_state(self) -> dict[str, Any]:
         if not SCANNER_STATE_PATH.exists():
@@ -756,7 +1489,7 @@ class MomentumSetupScanner:
 
     def _build_features(self, bars: pd.DataFrame) -> pd.DataFrame:
         rows: list[pd.DataFrame] = []
-        for symbol, g in bars.groupby("symbol", sort=False):
+        for _symbol, g in bars.groupby("symbol", sort=False):
             g = g.sort_values("timestamp").copy()
             c = g["close"].astype(float)
             v = g["volume"].astype(float)
@@ -884,9 +1617,26 @@ class MomentumSetupScanner:
         underlyings: set[str] = set()
         for pos in self.broker.get_all_open_positions():
             parsed = parse_occ_option_symbol(pos.symbol)
-            if parsed and parsed.get("type") == "call" and pos.qty > 0:
+            if parsed and pos.qty > 0:
                 underlyings.add(str(parsed["underlying"]))
         return underlyings
+
+    def _existing_option_positions_by_underlying(self) -> dict[str, list[BrokerPosition]]:
+        result: dict[str, list[BrokerPosition]] = {}
+        for pos in self.broker.get_all_open_positions():
+            parsed = parse_occ_option_symbol(pos.symbol)
+            if parsed and pos.qty > 0:
+                u = str(parsed["underlying"])
+                result.setdefault(u, []).append(pos)
+        return result
+
+    def _options_exposure(self, equity: float) -> float:
+        total_mv = sum(
+            pos.market_value
+            for pos in self.broker.get_all_open_positions()
+            if parse_occ_option_symbol(pos.symbol) and pos.qty > 0
+        )
+        return total_mv / max(equity, 1e-9)
 
     def _open_option_position_count(self) -> int:
         count = 0
@@ -896,191 +1646,179 @@ class MomentumSetupScanner:
                 count += 1
         return count
 
-    def _get_call_chain_snapshots(self, underlying: str) -> dict[str, Any]:
-        if self.option_data is None or OptionChainRequest is None:
-            return {}
+    def _select_best_contract(
+        self,
+        underlying: str,
+        underlying_price: float,
+        momentum_score: float,
+        option_type: str = "call",
+        pcr: float | None = None,
+        vol_oi_ratio: float | None = None,
+    ) -> dict[str, Any] | None:
+        cfg = self.options_config
+        try:
+            contracts = self.chain_discovery.discover_contracts_for_underlying(
+                underlying=underlying,
+                min_dte=cfg.min_dte,
+                max_dte=cfg.max_dte,
+                option_type=option_type,
+                feed=cfg.feed,
+            )
+        except Exception as exc:
+            print(f"[options] chain discovery failed for {underlying}: {exc}")
+            return None
+
+        if not contracts:
+            return None
+
+        for c in contracts:
+            c["underlying_price"] = underlying_price
+            if self.option_stream is not None:
+                live_quote = self.option_stream.get_quote(c.get("symbol", ""))
+                if live_quote and live_quote.get("bid", 0) > 0 and live_quote.get("ask", 0) > 0:
+                    c["bid"] = live_quote["bid"]
+                    c["ask"] = live_quote["ask"]
+                    c["bid_size"] = live_quote.get("bid_size", c.get("bid_size", 0))
+                    c["ask_size"] = live_quote.get("ask_size", c.get("ask_size", 0))
+                    c["mid"] = (c["bid"] + c["ask"]) / 2.0
+                    c["spread_pct"] = (c["ask"] - c["bid"]) / max(c["mid"], 1e-9)
+
+        ranked = self.ranker.rank(
+            contracts=contracts,
+            underlying_momentum_score=momentum_score,
+            pcr=pcr,
+            vol_oi_ratio=vol_oi_ratio,
+            option_type=option_type,
+        )
+
+        if ranked.empty:
+            return None
 
         try:
-            req = OptionChainRequest(underlying_symbol=underlying)
-            chain = self.option_data.get_option_chain(req)
-            if isinstance(chain, dict):
-                return chain
-            if hasattr(chain, "data") and isinstance(chain.data, dict):
-                return chain.data
-            return dict(chain) if chain is not None else {}
-        except Exception as exc:
-            print(f"[options] failed to fetch option chain for {underlying}: {exc}")
-            write_event("option_chain_fetch_error", {"underlying": underlying, "error": str(exc)})
-            return {}
+            OUT_DIR.mkdir(parents=True, exist_ok=True)
+            ranked.to_csv(OPTION_CANDIDATES_PATH, index=False)
+        except Exception:
+            pass
 
-    def _select_best_call_contract(self, underlying: str, underlying_price: float, confidence: float) -> dict[str, Any] | None:
-        cfg = self.options_config
-        chain = self._get_call_chain_snapshots(underlying)
-        if not chain:
-            return None
-
-        today = now_utc().date()
-        rows: list[dict[str, Any]] = []
-        for contract_symbol, snapshot in chain.items():
-            parsed = parse_occ_option_symbol(contract_symbol)
-            if not parsed or parsed.get("type") != "call":
-                continue
-
-            dte = (parsed["expiration"] - today).days
-            min_entry_dte = max(cfg.min_dte, cfg.block_new_entries_within_expiration_days + 1)
-            if dte < min_entry_dte or dte > cfg.max_dte:
-                continue
-
-            metrics = _option_quote_metrics(snapshot)
-            mid = metrics["mid"]
-            if mid <= 0 or mid > cfg.max_contract_mid_price:
-                continue
-            if metrics["spread_pct"] > cfg.max_spread_pct:
-                continue
-            if metrics["volume"] < cfg.min_volume:
-                continue
-            if metrics["open_interest"] < cfg.min_open_interest:
-                continue
-
-            delta = metrics["delta"]
-            if np.isnan(delta):
-                # Fall back to moneyness if greeks are unavailable.
-                moneyness = parsed["strike"] / max(underlying_price, 1e-9)
-                if not (0.95 <= moneyness <= 1.08):
-                    continue
-                delta_fit = 0.55
-            else:
-                if delta < cfg.target_delta_min or delta > cfg.target_delta_max:
-                    continue
-                delta_fit = 1.0 - min(abs(delta - cfg.ideal_delta) / max(cfg.target_delta_max - cfg.target_delta_min, 1e-9), 1.0)
-
-            dte_mid = (cfg.min_dte + cfg.max_dte) / 2.0
-            dte_fit = 1.0 - min(abs(dte - dte_mid) / max((cfg.max_dte - cfg.min_dte) / 2.0, 1e-9), 1.0)
-            spread_score = 1.0 - min(metrics["spread_pct"] / max(cfg.max_spread_pct, 1e-9), 1.0)
-            liquidity_score = min(metrics["volume"] / max(cfg.min_volume * 10, 1), 1.0) * 0.45 + min(metrics["open_interest"] / max(cfg.min_open_interest * 10, 1), 1.0) * 0.55
-            moneyness_score = 1.0 - min(abs(parsed["strike"] / max(underlying_price, 1e-9) - 1.0) / 0.12, 1.0)
-
-            option_score = (
-                0.30 * float(confidence)
-                + 0.20 * liquidity_score
-                + 0.18 * delta_fit
-                + 0.14 * spread_score
-                + 0.10 * dte_fit
-                + 0.08 * moneyness_score
-            )
-
-            rows.append({
-                "option_symbol": safe_symbol(contract_symbol),
-                "underlying": underlying,
-                "underlying_price": underlying_price,
-                "expiration": parsed["expiration"].isoformat(),
-                "dte": dte,
-                "strike": parsed["strike"],
-                "bid": metrics["bid"],
-                "ask": metrics["ask"],
-                "mid": mid,
-                "spread_pct": metrics["spread_pct"],
-                "delta": delta,
-                "gamma": metrics["gamma"],
-                "iv": metrics["iv"],
-                "volume": metrics["volume"],
-                "open_interest": metrics["open_interest"],
-                "option_score": option_score,
-            })
-
-        if not rows:
-            return None
-
-        ranked = pd.DataFrame(rows).sort_values("option_score", ascending=False).reset_index(drop=True)
-        ranked.to_csv(OPTION_BOOSTER_CANDIDATES_PATH, index=False)
         return ranked.iloc[0].to_dict()
 
-    def _build_option_booster_orders(self, scores: pd.DataFrame, equity: float) -> pd.DataFrame:
+    def _build_options_trading_orders(self, scores: pd.DataFrame, equity: float) -> pd.DataFrame:
+        """Options-first entry orders. No underlying stock position required."""
         cfg = self.options_config
         if not cfg.enabled:
             return pd.DataFrame()
-        if self.option_data is None:
-            print("[options] booster enabled but OptionHistoricalDataClient is unavailable; skipping")
-            return pd.DataFrame()
         if scores.empty:
             return pd.DataFrame()
-
-        positions = {normalize_symbol(p.symbol): p for p in self.broker.get_all_open_positions()}
-        existing_option_underlyings = self._existing_option_underlyings()
         if self._open_option_position_count() >= cfg.max_open_option_positions:
-            print("[options] max open option positions reached; skipping call booster")
+            print("[options] max open option positions reached")
+            return pd.DataFrame()
+        if self._options_exposure(equity) >= cfg.max_options_exposure:
+            print(f"[options] options exposure >= {cfg.max_options_exposure:.0%} limit")
             return pd.DataFrame()
 
-        latest = scores.copy()
-        latest["symbol"] = latest["symbol"].map(normalize_symbol)
-        latest["continuation_confidence"] = latest[[c for c in ["trade_confidence", "setup_score", "momentum_score"] if c in latest.columns]].max(axis=1)
-
-        candidates = latest[latest["continuation_confidence"] >= cfg.min_continuation_confidence].copy()
-        if cfg.require_momentum_setup and "setup_type" in candidates.columns:
-            candidates = candidates[candidates["setup_type"].astype(str).str.lower() == "momentum"].copy()
-
+        existing_by_underlying = self._existing_option_positions_by_underlying()
         rows: list[dict[str, Any]] = []
-        for _, r in candidates.sort_values("continuation_confidence", ascending=False).iterrows():
+
+        candidate_scores = scores.head(cfg.max_open_option_positions * 2).copy()
+        candidate_scores["symbol"] = candidate_scores["symbol"].map(normalize_symbol)
+        candidate_scores = candidate_scores.sort_values("setup_score", ascending=False)
+
+        for _, r in candidate_scores.iterrows():
+            if self._open_option_position_count() >= cfg.max_open_option_positions:
+                break
+
             underlying = normalize_symbol(r["symbol"])
-            if underlying in existing_option_underlyings:
-                continue
-            pos = positions.get(underlying)
-            if pos is None or pos.qty <= 0:
-                continue
-            if pos.unrealized_plpc < cfg.min_underlying_unrealized_plpc:
+            if underlying in existing_by_underlying:
                 continue
 
-            underlying_price = to_float(r.get("close"), pos.current_price)
-            if underlying_price <= 0:
-                underlying_price = pos.current_price
-            if underlying_price <= 0:
-                continue
+            underlying_price = to_float(r.get("close", 0.0))
+            momentum_score = to_float(r.get("momentum_score", r.get("setup_score", 0.0)))
+            reversal_score = to_float(r.get("reversal_score", 0.0))
 
-            best = self._select_best_call_contract(
-                underlying=underlying,
-                underlying_price=underlying_price,
-                confidence=float(r["continuation_confidence"]),
-            )
-            if not best:
-                continue
+            pcr: float | None = None
+            vol_oi_ratio: float | None = None
+            if self.av_client is not None:
+                try:
+                    pcr = self.av_client.get_put_call_ratio(underlying)
+                    vol_oi_ratio = self.av_client.get_volume_oi_ratio(underlying)
+                except Exception:
+                    pass
 
-            risk_budget = min(equity * cfg.max_risk_per_trade_pct, cfg.max_risk_per_trade_dollars)
-            contract_notional = float(best["mid"]) * 100.0
-            contracts = int(risk_budget // max(contract_notional, 1e-9))
-            contracts = min(contracts, cfg.max_contracts_per_underlying)
-            if contracts <= 0:
-                print(
-                    f"[options] skip {underlying}: selected call {best['option_symbol']} "
-                    f"cost=${contract_notional:.2f} exceeds risk_budget=${risk_budget:.2f}"
+            trade_calls = cfg.enable_long_calls
+            trade_puts = cfg.enable_long_puts
+
+            if pcr is not None:
+                if cfg.pcr_bearish_threshold <= pcr < cfg.pcr_contrarian_bullish_threshold:
+                    trade_calls = False
+                if pcr <= cfg.pcr_bullish_threshold:
+                    trade_puts = False
+            elif reversal_score > momentum_score * 1.2:
+                trade_calls = False
+
+            for opt_type in (["call"] if trade_calls else []) + (["put"] if trade_puts else []):
+                if self._open_option_position_count() >= cfg.max_open_option_positions:
+                    break
+                if underlying in self._existing_option_positions_by_underlying():
+                    break
+
+                best = self._select_best_contract(
+                    underlying=underlying,
+                    underlying_price=underlying_price,
+                    momentum_score=momentum_score,
+                    option_type=opt_type,
+                    pcr=pcr,
+                    vol_oi_ratio=vol_oi_ratio,
                 )
-                continue
+                if not best:
+                    continue
 
-            rows.append({
-                "symbol": best["option_symbol"],
-                "side": "buy",
-                "delta_shares": contracts,
-                "delta_dollars": contract_notional * contracts,
-                "price": float(best["mid"]),
-                "reason": "option_booster_long_call_after_positive_underlying_validation",
-                "target_weight": (contract_notional * contracts) / max(equity, 1e-9),
-                "current_weight": 0.0,
-                "delta_weight": (contract_notional * contracts) / max(equity, 1e-9),
-                "trade_confidence": float(r["continuation_confidence"]),
-                "confidence_score": float(r["continuation_confidence"]),
-                "underlying_symbol": underlying,
-                "underlying_unrealized_plpc": float(pos.unrealized_plpc),
-                "option_score": float(best["option_score"]),
-                "option_delta": best.get("delta"),
-                "option_dte": best.get("dte"),
-                "option_strike": best.get("strike"),
-                "option_spread_pct": best.get("spread_pct"),
-            })
+                mid = to_float(best.get("mid", 0.0))
+                if mid <= 0:
+                    continue
+
+                contract_notional = mid * 100.0
+                risk_dollars = equity * cfg.risk_per_trade_pct
+                n_contracts = max(1, int(risk_dollars // max(contract_notional, 1e-9)))
+                n_contracts = min(n_contracts, cfg.max_contracts_per_underlying)
+
+                exposure_room = (cfg.max_options_exposure - self._options_exposure(equity)) * equity
+                if contract_notional * n_contracts > exposure_room:
+                    n_contracts = int(exposure_room // max(contract_notional, 1e-9))
+                if n_contracts <= 0:
+                    continue
+
+                option_symbol = str(best.get("symbol", ""))
+                total_notional = contract_notional * n_contracts
+                rows.append({
+                    "symbol": option_symbol,
+                    "side": "buy",
+                    "delta_shares": n_contracts,
+                    "delta_dollars": total_notional,
+                    "price": mid,
+                    "reason": f"options_trading_long_{opt_type}",
+                    "target_weight": total_notional / max(equity, 1e-9),
+                    "current_weight": 0.0,
+                    "delta_weight": total_notional / max(equity, 1e-9),
+                    "trade_confidence": momentum_score,
+                    "option_type": opt_type,
+                    "underlying_symbol": underlying,
+                    "contract_score": to_float(best.get("contract_score", 0.0)),
+                    "option_delta": best.get("delta"),
+                    "option_dte": best.get("dte"),
+                    "option_strike": best.get("strike"),
+                    "option_spread_pct": best.get("spread_pct"),
+                    "option_iv": best.get("iv"),
+                    "put_call_ratio": pcr,
+                    "volume_oi_ratio": vol_oi_ratio,
+                    "is_option": True,
+                })
 
         if rows:
-            print(f"[options] generated long-call booster orders={len(rows)}")
+            print(f"[options] generated trading orders={len(rows)}")
         return pd.DataFrame(rows)
 
     def _build_option_exit_orders(self, equity: float) -> pd.DataFrame:
+        """Exit orders for all open long option positions (calls and puts)."""
         cfg = self.options_config
         if not cfg.enabled:
             return pd.DataFrame()
@@ -1091,9 +1829,10 @@ class MomentumSetupScanner:
 
         for pos in self.broker.get_all_open_positions():
             parsed = parse_occ_option_symbol(pos.symbol)
-            if not parsed or parsed.get("type") != "call" or pos.qty <= 0:
+            if not parsed or pos.qty <= 0:
                 continue
 
+            option_type = str(parsed.get("type", "call"))
             symbol = safe_symbol(pos.symbol)
             old_high = high_plpc.get(symbol, pos.unrealized_plpc)
             new_high = max(old_high, pos.unrealized_plpc)
@@ -1104,13 +1843,13 @@ class MomentumSetupScanner:
 
             reason = ""
             if dte <= cfg.close_before_expiration_days:
-                reason = "option_booster_expiration_protection_exit"
+                reason = f"option_{option_type}_expiration_protection"
             elif pos.unrealized_plpc <= cfg.hard_stop_pct:
-                reason = "option_booster_hard_stop"
+                reason = f"option_{option_type}_hard_stop"
             elif pos.unrealized_plpc >= cfg.take_profit_pct:
-                reason = "option_booster_take_profit"
+                reason = f"option_{option_type}_take_profit"
             elif new_high >= cfg.profit_lock_trigger_pct and pos.unrealized_plpc <= new_high - cfg.profit_giveback_pct:
-                reason = "option_booster_profit_giveback"
+                reason = f"option_{option_type}_profit_lock_giveback"
 
             if reason:
                 rows.append({
@@ -1125,10 +1864,12 @@ class MomentumSetupScanner:
                     "delta_weight": -float(pos.market_value) / max(equity, 1e-9),
                     "trade_confidence": 1.0,
                     "underlying_symbol": parsed.get("underlying"),
+                    "option_type": option_type,
                     "option_plpc": float(pos.unrealized_plpc),
                     "option_high_plpc": float(new_high),
                     "option_expiration": parsed["expiration"].isoformat(),
                     "option_dte": int(dte),
+                    "is_option": True,
                 })
                 high_plpc.pop(symbol, None)
 
@@ -1208,9 +1949,9 @@ class MomentumSetupScanner:
             )
 
         rebalance = pd.DataFrame(rows)
-        option_boosters = self._build_option_booster_orders(scores, equity)
-        if not option_boosters.empty:
-            rebalance = pd.concat([rebalance, option_boosters], ignore_index=True)
+        option_orders = self._build_options_trading_orders(scores, equity)
+        if not option_orders.empty:
+            rebalance = pd.concat([rebalance, option_orders], ignore_index=True)
 
         exits = self._update_high_water_and_exits(scores, equity)
         option_exits = self._build_option_exit_orders(equity)
@@ -2010,7 +2751,22 @@ class ProductionOrderExecutor:
                     continue
 
             try:
-                if side == "buy":
+                is_option = parse_occ_option_symbol(symbol) is not None
+                opts_cfg: OptionsTradingConfig = (
+                    self.config.options_booster or OptionsTradingConfig(enabled=False)
+                )
+                if is_option and not opts_cfg.allow_option_market_orders:
+                    if side == "buy":
+                        limit_price = round(price + opts_cfg.limit_entry_improvement, 2)
+                        submitted = self.broker.submit_limit_buy(
+                            symbol, qty, limit_price, client_order_id, self.config.time_in_force
+                        )
+                    else:
+                        limit_price = round(max(price - opts_cfg.limit_exit_offset, 0.01), 2)
+                        submitted = self.broker.submit_limit_sell(
+                            symbol, qty, limit_price, client_order_id, self.config.time_in_force
+                        )
+                elif side == "buy":
                     submitted = self.broker.submit_market_buy(symbol, qty, client_order_id, self.config.time_in_force)
                 else:
                     submitted = self.broker.submit_market_sell(symbol, qty, client_order_id, self.config.time_in_force)
@@ -2239,7 +2995,7 @@ class ProductionOrderExecutor:
     def run_cycle_from_files(self) -> tuple[pd.DataFrame, pd.DataFrame, AccountSnapshot, pd.DataFrame]:
         if self.scanner is not None:
             try:
-                rebalance, exits, _scores = self.scanner.build_orders()
+                rebalance, exits, _ = self.scanner.build_orders()
                 if not rebalance.empty or not exits.empty:
                     return self.run_once_from_frames(rebalance, exits)
             except Exception as exc:
@@ -2272,7 +3028,7 @@ class ProductionOrderExecutor:
         print(f"[executor] equity_curve={EQUITY_CURVE_PATH}")
         print(f"[executor] paper={self.config.paper}")
         print(f"[executor] account_scaling={self.config.enable_account_scaling}")
-        print(f"[executor] options_booster={bool(self.config.options_booster and self.config.options_booster.enabled)}")
+        print(f"[executor] options_mode={bool(self.config.options_booster and self.config.options_booster.enabled)}")
         print("[executor] mode=EXECUTION")
         print("[executor] run_policy=FOREVER_UNTIL_INTERRUPTED")
 
@@ -2428,28 +3184,52 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profit-lock-trigger", type=float, default=0.06)
     parser.add_argument("--profit-giveback", type=float, default=0.025)
 
-    parser.add_argument("--enable-options-booster", action="store_true", help="Enable long-call-only booster after positive underlying validation.")
+    # ── Options-first mode ────────────────────────────────────────────────────
+    parser.add_argument("--enable-options-booster", action="store_true",
+                        help="Legacy alias. Enables options-first trading mode.")
+    parser.add_argument("--enable-options-mode", action="store_true",
+                        help="Enable options-first trading mode (replaces legacy call booster).")
+    parser.add_argument("--enable-long-puts", action="store_true",
+                        help="Allow long put entries in addition to long calls.")
+    parser.add_argument("--option-feed", default="opra",
+                        help="Alpaca data feed for options: opra (default) or indicative.")
+    parser.add_argument("--option-min-dte", type=int, default=7,
+                        help="Minimum DTE to consider a contract.")
+    parser.add_argument("--option-max-dte", type=int, default=45,
+                        help="Maximum DTE to consider a contract.")
+    parser.add_argument("--option-call-delta-min", type=float, default=0.35)
+    parser.add_argument("--option-call-delta-max", type=float, default=0.65)
+    parser.add_argument("--option-put-delta-min", type=float, default=-0.65)
+    parser.add_argument("--option-put-delta-max", type=float, default=-0.35)
+    parser.add_argument("--option-max-spread-pct", type=float, default=0.12,
+                        help="Max bid/ask spread as fraction of mid (0.12 = 12%%).")
+    parser.add_argument("--option-min-volume", type=int, default=20)
+    parser.add_argument("--option-min-oi", type=int, default=100,
+                        help="Minimum open interest to consider a contract.")
+    parser.add_argument("--option-risk-pct", type=float, default=0.015,
+                        help="Risk per trade as fraction of equity (0.015 = 1.5%%).")
+    parser.add_argument("--option-max-exposure", type=float, default=0.40,
+                        help="Max total options exposure as fraction of equity.")
+    parser.add_argument("--option-max-positions", type=int, default=4)
+    parser.add_argument("--option-max-contracts", type=int, default=2)
+    parser.add_argument("--option-take-profit", type=float, default=0.60)
+    parser.add_argument("--option-stop-loss", type=float, default=-0.35)
+    parser.add_argument("--allow-option-market-orders", action="store_true",
+                        help="Use market orders for options (default: limit at midpoint).")
+    parser.add_argument("--option-limit-entry-improvement", type=float, default=0.01,
+                        help="Dollars above mid to improve limit entry price.")
+    parser.add_argument("--option-limit-exit-offset", type=float, default=0.01,
+                        help="Dollars below mid to accept on limit exit.")
+    parser.add_argument("--option-close-before-expiration-days", type=int, default=3,
+                        help="Force-close option positions when DTE <= this value.")
+    parser.add_argument("--option-block-new-entries-within-expiration-days", type=int, default=5,
+                        help="Do not open new options this close to expiration.")
+    # Legacy args retained for backward compat
     parser.add_argument("--option-min-confidence", type=float, default=0.68)
     parser.add_argument("--option-min-underlying-plpc", type=float, default=0.003)
-    parser.add_argument("--option-min-dte", type=int, default=14)
-    parser.add_argument("--option-max-dte", type=int, default=45)
     parser.add_argument("--option-max-risk-pct", type=float, default=0.010)
     parser.add_argument("--option-max-risk-dollars", type=float, default=250.0)
-    parser.add_argument("--option-max-contracts", type=int, default=2)
     parser.add_argument("--option-max-open-positions", type=int, default=4)
-    parser.add_argument("--option-max-spread-pct", type=float, default=0.15)
-    parser.add_argument(
-        "--option-close-before-expiration-days",
-        type=int,
-        default=3,
-        help="Force-close long call positions when DTE is at or below this value.",
-    )
-    parser.add_argument(
-        "--option-block-new-entries-within-expiration-days",
-        type=int,
-        default=5,
-        help="Do not open new calls this close to expiration.",
-    )
 
     return parser.parse_args()
 
@@ -2470,17 +3250,29 @@ def build_config(args: argparse.Namespace) -> ExecutorConfig:
         profit_lock_trigger_pct=args.profit_lock_trigger,
         profit_giveback_pct=args.profit_giveback,
     )
-    options_config = OptionsBoosterConfig(
-        enabled=args.enable_options_booster,
-        min_continuation_confidence=args.option_min_confidence,
-        min_underlying_unrealized_plpc=args.option_min_underlying_plpc,
+    options_config = OptionsTradingConfig(
+        enabled=args.enable_options_mode or args.enable_options_booster,
+        feed=args.option_feed,
+        enable_long_calls=True,
+        enable_long_puts=args.enable_long_puts,
         min_dte=args.option_min_dte,
         max_dte=args.option_max_dte,
-        max_risk_per_trade_pct=args.option_max_risk_pct,
-        max_risk_per_trade_dollars=args.option_max_risk_dollars,
-        max_contracts_per_underlying=args.option_max_contracts,
-        max_open_option_positions=args.option_max_open_positions,
+        call_delta_min=args.option_call_delta_min,
+        call_delta_max=args.option_call_delta_max,
+        put_delta_min=args.option_put_delta_min,
+        put_delta_max=args.option_put_delta_max,
         max_spread_pct=args.option_max_spread_pct,
+        min_open_interest=args.option_min_oi,
+        min_volume=args.option_min_volume,
+        risk_per_trade_pct=args.option_risk_pct,
+        max_options_exposure=args.option_max_exposure,
+        max_contracts_per_underlying=args.option_max_contracts,
+        max_open_option_positions=args.option_max_positions,
+        allow_option_market_orders=args.allow_option_market_orders,
+        limit_entry_improvement=args.option_limit_entry_improvement,
+        limit_exit_offset=args.option_limit_exit_offset,
+        take_profit_pct=args.option_take_profit,
+        hard_stop_pct=args.option_stop_loss,
         close_before_expiration_days=args.option_close_before_expiration_days,
         block_new_entries_within_expiration_days=args.option_block_new_entries_within_expiration_days,
     )
