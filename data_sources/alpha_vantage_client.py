@@ -423,6 +423,33 @@ class AlphaVantageClient:
             return []
         return normalize_time_series(payload, symbol, self.config.entitlement, source="alpha_vantage_intraday")
 
+    def get_intraday_extended(self, symbol: str, interval: Optional[str] = None,
+                              outputsize: str = "full", extended_hours: bool = True,
+                              month: Optional[str] = None) -> list[dict[str, Any]]:
+        """Intraday OHLCV bars INCLUDING extended hours (04:00–20:00 ET), full ~30-day
+        history — for premarket RVOL. Alpha Vantage intraday timestamps are US/Eastern.
+        Returns newest-last dicts (timestamp,open,high,low,close,volume,...); [] on failure.
+        """
+        symbol = (symbol or "").upper().strip()
+        interval = (interval or self.config.default_interval or "5min").strip()
+        if interval not in VALID_INTRADAY_INTERVALS:
+            logger.warning("AV intraday-extended: invalid interval %r, defaulting to 5min", interval)
+            interval = "5min"
+        params = {
+            "function": "TIME_SERIES_INTRADAY",
+            "symbol": symbol,
+            "interval": interval,
+            "outputsize": "full" if str(outputsize).lower() == "full" else "compact",
+            "extended_hours": "true" if extended_hours else "false",
+            "datatype": "json",
+        }
+        if month:
+            params["month"] = str(month)   # AV YYYY-MM for a specific historical month
+        payload = self.fetch(params)
+        if not payload:
+            return []
+        return normalize_time_series(payload, symbol, self.config.entitlement, source="alpha_vantage_intraday")
+
     def get_global_quote(self, symbol: str) -> dict[str, Any]:
         """Realtime global quote normalized to a single OHLCV-style dict."""
         symbol = (symbol or "").upper().strip()

@@ -34,6 +34,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from symbol_utils import normalize_for_yfinance
 
 
 LOOKBACK_DAYS = 420
@@ -122,7 +123,7 @@ def get_fred_client():
 
 def download_prices(tickers: List[str]) -> pd.DataFrame:
     data = yf.download(
-        tickers=tickers,
+        tickers=[normalize_for_yfinance(t) for t in tickers],
         period=f"{LOOKBACK_DAYS}d",
         interval="1d",
         auto_adjust=True,

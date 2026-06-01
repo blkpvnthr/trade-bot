@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 import yfinance as yf
+from symbol_utils import normalize_for_yfinance
 from config.env_loader import load_instance_env
 from openai import OpenAI
 
@@ -376,7 +377,7 @@ def previous_session_levels_yfinance() -> dict[str, Any]:
 
     for symbol in INDEX_SYMBOLS:
         try:
-            hist = yf.Ticker(symbol).history(period="10d", interval="1d")
+            hist = yf.Ticker(normalize_for_yfinance(symbol)).history(period="10d", interval="1d")
             if hist.empty:
                 continue
 
@@ -449,7 +450,7 @@ def get_etf_snapshot(symbols: list[str], period: str = "15d") -> dict[str, Any]:
 
     for symbol in symbols:
         try:
-            hist = yf.Ticker(symbol).history(period=period, interval="1d")
+            hist = yf.Ticker(normalize_for_yfinance(symbol)).history(period=period, interval="1d")
 
             if hist.empty or len(hist) < 2:
                 out[symbol] = {"error": "insufficient_data"}

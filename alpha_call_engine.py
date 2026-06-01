@@ -54,6 +54,12 @@ ALPHA_STATE_PATH = SYSTEM_DATA / f"{DATA_TAG}_alpha_engine_state.json"
 ALPHA_EVENTS_PATH = PROJECT_ROOT / "logs" / "execution" / DATA_TAG / f"{DATA_TAG}_alpha_engine_events.jsonl"
 ALPHA_EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+# Guard: suppress event file writes when running under pytest so tests don't
+# contaminate production execution journals.
+# NOTE: evaluated at call-time (not import-time) so that PYTEST_CURRENT_TEST is seen correctly.
+def _in_test() -> bool:
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in os.path.basename(os.environ.get("_", ""))
+
 
 # ── configuration ─────────────────────────────────────────────────────────────
 @dataclass
@@ -309,6 +315,8 @@ class ActiveCall:
 
 # ── event logging ──────────────────────────────────────────────────────────────
 def _alpha_event(event: str, payload: dict) -> None:
+    if _in_test():
+        return  # never write to production journals during test runs
     try:
         line = json.dumps({
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),

@@ -110,6 +110,10 @@ ENABLE_ALPHA_OPTIONS_SCREENER   = os.environ.get("ENABLE_ALPHA_OPTIONS_SCREENER"
 ENABLE_BUFFETT_ACCUMULATION_SCREENER = os.environ.get("ENABLE_BUFFETT_ACCUMULATION_SCREENER", "true").lower() in {"1", "true"}
 MAX_OPTIONS_EXPOSURE_PCT        = float(os.environ.get("MAX_OPTIONS_EXPOSURE_PCT", 0.15))
 MAX_STOCK_EXPOSURE_PCT          = float(os.environ.get("MAX_STOCK_EXPOSURE_PCT",  0.80))
+# Size-to-fit: when a BUY exceeds only a trimmable notional/exposure cap, shrink it
+# to the remaining room under the cap instead of hard-rejecting the whole order. The
+# cap is never breached; hard risk blocks (kill-switch, drawdown, PDT, …) still reject.
+SIZE_TO_FIT_EXPOSURE            = os.environ.get("SIZE_TO_FIT_EXPOSURE", "1").lower() not in {"0", "false", "no"}
 MAX_SINGLE_STOCK_WEIGHT         = float(os.environ.get("MAX_SINGLE_STOCK_WEIGHT", 0.10))
 OPTIONS_RISK_PER_TRADE_PCT      = float(os.environ.get("OPTIONS_RISK_PER_TRADE_PCT", 0.015))
 BAL_MIN_SCORE_TO_BUY            = float(os.environ.get("BAL_MIN_SCORE_TO_BUY", 55))
@@ -151,6 +155,10 @@ DATA_TAG       = os.getenv("RUN_DATA_DATE", datetime.now(timezone.utc).strftime(
 DAILY_OUTPUTS  = PROJECT_ROOT / "daily_system_outputs"
 SKIPPED_TRADES_PATH = PROJECT_ROOT / "logs" / "execution" / DATA_TAG / f"{DATA_TAG}_skipped_trades.jsonl"
 SCREENER_FUNNEL_PATH = DAILY_OUTPUTS / "screener_funnel_report.json"
+# Guard: suppress file writes when called from pytest
+# NOTE: evaluated at call-time (not import-time) so that PYTEST_CURRENT_TEST is seen correctly.
+def _in_test() -> bool:
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in os.path.basename(os.environ.get("_", ""))
 
 # Canonical skip reasons (every rejected trade must log one of these)
 SKIP_REASONS = {
@@ -175,6 +183,8 @@ SKIP_REASONS = {
 
 def log_skip(symbol: str, reason: str, **detail) -> None:
     """Record a skipped trade with a canonical reason. Always logged + journaled."""
+    if _in_test():
+        return  # never pollute production journals from test runs
     base = reason.split(":", 1)[0]
     if base not in SKIP_REASONS:
         logger.debug("log_skip: non-canonical reason '%s' (symbol=%s)", reason, symbol)
@@ -354,6 +364,29 @@ class RiskManager:
                                    f"{self.equity * MAX_STOCK_EXPOSURE_PCT:.0f}")
 
         return True, ""
+
+    def max_affordable_qty(self, side: str, price: float, asset_class: str = "equity") -> Optional[int]:
+        """Largest BUY qty that fits the *trimmable* notional caps: the per-order
+        dollar cap plus the options/stock exposure room remaining under the cap.
+
+        Returns None when no notional trim applies (sells, non-positive price).
+        Hard blocks — kill-switch, equity floor, daily-loss, drawdown, PDT,
+        position count, max_order_size — are NOT trimmable and stay enforced by
+        gate(). The cap is never exceeded; this only lets an order fill UP TO the
+        remaining room instead of being rejected outright.
+        """
+        if side != "buy" or price <= 0:
+            return None
+        mult = 100.0 if asset_class == "option" else 1.0
+        rooms = []
+        if self.max_order_dollars > 0:
+            rooms.append(self.max_order_dollars)
+        if asset_class == "option":
+            rooms.append(max(0.0, self.equity * MAX_OPTIONS_EXPOSURE_PCT - self.options_exposure))
+        else:
+            rooms.append(max(0.0, self.equity * MAX_STOCK_EXPOSURE_PCT - self.stock_exposure))
+        room = min(rooms) if rooms else 0.0
+        return int(room // (price * mult))
 
     def check_order(self, symbol: str, side: str, qty: int,
                     price: float, dry_run: bool = False) -> bool:
@@ -689,6 +722,15 @@ class AlpacaGateway:
                      side=side, qty=qty, source=reason or "broker")
             return None
 
+        # Size-to-fit: trim a BUY to the room remaining under the trimmable
+        # notional/exposure caps rather than rejecting it whole. Cap never breached.
+        if SIZE_TO_FIT_EXPOSURE and side == "buy":
+            fit = self.risk.max_affordable_qty(side, ref_price, asset_class=asset_class)
+            if fit is not None and 0 < fit < qty:
+                logger.info("[size-to-fit] %s BUY trimmed %d->%d to fit exposure cap (px=%.2f)",
+                            symbol, qty, fit, ref_price)
+                qty = fit
+
         allowed, gate_reason = self.risk.gate(symbol, side, qty, ref_price, asset_class=asset_class)
         if not allowed:
             log_skip(symbol, gate_reason, side=side, qty=qty, source=reason or "broker")
@@ -795,7 +837,10 @@ def fetch_1m_bars(gateway: AlpacaGateway, symbols: List[str]) -> Dict[str, "Any"
     """
     Fetch recent 1-minute OHLCV bars per symbol as a pandas DataFrame
     (columns: open, high, low, close, volume; tz-aware index).
-    Falls back to a deterministic simulation when Alpaca data is unavailable.
+    Falls back to a deterministic simulation per-symbol when Alpaca data is unavailable.
+    Fix: simulation now fills in individually missing symbols even when the batch
+    partially succeeds — prevents "no_bars" rejections for symbols IEX doesn't cover
+    (e.g., small-caps during pre-market).
     """
     try:
         import pandas as pd
@@ -804,6 +849,8 @@ def fetch_1m_bars(gateway: AlpacaGateway, symbols: List[str]) -> Dict[str, "Any"
         return {}
 
     out: Dict[str, Any] = {}
+    missing: List[str] = list(symbols)  # will shrink as real bars are found
+
     if gateway.available and gateway._mode == "alpaca_py":
         try:
             from alpaca.data.historical import StockHistoricalDataClient
@@ -824,16 +871,23 @@ def fetch_1m_bars(gateway: AlpacaGateway, symbols: List[str]) -> Dict[str, "Any"
                 df = df.reset_index()
                 for sym, grp in df.groupby("symbol"):
                     g = grp.set_index("timestamp")[["open", "high", "low", "close", "volume"]].copy()
-                    out[sym] = g
-                return out
+                    if len(g) >= 2:
+                        out[sym] = g
+                # Only simulate for symbols that got no real bars
+                missing = [s for s in symbols if s not in out]
+                if not missing:
+                    return out
+                logger.debug("fetch_1m_bars: %d/%d symbols got real bars; simulating %d",
+                             len(out), len(symbols), len(missing))
         except Exception as e:
-            logger.warning("Alpaca 1m bar fetch failed (%s) — using simulation", e)
+            logger.warning("Alpaca 1m bar fetch failed (%s) — using simulation for all", e)
 
-    # Simulation fallback (deterministic per-symbol so the loop stays runnable offline)
+    # Per-symbol simulation fallback (deterministic; keeps loop runnable offline and
+    # fills any symbol IEX couldn't serve — e.g., small-caps with no pre-market activity).
     import pandas as pd
     from datetime import timedelta
     now = datetime.now(timezone.utc)
-    for sym in symbols:
+    for sym in missing:
         seed = sum(ord(c) for c in sym)
         base = 20.0 + (seed % 200)
         idx = [now - timedelta(minutes=ALPHA_BARS_LOOKBACK_MIN - i) for i in range(ALPHA_BARS_LOOKBACK_MIN)]
@@ -1202,6 +1256,47 @@ def _build_premarket_universe_safe(gateway, bal, market_context) -> List[str]:
     return _build_premarket_universe(dynamic, insider, bcands, held)
 
 
+# ── Alpha Vantage premarket RVOL (provider-consistent: AV numerator AND denominator) ──
+# Default ON but fully fail-safe: no AV key / entitlement / throttle / malformed response →
+# RVOL stays UNAVAILABLE (never fabricated). Throttled so the premarket loop never hammers AV.
+ENABLE_AV_PREMARKET_RVOL = os.environ.get("ENABLE_AV_PREMARKET_RVOL", "true").lower() in {"1", "true"}
+AV_PREMARKET_RVOL_MAX_SYMBOLS = int(os.environ.get("AV_PREMARKET_RVOL_MAX_SYMBOLS", "15"))
+AV_PREMARKET_RVOL_INTERVAL_SEC = int(os.environ.get("AV_PREMARKET_RVOL_INTERVAL_SEC", "600"))
+_last_av_rvol_ts = 0.0
+
+
+def _av_premarket_rvol_cycle(feed) -> None:
+    """Compute AV premarket RVOL for the watch universe and inject it (provider-consistent)
+    behind the PremarketLiveFeed RVOL abstraction. Throttled + fail-safe; logs diagnostics."""
+    global _last_av_rvol_ts
+    if not ENABLE_AV_PREMARKET_RVOL or feed is None or not getattr(feed, "symbols", None):
+        return
+    if (time.time() - _last_av_rvol_ts) < AV_PREMARKET_RVOL_INTERVAL_SEC:
+        return
+    _last_av_rvol_ts = time.time()
+    try:
+        import data_sources.alpha_vantage_premarket as avpm
+        syms = list(feed.symbols)[:AV_PREMARKET_RVOL_MAX_SYMBOLS]
+        results = avpm.compute_many(syms, max_symbols=AV_PREMARKET_RVOL_MAX_SYMBOLS)
+        feed.set_premarket_rvols(results)
+        avail = 0
+        for s, r in results.items():
+            if r.get("rvol_available"):
+                avail += 1
+                logger.info("[av-rvol] %s sessions=%d current=%.0f avg=%.0f rvol=%.2f as_of=%s mode=%s provider=%s",
+                            s, int(r.get("sessions_used") or 0), float(r.get("current_premarket_volume") or 0),
+                            float(r.get("avg_premarket_volume") or 0), float(r.get("premarket_rvol") or 0),
+                            r.get("as_of_et"), r.get("rvol_mode"), r.get("rvol_provider"))
+            else:
+                logger.info("[av-rvol] %s UNAVAILABLE reason=%s historical_sessions=%s provider=%s",
+                            s, r.get("rvol_reason"), r.get("historical_sessions"), r.get("rvol_provider"))
+        logger.info("[av-rvol] premarket RVOL available for %d/%d symbols (provider=alpha_vantage)",
+                    avail, len(results))
+        feed.write_rvol_report(out_dir=_premarket_dir())
+    except Exception as e:
+        logger.debug("AV premarket RVOL skipped (RVOL left unavailable, not fabricated): %s", e)
+
+
 def run_premarket_phase(gateway, bal, market_context) -> None:
     """
     Premarket orchestration: build the watch universe (once), start/maintain the live
@@ -1229,6 +1324,9 @@ def run_premarket_phase(gateway, bal, market_context) -> None:
             feed.write_overnight_report(out_dir=_premarket_dir())
     except Exception as e:
         logger.debug("overnight metrics skipped: %s", e)
+    # Alpha Vantage premarket RVOL — provider-consistent (AV numerator + AV denominator),
+    # throttled, fail-safe (leaves RVOL unavailable rather than fabricating).
+    _av_premarket_rvol_cycle(feed)
     _write_premarket_reports()
     # Premarket relative-volume report (RVOL stays None unless 20d history is supplied).
     try:
@@ -1759,6 +1857,14 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     if waterfall is not None:
         write_capital_waterfall(waterfall)
     write_screener_funnel_report(alpha_scr.get("funnel", {}), buffett_res, market_context)
+    # Observational execution-funnel line (read-only; reads the artifacts just written above).
+    # Universe→Tradable→Signals→Qualified→Approved→Submitted→Filled + categorised rejections.
+    # Never alters thresholds/gates/decisions and never raises.
+    try:
+        import funnel_report
+        funnel_report.log_funnel(logger, DATA_TAG)
+    except Exception as _e:
+        logger.debug("funnel_report skipped: %s", _e)
     _write_indicator_reports()   # streaming_indicator_snapshot.json + _health.json
     # 6. Evidence System — regenerate research analytics from the recorded events.
     bal_value = sum(float(getattr(p, "market_value", 0) or 0) for p in equity_positions.values())

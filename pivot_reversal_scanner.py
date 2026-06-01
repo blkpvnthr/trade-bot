@@ -456,7 +456,8 @@ def fetch_daily_bars(symbol: str, lookback_days: int = PIVOT_LOOKBACK_DAYS) -> p
     try:
         end = datetime.now(ET)
         start = end - timedelta(days=lookback_days)
-        ticker = yf.Ticker(symbol)
+        from symbol_utils import normalize_for_yfinance
+        ticker = yf.Ticker(normalize_for_yfinance(symbol))   # BRK.B → BRK-B for Yahoo
         df = ticker.history(
             start=start.strftime("%Y-%m-%d"),
             end=end.strftime("%Y-%m-%d"),

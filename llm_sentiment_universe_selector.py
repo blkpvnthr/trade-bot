@@ -51,6 +51,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
+from symbol_utils import normalize_for_yfinance
 from config.env_loader import load_instance_env
 
 # ---------------------------------------------------------------------------
@@ -228,7 +229,7 @@ def enrich_company_details(symbols: list[str]) -> dict[str, dict[str, Any]]:
     enriched: dict[str, dict[str, Any]] = {}
     for symbol in symbols:
         try:
-            ticker = yf.Ticker(symbol)
+            ticker = yf.Ticker(normalize_for_yfinance(symbol))   # BRK.B → BRK-B for Yahoo
             info: dict[str, Any] = {}
             try:
                 info = ticker.get_info() or {}

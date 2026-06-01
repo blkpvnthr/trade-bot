@@ -96,7 +96,7 @@ def _load_yfinance_bars(
         result: dict[str, pd.DataFrame] = {}
         for sym in symbols:
             try:
-                ticker = yf.Ticker(sym)
+                ticker = yf.Ticker(str(sym).replace(".", "-"))   # Yahoo class-share format (BRK.B→BRK-B)
                 start_str = trade_date.strftime("%Y-%m-%d")
                 end_str   = (trade_date + timedelta(days=1)).strftime("%Y-%m-%d")
                 df = ticker.history(start=start_str, end=end_str, interval="1m")

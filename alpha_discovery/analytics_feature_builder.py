@@ -129,6 +129,25 @@ def relationship_value(calcs: dict[str, Any], calc: str, symbol: str, reference:
     return _to_f(row[j])
 
 
+def relationship_slope(calcs: dict[str, Any], calc: str, symbol: str, reference: str) -> Optional[float]:
+    """Read symbol↔reference rolling slope from a sliding-window matrix's ``slope_matrix``."""
+    node = (calcs or {}).get(calc)
+    if not isinstance(node, dict):
+        return None
+    index = node.get("index")
+    smatrix = node.get("slope_matrix")
+    if not isinstance(index, list) or not isinstance(smatrix, list):
+        return None
+    idx = {str(s).upper(): i for i, s in enumerate(index)}
+    i, j = idx.get(symbol.upper()), idx.get(reference.upper())
+    if i is None or j is None or i >= len(smatrix):
+        return None
+    row = smatrix[i]
+    if not isinstance(row, list) or j >= len(row):
+        return None
+    return _to_f(row[j])
+
+
 # =============================================================================
 # §2 Fixed-window features
 # =============================================================================
@@ -197,7 +216,8 @@ def build_sliding_window_features(
 
     # Slope-derived regime reads (from the sliding-window per-symbol series slope).
     vol_slope = _scalar_slope(calcs, "STDDEV", sym)
-    corr_slope = _scalar_slope(calcs, "CORRELATION", sym)
+    # Correlation slope to SPY comes from the running pairwise slope matrix.
+    corr_slope = relationship_slope(calcs, "CORRELATION", sym, spy)
     out["rolling_volatility_slope"] = vol_slope
     out["rolling_correlation_slope"] = corr_slope
 

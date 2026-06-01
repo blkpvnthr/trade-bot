@@ -92,6 +92,12 @@ MIN_WINDOW_SIZE = 10
 # than a {symbol: scalar} mapping. Matched by the token BEFORE any "(" arguments.
 _MATRIX_CALCS = frozenset({"CORRELATION", "COVARIANCE"})
 
+# Calculations the ANALYTICS_SLIDING_WINDOW endpoint does NOT support. Verified
+# against the live API: including ANY of these makes Alpha Vantage return an empty
+# RETURNS_CALCULATIONS for the WHOLE request, so they are dropped (with a logged
+# note) from sliding-window requests rather than silently breaking the response.
+SLIDING_UNSUPPORTED_CALCS = frozenset({"MAX_DRAWDOWN", "MIN", "MAX"})
+
 # Alpha Vantage notice keys that indicate throttle / info / error payloads.
 _NOTICE_KEYS = ("Error Message", "Note", "Information")
 
@@ -525,6 +531,13 @@ class AlphaVantageAnalyticsClient:
     ) -> dict[str, Any]:
         syms = _normalize_symbols(symbols)
         calcs = _normalize_calculations(calculations)
+        if function == SLIDING_WINDOW_FUNCTION:
+            kept = [c for c in calcs if _calc_base(c) not in SLIDING_UNSUPPORTED_CALCS]
+            dropped = [c for c in calcs if _calc_base(c) in SLIDING_UNSUPPORTED_CALCS]
+            if dropped:
+                logger.info("AV analytics sliding window: dropping unsupported calcs %s", dropped)
+                calcs = kept
+                calculations = kept
         try:
             params = build_analytics_params(function, symbols, calculations, range_, interval, window_size, ohlc)
         except ValueError as exc:
@@ -773,7 +786,13 @@ def parse_matrix_calc(node: Any) -> Optional[dict[str, Any]]:
 
     Accepts the Alpha Vantage form ``{"index": [...], "correlation": [[...]]}`` (or
     "covariance"), and our own ``{"index": [...], "matrix": [[...]]}``. Returns
-    ``{"index": [...symbols...], "matrix": [[float, ...], ...]}`` or None.
+    ``{"index": [...symbols...], "matrix": [[float, ...], ...]}`` (a full N×N
+    symmetric matrix) or None.
+
+    Alpha Vantage returns a **lower-triangular** matrix (row i has i+1 entries,
+    the last being the diagonal). We symmetrize into a full square so downstream
+    lookups work regardless of symbol order; full square inputs pass through
+    unchanged (mirroring is idempotent for symmetric matrices).
     """
     if not isinstance(node, dict):
         return None
@@ -785,12 +804,75 @@ def parse_matrix_calc(node: Any) -> Optional[dict[str, Any]]:
             break
     if not isinstance(index, list) or not isinstance(matrix, list):
         return None
-    out_matrix: list[list[float]] = []
-    for row in matrix:
-        if not isinstance(row, list):
+    n = len(index)
+    sym: list[list[float]] = [[0.0] * n for _ in range(n)]
+    for i, row in enumerate(matrix):
+        if not isinstance(row, list) or i >= n:
             return None
-        out_matrix.append([(to_float(x) if to_float(x) is not None else 0.0) for x in row])
-    return {"index": [str(s).upper() for s in index], "matrix": out_matrix}
+        for j, val in enumerate(row):
+            if j >= n:
+                continue
+            f = to_float(val)
+            if f is None:
+                continue
+            sym[i][j] = f
+            sym[j][i] = f  # mirror lower<->upper triangle
+    return {"index": [str(s).upper() for s in index], "matrix": sym}
+
+
+def _unwrap_running(node: Any) -> Any:
+    """Unwrap the sliding-window ``{"RUNNING_<X>": {...}}`` envelope.
+
+    Sliding-window responses nest each calculation under a ``RUNNING_<NAME>`` key
+    (e.g. RUNNING_MEAN, RUNNING_CORRELATION), often alongside sibling metadata such
+    as ``WINDOW_START``; fixed-window responses do not. Returns the inner
+    ``RUNNING_<NAME>`` node when present, else ``node`` unchanged.
+    """
+    if isinstance(node, dict):
+        for key, val in node.items():
+            if isinstance(key, str) and key.upper().startswith("RUNNING_"):
+                return val
+    return node
+
+
+def parse_running_matrix(node: Any) -> Optional[dict[str, Any]]:
+    """Parse a sliding-window pairwise relationship (``{"A;B": {ts: val}}``).
+
+    Builds a symmetric latest-value matrix plus a parallel ``slope_matrix`` (the
+    per-pair rolling slope, last-minus-first over points), with ``index`` derived
+    from the symbols seen across all pairs. Returns the uniform matrix shape or
+    None when the node is not a pairwise running structure.
+    """
+    if not isinstance(node, dict) or not node:
+        return None
+    pairs: dict[tuple[str, str], dict[str, Any]] = {}
+    symbols: list[str] = []
+    for key, series in node.items():
+        if not isinstance(key, str) or ";" not in key or not isinstance(series, dict):
+            return None
+        a, b = (p.strip().upper() for p in key.split(";", 1))
+        for s in (a, b):
+            if s not in symbols:
+                symbols.append(s)
+        ordered = [to_float(series[k]) for k in sorted(series.keys())]
+        ordered = [v for v in ordered if v is not None]
+        pairs[(a, b)] = {
+            "latest": ordered[-1] if ordered else None,
+            "slope": ((ordered[-1] - ordered[0]) / max(len(ordered) - 1, 1)) if len(ordered) >= 2 else 0.0,
+        }
+    if not pairs:
+        return None
+    symbols.sort()
+    n = len(symbols)
+    idx = {s: i for i, s in enumerate(symbols)}
+    matrix = [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
+    slope_matrix = [[0.0] * n for _ in range(n)]
+    for (a, b), v in pairs.items():
+        i, j = idx[a], idx[b]
+        latest = v["latest"] if v["latest"] is not None else 0.0
+        matrix[i][j] = matrix[j][i] = latest
+        slope_matrix[i][j] = slope_matrix[j][i] = v["slope"]
+    return {"index": symbols, "matrix": matrix, "slope_matrix": slope_matrix}
 
 
 def parse_scalar_calc(node: Any) -> dict[str, Any]:
@@ -873,8 +955,10 @@ def normalize_analytics_result(payload: dict[str, Any], function: str, symbols: 
     calculations: dict[str, Any] = {}
     for raw_name, node in (rc or {}).items():
         base = _calc_base(raw_name)
+        node = _unwrap_running(node)  # sliding-window: strip the RUNNING_<X> envelope
         if base in _MATRIX_CALCS:
-            parsed = parse_matrix_calc(node)
+            # fixed-window matrix (has "index"), else sliding pairwise running matrix
+            parsed = parse_matrix_calc(node) or parse_running_matrix(node)
             if parsed is not None:
                 calculations[base] = parsed
         elif base == "HISTOGRAM":

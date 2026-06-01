@@ -72,6 +72,7 @@ QUOTE_FIELDS: List[str] = [
     "premarket_volume", "premarket_high", "premarket_low", "bid", "ask",
     "bid_ask_spread", "updated_at", "source", "stale", "error",
     "premarket_rvol", "avg_premarket_volume_20d", "rvol_source", "rvol_available",
+    "rvol_provider", "rvol_reason",
     # Alpaca overnight-session metrics (advisory: ranking / market-state / research only).
     "overnight_volume", "overnight_vwap", "overnight_range_pct", "overnight_rvol",
     "overnight_trend", "overnight_session_strength",
@@ -219,6 +220,7 @@ class PremarketLiveFeed:
             # Premarket relative volume (computed when 20d history is supplied).
             "premarket_rvol": None, "avg_premarket_volume_20d": None,
             "rvol_source": None, "rvol_available": False,
+            "rvol_provider": None, "rvol_reason": None, "rvol_current_volume": None,
             # Alpaca overnight-session metrics (advisory only; never creates a trade).
             "overnight_volume": None, "overnight_vwap": None, "overnight_range_pct": None,
             "overnight_rvol": None, "overnight_trend": None, "overnight_session_strength": None,
@@ -460,6 +462,44 @@ class PremarketLiveFeed:
         for sym, avg in (avg_by_symbol or {}).items():
             self.set_avg_premarket_volume(sym, avg, source)
 
+    def set_premarket_rvol(self, symbol: str, current_volume: Any = None, avg_volume: Any = None,
+                           provider: str = "alpha_vantage", sessions: Any = None,
+                           reason: str = None, available: bool = None) -> None:
+        """Inject a PROVIDER-CONSISTENT premarket RVOL pair: the current-session volume
+        (numerator) and the trailing average (denominator) BOTH come from the SAME provider
+        (e.g. Alpha Vantage), so the ratio is never mixed across providers. Missing/invalid
+        current or avg → RVOL stays unavailable (never fabricated); provider + reason are still
+        recorded for diagnostics."""
+        symu = str(symbol or "").upper()
+        if not symu:
+            return
+        cur = _f(current_volume)
+        avg = _f(avg_volume)
+        ok = bool(avg is not None and avg > 0 and cur is not None and cur > 0)
+        if available is not None:
+            ok = ok and bool(available)
+        with self._lock:
+            st = self.state.get(symu) or self._new_state(symu)
+            st["rvol_provider"] = provider
+            st["rvol_source"] = provider
+            st["rvol_reason"] = reason
+            # Only retain a numerator/denominator we trust from this single provider.
+            st["rvol_current_volume"] = cur if ok else None
+            st["avg_premarket_volume_20d"] = avg if ok else None
+            self.state[symu] = st
+
+    def set_premarket_rvols(self, results_by_symbol: Dict[str, Dict[str, Any]]) -> None:
+        """Bulk-inject result dicts from alpha_vantage_premarket.compute_* (provider-consistent)."""
+        for sym, r in (results_by_symbol or {}).items():
+            if not isinstance(r, dict):
+                continue
+            self.set_premarket_rvol(sym, current_volume=r.get("current_premarket_volume"),
+                                    avg_volume=r.get("avg_premarket_volume"),
+                                    provider=r.get("rvol_provider", "alpha_vantage"),
+                                    sessions=r.get("sessions_used"),
+                                    reason=r.get("rvol_reason"),
+                                    available=r.get("rvol_available"))
+
     def set_overnight_metrics(self, symbol: str, metrics: Dict[str, Any]) -> None:
         """Inject Alpaca overnight-session metrics for a symbol (advisory; never a trade)."""
         if not metrics or not metrics.get("overnight_available", True):
@@ -539,7 +579,14 @@ class PremarketLiveFeed:
         # exist. premarket_volume of 0/None means "no prints yet", NOT valid low volume, so
         # RVOL stays unavailable (never fabricated). vol > 0 distinguishes the two.
         avg = st.get("avg_premarket_volume_20d")
-        vol = st.get("premarket_volume")
+        provider = st.get("rvol_provider")
+        if provider:
+            # Provider-consistent path (e.g. alpha_vantage): numerator AND denominator come
+            # from the SAME provider — never divide an AV average by a live (yliveticker/Alpaca)
+            # numerator. Both were injected together via set_premarket_rvol().
+            vol = st.get("rvol_current_volume")
+        else:
+            vol = st.get("premarket_volume")
         if avg and avg > 0 and vol is not None and vol > 0:
             out["premarket_rvol"] = round(vol / avg, 4)
             out["rvol_available"] = True
@@ -548,6 +595,8 @@ class PremarketLiveFeed:
             out["rvol_available"] = False
         out["avg_premarket_volume_20d"] = avg
         out["rvol_source"] = st.get("rvol_source")
+        out["rvol_provider"] = provider
+        out["rvol_reason"] = st.get("rvol_reason")
         return out
 
     def get_symbol_state(self, symbol: str) -> Optional[Dict[str, Any]]:

@@ -704,6 +704,34 @@ def _options_sentiment_vals(e: dict) -> List[float]:
     ]
 
 
+# ── validated EX-ANTE intraday mean-reversion features (alpha_discovery.exante_feature_research) ──
+# The ONLY features that survived the leakage-resistant OOS validation (per-symbol-day IC vs forward
+# returns, FDR-corrected, leakage-tripwire-screened): a coherent SHORT-HORIZON mean-reversion complex
+# (OOS IC ~-0.03..-0.05 at 5–15m, decaying by 30m). Computed strictly from bars ≤ t by
+# alpha_discovery.exante_entry_feature_builder, so leak-free by construction. exante_reversion_score
+# in [-1,1]: HIGH = oversold (bounce expected) — for a LONG entry, prefer HIGH.
+# HORIZON NOTE: these predict 5–15m UNDERLYING moves — they fit intraday / scalping entry agents,
+# NOT the multi-day options alpha_entry horizon (see reports/exante_entry_features.md). Wired in ONLY
+# when RL_EXANTE_FEATURES=1 — default OFF; values must be joined onto events at the entry timestamp.
+EXANTE_FEATURES = ["exante_reversion_score", "exante_dist_sma_5", "exante_dist_sma_10",
+                   "exante_dist_sma_15", "exante_dist_vwap", "exante_macd_hist",
+                   "exante_ret_1m", "exante_ret_3m", "exante_ret_5m", "exante_ret_10m",
+                   "exante_breakout_15"]
+EXANTE_ENABLED = os.getenv("RL_EXANTE_FEATURES", "0") == "1"
+
+
+def _exante_vals(e: dict) -> List[float]:
+    """Validated ex-ante mean-reversion values (neutral 0.0 when bars unavailable). Accepts either
+    the prefixed (exante_*) or bare builder keys for convenience."""
+    def g(name: str) -> float:
+        return to_f(e.get(f"exante_{name}", e.get(name)))
+    return [
+        to_f(e.get("exante_reversion_score")),
+        g("dist_sma_5"), g("dist_sma_10"), g("dist_sma_15"), g("dist_vwap"), g("macd_hist"),
+        g("ret_1m"), g("ret_3m"), g("ret_5m"), g("ret_10m"), g("breakout_15"),
+    ]
+
+
 # ── feature extraction (one fixed-width vector per agent) ──────────────────────────
 # MTF trend features + catalyst strength (Roy 2024) are APPENDED to the base feature sets.
 # Order matters: the dataset builder maps features by index against these lists, so the
@@ -717,7 +745,8 @@ ALPHA_ENTRY_FEATURES = ["setup_score", "black_scholes_score", "oops_score", "opt
                        + (AV_REALTIME_FEATURES if AV_REALTIME_ENABLED else []) \
                        + (NEWS_FEATURES if NEWS_ENABLED else []) \
                        + (ANALYTICS_FEATURES if ANALYTICS_ENABLED else []) \
-                       + (OPTIONS_SENTIMENT_FEATURES if OPTIONS_SENTIMENT_ENABLED else [])   # realtime AV + news + analytics + options-sentiment latents, appended only when enabled
+                       + (OPTIONS_SENTIMENT_FEATURES if OPTIONS_SENTIMENT_ENABLED else []) \
+                       + (EXANTE_FEATURES if EXANTE_ENABLED else [])   # realtime AV + news + analytics + options-sentiment latents + validated ex-ante reversion, appended only when enabled
 ALPHA_EXIT_FEATURES = ["unrealized_R", "premium_ratio", "stop_distance", "trail_high_ratio",
                        "black_scholes_score", "oops_score", "probability_band", "market_state_confidence",
                        "time_to_close", "overnight_confidence"] + MTF_FEATURES + ENRICH_EXTRA_FEATURES
@@ -748,8 +777,27 @@ def _enrich_vals(e: dict) -> List[float]:
     ]
 
 
+# ── leakage quarantine ───────────────────────────────────────────────────────────────
+# Features the falsification audit (2026-05-31) proved are outcome-coupled / leaky and which
+# psc_validation.py already flags as LEAK_FEATURES. When quarantined they are pinned to 0.0 in
+# EVERY alpha-entry observation (dataset build, env, eval, live) so the RL agent cannot learn
+# from them. Width is unchanged (the dims remain, fixed at 0), so model widths still load.
+# Default ON for {probability_of_profit, expected_R}; set RL_QUARANTINE_FEATURES="" to lift.
+QUARANTINE_FEATURES = {s.strip() for s in os.getenv(
+    "RL_QUARANTINE_FEATURES", "probability_of_profit,expected_R").split(",") if s.strip()}
+
+
+def apply_entry_quarantine(values: List[float], names: Optional[List[str]] = None) -> List[float]:
+    """Zero any quarantined feature in an alpha-entry observation vector (matched by name/index)."""
+    if not QUARANTINE_FEATURES:
+        return list(values)
+    nm = names if names is not None else ALPHA_ENTRY_FEATURES
+    return [0.0 if (i < len(nm) and nm[i] in QUARANTINE_FEATURES) else v
+            for i, v in enumerate(values)]
+
+
 def alpha_entry_features(e: dict) -> List[float]:
-    return [
+    _vec = [
         to_f(e.get("setup_score")) / 100.0,
         to_f(e.get("black_scholes_score")) / 100.0,
         to_f(e.get("oops_score")) / 100.0,
@@ -769,7 +817,9 @@ def alpha_entry_features(e: dict) -> List[float]:
       + (_av_realtime_vals(e) if AV_REALTIME_ENABLED else []) \
       + (_news_vals(e) if NEWS_ENABLED else []) \
       + (_analytics_vals(e) if ANALYTICS_ENABLED else []) \
-      + (_options_sentiment_vals(e) if OPTIONS_SENTIMENT_ENABLED else [])
+      + (_options_sentiment_vals(e) if OPTIONS_SENTIMENT_ENABLED else []) \
+      + (_exante_vals(e) if EXANTE_ENABLED else [])
+    return apply_entry_quarantine(_vec)
 
 
 def alpha_exit_features(e: dict) -> List[float]:

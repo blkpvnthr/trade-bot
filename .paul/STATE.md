@@ -11,10 +11,10 @@ See: .paul/PROJECT.md (updated 2026-05-20)
 ## Current Position
 
 Milestone: Production Foundation (v0.1)
-Phase: 2 of 4 (Training Pipeline Consistency) — In Progress
-Plan: 02-02 ✓, 02-02b ✓, 02-03 not yet planned
-Status: Loop closed — ready for 02-03 planning
-Last activity: 2026-05-22 — Applied and unified 02-02b (stream_confirmed fix)
+Phase: 2 of 4 (Training Pipeline Consistency) — Planning
+Plan: 02-02 ✓, 02-02b ✓, 02-03 created (revised), awaiting approval
+Status: PLAN created, ready for APPLY
+Last activity: 2026-06-01 — Revised 02-03 plan; coherence check corrected a false premise (trainer writes non-canonical output paths 5+ consumers can't find)
 
 Progress:
 - Milestone: [████░░░░░░] 42%
@@ -24,7 +24,7 @@ Progress:
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [02-02b loop complete — ready for 02-03 plan]
+  ✓        ○        ○     [02-03 plan created, awaiting approval]
 ```
 
 ## Performance Metrics
@@ -56,6 +56,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Smoke test reads source text, not imports | 2 | Avoids torch/alpaca-py side effects; pattern for all future pipeline checks |
 | Orchestration audit is read-only (no hooks in v0.1) | 2 | Hooks reserved for v0.2 Phase 5 after paper trading baseline validated |
 | Corrective plans use NN-NNb naming | 2 | Not tracked in ROADMAP; execute between parent plan and next plan in sequence |
+| 02-03: align producer (rl_intraday_structure_trainer.py) to consumers' canonical paths, not vice-versa | 2 | Trainer wrote models/rl_intraday/final_model.zip + metrics/rl_intraday_metrics.json; trade.py/self_awareness/optimizer/scripts expect system-data/{DATE}/{DATE}_rl_intraday_structure_model.zip + _training_metrics.json. Fix the trainer's default paths; consumers untouched. Smoke test exits 0 despite failures — also fixed. |
 
 ### Deferred Issues
 
@@ -79,10 +80,10 @@ None active.
 
 ## Session Continuity
 
-Last session: 2026-05-22
-Stopped at: 02-02b applied and unified; paper trading running (tux_mtf_original, paper mode)
-Next action: Plan 02-03 (`/paul:plan` — rl_intraday_structure_trainer.py validation + smoke test)
-Resume file: .paul/phases/02-training-pipeline-consistency/02-02b-SUMMARY.md
+Last session: 2026-06-01
+Stopped at: 02-03 plan revised/created (coherence check corrected the trainer-path premise; chose "fix the real mismatch")
+Next action: Review and approve plan, then run `/paul:apply 02-03`
+Resume file: .paul/phases/02-training-pipeline-consistency/02-03-PLAN.md
 
 ---
 *STATE.md — Updated after every significant action*

@@ -6,6 +6,7 @@ and BAL orders are gated on real notional.
 import sys
 import types
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -27,12 +28,31 @@ class ExposureNotionalTests(unittest.TestCase):
         risk, gw = _sim_gateway()
         # Near the 80% stock-exposure cap (= $80k on $100k equity).
         risk.stock_exposure = 79_000.0
-        # A $5,000 notional buy must be REJECTED (79k + 5k = 84k > 80k cap).
+        # SIZE-TO-FIT (P1.5): a $5,000 notional buy (100 @ $50) that would breach
+        # the cap (79k + 5k = 84k > 80k) is now TRIMMED to the $1k of remaining
+        # room (= 20 shares) instead of being rejected outright. The cap itself is
+        # never exceeded. (That a trim happens at all proves notional is computed
+        # on the REAL price, not qty × 0.0 — a zero notional would never trim.)
         over = gw.submit_market_order("AAA", "buy", 100, reason="t", reference_price=50.0)
-        self.assertIsNone(over, "buy exceeding the exposure cap must be rejected on real notional")
-        # A $500 notional buy must be ALLOWED (79k + 0.5k = 79.5k <= 80k).
+        self.assertIsNotNone(over, "over-cap buy should be trimmed to fit, not dropped")
+        self.assertEqual(over["qty"], 20, "buy must be trimmed to the room under the cap")
+        self.assertLessEqual(
+            risk.stock_exposure + over["qty"] * 50.0,
+            risk.equity * run.MAX_STOCK_EXPOSURE_PCT,
+            "the exposure cap must never be exceeded after trimming",
+        )
+        # A $500 notional buy must pass untrimmed (79k + 0.5k = 79.5k <= 80k).
         under = gw.submit_market_order("AAA", "buy", 10, reason="t", reference_price=50.0)
         self.assertIsNotNone(under, "buy within the exposure cap must pass")
+        self.assertEqual(under["qty"], 10, "in-cap buy must not be trimmed")
+
+    def test_size_to_fit_can_be_disabled(self):
+        """With SIZE_TO_FIT_EXPOSURE off, the old hard-reject contract holds."""
+        risk, gw = _sim_gateway()
+        risk.stock_exposure = 79_000.0
+        with unittest.mock.patch.object(run, "SIZE_TO_FIT_EXPOSURE", False):
+            over = gw.submit_market_order("AAA", "buy", 100, reason="t", reference_price=50.0)
+        self.assertIsNone(over, "with size-to-fit disabled, an over-cap buy is rejected")
 
     def test_buy_without_reference_price_is_rejected(self):
         # The old bug: no price → gate saw qty × 0.0 and silently passed. Now: no

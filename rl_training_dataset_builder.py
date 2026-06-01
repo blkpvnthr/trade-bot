@@ -29,12 +29,14 @@ from oops_option_utility import OOPS_FIELDS, enrich_event_with_oops
 logger = logging.getLogger(__name__)
 
 
-def _proxy_realized_R(e: dict) -> float:
-    """When no matched exit exists, estimate R from probability_of_profit / expected_R."""
-    if e.get("expected_R") is not None:
-        return rc.to_f(e.get("expected_R"))
-    pop = rc.to_f(e.get("probability_of_profit"), 0.5)
-    return round(pop * 3.0 - (1.0 - pop) * 1.0, 4)   # 3R target, 1R stop expectation
+def _proxy_realized_R(e: dict):
+    """DISABLED — fabricating realized_R from expected_R / probability_of_profit made the target
+    a deterministic function of a FEATURE (pop=setup_score/100), which leaked: a classifier hit
+    AUC 1.0 on those rows and ~0.92 overall (see docs/rl_psc_validation_findings.md). We no longer
+    synthesize outcomes. Rows without a genuine matched-exit r_multiple return None and are either
+    dropped here or re-targeted from real forward bars by rl_clean_target.py. Never fabricate a
+    label from the same features the model will train on."""
+    return None
 
 
 def _det_noise(key: str) -> float:
@@ -57,7 +59,16 @@ def build_alpha_entry_dataset(events: List[dict]) -> List[dict]:
             continue
         sym = str(e.get("symbol") or "").upper()
         matched = exits_by_symbol.get(sym, [])
-        realized_R = matched.pop(0) if matched else _proxy_realized_R(e)
+        # Genuine matched-exit outcome only; NO fabrication from features (anti-leak). Rows
+        # without a genuine outcome are kept with realized_R=None + source flag so a downstream
+        # re-targeter (rl_clean_target.py, forward bars) can fill a leak-free label, and the
+        # supervised trainers can filter them out. Set RL_DROP_UNLABELED=1 to drop them at build.
+        if matched:
+            realized_R, source = matched.pop(0), "matched_exit"
+        else:
+            realized_R, source = _proxy_realized_R(e), "unlabeled"
+            if os.getenv("RL_DROP_UNLABELED", "0") == "1":
+                continue
         feats = rc.alpha_entry_features(e)
         row = {f: feats[i] for i, f in enumerate(rc.ALPHA_ENTRY_FEATURES)}
         # OOPS enhancement: expected-utility / payoff-simulation features from the option paper.
@@ -65,7 +76,8 @@ def build_alpha_entry_dataset(events: List[dict]) -> List[dict]:
         # price/IV/liquidity proxies and still emits every field for stable model shapes.
         row.update(enrich_event_with_oops(e))
         row.update({"symbol": sym, "date_tag": e.get("date_tag", ""),
-                    "event_type": e.get("event_type"), "realized_R": realized_R})
+                    "event_type": e.get("event_type"), "realized_R": realized_R,
+                    "realized_R_source": source})
         rows.append(row)
     return rows
 

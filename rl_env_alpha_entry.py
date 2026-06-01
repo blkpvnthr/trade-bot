@@ -50,7 +50,8 @@ class AlphaEntryEnv(rc.EnvBase):
 
     def _obs(self) -> np.ndarray:
         row = self.rows[self._i % len(self.rows)]
-        return np.array(rc.normalize_obs([rc.to_f(row.get(f)) for f in FEATURES]), dtype=np.float32)
+        vals = rc.apply_entry_quarantine([rc.to_f(row.get(f)) for f in FEATURES], FEATURES)
+        return np.array(rc.normalize_obs(vals), dtype=np.float32)
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None) -> Tuple[np.ndarray, dict]:
         self._step_n = 0
@@ -76,7 +77,8 @@ class AlphaEntryEnv(rc.EnvBase):
 
 def recommend(model: Any, obs_row: Dict[str, Any]) -> str:
     """Map a feature dict → recommended action via a trained model (advisory)."""
-    vec = np.array(rc.normalize_obs([rc.to_f(obs_row.get(f)) for f in FEATURES]), dtype=np.float32)
+    _qv = rc.apply_entry_quarantine([rc.to_f(obs_row.get(f)) for f in FEATURES], FEATURES)
+    vec = np.array(rc.normalize_obs(_qv), dtype=np.float32)
     # Guard against a stale model whose observation width no longer matches the env's
     # FEATURES (e.g. after a feature family is added without retraining). Previously this was
     # silently swallowed and returned "wait" for EVERY row → the policy looked like a total

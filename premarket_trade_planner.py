@@ -52,6 +52,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
+from symbol_utils import normalize_for_yfinance
 from config.env_loader import load_instance_env
 
 try:
@@ -749,7 +750,7 @@ def _fetch_minute_bars_yfinance(
 
     for batch in chunked(symbols, YF_BATCH_SIZE):
         batch_diag = {"symbols": batch, "row_count": 0, "counts": {}, "error": None}
-        tickers = " ".join(batch)
+        tickers = " ".join(normalize_for_yfinance(s) for s in batch)
 
         try:
             raw = yf.download(
@@ -889,7 +890,7 @@ def _fetch_multitimeframe_bars_yfinance(symbols: list[str]) -> dict[str, pd.Data
 
         for batch in chunked(symbols, YF_BATCH_SIZE):
             batch_diag: dict[str, Any] = {"symbols": batch, "row_count": 0, "error": None}
-            tickers = " ".join(batch)
+            tickers = " ".join(normalize_for_yfinance(s) for s in batch)
             try:
                 raw = yf.download(
                     tickers=tickers,
@@ -957,7 +958,7 @@ def fetch_multitimeframe_bars(symbols: list[str]) -> dict[str, pd.DataFrame]:
                 for batch in chunked(symbols, YF_BATCH_SIZE):
                     try:
                         raw = yf.download(
-                            tickers=" ".join(batch),
+                            tickers=" ".join(normalize_for_yfinance(s) for s in batch),
                             period=period,
                             interval=tf,
                             prepost=False,

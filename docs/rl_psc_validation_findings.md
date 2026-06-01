@@ -79,3 +79,32 @@ harness tests *temporal stability within one window* only — a DATA limitation,
 4. Only after a leak-free signal clears the classifier bar is a full `run.py` portfolio sim
    (slippage/spread/delays/caps) and multi-week paper trading warranted. A portfolio sim on the
    current marginal/leak-tainted signal would be misleading, so it is deferred.
+
+## UPDATE — leak fixed + retrained (2026-06-01)
+
+**Root cause (refined):** `realized_R` was a genuine forward intraday-bracket outcome, but (a) the
+dataset builder's `_proxy_realized_R` FABRICATED it as `expected_R = 4·pop−1` for ~10% of rows
+(pure circular leak, AUC 1.0), and (b) `probability_of_profit = setup_score/100`, and `setup_score`
+was entangled with the same-day bracket outcome (AUC 0.89 even on genuine rows).
+
+**Fix applied:**
+- `rl_training_dataset_builder._proxy_realized_R` now returns `None` — outcomes are NEVER
+  synthesized from features (rows tagged `realized_R_source`).
+- **`rl_clean_target.py`** re-targets `realized_R` as the **forward 2-day underlying return from
+  real cached daily bars** (`realized_R = clip(fwd_return / 0.005)`), keyed by (symbol, date_tag) —
+  independent of `setup_score`. Rows without forward bars are dropped (54,652 → **12,164**), never
+  fabricated. Prior dataset archived at `data/rl_training/_pre_clean_target_archive/`.
+
+**Result (the leak is gone, and so is the apparent edge):**
+- `probability_of_profit` → win AUC **0.924 → 0.515** (random); **no feature exceeds 0.55**.
+- Leak-free multi-fold ablation: **every** feature set (raw34 / raw+causal / causal_only /
+  raw+causal−FRE / raw+pls) sits at **AUC ~0.48–0.51** — causal/quantum gives NO advantage over raw.
+- Retrained `alpha_entry` (12,164 samples) → deployment gate **`do_not_deploy`
+  (`does_not_beat_baseline_out_of_sample`)**, rl_exp 1.72 vs baseline 2.14 (both positive only from
+  up-window beta, not alpha).
+
+**Conclusion:** confirmed — the paper-mode win was target leakage. On a leak-free target there is no
+demonstrable predictive edge in any representation on this ~6-week dataset, and the gate correctly
+refuses promotion. Genuine edge work now requires a multi-year, multi-regime dataset with
+real (non-synthesized) forward outcomes. NOTE: only `alpha_entry_dataset` was re-targeted; the
+exit/dca/allocation datasets still use matched-exit/proxy outcomes and warrant the same audit.

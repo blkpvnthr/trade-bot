@@ -57,6 +57,11 @@ CONVICTION_REPORT_PATH = DAILY_OUTPUTS / "conviction_score_report.json"
 BAL_EVENTS_PATH = PROJECT_ROOT / "logs" / "execution" / DATA_TAG / f"{DATA_TAG}_bal_events.jsonl"
 BAL_EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+# Guard: suppress event file writes when running under pytest
+# NOTE: evaluated at call-time (not import-time) so that PYTEST_CURRENT_TEST is seen correctly.
+def _in_test() -> bool:
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in os.path.basename(os.environ.get("_", ""))
+
 
 # ── configuration ─────────────────────────────────────────────────────────────
 @dataclass
@@ -272,6 +277,8 @@ class DCASignal:
 
 # ── event logging ──────────────────────────────────────────────────────────────
 def _bal_event(event: str, payload: dict) -> None:
+    if _in_test():
+        return  # never write to production journals during test runs
     try:
         line = json.dumps({
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -290,7 +297,8 @@ def _fetch_fundamentals(symbol: str) -> FundamentalData:
     fd = FundamentalData(symbol=symbol, fetched_at_utc=datetime.now(timezone.utc).isoformat())
     try:
         import yfinance as yf
-        ticker = yf.Ticker(symbol)
+        from symbol_utils import normalize_for_yfinance
+        ticker = yf.Ticker(normalize_for_yfinance(symbol))   # BRK.B → BRK-B for Yahoo
         info = ticker.info or {}
 
         def _f(key: str, default: float = 0.0) -> float:

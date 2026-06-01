@@ -161,6 +161,20 @@ class TestNormalization(unittest.TestCase):
         parsed = parse_matrix_calc(_FIXED_PAYLOAD["payload"]["RETURNS_CALCULATIONS"]["COVARIANCE"])
         self.assertEqual(parsed["matrix"][1][1], 0.0006)
 
+    def test_lower_triangular_matrix_symmetrized(self):
+        # Alpha Vantage returns a lower-triangular matrix; we must symmetrize it.
+        node = {"index": ["MSFT", "AAPL", "SPY"],
+                "correlation": [[1.0], [0.02, 1.0], [0.11, 0.41, 1.0]]}
+        parsed = parse_matrix_calc(node)
+        self.assertEqual(len(parsed["matrix"]), 3)
+        self.assertTrue(all(len(r) == 3 for r in parsed["matrix"]))
+        # mirrored: [AAPL][SPY] (upper) == [SPY][AAPL] (lower) == 0.41
+        self.assertEqual(parsed["matrix"][1][2], 0.41)
+        self.assertEqual(parsed["matrix"][2][1], 0.41)
+        # lookups work in BOTH directions now
+        self.assertEqual(relationship_value({"CORRELATION": parsed}, "CORRELATION", "AAPL", "SPY"), 0.41)
+        self.assertEqual(relationship_value({"CORRELATION": parsed}, "CORRELATION", "SPY", "AAPL"), 0.41)
+
     def test_autocorrelation_parsing(self):
         c = normalize_analytics_result(_FIXED_PAYLOAD, FIXED_WINDOW_FUNCTION, ["AAPL", "MSFT"])["calculations"]
         self.assertEqual(c["AUTOCORRELATION"]["AAPL"], 0.3)
@@ -169,6 +183,41 @@ class TestNormalization(unittest.TestCase):
     def test_histogram_parsing(self):
         h = parse_histogram(_FIXED_PAYLOAD["payload"]["RETURNS_CALCULATIONS"]["HISTOGRAM(bins=20)"])
         self.assertEqual(h["AAPL"]["counts"], [5, 20, 7])
+
+    def test_sliding_window_running_envelope(self):
+        # Real sliding-window shape: RUNNING_<X> envelope + pairwise running correlation.
+        # Real shape: RUNNING_<X> alongside a WINDOW_START sibling key.
+        payload = {"meta_data": {"interval": "60min"}, "payload": {"RETURNS_CALCULATIONS": {
+            "MEAN": {"WINDOW_START": "2026-05-06T16:00:00", "RUNNING_MEAN": {
+                "SPY": {"2026-05-06T16:00:00": 0.0006, "2026-05-06T17:00:00": 0.0008},
+                "AAPL": {"2026-05-06T16:00:00": 0.0010, "2026-05-06T17:00:00": 0.0015}}},
+            "STDDEV": {"WINDOW_START": "2026-05-06T16:00:00", "RUNNING_STDDEV": {
+                "AAPL": {"2026-05-06T16:00:00": 0.003, "2026-05-06T17:00:00": 0.004}}},
+            "CORRELATION(METHOD=PEARSON)": {"WINDOW_START": "x", "RUNNING_CORRELATION": {
+                "SPY;AAPL": {"2026-05-06T16:00:00": 0.68, "2026-05-06T17:00:00": 0.72}}},
+        }}}
+        res = normalize_analytics_result(payload, SLIDING_WINDOW_FUNCTION, ["AAPL", "SPY"])
+        c = res["calculations"]
+        # scalar unwrapped + keyed by real symbol (not RUNNING_MEAN)
+        self.assertIn("AAPL", c["MEAN"])
+        self.assertEqual(c["MEAN"]["AAPL"]["latest"], 0.0015)
+        # pairwise running correlation -> symmetric latest matrix + slope matrix
+        corr = c["CORRELATION"]
+        self.assertEqual(relationship_value(c, "CORRELATION", "AAPL", "SPY"), 0.72)
+        self.assertIn("slope_matrix", corr)
+
+    def test_sliding_window_features_from_running(self):
+        from alpha_discovery.analytics_feature_builder import build_sliding_window_features
+        payload = {"payload": {"RETURNS_CALCULATIONS": {
+            "STDDEV": {"RUNNING_STDDEV": {"AAPL": {"t1": 0.003, "t2": 0.004, "t3": 0.006}}},
+            "CORRELATION(METHOD=PEARSON)": {"RUNNING_CORRELATION": {
+                "AAPL;SPY": {"t1": 0.80, "t2": 0.70, "t3": 0.60}}},
+        }}}
+        res = normalize_analytics_result(payload, SLIDING_WINDOW_FUNCTION, ["AAPL", "SPY"])
+        f = build_sliding_window_features("AAPL", res, spy="SPY")
+        self.assertEqual(f["rolling_correlation_to_spy"], 0.60)
+        self.assertLess(f["rolling_correlation_slope"], 0.0)   # correlation breaking down
+        self.assertGreater(f["rolling_volatility_slope"], 0.0)  # vol expanding
 
     def test_sliding_series_summary(self):
         node = {"AAPL": [0.01, 0.02, 0.03, 0.05]}
@@ -234,6 +283,23 @@ class TestFetchAndFallback(unittest.TestCase):
         res = c.get_fixed_window(["AAPL"], ["MEAN"])
         self.assertEqual(calls["n"], 3)  # initial + 2 retries
         self.assertEqual(res["source"], "neutral")
+
+    def test_sliding_drops_unsupported_calcs(self):
+        # MAX_DRAWDOWN/MIN/MAX break the whole sliding request -> must be dropped.
+        captured = {}
+
+        def fake(url, params, timeout):
+            captured.update(params)
+            return {"payload": {"RETURNS_CALCULATIONS": {"MEAN": {"RUNNING_MEAN": {"AAPL": {"t": 0.01}}}}}}
+
+        c = _client(fake)
+        c.get_sliding_window(["AAPL"], ["MEAN", "MAX_DRAWDOWN", "MIN", "MAX", "STDDEV"], window_size=20)
+        sent = captured.get("CALCULATIONS", "")
+        self.assertIn("MEAN", sent)
+        self.assertIn("STDDEV", sent)
+        self.assertNotIn("MAX_DRAWDOWN", sent)
+        self.assertNotIn("MIN", sent)
+        self.assertNotIn("MAX", sent)
 
     def test_bad_window_size_degrades_gracefully(self):
         c = _client(lambda *a, **k: _FIXED_PAYLOAD)
