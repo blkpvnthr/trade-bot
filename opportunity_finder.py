@@ -135,34 +135,34 @@ def _fetch_replacement_candidates(
         return []
 
     try:
-        # Build query
-        query = Query()
-        query = query.set_filter(col("type") == "stock")
-        query = query.set_filter(col("close") >= config.min_price)
-        query = query.set_filter(col("close") <= config.max_price)
-        query = query.set_filter(col("relative_volume_10d_calc") >= config.min_rvol)
-        query = query.set_filter(col("market_cap_basic") >= 50000000)  # 50M minimum
-        query = query.set_filter(col("Recommend.All|5") > 0)  # Neutral or better on 5m
-        query = query.set_filter(col("Recommend.All|15") > 0)  # Neutral or better on 15m
+        # Build query — tradingview_screener >= 2.x API uses .where()/.select()/.limit()
+        query = (
+            Query()
+            .where(
+                col("type") == "stock",
+                col("close") >= config.min_price,
+                col("close") <= config.max_price,
+                col("relative_volume_10d_calc") >= config.min_rvol,
+                col("market_cap_basic") >= 50000000,
+                col("Recommend.All|5") > 0,
+                col("Recommend.All|15") > 0,
+            )
+            .select(
+                "name", "close", "change", "volume", "relative_volume_10d_calc", "market_cap_basic",
+                "close|1", "close|5", "close|15", "close|60",
+                "volume|1", "volume|5", "volume|15",
+                "MACD.macd|1", "MACD.signal|1", "MACD.macd|5", "MACD.signal|5",
+                "MACD.macd|15", "MACD.signal|15",
+                "Recommend.All", "Recommend.All|1", "Recommend.All|5", "Recommend.All|15", "Recommend.All|60",
+                "RSI", "RSI|5", "RSI|15",
+            )
+            .order_by("relative_volume_10d_calc", ascending=False)
+            .limit(250)
+        )
 
-        # Fields to retrieve
-        fields = [
-            "name", "close", "change", "volume", "relative_volume_10d_calc", "market_cap_basic",
-            "close|1", "close|5", "close|15", "close|60",
-            "volume|1", "volume|5", "volume|15",
-            "MACD.macd|1", "MACD.signal|1", "MACD.macd|5", "MACD.signal|5",
-            "MACD.macd|15", "MACD.signal|15",
-            "Recommend.All", "Recommend.All|1", "Recommend.All|5", "Recommend.All|15", "Recommend.All|60",
-            "RSI", "RSI|5", "RSI|15",
-        ]
-        query = query.set_fields(fields)
-
-        # Order and limit
-        query = query.order_by("relative_volume_10d_calc", descending=True)
-        query = query.set_limit(250)
-
-        # Execute
-        df = query.get_scanner_data()
+        # Execute — returns (count, df) in tradingview_screener >= 2.x
+        result = query.get_scanner_data()
+        _, df = result if isinstance(result, tuple) else (None, result)
         if df is None or df.empty:
             return []
 

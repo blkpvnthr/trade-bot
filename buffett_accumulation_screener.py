@@ -22,6 +22,7 @@ accumulate (macro/cycle/technical timing) remains the BAL layer's job downstream
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,8 @@ from buffett_accumulation_layer import (
     compute_insider_buy_score, _earnings_quality_score,
     _dca_valuation_discount_score, _dca_macro_cycle_opportunity_score,
 )
+
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -91,6 +94,30 @@ def _sec_insider_candidates() -> dict:
         return {}
 
 
+def _av_insider_trend(symbol: str) -> dict:
+    """
+    Alpha Vantage per-symbol insider trend (fail-safe, neutral on any error).
+    The returned dict always has all required fields; never raises.
+    """
+    try:
+        from insider_transactions_av import get_insider_trend
+        return get_insider_trend(symbol)
+    except Exception:
+        return {
+            "insider_trend_score": 0.0,
+            "insider_confidence_modifier": 0.0,
+            "insider_net_value": 0.0,
+            "insider_buy_value": 0.0,
+            "insider_sell_value": 0.0,
+            "insider_buy_count": 0,
+            "insider_sell_count": 0,
+            "insider_buy_sell_ratio": 1.0,
+            "insider_warning_flags": [],
+            "insider_summary_text": "unavailable",
+            "insider_from_date": "",
+        }
+
+
 def build_buffett_universe(extra_symbols: list[str] | None = None,
                            size: int | None = None) -> list[str]:
     """
@@ -124,7 +151,52 @@ def _norm(v, vmax):
     return _clip(float(v or 0) / vmax, 0.0, 1.0) if vmax else 0.0
 
 
-def screen(
+def screen(market_context: dict, *args, premarket_snapshot: dict | None = None, **kwargs) -> dict:
+    """Public Buffett accumulation screen.
+
+    `premarket_snapshot` (optional, from PremarketLiveFeed) adds premarket AWARENESS
+    only — gap into/away from a valuation zone and quote staleness. It NEVER overrides
+    the BAL score, valuation, conviction, Composite DCA, or RiskManager. All other
+    arguments are forwarded unchanged to the underlying screen implementation.
+    """
+    result = _screen_impl(market_context, *args, **kwargs)
+    try:
+        _annotate_premarket_awareness(result, premarket_snapshot)
+    except Exception:
+        pass
+    return result
+
+
+def _annotate_premarket_awareness(result: dict, premarket_snapshot: dict | None) -> None:
+    """Attach premarket gap/staleness awareness to the screen result (timing only)."""
+    if not isinstance(result, dict):
+        return
+    quotes = (premarket_snapshot or {}).get("quotes") or {}
+    funnel = result.setdefault("funnel", {})
+    funnel["premarket_available"] = bool(quotes)
+    funnel["premarket_fallback_used"] = bool((premarket_snapshot or {}).get("fallback_used"))
+    if not quotes:
+        return
+    gapping = stale = 0
+    for row in (result.get("detail") or []):
+        if not isinstance(row, dict):
+            continue
+        q = quotes.get(str(row.get("symbol") or "").upper())
+        if not q:
+            continue
+        row["premarket_source"] = q.get("source")
+        row["premarket_gap_pct"] = q.get("premarket_change_pct")
+        row["premarket_stale"] = bool(q.get("stale"))
+        gp = q.get("premarket_change_pct")
+        if gp is not None and abs(gp) >= 2.0:
+            gapping += 1
+        if q.get("stale"):
+            stale += 1
+    funnel["premarket_gapping_count"] = gapping
+    funnel["premarket_stale_count"] = stale
+
+
+def _screen_impl(
     market_context: dict,
     symbols: list[str] | None = None,
     config: BALConfig | None = None,
@@ -199,7 +271,7 @@ def screen(
         else:
             funnel["passed"] += 1
 
-        # ── multi-model valuation + conviction (insider defaults to none here) ──
+        # ── multi-model valuation + conviction ────────────────────────────────
         price = float(getattr(fd, "current_price", 0) or 0)
         val_detail = multi_model_intrinsic_value(fd, market_context)
         iv = float(val_detail.get("intrinsic_value", 0.0) or 0.0)
@@ -207,15 +279,29 @@ def screen(
         val_discount_s = _dca_valuation_discount_score(p2iv)
         macro_cycle_s = _dca_macro_cycle_opportunity_score(card, market_context)
         eq_s = _earnings_quality_score(fd)
-        # SEC Form 4 insider discovery (discovery/attention only — never a buy signal).
+
+        # ── SEC Form 4 insider discovery ──────────────────────────────────────
         sec_rec = sec_map.get(str(symbol).upper(), {})
         sec_discovered = bool(sec_rec)
         insider = compute_insider_buy_score(sec_rec or None, fd)
-        # Insider score only modifies conviction once quality + valuation already pass.
+
+        # ── Alpha Vantage insider trend (advisory, per-symbol) ────────────────
+        av = _av_insider_trend(symbol)
+        av_trend_score = float(av.get("insider_trend_score", 0.0) or 0.0)
+        av_modifier = float(av.get("insider_confidence_modifier", 0.0) or 0.0)
+
+        # Combine: SEC Form 4 score is the base; AV modifier adjusts it.
+        # Modifier only applied when quality + valuation already pass (same gate as SEC).
         bal_ok = float(card.bal_score) >= cfg.min_score_to_buy
         undervalued = 0 < p2iv <= 1.0
         insider_used = bool(insider["detected"]) and bal_ok and undervalued
-        insider_for_conviction = insider["score"] if insider_used else 0.0
+        sec_insider_score = insider["score"] if insider_used else 0.0
+
+        # AV modifier shifts the insider conviction input; capped to [0, 100].
+        # A negative modifier only activates when quality is good but AV signals caution.
+        av_modifier_applied = av_modifier if bal_ok else 0.0
+        insider_for_conviction = max(0.0, min(100.0, sec_insider_score + av_modifier_applied))
+
         conviction = compute_conviction_score(
             card, fd, val_discount_s, macro_cycle_s, insider_for_conviction, eq_s, prof)["conviction_score"]
         target_alloc_pct, _max_alloc_pct, _alloc_reason = conviction_target_allocation(conviction, cfg=None)
@@ -233,7 +319,7 @@ def screen(
             "buffett_screener_score": screener_score,
             "BAL_score": round(float(card.bal_score), 1),
             "accumulation_action": card.action,
-            # ── valuation + conviction (upgrade 5 fields) ──
+            # ── valuation + conviction ────────────────────────────────────────
             "intrinsic_value": iv,
             "price_to_intrinsic_value": p2iv,
             "valuation_model_values": val_detail.get("valuation_model_values", {}),
@@ -243,7 +329,7 @@ def screen(
             "primary_valuation_method": str(val_detail.get("primary_valuation_method", "none")),
             "conviction_score": conviction,
             "target_allocation_pct": round(target_alloc_pct, 4),
-            # ── SEC Form 4 insider discovery fields ──
+            # ── SEC Form 4 insider discovery ──────────────────────────────────
             "sec_form4_discovered": sec_discovered,
             "discovery_source": DISCOVERY_SOURCE if sec_discovered else "",
             "insider_buy_detected": bool(insider["detected"]),
@@ -255,6 +341,18 @@ def screen(
             "insider_buy_used_in_conviction": insider_used,
             "latest_insider_buy_date": sec_rec.get("latest_insider_buy_date", ""),
             "sec_filing_urls": sec_rec.get("sec_filing_urls", []),
+            # ── Alpha Vantage insider trend ────────────────────────────────────
+            "av_insider_from_date": av.get("insider_from_date", ""),
+            "av_insider_net_value": float(av.get("insider_net_value", 0.0) or 0.0),
+            "av_insider_buy_value": float(av.get("insider_buy_value", 0.0) or 0.0),
+            "av_insider_sell_value": float(av.get("insider_sell_value", 0.0) or 0.0),
+            "av_insider_buy_count": int(av.get("insider_buy_count", 0) or 0),
+            "av_insider_sell_count": int(av.get("insider_sell_count", 0) or 0),
+            "av_insider_buy_sell_ratio": float(av.get("insider_buy_sell_ratio", 1.0) or 1.0),
+            "av_insider_trend_score": round(av_trend_score, 4),
+            "av_insider_confidence_modifier": round(av_modifier, 2),
+            "av_insider_warning_flags": av.get("insider_warning_flags", []),
+            "av_insider_summary_text": av.get("insider_summary_text", ""),
             "reject_reason": reject,
             "is_candidate": reject == "",
         })

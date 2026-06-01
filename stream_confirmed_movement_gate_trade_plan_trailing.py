@@ -59,6 +59,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+from ensure_runtime_outputs import ORDER_COLUMNS, STREAM_TRADE_PLAN_COLUMNS, ensure_csv
 try:
     from config.env_loader import load_instance_env
 except Exception:
@@ -1083,6 +1084,8 @@ def build_trade_plan(watch: WatchSymbol, state: MovementState) -> dict[str, Any]
         "side": "buy",
         "setup_type": state.setup_type,
         "entry_price": round(entry, 4),
+        "stop_price": round(stop_loss, 4),
+        "target_price": round(take_profit, 4),
         "stop_loss": round(stop_loss, 4),
         "take_profit": round(take_profit, 4),
         "risk_per_share": round(risk_per_share, 4),
@@ -1116,6 +1119,9 @@ def build_trade_plan(watch: WatchSymbol, state: MovementState) -> dict[str, Any]
 
 def append_trade_plan(plan: dict[str, Any]) -> None:
     df = pd.DataFrame([safe_json(plan)])
+    if df.empty and len(df.columns) == 0:
+        ensure_csv(TRADE_PLAN_PATH, STREAM_TRADE_PLAN_COLUMNS)
+        return
     header = not TRADE_PLAN_PATH.exists()
     df.to_csv(TRADE_PLAN_PATH, index=False, mode="a", header=header)
 
@@ -1195,6 +1201,8 @@ def append_confirmed_order(watch: WatchSymbol, state: MovementState) -> None:
         "order_qty": qty,
         "price": float(plan["entry_price"]),
         "entry_price": float(plan["entry_price"]),
+        "stop_price": float(plan["stop_price"]),
+        "target_price": float(plan["target_price"]),
         "stop_loss": float(plan["stop_loss"]),
         "take_profit": float(plan["take_profit"]),
         "risk_per_share": float(plan["risk_per_share"]),
@@ -1228,6 +1236,9 @@ def append_confirmed_order(watch: WatchSymbol, state: MovementState) -> None:
     }
 
     df = pd.DataFrame([row])
+    if df.empty and len(df.columns) == 0:
+        ensure_csv(CONFIRMED_ORDERS_PATH, ORDER_COLUMNS)
+        return
     header = not CONFIRMED_ORDERS_PATH.exists()
     df.to_csv(CONFIRMED_ORDERS_PATH, index=False, mode="a", header=header)
     write_event("stream_confirmed_order", row)

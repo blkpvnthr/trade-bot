@@ -1112,7 +1112,25 @@ def fallback_classification(raw_context: dict[str, Any], reason: str) -> dict[st
 # Main
 # =============================================================================
 
-def build_market_context() -> dict[str, Any]:
+def build_market_context(premarket_snapshot: dict | None = None) -> dict[str, Any]:
+    """Build the market context. `premarket_snapshot` (optional, from PremarketLiveFeed)
+    adds a premarket-awareness summary block; it never changes regime/permission gates."""
+    ctx = _build_market_context_impl()
+    try:
+        if isinstance(ctx, dict):
+            quotes = (premarket_snapshot or {}).get("quotes") or {}
+            ctx["premarket_live"] = {
+                "available": bool(quotes),
+                "fallback_used": bool((premarket_snapshot or {}).get("fallback_used")),
+                "symbols_tracked": len(quotes),
+                "stale_symbols": (premarket_snapshot or {}).get("stale_symbols", []),
+            }
+    except Exception:
+        pass
+    return ctx
+
+
+def _build_market_context_impl() -> dict[str, Any]:
     symbols = load_universe()
 
     raw_context = {

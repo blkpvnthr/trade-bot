@@ -23,20 +23,26 @@ Data flow:
        →  macro/policy/cycle context  →  Alpha Engine (calls) + BAL (stock)
        →  risk-gated Alpaca execution  →  journal / equity logging.
 
-SAFETY GATES (never bypassed — preserved from prior run.py):
-  • Daily loss limit             DAILY_LOSS_LIMIT (env, default -$500)
-  • Max portfolio drawdown       MAX_DRAWDOWN     (env, default -5%)
-  • Max open positions           MAX_POSITIONS    (env, default 3)
-  • Kill switch (manual file)    KILL_SWITCH_PATH (env, default .kill_switch)
-  • Alpaca paper-only gate       ALPACA_PAPER_ONLY (env, default "true")
-  • Equity floor                 EQUITY_FLOOR     (env, default $1000)
-  • Max order size               MAX_ORDER_SIZE   (env, default 1000 shares)
-  • Cash buffer                  CASH_BUFFER_PCT  (env, default 8%)
-  • Max options exposure         MAX_OPTIONS_EXPOSURE_PCT (env, default 15%)
-  • Max stock exposure           MAX_STOCK_EXPOSURE_PCT   (env, default 80%)
-  • Max single-stock weight      MAX_SINGLE_STOCK_WEIGHT  (env, default 10%)
-  • PDT awareness                (block equity day-trade buys if flagged < $25k)
-  • Market hours gate            (no orders outside RTH unless allowed)
+SAFETY GATES (never bypassed):
+  • Dynamic daily loss limit      account_equity × DYNAMIC_DAILY_LOSS_PCT
+                                  default 0.50%, minimum $500, recalculated from Alpaca account
+  • Dynamic max drawdown          starting/account-anchor equity × DYNAMIC_MAX_DRAWDOWN_PCT
+                                  default 10%, enforced from the first live Alpaca account snapshot
+  • Dynamic max open positions    floor(account_equity / DYNAMIC_POSITION_EQUITY_UNIT)
+                                  default one slot per $50k, bounded by 5–50
+  • Kill switch (manual file)     KILL_SWITCH_PATH (env, default .kill_switch)
+  • Alpaca paper-only gate        ALPACA_PAPER_ONLY (env, default "true")
+  • Dynamic equity floor          starting/account-anchor equity × DYNAMIC_EQUITY_FLOOR_PCT
+                                  default 90%, never below $1,000
+  • Dynamic max order notional    account_equity × DYNAMIC_MAX_ORDER_PCT
+                                  default 3%, used for new buy orders
+  • Optional max order shares     MAX_ORDER_SIZE if explicitly set; otherwise disabled
+  • Cash buffer                   CASH_BUFFER_PCT  (env, default 8%)
+  • Max options exposure          MAX_OPTIONS_EXPOSURE_PCT (env, default 15%)
+  • Max stock exposure            MAX_STOCK_EXPOSURE_PCT   (env, default 80%)
+  • Max single-stock weight       MAX_SINGLE_STOCK_WEIGHT  (env, default 10%)
+  • PDT awareness                 (block equity day-trade buys if flagged < $25k)
+  • Market hours gate             (no orders outside RTH unless allowed)
 """
 
 from __future__ import annotations
@@ -68,14 +74,32 @@ except Exception:
 
 MODE               = os.environ.get("MODE",             "paper").lower()   # paper | live | train | scalp
 SYMBOLS_ENV        = os.environ.get("SYMBOLS",          "")
-DAILY_LOSS_LIMIT   = float(os.environ.get("DAILY_LOSS_LIMIT",  -500.0))
-MAX_DRAWDOWN       = float(os.environ.get("MAX_DRAWDOWN",       -0.05))
-MAX_POSITIONS      = int(os.environ.get("MAX_POSITIONS",         3))
-EQUITY_FLOOR       = float(os.environ.get("EQUITY_FLOOR",     1000.0))
-MAX_ORDER_SIZE     = int(os.environ.get("MAX_ORDER_SIZE",       1000))
+# Dynamic risk limits are derived from the live Alpaca account snapshot. The old
+# fixed env names are still accepted as explicit overrides, but by default the
+# bot scales risk to account equity instead of using small-account constants.
+DYNAMIC_RISK_LIMITS = os.environ.get("DYNAMIC_RISK_LIMITS", "true").lower() in {"1", "true", "yes"}
+DYNAMIC_DAILY_LOSS_PCT = float(os.environ.get("DYNAMIC_DAILY_LOSS_PCT", "0.005"))       # 0.50%/day
+DYNAMIC_DAILY_LOSS_MIN = float(os.environ.get("DYNAMIC_DAILY_LOSS_MIN", "500"))
+DYNAMIC_MAX_DRAWDOWN_PCT = float(os.environ.get("DYNAMIC_MAX_DRAWDOWN_PCT", "0.10"))    # 10% from anchor
+DYNAMIC_EQUITY_FLOOR_PCT = float(os.environ.get("DYNAMIC_EQUITY_FLOOR_PCT", "0.90"))    # 90% of anchor
+DYNAMIC_EQUITY_FLOOR_MIN = float(os.environ.get("DYNAMIC_EQUITY_FLOOR_MIN", "1000"))
+DYNAMIC_MAX_ORDER_PCT = float(os.environ.get("DYNAMIC_MAX_ORDER_PCT", "0.03"))          # 3% notional/order
+DYNAMIC_POSITION_EQUITY_UNIT = float(os.environ.get("DYNAMIC_POSITION_EQUITY_UNIT", "50000"))
+DYNAMIC_MIN_POSITIONS = int(os.environ.get("DYNAMIC_MIN_POSITIONS", "5"))
+DYNAMIC_MAX_POSITIONS = int(os.environ.get("DYNAMIC_MAX_POSITIONS", "50"))
+
+# Optional fixed overrides. Leave unset for dynamic behavior.
+DAILY_LOSS_LIMIT_OVERRIDE = os.environ.get("DAILY_LOSS_LIMIT")
+MAX_DRAWDOWN_OVERRIDE = os.environ.get("MAX_DRAWDOWN")
+MAX_POSITIONS_OVERRIDE = os.environ.get("MAX_POSITIONS")
+EQUITY_FLOOR_OVERRIDE = os.environ.get("EQUITY_FLOOR")
+MAX_ORDER_DOLLARS_OVERRIDE = os.environ.get("MAX_ORDER_DOLLARS")
+MAX_ORDER_SIZE_OVERRIDE = os.environ.get("MAX_ORDER_SIZE")  # optional share/contract-count cap
+
 ALPACA_PAPER_ONLY  = os.environ.get("ALPACA_PAPER_ONLY",       "true").lower() == "true"
 KILL_SWITCH_PATH   = os.environ.get("KILL_SWITCH_PATH",        ".kill_switch")
 BAR_INTERVAL_SEC   = float(os.environ.get("BAR_INTERVAL_SEC",  60.0))
+ACCOUNT_STATS_LOG_SEC = float(os.environ.get("ACCOUNT_STATS_LOG_SEC", 300.0))
 STARTING_EQUITY    = float(os.environ.get("STARTING_EQUITY", 100_000.0))
 
 # Two-engine toggles & exposure controls (also consumed by the engine configs via env)
@@ -179,6 +203,27 @@ def is_option_symbol(symbol: str) -> bool:
     return (tail[6] in ("C", "P")) and tail[:6].isdigit() and tail[7:].isdigit()
 
 
+
+def _env_float(value: Optional[str], default: Optional[float] = None) -> Optional[float]:
+    """Parse an optional env float without making dynamic risk brittle."""
+    if value in (None, ""):
+        return default
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _env_int(value: Optional[str], default: Optional[int] = None) -> Optional[int]:
+    """Parse an optional env int without making dynamic risk brittle."""
+    if value in (None, ""):
+        return default
+    try:
+        return int(float(value))
+    except Exception:
+        return default
+
+
 # ---------------------------------------------------------------------------
 # Risk manager  (preserved + extended for options/stock exposure and reason codes)
 # ---------------------------------------------------------------------------
@@ -190,15 +235,74 @@ class RiskManager:
     """
 
     def __init__(self, equity: float = STARTING_EQUITY):
-        self.starting_equity = equity
-        self.equity          = equity
-        self.buying_power    = equity
+        self.starting_equity = float(equity)
+        self.equity          = float(equity)
+        self.buying_power    = float(equity)
         self.daily_pnl       = 0.0
         self.open_positions: Dict[str, int] = {}
         self.options_exposure = 0.0     # $ notional in option positions
         self.stock_exposure   = 0.0     # $ notional in equity positions
         self.pdt_restricted   = False   # account flagged & < $25k & near daytrade cap
         self._killed         = False
+        self._account_anchor_set = False
+        self.refresh_dynamic_limits()
+
+    # ------------------------------------------------------------------
+
+    def refresh_dynamic_limits(self) -> None:
+        """Recalculate risk gates from the latest Alpaca account equity snapshot.
+
+        The account anchor is the first real broker equity snapshot seen after startup.
+        Daily risk and order size scale with current equity; drawdown and equity floor
+        protect the account relative to the anchor so the floor does not drift lower
+        intraday after losses.
+        """
+        equity = max(float(self.equity or 0.0), 1.0)
+        anchor = max(float(self.starting_equity or equity), 1.0)
+
+        if DYNAMIC_RISK_LIMITS:
+            self.daily_loss_limit = -abs(max(DYNAMIC_DAILY_LOSS_MIN, equity * DYNAMIC_DAILY_LOSS_PCT))
+            self.max_drawdown = -abs(DYNAMIC_MAX_DRAWDOWN_PCT)
+            self.max_positions = max(
+                DYNAMIC_MIN_POSITIONS,
+                min(DYNAMIC_MAX_POSITIONS, int(equity / max(DYNAMIC_POSITION_EQUITY_UNIT, 1.0))),
+            )
+            self.equity_floor = max(DYNAMIC_EQUITY_FLOOR_MIN, anchor * DYNAMIC_EQUITY_FLOOR_PCT)
+            self.max_order_dollars = max(0.0, equity * DYNAMIC_MAX_ORDER_PCT)
+            self.max_order_size = _env_int(MAX_ORDER_SIZE_OVERRIDE, 0) or 0
+        else:
+            self.daily_loss_limit = -abs(_env_float(DAILY_LOSS_LIMIT_OVERRIDE, 500.0) or 500.0)
+            self.max_drawdown = -abs(_env_float(MAX_DRAWDOWN_OVERRIDE, 0.05) or 0.05)
+            self.max_positions = _env_int(MAX_POSITIONS_OVERRIDE, 3) or 3
+            self.equity_floor = _env_float(EQUITY_FLOOR_OVERRIDE, 1000.0) or 1000.0
+            self.max_order_dollars = _env_float(MAX_ORDER_DOLLARS_OVERRIDE, 0.0) or 0.0
+            self.max_order_size = _env_int(MAX_ORDER_SIZE_OVERRIDE, 1000) or 1000
+
+        # Explicit fixed env overrides always win when supplied.
+        if DAILY_LOSS_LIMIT_OVERRIDE not in (None, ""):
+            self.daily_loss_limit = -abs(_env_float(DAILY_LOSS_LIMIT_OVERRIDE, abs(self.daily_loss_limit)) or abs(self.daily_loss_limit))
+        if MAX_DRAWDOWN_OVERRIDE not in (None, ""):
+            self.max_drawdown = -abs(_env_float(MAX_DRAWDOWN_OVERRIDE, abs(self.max_drawdown)) or abs(self.max_drawdown))
+        if MAX_POSITIONS_OVERRIDE not in (None, ""):
+            self.max_positions = max(1, _env_int(MAX_POSITIONS_OVERRIDE, self.max_positions) or self.max_positions)
+        if EQUITY_FLOOR_OVERRIDE not in (None, ""):
+            self.equity_floor = _env_float(EQUITY_FLOOR_OVERRIDE, self.equity_floor) or self.equity_floor
+        if MAX_ORDER_DOLLARS_OVERRIDE not in (None, ""):
+            self.max_order_dollars = max(0.0, _env_float(MAX_ORDER_DOLLARS_OVERRIDE, self.max_order_dollars) or 0.0)
+        if MAX_ORDER_SIZE_OVERRIDE not in (None, ""):
+            self.max_order_size = max(0, _env_int(MAX_ORDER_SIZE_OVERRIDE, self.max_order_size) or 0)
+
+    def risk_limits_summary(self) -> Dict[str, float]:
+        return {
+            "equity": float(self.equity),
+            "anchor_equity": float(self.starting_equity),
+            "daily_loss_limit": float(self.daily_loss_limit),
+            "max_drawdown": float(self.max_drawdown),
+            "max_positions": int(self.max_positions),
+            "equity_floor": float(self.equity_floor),
+            "max_order_dollars": float(self.max_order_dollars),
+            "max_order_size": int(self.max_order_size),
+        }
 
     # ------------------------------------------------------------------
 
@@ -211,22 +315,27 @@ class RiskManager:
         if self._check_kill_switch():
             return False, "rejected_by_kill_switch"
 
-        if self.equity < EQUITY_FLOOR:
-            return False, f"rejected_by_equity_floor:equity={self.equity:.0f}<{EQUITY_FLOOR:.0f}"
+        self.refresh_dynamic_limits()
 
-        if self.daily_pnl <= DAILY_LOSS_LIMIT:
-            return False, f"rejected_by_daily_loss:pnl={self.daily_pnl:.0f}<={DAILY_LOSS_LIMIT:.0f}"
+        if self.equity < self.equity_floor:
+            return False, f"rejected_by_equity_floor:equity={self.equity:.0f}<{self.equity_floor:.0f}"
+
+        if self.daily_pnl <= self.daily_loss_limit:
+            return False, f"rejected_by_daily_loss:pnl={self.daily_pnl:.0f}<={self.daily_loss_limit:.0f}"
 
         dd = (self.equity - self.starting_equity) / (self.starting_equity + 1e-8)
-        if dd <= MAX_DRAWDOWN:
-            return False, f"rejected_by_drawdown:dd={dd*100:.1f}%<={MAX_DRAWDOWN*100:.1f}%"
+        if dd <= self.max_drawdown:
+            return False, f"rejected_by_drawdown:dd={dd*100:.1f}%<={self.max_drawdown*100:.1f}%"
 
-        if qty > MAX_ORDER_SIZE:
-            return False, f"rejected_by_order_size:qty={qty}>{MAX_ORDER_SIZE}"
+        if self.max_order_size > 0 and qty > self.max_order_size:
+            return False, f"rejected_by_order_size:qty={qty}>{self.max_order_size}"
 
+        notional = qty * price * (100.0 if asset_class == "option" else 1.0)
         # Buy-side exposure / position controls
         if side == "buy":
-            notional = qty * price * (100.0 if asset_class == "option" else 1.0)
+            if self.max_order_dollars > 0 and notional > self.max_order_dollars:
+                return False, (f"rejected_by_order_size:notional={notional:.0f}>"
+                               f"{self.max_order_dollars:.0f}")
             if asset_class == "option":
                 if (self.options_exposure + notional) > self.equity * MAX_OPTIONS_EXPOSURE_PCT:
                     return False, (f"rejected_by_exposure_limit:options="
@@ -237,8 +346,8 @@ class RiskManager:
                 if self.pdt_restricted:
                     return False, "rejected_by_PDT"
                 n_open = len([s for s, q in self.open_positions.items() if q > 0])
-                if n_open >= MAX_POSITIONS:
-                    return False, f"rejected_by_exposure_limit:positions={n_open}>={MAX_POSITIONS}"
+                if n_open >= self.max_positions:
+                    return False, f"rejected_by_exposure_limit:positions={n_open}>={self.max_positions}"
                 if (self.stock_exposure + notional) > self.equity * MAX_STOCK_EXPOSURE_PCT:
                     return False, (f"rejected_by_exposure_limit:stock="
                                    f"{self.stock_exposure + notional:.0f}>"
@@ -267,15 +376,19 @@ class RiskManager:
         self.equity    += pnl
 
     def sync_account(self, account: Dict):
-        """Refresh equity/buying-power/PDT from a broker account snapshot."""
+        """Refresh equity/buying-power/PDT from a broker account snapshot and rescale risk."""
         if account.get("equity"):
             self.equity = float(account["equity"])
+            if not self._account_anchor_set and self.equity > 0:
+                self.starting_equity = self.equity
+                self._account_anchor_set = True
         if account.get("buying_power") is not None:
             self.buying_power = float(account["buying_power"])
         # PDT: flagged AND under the $25k pattern-day-trader floor AND near the daytrade cap
         flagged   = bool(account.get("pattern_day_trader", False))
         dt_count  = int(account.get("daytrade_count", 0) or 0)
         self.pdt_restricted = flagged and self.equity < 25_000 and dt_count >= 3
+        self.refresh_dynamic_limits()
 
     def sync_exposure(self, options_exposure: float, stock_exposure: float):
         self.options_exposure = max(0.0, options_exposure)
@@ -640,6 +753,15 @@ def is_market_open() -> bool:
     return 13 * 60 + 30 <= mins <= 20 * 60
 
 
+def is_premarket() -> bool:
+    """Premarket session (UTC, EDT-aligned with is_market_open): 08:00–13:30 UTC ≈ 04:00–09:30 ET."""
+    now = datetime.now(timezone.utc)
+    if now.weekday() >= 5:
+        return False
+    mins = now.hour * 60 + now.minute
+    return 8 * 60 <= mins < 13 * 60 + 30
+
+
 # ---------------------------------------------------------------------------
 # Universe / data helpers
 # ---------------------------------------------------------------------------
@@ -692,7 +814,9 @@ def fetch_1m_bars(gateway: AlpacaGateway, symbols: List[str]) -> Dict[str, "Any"
             data_client = StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET)
             end = datetime.now(timezone.utc)
             start = end - timedelta(minutes=ALPHA_BARS_LOOKBACK_MIN + 5)
-            feed = DataFeed.SIP if os.getenv("ALPACA_DATA_FEED", "iex").lower() == "sip" else DataFeed.IEX
+            # IEX-only: this subscription has no SIP/delayed-SIP. We never select SIP
+            # (Phase 4 rule). The feed manager confirms availability + downgrades safely.
+            feed = DataFeed.IEX
             req = StockBarsRequest(symbol_or_symbols=symbols, timeframe=TimeFrame.Minute,
                                    start=start, end=end, feed=feed)
             df = data_client.get_stock_bars(req).df
@@ -847,13 +971,380 @@ def _research(method: str, *args, **kwargs) -> None:
         logger.debug("research layer (%s) skipped: %s", method, e)
 
 
+# ── Streaming Indicator Engine — shared real-time indicator state (infra layer) ───
+# run.py only FETCHES bars and UPDATES the shared indicator state; the engines decide
+# and RiskManager protects. No streaming indicator ever creates an order. Any failure
+# (incl. a missing `streaming-indicators` package) falls back to bar-based indicators
+# and never stops the trading loop.
+ENABLE_STREAMING_INDICATORS = os.environ.get("ENABLE_STREAMING_INDICATORS", "true").lower() in {"1", "true"}
+_STREAMING_ENGINE: Any = None
+
+
+def _streaming_engine():
+    """Lazily resolve the shared StreamingIndicatorEngine singleton (fail-safe)."""
+    global _STREAMING_ENGINE
+    if not ENABLE_STREAMING_INDICATORS:
+        return None
+    if _STREAMING_ENGINE is None:
+        try:
+            import streaming_indicator_engine as sie
+            _STREAMING_ENGINE = sie.get_engine()
+            logger.info("StreamingIndicatorEngine ENABLED (streaming_package_available=%s)",
+                        sie.STREAMING_PACKAGE_AVAILABLE)
+        except Exception as e:
+            logger.warning("StreamingIndicatorEngine unavailable (%s) — engines use bar-based indicators", e)
+            _STREAMING_ENGINE = False   # sentinel: tried + failed (don't retry every cycle)
+    return _STREAMING_ENGINE or None
+
+
+def _update_indicators(bars_by_symbol: Dict[str, Any]) -> None:
+    eng = _streaming_engine()
+    if eng is None or not bars_by_symbol:
+        return
+    try:
+        eng.update_many(bars_by_symbol)
+    except Exception as e:
+        logger.debug("streaming indicator update failed: %s", e)
+
+
+def _indicator_snapshot() -> Optional[Dict[str, Any]]:
+    eng = _streaming_engine()
+    if eng is None:
+        return None
+    try:
+        return eng.snapshot()
+    except Exception as e:
+        logger.debug("streaming indicator snapshot failed: %s", e)
+        return None
+
+
+def _write_indicator_reports() -> None:
+    eng = _streaming_engine()
+    if eng is None:
+        return
+    try:
+        eng.write_report()
+    except Exception as e:
+        logger.debug("streaming indicator report failed: %s", e)
+
+
+# RL shadow mode — OFF by default. When ENABLE_RL_SHADOW_MODE=true, trained RL agents log
+# advisory recommendations only; the live trading loop ignores them entirely (no order is
+# created or blocked). Fully fail-safe and import-guarded so RL deps never affect run.py.
+def _rl_shadow_cycle() -> None:
+    if os.environ.get("ENABLE_RL_SHADOW_MODE", "false").lower() not in {"1", "true", "yes"}:
+        return
+    try:
+        import rl_shadow_mode
+        rl_shadow_mode.run_shadow_cycle()
+    except Exception as e:
+        logger.debug("rl shadow cycle skipped: %s", e)
+
+
+# ── Premarket Live Feed — live premarket quote awareness (yliveticker) ─────────────
+# run.py only STREAMS/fetches premarket quotes; the engines decide and RiskManager
+# protects. Premarket data NEVER creates an order — it only improves setup scoring and
+# awareness. A missing `yliveticker` package or any feed failure falls back to the
+# existing yfinance/Alpaca premarket logic and never stops the loop / Alpha / Buffett.
+ENABLE_PREMARKET_LIVE_FEED = os.environ.get("ENABLE_PREMARKET_LIVE_FEED", "true").lower() in {"1", "true"}
+PREMARKET_MAX_STALE_SEC    = float(os.environ.get("PREMARKET_MAX_STALE_SEC", "30"))
+PREMARKET_REFRESH_SEC      = float(os.environ.get("PREMARKET_REFRESH_SEC", "30"))
+_PREMARKET_FEED: Any = None
+_PREMARKET_UNIVERSE_KEY: Optional[str] = None   # symbols signature the feed was started for
+
+
+def _premarket_dir() -> Path:
+    return DAILY_OUTPUTS / DATA_TAG
+
+
+def _build_premarket_universe(dynamic_symbols, insider_data, buffett_candidates,
+                              held_symbols) -> List[str]:
+    """Assemble the premarket watch universe from all candidate sources (de-duped)."""
+    syms: List[str] = []
+
+    def add(items):
+        for s in (items or []):
+            su = str(s or "").upper().strip()
+            if su:
+                syms.append(su)
+
+    try:
+        from alpha_call_engine import build_alpha_universe
+        add(build_alpha_universe(dynamic_symbols or []))
+    except Exception:
+        add(dynamic_symbols)
+    add(list((insider_data or {}).keys()))
+    add(buffett_candidates)
+    add(held_symbols)
+    seen, out = set(), []
+    for s in syms:
+        if s not in seen:
+            seen.add(s); out.append(s)
+    return out
+
+
+def _premarket_feed(symbols: Optional[List[str]] = None):
+    """Lazily resolve/(re)start the shared PremarketLiveFeed singleton (fail-safe)."""
+    global _PREMARKET_FEED, _PREMARKET_UNIVERSE_KEY
+    if not ENABLE_PREMARKET_LIVE_FEED:
+        return None
+    if symbols is None:
+        return _PREMARKET_FEED if _PREMARKET_FEED not in (None, False) else None
+    key = ",".join(sorted(set(symbols)))
+    if _PREMARKET_FEED in (None, False) or key != _PREMARKET_UNIVERSE_KEY:
+        try:
+            if _PREMARKET_FEED not in (None, False):
+                _PREMARKET_FEED.stop()
+        except Exception:
+            pass
+        try:
+            import premarket_live_feed as plf
+            feed = plf.PremarketLiveFeed(symbols, output_dir=_premarket_dir(),
+                                         max_stale_seconds=PREMARKET_MAX_STALE_SEC)
+            feed.start()
+            _PREMARKET_FEED = feed
+            _PREMARKET_UNIVERSE_KEY = key
+            logger.info("PremarketLiveFeed ENABLED (status=%s, symbols=%d, yliveticker=%s)",
+                        feed.feed_status, len(symbols), plf.YLIVETICKER_AVAILABLE)
+        except Exception as e:
+            logger.warning("PremarketLiveFeed unavailable (%s) — using yfinance/Alpaca premarket logic", e)
+            _PREMARKET_FEED = False
+            return None
+    return _PREMARKET_FEED or None
+
+
+def _premarket_snapshot() -> Optional[Dict[str, Any]]:
+    feed = _premarket_feed()
+    if feed is None:
+        return None
+    try:
+        return feed.get_snapshot()
+    except Exception as e:
+        logger.debug("premarket snapshot failed: %s", e)
+        return None
+
+
+def _premarket_apply_fallback(feed, symbols) -> None:
+    """When the live stream is unavailable/failed, populate via existing yfinance logic."""
+    if feed is None:
+        return
+    if not (feed.fallback_used or feed.feed_status in ("fallback", "failed")):
+        return
+    try:
+        import premarket_data_collector as pdc
+        res = pdc.collect_premarket_data(list(symbols or []))
+        data = res.get("data", res) if isinstance(res, dict) else {}
+        quotes: Dict[str, Dict[str, Any]] = {}
+        for sym, q in (data.items() if isinstance(data, dict) else []):
+            if not isinstance(q, dict):
+                continue
+            quotes[sym] = {
+                "price": q.get("premarket_price") or q.get("price"),
+                "previous_close": q.get("previous_close"),
+                "premarket_change": q.get("premarket_change"),
+                "premarket_change_pct": q.get("premarket_change_pct"),
+                "premarket_volume": q.get("premarket_volume"),
+                "bid": q.get("bid"), "ask": q.get("ask"),
+            }
+        feed.apply_fallback_quotes(quotes)
+    except Exception as e:
+        logger.debug("premarket yfinance fallback skipped: %s", e)
+
+
+def _write_premarket_reports() -> None:
+    feed = _premarket_feed()
+    if feed is None:
+        return
+    try:
+        feed.write_snapshot(out_dir=_premarket_dir())
+    except Exception as e:
+        logger.debug("premarket report failed: %s", e)
+
+
+def _stop_premarket_feed() -> None:
+    """Stop the live feed (e.g. at market open, freezing premarket high/low). Fail-safe."""
+    feed = _PREMARKET_FEED
+    if feed in (None, False):
+        return
+    try:
+        if getattr(feed, "feed_status", "") == "running":
+            feed.stop()
+    except Exception:
+        pass
+
+
+def _build_premarket_universe_safe(gateway, bal, market_context) -> List[str]:
+    """Gather candidate symbols from all sources for premarket streaming. Fail-safe."""
+    try:
+        dynamic = load_candidate_universe()
+    except Exception:
+        dynamic = []
+    insider: Dict[str, Any] = {}
+    if ENABLE_SEC_FORM4_FEED:
+        try:
+            import sec_form4_feed
+            insider = sec_form4_feed.insider_data_for_layer() or {}
+        except Exception:
+            insider = {}
+    bcands: List[str] = []
+    if bal is not None:
+        try:
+            bcands = run_buffett_screener(market_context).get("candidates", []) or []
+        except Exception:
+            bcands = []
+    held: List[str] = []
+    try:
+        raw_positions = gateway.get_positions_raw()
+        _, equity_positions, _, _ = gateway.split_positions(raw_positions)
+        held = list(equity_positions.keys())
+    except Exception:
+        held = []
+    return _build_premarket_universe(dynamic, insider, bcands, held)
+
+
+def run_premarket_phase(gateway, bal, market_context) -> None:
+    """
+    Premarket orchestration: build the watch universe (once), start/maintain the live
+    feed, fall back to yfinance/Alpaca when needed, and write the snapshot + health
+    reports. NO trading occurs premarket — this is awareness only. Fully fail-safe.
+    """
+    feed = _premarket_feed()
+    if feed is None:
+        universe = _build_premarket_universe_safe(gateway, bal, market_context)
+        if not universe:
+            return
+        feed = _premarket_feed(universe)
+        if feed is not None:
+            _premarket_apply_fallback(feed, universe)
+    else:
+        if feed.fallback_used or feed.feed_status in ("fallback", "failed"):
+            _premarket_apply_fallback(feed, feed.symbols)
+    # Overnight feed metrics (Alpaca overnight session, read-only) — advisory awareness.
+    _alpaca_feed_cycle("premarket")
+    try:
+        mgr = _alpaca_feed_manager()
+        if mgr is not None and feed is not None and getattr(feed, "symbols", None):
+            metrics = mgr.fetch_overnight_metrics(list(feed.symbols)[:25])
+            feed.set_overnight_metrics_many(metrics)
+            feed.write_overnight_report(out_dir=_premarket_dir())
+    except Exception as e:
+        logger.debug("overnight metrics skipped: %s", e)
+    _write_premarket_reports()
+    # Premarket relative-volume report (RVOL stays None unless 20d history is supplied).
+    try:
+        if feed is not None:
+            feed.write_rvol_report(out_dir=_premarket_dir())
+    except Exception as e:
+        logger.debug("premarket rvol report skipped: %s", e)
+
+
+# ── MarketStateEngine — single shared market truth (advisory; never places orders) ─
+ENABLE_MARKET_STATE_ENGINE = os.environ.get("ENABLE_MARKET_STATE_ENGINE", "true").lower() in {"1", "true"}
+_MARKET_STATE_ENGINE: Any = None
+
+
+def _market_state_engine():
+    """Lazily resolve the shared MarketStateEngine singleton (fail-safe)."""
+    global _MARKET_STATE_ENGINE
+    if not ENABLE_MARKET_STATE_ENGINE:
+        return None
+    if _MARKET_STATE_ENGINE is None:
+        try:
+            import market_state_engine as mse
+            _MARKET_STATE_ENGINE = mse.get_engine()
+            logger.info("MarketStateEngine ENABLED")
+        except Exception as e:
+            logger.warning("MarketStateEngine unavailable (%s) — using market_context only", e)
+            _MARKET_STATE_ENGINE = False
+    return _MARKET_STATE_ENGINE or None
+
+
+def _build_market_state(market_context: dict, indicator_snapshot=None,
+                        premarket_snapshot=None, bars_by_symbol=None, feed_type=None):
+    """Build the shared market_state for this cycle (advisory). Falls back to None."""
+    eng = _market_state_engine()
+    if eng is None:
+        return None
+    try:
+        qn = sum(1 for q in (premarket_snapshot or {}).get("quotes", {}).values()
+                 if q.get("price") is not None) if premarket_snapshot else 0
+        bn = len((indicator_snapshot or {}))
+        state = eng.build(market_context=market_context, indicator_snapshot=indicator_snapshot,
+                          premarket_snapshot=premarket_snapshot, bars_by_symbol=bars_by_symbol,
+                          alpaca_quote_count=qn, alpaca_bar_count=bn, feed_type=feed_type)
+        eng.write_report(out_dir=_premarket_dir())
+        return state
+    except Exception as e:
+        logger.debug("market_state build failed: %s", e)
+        return None
+
+
+# ── Alpaca live-feed manager (read-only data quality; never changes execution) ────
+ENABLE_ALPACA_FEED_MANAGER = os.environ.get("ENABLE_ALPACA_FEED_MANAGER", "true").lower() in {"1", "true"}
+_ALPACA_FEED: Any = None
+
+
+def _alpaca_feed_manager():
+    global _ALPACA_FEED
+    if not ENABLE_ALPACA_FEED_MANAGER:
+        return None
+    if _ALPACA_FEED is None:
+        try:
+            import alpaca_feed_manager as afm
+            _ALPACA_FEED = afm.get_manager()
+            logger.info("AlpacaFeedManager ENABLED (no SIP; iex/overnight only)")
+        except Exception as e:
+            logger.warning("AlpacaFeedManager unavailable (%s)", e)
+            _ALPACA_FEED = False
+    return _ALPACA_FEED or None
+
+
+def _alpaca_feed_cycle(session: str = "rth") -> Optional[str]:
+    """Detect feeds, write diagnostics, tag the streaming engine. Returns active feed. Fail-safe."""
+    mgr = _alpaca_feed_manager()
+    if mgr is None:
+        return None
+    try:
+        active = mgr.active_feed(session)
+        mgr.write_diagnostic(out_dir=_premarket_dir(), session=session)
+        diag = mgr.diagnostic(session)
+        # Deliverables: live_data_feed_health.json + alpaca_live_data_snapshot.json
+        from datetime import datetime as _dt, timezone as _tz
+        health = {"generated_at_utc": _dt.now(_tz.utc).isoformat(), "date_tag": DATA_TAG,
+                  "session": session, "active_feed": active, "feeds": diag.get("feeds", {}),
+                  "feed_failover_count": diag.get("feed_failover_count", 0),
+                  "feed_reconnect_count": diag.get("feed_reconnect_count", 0),
+                  "sip_used": False, "delayed_sip_used": False}
+        try:
+            from rl_common import write_json as _wj
+        except Exception:
+            _wj = None
+        outdir = _premarket_dir()
+        if _wj:
+            _wj(outdir / "live_data_feed_health.json", health)
+            _wj(outdir / "alpaca_live_data_snapshot.json",
+                {"generated_at_utc": health["generated_at_utc"], "date_tag": DATA_TAG,
+                 "active_feed": active, "feed_source": "alpaca", "sip_used": False})
+        eng = _streaming_engine()
+        if eng is not None and hasattr(eng, "set_feed"):
+            eng.set_feed(active, used=active not in (None, "fallback"))
+        return active
+    except Exception as e:
+        logger.debug("alpaca feed cycle skipped: %s", e)
+        return None
+
+
 # ── Alpha: EXIT pass (runs every cycle, independent of regime/entries/screeners) ──
 def run_alpha_exits(engine, gateway: AlpacaGateway, waterfall,
-                    option_positions: List[Dict], market_context: dict) -> int:
+                    option_positions: List[Dict], market_context: dict,
+                    indicator_snapshot: Optional[dict] = None,
+                    market_state: Optional[dict] = None) -> int:
     """Manage open calls via the engine's public exit pass. ALWAYS runs."""
     try:
         exits = engine.check_active_positions(option_positions, _alpha_waterfall_cb(waterfall),
-                                              market_context=market_context)
+                                              market_context=market_context,
+                                              indicator_snapshot=indicator_snapshot,
+                                              market_state=market_state)
     except Exception as e:
         logger.error("alpha check_active_positions failed: %s", e)
         exits = []
@@ -868,7 +1359,10 @@ def run_alpha_exits(engine, gateway: AlpacaGateway, waterfall,
 def run_alpha_entries(engine, gateway: AlpacaGateway, waterfall, risk: RiskManager,
                       symbols: List[str], bars_by_symbol: Dict[str, Any],
                       chains_by_symbol: Dict[str, list], market_context: dict,
-                      positions: Optional[dict] = None) -> int:
+                      positions: Optional[dict] = None,
+                      indicator_snapshot: Optional[dict] = None,
+                      premarket_snapshot: Optional[dict] = None,
+                      market_state: Optional[dict] = None) -> int:
     """
     Hand PRE-FETCHED data to the engine; it writes alpha_options_universe.json and
     returns order intents. run.py only routes intents through Risk/Gateway.
@@ -880,6 +1374,9 @@ def run_alpha_entries(engine, gateway: AlpacaGateway, waterfall, risk: RiskManag
             equity=risk.equity, options_exposure=risk.options_exposure, waterfall_budget=0.0,
             chains_by_symbol=chains_by_symbol, positions=positions,
             account_state={"equity": risk.equity, "buying_power": risk.buying_power},
+            indicator_snapshot=indicator_snapshot,
+            premarket_snapshot=premarket_snapshot,
+            market_state=market_state,
         )
     except Exception as e:
         logger.error("alpha evaluate_universe failed: %s", e)
@@ -958,7 +1455,10 @@ def run_bal_entries(bal, gateway: AlpacaGateway, waterfall, risk: RiskManager,
                     symbols: List[str], market_context: dict,
                     bars_ctx_by_symbol: Dict[str, Dict], equity_positions: Dict[str, Any],
                     insider_data_by_symbol: Optional[Dict[str, Dict]] = None,
-                    target_weights_by_symbol: Optional[Dict[str, float]] = None) -> int:
+                    target_weights_by_symbol: Optional[Dict[str, float]] = None,
+                    indicator_snapshot: Optional[dict] = None,
+                    market_state: Optional[dict] = None,
+                    optimizer_objective_weights: Optional[dict] = None) -> int:
     if not symbols:
         return 0
     stock_room = max(0.0, risk.equity * MAX_STOCK_EXPOSURE_PCT - risk.stock_exposure)
@@ -979,6 +1479,9 @@ def run_bal_entries(bal, gateway: AlpacaGateway, waterfall, risk: RiskManager,
                 positions=equity_positions, available_capital=available_capital,
                 insider_data_by_symbol=insider_data_by_symbol or {},
                 target_weights_by_symbol=target_weights_by_symbol or {},
+                indicator_snapshot=indicator_snapshot or {},
+                market_state=market_state,
+                optimizer_objective_weights=optimizer_objective_weights,
             )
         else:
             orders = bal.scan(
@@ -1016,13 +1519,13 @@ def run_bal_entries(bal, gateway: AlpacaGateway, waterfall, risk: RiskManager,
 
 
 # ── Buffett screener orchestration (fully isolated from Alpha) ────────────────────
-def run_buffett_screener(market_context: dict) -> dict:
+def run_buffett_screener(market_context: dict, premarket_snapshot: Optional[dict] = None) -> dict:
     """Guarded: any failure returns empty candidates so Alpha exits/entries are never affected."""
     if not ENABLE_BUFFETT_ACCUMULATION_SCREENER:
         return {"candidates": [], "funnel": {"note": "screener_disabled"}, "detail": []}
     try:
         import buffett_accumulation_screener as bscr
-        return bscr.screen(market_context)
+        return bscr.screen(market_context, premarket_snapshot=premarket_snapshot)
     except Exception as e:
         logger.error("Buffett screener failed (Alpha unaffected): %s", e)
         return {"candidates": [], "funnel": {"error": str(e)[:160]}, "detail": []}
@@ -1142,9 +1645,25 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     summary = {"alpha_exits": 0, "bal_exits": 0, "alpha_entries": 0, "bal_entries": 0,
                "new_buys_allowed": new_buys_allowed}
 
+    # Shared real-time indicator state (carried over from prior cycles for the exit
+    # pass; refreshed below once this cycle's bars are fetched). Diagnostics only here.
+    indicator_snapshot = _indicator_snapshot()
+    # Frozen premarket snapshot (gap / premarket high-low / volume) for early-session
+    # gap & ORB context. Awareness only — premarket data never creates an order.
+    premarket_snapshot = _premarket_snapshot()
+    # Single shared market truth for this cycle (advisory; consumed by Alpha, OOPS,
+    # Probability, Buffett, Black-Litterman, and the Adaptive Allocator). Never orders.
+    # Detect the active Alpaca feed (read-only; iex/overnight, never SIP), write feed
+    # diagnostics, and tag the streaming engine. Advisory data-quality only.
+    _active_feed = _alpaca_feed_cycle("rth")
+    market_state = _build_market_state(market_context, indicator_snapshot, premarket_snapshot,
+                                       feed_type=_active_feed)
+
     # 2. EXIT PASS — unconditional (regime/entries/screeners cannot block exits) ─────
     if alpha is not None:
-        summary["alpha_exits"] = run_alpha_exits(alpha, gateway, waterfall, option_positions, market_context)
+        summary["alpha_exits"] = run_alpha_exits(alpha, gateway, waterfall, option_positions,
+                                                 market_context, indicator_snapshot=indicator_snapshot,
+                                                 market_state=market_state)
     if bal is not None:
         try:
             summary["bal_exits"] = run_bal_exits(bal, gateway, equity_positions, market_context)
@@ -1174,23 +1693,29 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
                         len(sec_res.get("candidates", [])), len(sec_res.get("errors", [])))
         except Exception as e:
             logger.error("SEC Form 4 discovery failed (Buffett/Alpha unaffected): %s", e)
-    buffett_res = run_buffett_screener(market_context) if bal is not None else \
+    buffett_res = run_buffett_screener(market_context, premarket_snapshot) if bal is not None else \
         {"candidates": [], "funnel": {}, "detail": []}
 
     # 4. ENTRY PASS — after all exits. Alpha first, then BAL. ────────────────────────
     if not new_buys_allowed:
         log_skip("UNIVERSE", regime_reason, phase="entry_gate")
+    # Update the shared indicator state from THIS cycle's alpha bars, then snapshot.
+    # run.py only fetches + updates indicators; the engine still decides every entry.
+    _update_indicators(alpha_scr.get("bars", {}))
+    indicator_snapshot = _indicator_snapshot()
     # Alpha entries ALWAYS call evaluate_universe so the universe file is written; the
     # ENGINE rejects entries internally when the regime is hostile (engine setup gate).
     if alpha is not None:
         summary["alpha_entries"] = run_alpha_entries(
             alpha, gateway, waterfall, risk,
             alpha_scr["base"], alpha_scr["bars"], alpha_scr["chains"],
-            market_context, positions=equity_positions)
+            market_context, positions=equity_positions, indicator_snapshot=indicator_snapshot,
+            premarket_snapshot=premarket_snapshot, market_state=market_state)
     # Black-Litterman + Efficient-Frontier optimizer: produce DESIRED target weights
     # (how much to own). Composite DCA decides WHEN; RiskManager decides whether ALLOWED.
     # Fully fail-safe — any failure leaves target_weights empty and BAL uses conviction.
     target_weights: Dict[str, float] = {}
+    optimizer_objective_weights: Optional[dict] = None
     if bal is not None and ENABLE_BUFFETT_OPTIMIZER:
         try:
             import buffett_portfolio_optimizer as bopt
@@ -1198,8 +1723,13 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
             if opt_signals:
                 caps = {r["symbol"]: r.get("market_cap", 0.0) for r in opt_signals if r.get("symbol")}
                 opt_res = bopt.run_optimizer_safe(opt_signals, market_caps=caps,
-                                                  current_weights=None, write=True)
+                                                  current_weights=None, write=True,
+                                                  market_state=market_state)
                 target_weights = opt_res.get("target_weights", {}) or {}
+                optimizer_objective_weights = {
+                    "active_optimizer": opt_res.get("active_optimizer"),
+                    "used_objectives": opt_res.get("used_objectives"),
+                }
         except Exception as e:
             logger.error("Buffett optimizer failed (BAL uses conviction): %s", e)
 
@@ -1209,10 +1739,17 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
             bcands = buffett_res.get("candidates", [])
             bal_bars = fetch_1m_bars(gateway, bcands) if bcands else {}
             bal_ctx = build_bars_ctx(bal_bars)
+            # Feed the Buffett candidates' bars into the shared indicator state, then
+            # refresh the snapshot so BAL reads streaming VWAP for timing (only).
+            _update_indicators(bal_bars)
+            bal_snapshot = _indicator_snapshot()
             summary["bal_entries"] = run_bal_entries(bal, gateway, waterfall, risk,
                                                      bcands, market_context, bal_ctx, equity_positions,
                                                      insider_data_by_symbol=insider_data,
-                                                     target_weights_by_symbol=target_weights)
+                                                     target_weights_by_symbol=target_weights,
+                                                     indicator_snapshot=bal_snapshot,
+                                                     market_state=market_state,
+                                                     optimizer_objective_weights=optimizer_objective_weights)
         except Exception as e:
             logger.error("BAL entries failed (Alpha unaffected): %s", e)
 
@@ -1222,6 +1759,7 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     if waterfall is not None:
         write_capital_waterfall(waterfall)
     write_screener_funnel_report(alpha_scr.get("funnel", {}), buffett_res, market_context)
+    _write_indicator_reports()   # streaming_indicator_snapshot.json + _health.json
     # 6. Evidence System — regenerate research analytics from the recorded events.
     bal_value = sum(float(getattr(p, "market_value", 0) or 0) for p in equity_positions.values())
     _research("generate_all_reports_safe", market_context=market_context,
@@ -1232,18 +1770,75 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     if ENABLE_ADAPTIVE_ALLOCATION:
         try:
             import adaptive_capital_allocator as aca
-            aca.build_allocation_plan_safe(market_context=market_context)
+            aca.build_allocation_plan_safe(market_context=market_context, market_state=market_state)
         except Exception as e:
             logger.debug("adaptive allocator skipped: %s", e)
+    # RL SHADOW MODE (opt-in, OFF by default): trained RL agents log what they WOULD
+    # recommend; the live system ignores them. Never creates/blocks an order. Fail-safe.
+    _rl_shadow_cycle()
     return summary
 
 
-def run_two_engine_trading():
-    logger.info("=== TWO-ENGINE TRADING  mode=%s ===", MODE)
-    _log_config()
+def _account_num(account: Dict[str, Any], key: str, default: float = 0.0) -> float:
+    """Parse numeric account fields safely across Alpaca objects/dicts/strings."""
+    try:
+        value = account.get(key, default) if isinstance(account, dict) else getattr(account, key, default)
+        if value in (None, ""):
+            return default
+        return float(value)
+    except Exception:
+        return default
 
+
+def log_account_stats(gateway: AlpacaGateway, risk: RiskManager,
+                      label: str = "Account") -> Dict[str, Any]:
+    """
+    Refresh broker account + exposure state and print one compact telemetry line.
+    This is intentionally fail-safe: a transient Alpaca/account error must never
+    stop the trading daemon.
+    """
+    account: Dict[str, Any] = {}
+    try:
+        account = gateway.get_account() or {}
+        if account:
+            risk.sync_account(account)
+    except Exception as exc:
+        logger.warning("Account: unavailable (%s)", exc)
+        account = {}
+
+    try:
+        raw_positions = gateway.get_positions_raw()
+        _, _, opt_exp, stk_exp = gateway.split_positions(raw_positions)
+        risk.sync_exposure(opt_exp, stk_exp)
+    except Exception as exc:
+        logger.debug("Account exposure refresh skipped: %s", exc)
+
+    equity = float(risk.equity or _account_num(account, "equity", STARTING_EQUITY))
+    buying_power = float(risk.buying_power or _account_num(account, "buying_power", equity))
+    cash = _account_num(account, "cash", 0.0)
+    cash_pct = (cash / equity * 100.0) if equity > 0 else 0.0
+    pdt = bool(account.get("pattern_day_trader", False)) if isinstance(account, dict) else False
+    daytrades = int(_account_num(account, "daytrade_count", 0.0))
+    source = "sim" if account.get("sim") else ("alpaca" if gateway.available else "sim")
+
+    logger.info(
+        "%s: equity=$%.2f cash=$%.2f bp=$%.2f daily_pnl=$%.2f "
+        "stock_exp=$%.2f opt_exp=$%.2f cash=%.1f%% PDT=%s daytrades=%d source=%s",
+        label, equity, cash, buying_power, risk.daily_pnl,
+        risk.stock_exposure, risk.options_exposure, cash_pct, pdt, daytrades, source,
+    )
+    return account
+
+
+def run_two_engine_trading():
     risk    = RiskManager(equity=STARTING_EQUITY)
     gateway = AlpacaGateway(risk)
+
+    logger.info("=== TWO-ENGINE TRADING  mode=%s ===", MODE)
+    # Required first line after the banner: live/sim account telemetry.
+    log_account_stats(gateway, risk)
+    _log_config(risk)
+
     ensure_outputs_exist()
     alpha, bal, monitor, waterfall = build_engines(gateway)
 
@@ -1253,17 +1848,44 @@ def run_two_engine_trading():
 
     market_context: dict = {}
     last_context_build = 0.0
+    last_account_log = time.time()
+    cycle_count = 0
 
     logger.info("Entering two-engine loop (Ctrl-C to stop) …")
-    try:
-        while True:
+    while True:
+        try:
+            cycle_count += 1
+
             if risk.is_killed:
                 logger.critical("Kill switch active — exiting loop")
                 break
+
+            now = time.time()
+            if now - last_account_log >= ACCOUNT_STATS_LOG_SEC:
+                log_account_stats(gateway, risk, label=f"Account cycle={cycle_count}")
+                last_account_log = now
+
             if not is_market_open():
+                # Premarket: stream live quotes for awareness only (no trading). Any
+                # failure here is swallowed and never blocks the upcoming session.
+                if is_premarket():
+                    if not market_context:
+                        market_context = _build_context_safe()
+                    try:
+                        run_premarket_phase(gateway, bal, market_context)
+                    except Exception as e:
+                        logger.debug("premarket phase skipped: %s", e)
+                    time.sleep(PREMARKET_REFRESH_SEC)
+                    continue
+
                 logger.debug("Market closed — sleeping 60s")
                 time.sleep(60)
                 continue
+
+            # Market just opened — freeze premarket high/low by stopping the live feed;
+            # the frozen snapshot stays available for early-session gap / ORB context.
+            _stop_premarket_feed()
+
             if (time.time() - last_context_build) > CONTEXT_REFRESH_MIN * 60 or not market_context:
                 market_context = _build_context_safe()
                 last_context_build = time.time()
@@ -1271,20 +1893,38 @@ def run_two_engine_trading():
             run_two_engine_cycle(risk, gateway, waterfall, alpha, bal, monitor, market_context)
             time.sleep(BAR_INTERVAL_SEC)
 
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user — finalising outputs")
-    finally:
-        if waterfall is not None:
-            write_capital_waterfall(waterfall)
-        ensure_outputs_exist()
-        logger.info("Two-engine session complete. Risk: equity=%.2f daily_pnl=%.2f opt_exp=%.0f stk_exp=%.0f",
-                    risk.equity, risk.daily_pnl, risk.options_exposure, risk.stock_exposure)
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user — finalising outputs")
+            break
+        except Exception:
+            # Run forever: transient broker/data/engine errors are logged, then the loop
+            # continues after a normal sleep instead of killing the process.
+            logger.exception("Two-engine loop error — continuing")
+            try:
+                log_account_stats(gateway, risk, label=f"Account after_error cycle={cycle_count}")
+            except Exception:
+                pass
+            time.sleep(max(5.0, BAR_INTERVAL_SEC))
+
+    _stop_premarket_feed()
+    if waterfall is not None:
+        write_capital_waterfall(waterfall)
+    ensure_outputs_exist()
+    logger.info("Two-engine session complete. Risk: equity=%.2f daily_pnl=%.2f opt_exp=%.0f stk_exp=%.0f",
+                risk.equity, risk.daily_pnl, risk.options_exposure, risk.stock_exposure)
 
 
 def _build_context_safe() -> dict:
     try:
+        import inspect as _inspect
         from market_context_builder import build_market_context
-        ctx = build_market_context()
+        # Decide kwarg support by INSPECTING the signature — never via `except TypeError`,
+        # which would also swallow a genuine TypeError raised inside the builder and
+        # silently re-run it. A real failure now surfaces to the outer except below.
+        if "premarket_snapshot" in _inspect.signature(build_market_context).parameters:
+            ctx = build_market_context(premarket_snapshot=_premarket_snapshot())
+        else:
+            ctx = build_market_context()
         logger.info("Market context: bias=%s permission=%s risk=%s",
                     ctx.get("overall_market_bias"), ctx.get("trade_permission"), ctx.get("risk_level"))
         return ctx or {}
@@ -1293,9 +1933,33 @@ def _build_context_safe() -> dict:
         return {"overall_market_bias": "mixed", "trade_permission": "cautious", "risk_level": "high"}
 
 
-def _log_config() -> None:
-    logger.info("Risk limits: daily_loss=%.0f max_dd=%.1f%% max_pos=%d equity_floor=%.0f max_order=%d",
-                DAILY_LOSS_LIMIT, MAX_DRAWDOWN * 100, MAX_POSITIONS, EQUITY_FLOOR, MAX_ORDER_SIZE)
+def _log_config(risk: Optional[RiskManager] = None) -> None:
+    if risk is not None:
+        limits = risk.risk_limits_summary()
+        logger.info(
+            "Risk limits: mode=%s daily_loss=$%.0f (%.2f%% equity) max_dd=%.1f%% "
+            "max_pos=%d equity_floor=$%.0f max_order=$%.0f max_order_qty=%s anchor=$%.0f",
+            "dynamic" if DYNAMIC_RISK_LIMITS else "fixed",
+            limits["daily_loss_limit"],
+            abs(limits["daily_loss_limit"]) / max(1.0, limits["equity"]) * 100.0,
+            limits["max_drawdown"] * 100.0,
+            limits["max_positions"],
+            limits["equity_floor"],
+            limits["max_order_dollars"],
+            (limits["max_order_size"] if limits["max_order_size"] > 0 else "off"),
+            limits["anchor_equity"],
+        )
+    else:
+        logger.info(
+            "Risk limits: mode=%s daily_loss_pct=%.2f%% max_dd=%.1f%% "
+            "equity_floor_pct=%.0f%% max_order_pct=%.1f%% position_unit=$%.0f",
+            "dynamic" if DYNAMIC_RISK_LIMITS else "fixed",
+            DYNAMIC_DAILY_LOSS_PCT * 100.0,
+            -abs(DYNAMIC_MAX_DRAWDOWN_PCT) * 100.0,
+            DYNAMIC_EQUITY_FLOOR_PCT * 100.0,
+            DYNAMIC_MAX_ORDER_PCT * 100.0,
+            DYNAMIC_POSITION_EQUITY_UNIT,
+        )
     logger.info("Engines: alpha=%s bal=%s monitor=%s | paper_only=%s",
                 ENABLE_ALPHA_CALL_ENGINE, ENABLE_BUFFETT_ACCUMULATION_LAYER,
                 ENABLE_BAL_PORTFOLIO_MONITOR, ALPACA_PAPER_ONLY)

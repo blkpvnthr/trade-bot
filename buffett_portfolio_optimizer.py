@@ -408,7 +408,7 @@ def run_optimizer(signals: list[dict], prices: pd.DataFrame | None = None,
                   current_weights: dict | None = None, conviction_weights: dict | None = None,
                   returns_df: pd.DataFrame | None = None, sectors: dict | None = None,
                   cfg: OptimizerConfig | None = None, bl_cfg: bbl.BLConfig | None = None,
-                  date_tag: str | None = None, write: bool = True) -> dict:
+                  date_tag: str | None = None, write: bool = True, market_state: dict | None = None) -> dict:
     """
     Live optimizer pass: Black-Litterman posterior → blended efficient-frontier target
     weights → diversification analytics. Optionally runs the walk-forward comparison when
@@ -420,7 +420,8 @@ def run_optimizer(signals: list[dict], prices: pd.DataFrame | None = None,
            "target_weights": {}, "fallback": False, "active_optimizer": cfg.default_active}
     try:
         bl = bbl.run_black_litterman(signals, prices=prices, market_caps=market_caps,
-                                     vol_by_symbol=vol_by_symbol, cfg=bl_cfg, date_tag=date_tag, write=write)
+                                     vol_by_symbol=vol_by_symbol, cfg=bl_cfg, date_tag=date_tag,
+                                     write=write, market_state=market_state)
         mu = bl.get("_posterior_returns_series")
         S = bl.get("_posterior_covariance_df")
         if mu is None or S is None or len(mu) < 2:

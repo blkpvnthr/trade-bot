@@ -1,5 +1,22 @@
 # trade-bot
 ```bash
+pip install flashalpha
+
+from flashalpha import FlashAlpha
+fa = FlashAlpha("XvoBDVTjdoGflFS1JerGEoKU4SphGcNrLAzx82BT")
+gex = fa.gex("SPY")
+print(f"Gamma flip: {gex['gamma_flip']}")
+```
+```BASH
+curl -H "X-Api-Key: XvoBDVTjdoGflFS1JerGEoKU4SphGcNrLAzx82BT" \
+  https://lab.flashalpha.com/v1/exposure/gex/SPY
+```
+```bash
+watch -n 5 'curl -s "https://paper-api.alpaca.markets/v2/orders?status=all&limit=10" \
+-H "APCA-API-KEY-ID: $APCA_API_KEY_ID" \
+-H "APCA-API-SECRET-KEY: $APCA_API_SECRET_KEY" | python3 -m json.tool'
+```
+```bash
 curl https://tv.quantumquant.trade/
 ```
 ```bash

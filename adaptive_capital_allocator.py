@@ -283,6 +283,7 @@ def transfer_recommendation(alpha_score: float, buffett_score: float,
 
 # ── orchestration ────────────────────────────────────────────────────────────────
 def build_allocation_plan(research: dict | None = None, market_context: dict | None = None,
+                          market_state: dict | None = None,
                           config: AllocatorConfig | None = None, date_tag: str | None = None,
                           write: bool = True) -> dict:
     """

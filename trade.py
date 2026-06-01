@@ -100,6 +100,12 @@ except Exception:
     OptionChainRequest = None
     TimeFrame = None
 
+try:
+    from conviction_portfolio_manager import ConvictionPortfolioManager as _ConvictionPortfolioManager
+    _CONVICTION_AVAILABLE = True
+except ImportError:
+    _CONVICTION_AVAILABLE = False
+
 
 # ======================================================================# Paths / environment
 # ======================================================================
@@ -4127,6 +4133,17 @@ class ProductionOrderExecutor:
         self.account_history: list[dict[str, Any]] = []
         self._last_morning_refresh_date: str | None = None
         self._rl_validation_cache: dict[str, Any] | None = None
+        self._conviction_mgr: Any = None
+        if _CONVICTION_AVAILABLE:
+            _conviction_state = PROJECT_ROOT / "system-data" / "conviction_portfolio.json"
+            self._conviction_mgr = _ConvictionPortfolioManager(_conviction_state)
+            # Surface any parse warnings through the JSONL event log so they
+            # appear in post-incident reviews (CPM is stdlib-only, can't call
+            # write_event directly).
+            for _warn in self._conviction_mgr.load_warnings:
+                write_event("conviction_state_load_warning", {"warning": _warn, "state_file": str(_conviction_state)})
+            summary = self._conviction_mgr.get_summary()
+            print(f"[conviction] portfolio loaded: {summary['count']} position(s) protected: {summary['symbols']}")
 
     def _in_cooldown(self) -> bool:
         return (time.time() - self.last_order_time) < self.config.cooldown_seconds
@@ -4780,6 +4797,20 @@ class ProductionOrderExecutor:
                 plan = plan[~buy_block_mask].copy()
                 if plan.empty:
                     return pd.DataFrame()
+
+        # Block SELL orders on conviction-protected long-term positions.
+        if self._conviction_mgr is not None:
+            self._conviction_mgr.reload()           # pick up any CLI changes made mid-session
+            _protected = self._conviction_mgr.get_protected_symbols()
+            if _protected:
+                _sell_mask = (plan["side"] == "sell") & plan["symbol"].map(safe_symbol).isin(_protected)
+                _n_protected = int(_sell_mask.sum())
+                if _n_protected:
+                    _blocked_syms = sorted(plan.loc[_sell_mask, "symbol"].map(safe_symbol).unique())
+                    print(f"[conviction] blocked {_n_protected} SELL order(s) on: {_blocked_syms}")
+                    plan = plan[~_sell_mask].copy()
+                    if plan.empty:
+                        return pd.DataFrame()
 
         plan["abs_delta_shares"] = plan["delta_shares"].abs().fillna(0)
         plan["abs_delta_dollars"] = plan["delta_dollars"].abs().fillna(0)
@@ -5626,6 +5657,11 @@ class ProductionOrderExecutor:
             return
 
         print(f"[morning] preparing daily inputs for {today}")
+        if self._conviction_mgr is not None:
+            self._conviction_mgr.reload()           # refresh from disk for accurate morning report
+            _cv_summary = self._conviction_mgr.get_summary()
+            if _cv_summary["count"] > 0:
+                print(f"[conviction:morning] {_cv_summary['count']} protected position(s): {_cv_summary['symbols']} | allocated: ${_cv_summary['allocated_capital']:,.0f}")
         run_session_planning_pipeline(self.config.scanner, force=False)
 
         self._last_morning_refresh_date = today

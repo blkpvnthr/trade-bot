@@ -282,11 +282,31 @@ def blended_expected_returns(signals: list[dict], symbols: list[str], cfg: BLCon
 
 
 # ── orchestrator ────────────────────────────────────────────────────────────────────
+def _market_state_confidence_multiplier(market_state: dict | None) -> float:
+    """Scale BL view confidence by the shared market_state (1.0 when absent).
+
+    Lower market_state confidence (or a high-volatility regime) shrinks view confidence,
+    which widens omega and pulls the posterior back toward the equilibrium prior — i.e.
+    the optimizer trusts its directional views LESS when the market picture is uncertain.
+    """
+    if not market_state:
+        return 1.0
+    try:
+        conf = float(market_state.get("confidence") if market_state.get("confidence") is not None else 1.0)
+    except Exception:
+        conf = 1.0
+    mult = max(0.3, min(1.0, 0.5 + 0.5 * conf))
+    vol_regime = str(market_state.get("volatility_regime") or market_state.get("vix_state") or "").lower()
+    if vol_regime in ("high", "elevated"):
+        mult *= 0.8
+    return round(mult, 4)
+
+
 def run_black_litterman(signals: list[dict], prices: pd.DataFrame | None = None,
                         market_caps: dict[str, float] | None = None,
                         vol_by_symbol: dict[str, float] | None = None,
                         cfg: BLConfig | None = None, date_tag: str | None = None,
-                        write: bool = True) -> dict:
+                        write: bool = True, market_state: dict | None = None) -> dict:
     """
     Full Black-Litterman pass. Returns posterior_returns, posterior_covariance, prior,
     views, confidences, omega, tau, rejected_views, diagnostics, and a `fallback` flag.
@@ -311,6 +331,11 @@ def run_black_litterman(signals: list[dict], prices: pd.DataFrame | None = None,
         cov = build_covariance(symbols, prices, vol_by_symbol, cfg)
         pi = market_implied_prior(symbols, cov, market_caps, cfg)
         views = build_views(signals, symbols, cfg)
+        # Incorporate the shared market_state: scale view confidence by market confidence
+        # / volatility regime before forming the posterior (no-op when market_state is None).
+        _ms_mult = _market_state_confidence_multiplier(market_state)
+        if _ms_mult != 1.0 and len(views.get("confidences", [])):
+            views["confidences"] = [float(c) * _ms_mult for c in views["confidences"]]
         post = black_litterman_posterior(pi, cov, views, cfg)
         post_ret, post_cov = post["posterior_returns"], post["posterior_covariance"]
         result.update({
@@ -325,9 +350,12 @@ def run_black_litterman(signals: list[dict], prices: pd.DataFrame | None = None,
             "rejected_views": views["rejected_views"],
             "view_strength": int(views["P"].shape[0]),
             "view_confidence": round(float(np.mean(views["confidences"])), 4) if len(views["confidences"]) else 0.0,
+            "market_state_confidence_multiplier": _ms_mult,
+            "market_state_confidence": (market_state or {}).get("confidence"),
             "diagnostics": {"n_assets": len(symbols),
                             "posterior_vs_prior_max_shift": round(float(np.max(np.abs(
                                 post_ret.values - pi.reindex(post_ret.index).values))), 6),
+                            "market_state_confidence_multiplier": _ms_mult,
                             "cov_source": "prices" if (prices is not None and not prices.empty) else "vol_estimate"},
         })
         result["_posterior_returns_series"] = post_ret

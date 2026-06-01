@@ -118,11 +118,39 @@ def _vol_regime(mc: dict) -> str:
 
 
 # Convenience recorders (accept the existing engine dict/dataclass shapes) ──────────
+def _realtime_feature_extra(sig: dict) -> dict:
+    """Forward normalized Alpha Vantage realtime + news features into the recorded
+    event so the RL dataset/state can consume them (when their gates are enabled).
+
+    Advisory + safe: when AV_REALTIME_FETCH_ON_RECORD=1 it fetches a fresh bundle
+    via the live feature transformer (cached, neutral-on-failure); otherwise it
+    only forwards realtime feature keys already present on `sig`. Never raises and
+    never blocks signal recording.
+    """
+    extra: dict = {}
+    try:
+        from alpha_discovery.live_feature_transformer import neutral_bundle
+        if os.getenv("AV_REALTIME_FETCH_ON_RECORD", "0") == "1":
+            try:
+                from alpha_discovery.live_feature_transformer import transform_event
+                transform_event(sig)  # setdefault-merges the realtime bundle into sig
+            except Exception:
+                pass
+        for k in neutral_bundle().keys():
+            if k in sig and sig[k] is not None:
+                extra[k] = sig[k]
+    except Exception:
+        pass
+    return extra
+
+
 def record_alpha_signal(sig: dict, market_context: dict | None = None, placed: bool = False,
                         date_tag: str | None = None) -> dict:
     sig = dict(sig or {})
     et = "alpha_entry" if placed else "alpha_rejection"
+    _rt_extra = _realtime_feature_extra(sig)
     return record_event(et, sig.get("symbol", ""), date_tag=date_tag,
+                        **_rt_extra,
                         regime=_regime(market_context), sector=sig.get("sector", ""),
                         setup_type=sig.get("setup_type", ""), grade=sig.get("grade", ""),
                         setup_score=sig.get("setup_score"), vol_regime=_vol_regime(market_context),
@@ -142,7 +170,32 @@ def record_alpha_signal(sig: dict, market_context: dict | None = None, placed: b
                         certainty_equivalent=sig.get("certainty_equivalent"),
                         probability_total_loss=sig.get("probability_total_loss"),
                         selected_by_oops=sig.get("selected_by_oops"),
-                        combined_option_score=sig.get("combined_option_score"))
+                        combined_option_score=sig.get("combined_option_score"),
+                        indicator_source=sig.get("indicator_source", ""),
+                        indicator_age_seconds=sig.get("indicator_age_seconds"),
+                        streaming_indicator_available=sig.get("streaming_indicator_available"),
+                        fallback_used=sig.get("fallback_used"),
+                        premarket_source=sig.get("premarket_source", ""),
+                        premarket_gap_pct=sig.get("premarket_gap_pct"),
+                        premarket_volume=sig.get("premarket_volume"),
+                        premarket_relative_strength=sig.get("premarket_relative_strength"),
+                        premarket_stale=sig.get("premarket_stale"),
+                        premarket_high=sig.get("premarket_high"),
+                        premarket_low=sig.get("premarket_low"),
+                        market_state=sig.get("market_state"),
+                        market_state_confidence=sig.get("market_state_confidence"),
+                        premarket_rvol=sig.get("premarket_rvol"),
+                        premarket_rank_score=sig.get("premarket_rank_score"),
+                        optionlab_score=sig.get("optionlab_score"),
+                        payoff_quality=sig.get("payoff_quality", ""),
+                        feed_source=sig.get("feed_source", ""),
+                        feed_type=sig.get("feed_type", ""),
+                        feed_latency=sig.get("feed_latency"),
+                        data_age=sig.get("data_age"),
+                        alpaca_feed_health=sig.get("alpaca_feed_health"),
+                        overnight_feed_health=sig.get("overnight_feed_health"),
+                        quote_health=sig.get("quote_health"),
+                        bar_health=sig.get("bar_health"))
 
 
 def record_alpha_exit(exit_order: dict, market_context: dict | None = None,
@@ -168,7 +221,13 @@ def record_alpha_exit(exit_order: dict, market_context: dict | None = None,
                         holding_period_days=eo.get("holding_period_days"),
                         probability_band=band, probability_of_profit=pop,
                         management_style=eo.get("management_style", ""),
-                        probability_accurate=accurate, win=win)
+                        probability_accurate=accurate, win=win,
+                        indicator_source=eo.get("indicator_source", ""),
+                        indicator_age_seconds=eo.get("indicator_age_seconds"),
+                        streaming_indicator_available=eo.get("streaming_indicator_available"),
+                        fallback_used=eo.get("fallback_used"),
+                        market_state=eo.get("market_state"),
+                        market_state_confidence=eo.get("market_state_confidence"))
 
 
 def record_bal_order(order: dict, market_context: dict | None = None,
@@ -185,7 +244,23 @@ def record_bal_order(order: dict, market_context: dict | None = None,
                         bal_score=o.get("bal_score"),
                         target_allocation_pct=o.get("target_allocation_pct"),
                         journal_reason=o.get("journal_reason", ""),
-                        return_pct=o.get("return_pct"), pnl=o.get("pnl"))
+                        return_pct=o.get("return_pct"), pnl=o.get("pnl"),
+                        indicator_source=o.get("indicator_source", ""),
+                        indicator_age_seconds=o.get("indicator_age_seconds"),
+                        streaming_indicator_available=o.get("streaming_indicator_available"),
+                        fallback_used=o.get("fallback_used"),
+                        optimized_target_weight=o.get("optimized_target_weight"),
+                        current_weight=o.get("current_weight"),
+                        weight_gap=o.get("weight_gap"),
+                        active_buffett_optimizer=(o.get("optimizer_objective_weights") or {}).get("active_optimizer"),
+                        black_litterman_view_confidence=o.get("black_litterman_view_confidence"),
+                        market_state=o.get("market_state"),
+                        market_state_confidence=o.get("market_state_confidence"),
+                        feed_source=o.get("feed_source", ""),
+                        feed_type=o.get("feed_type", ""),
+                        data_age=o.get("data_age"),
+                        alpaca_feed_health=o.get("alpaca_feed_health"),
+                        bar_health=o.get("bar_health"))
 
 
 def record_bal_rejection(sig: dict, market_context: dict | None = None,

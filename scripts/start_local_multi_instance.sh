@@ -11,6 +11,15 @@ INSTANCES=(
 
 mkdir -p .local_pids
 
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || true)}"
+if [[ -z "$PYTHON_BIN" ]]; then
+  PYTHON_BIN="$(command -v python || true)"
+fi
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "[fatal] No python interpreter found on PATH"
+  exit 1
+fi
+
 for entry in "${INSTANCES[@]}"; do
   STRATEGY_ID="${entry%% *}"
   ENV_FILE="${entry##* }"
@@ -34,7 +43,7 @@ for entry in "${INSTANCES[@]}"; do
   source "$ENV_FILE"
   set +a
 
-  nohup python run.py > "$LOG_DIR_PATH/startup.log" 2>&1 &
+  nohup "$PYTHON_BIN" run.py > "$LOG_DIR_PATH/startup.log" 2>&1 &
   echo $! > "$PID_FILE"
   echo "[started] $STRATEGY_ID PID=$! log=$LOG_DIR_PATH/startup.log"
 done

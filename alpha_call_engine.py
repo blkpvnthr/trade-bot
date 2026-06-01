@@ -119,6 +119,14 @@ class AlphaCallConfig:
     vol_diagnostics_enabled: bool = os.getenv("ENABLE_VOL_DIAGNOSTICS", "true").lower() in {"1", "true"}
     vol_iv_crush_exit_threshold: float = float(os.getenv("OPTIONS_IV_CRUSH_EXIT", "70"))  # crush risk that discourages overnight hold
     vol_gt_efficiency_bonus: float = float(os.getenv("OPTIONS_GT_EFFICIENCY_BONUS", "6.0"))  # max selection bonus from gamma/theta efficiency
+    # ── OptionLab payoff/risk profile (advisory; validates the chosen call) ───────
+    optionlab_enabled: bool = os.getenv("ENABLE_OPTIONLAB", "true").lower() in {"1", "true"}
+    # Final combined option score weights (configurable; renormalised at use):
+    #   combined = w_bs*BS + w_oops*OOPS + w_optionlab*OptionLab + w_liq*liquidity
+    combined_bs_weight: float = float(os.getenv("COMBINED_BS_WEIGHT", "0.25"))
+    combined_oops_weight: float = float(os.getenv("COMBINED_OOPS_WEIGHT", "0.30"))
+    combined_optionlab_weight: float = float(os.getenv("COMBINED_OPTIONLAB_WEIGHT", "0.25"))
+    combined_liq_weight: float = float(os.getenv("COMBINED_LIQ_WEIGHT", "0.20"))
 
 
 # ── data structures ────────────────────────────────────────────────────────────
@@ -141,6 +149,20 @@ class SetupEvaluation:
     reject_reason: str = ""
     notes: list[str] = field(default_factory=list)
     evaluated_at_utc: str = ""
+    # ── shared streaming-indicator provenance (timing diagnostics; never directional) ──
+    indicator_source: str = "fallback_static"   # "streaming" | "fallback_static"
+    indicator_age_seconds: float | None = None
+    streaming_indicator_available: bool = False
+    fallback_used: bool = True
+    # ── premarket live-feed awareness (improves scoring only; never creates a trade) ──
+    premarket_source: str = ""                  # "yliveticker" | "yfinance" | ""
+    premarket_gap_pct: float | None = None
+    premarket_volume: float | None = None
+    premarket_high: float | None = None
+    premarket_low: float | None = None
+    premarket_relative_strength: float | None = None
+    premarket_stale: bool = False
+    premarket_rank_score: float | None = None   # advisory ranking input (gap+rvol+sector+risk)
 
 
 @dataclass
@@ -225,6 +247,31 @@ class CallSignal:
     signal_at_utc: str = ""
     reject_reason: str = ""
     status: str = "pending"      # pending | submitted | active | closed
+    # ── shared streaming-indicator provenance (recorded by the Research Lab) ──────
+    indicator_source: str = "fallback_static"   # "streaming" | "fallback_static"
+    indicator_age_seconds: float | None = None
+    streaming_indicator_available: bool = False
+    fallback_used: bool = True
+    # ── premarket live-feed awareness (recorded by the Research Lab) ──────────────
+    premarket_source: str = ""
+    premarket_gap_pct: float | None = None
+    premarket_volume: float | None = None
+    premarket_high: float | None = None
+    premarket_low: float | None = None
+    premarket_relative_strength: float | None = None
+    premarket_stale: bool = False
+    premarket_rank_score: float | None = None
+    # ── OptionLab payoff/risk profile (advisory; validates the chosen call) ───────
+    optionlab_score: float = 0.0
+    break_even_price: float | None = None
+    break_even_distance_pct: float | None = None
+    profitable_price_range: list | None = None
+    max_loss: float | None = None
+    max_gain_estimate: float | None = None
+    payoff_asymmetry: float | None = None
+    payoff_quality: str = ""
+    optionlab_greeks: dict | None = None
+    optionlab_reject_reason: str = ""
 
 
 @dataclass
@@ -342,13 +389,58 @@ def _compute_rvol(bars_1m: pd.DataFrame, lookback_bars: int = 20) -> float:
         return 1.0
 
 
+def _resolve_indicator_state(symbol: str, indicator_snapshot: dict | None) -> tuple[dict | None, bool]:
+    """
+    Return (usable_state, is_fresh) for a symbol from a StreamingIndicatorEngine
+    snapshot. State is usable only when present and NOT stale; otherwise callers
+    fall back to bar-based calculations (indicator_source='fallback_static').
+    """
+    if not indicator_snapshot:
+        return None, False
+    state = indicator_snapshot.get(symbol)
+    if not state:
+        return None, False
+    if state.get("stale"):
+        return state, False
+    return state, True
+
+
+def _resolve_premarket_state(symbol: str, premarket_snapshot: dict | None):
+    """Return (symbol_quote, all_quotes) from a PremarketLiveFeed snapshot, or (None, {})."""
+    if not premarket_snapshot:
+        return None, {}
+    quotes = premarket_snapshot.get("quotes") or {}
+    return quotes.get(symbol), quotes
+
+
+def _premarket_benchmark_gap(quotes: dict) -> float | None:
+    """Fresh premarket gap% of a broad benchmark (SPY/QQQ/IWM) for relative strength."""
+    for b in ("SPY", "QQQ", "IWM"):
+        q = quotes.get(b)
+        if q and not q.get("stale") and q.get("premarket_change_pct") is not None:
+            try:
+                return float(q["premarket_change_pct"])
+            except Exception:
+                return None
+    return None
+
+
 def detect_setup(
     symbol: str,
     bars_1m: pd.DataFrame,
     config: AlphaCallConfig,
     market_context: dict,
+    indicator_snapshot: dict | None = None,
+    premarket_snapshot: dict | None = None,
 ) -> SetupEvaluation:
-    """Score each symbol for A/A+ call setups. Returns a SetupEvaluation."""
+    """Score each symbol for A/A+ call setups. Returns a SetupEvaluation.
+
+    When a fresh StreamingIndicatorEngine snapshot is supplied, its VWAP is used
+    for the VWAP-based gates (shared real-time indicator state). If the snapshot is
+    missing or stale, the engine falls back to the existing bar-based VWAP and the
+    evaluation is marked indicator_source='fallback_static'. Streaming indicators
+    only inform timing — they never create or block an order on their own.
+    """
     now_utc = datetime.now(timezone.utc).isoformat()
 
     ev = SetupEvaluation(
@@ -373,6 +465,37 @@ def detect_setup(
         ev.reject_reason = "rejected_by_setup_quality:no_bars"
         return ev
 
+    # ── shared real-time indicator state (timing only) ─────────────────────────
+    # Resolved UP-FRONT so provenance is recorded even when the setup is later
+    # rejected (e.g. by the regime gate). A fresh streaming VWAP is applied below.
+    _ind_state, _ind_fresh = _resolve_indicator_state(symbol, indicator_snapshot)
+    _stream_vwap: float | None = None
+    if _ind_state is not None:
+        ev.streaming_indicator_available = bool(_ind_state.get("streaming_indicator_available"))
+        ev.indicator_age_seconds = _ind_state.get("indicator_age_seconds")
+    if _ind_fresh:
+        _sv = (_ind_state.get("indicators") or {}).get("vwap")
+        if isinstance(_sv, (int, float)) and _sv > 0:
+            _stream_vwap = float(_sv)
+            ev.indicator_source = "streaming"
+            ev.fallback_used = False
+
+    # ── premarket live-feed awareness (recorded even on later rejection) ────────
+    _pm_q, _pm_quotes = _resolve_premarket_state(symbol, premarket_snapshot)
+    if _pm_q is not None:
+        ev.premarket_source = _pm_q.get("source") or ""
+        ev.premarket_stale = bool(_pm_q.get("stale"))
+        ev.premarket_gap_pct = _pm_q.get("premarket_change_pct")
+        ev.premarket_volume = _pm_q.get("premarket_volume")
+        ev.premarket_high = _pm_q.get("premarket_high")
+        ev.premarket_low = _pm_q.get("premarket_low")
+        _bench = _premarket_benchmark_gap(_pm_quotes)
+        if ev.premarket_gap_pct is not None:
+            try:
+                ev.premarket_relative_strength = round(float(ev.premarket_gap_pct) - (_bench or 0.0), 4)
+            except Exception:
+                ev.premarket_relative_strength = None
+
     # ── regime gate ───────────────────────────────────────────────────────────
     bias = str(
         market_context.get("overall_market_bias")
@@ -388,7 +511,8 @@ def detect_setup(
 
     # ── base metrics ─────────────────────────────────────────────────────────
     price = float(bars_1m["close"].iloc[-1])
-    vwap = _compute_vwap(bars_1m)
+    # Prefer the fresh streaming VWAP (resolved above); else the bar-based VWAP.
+    vwap = _stream_vwap if _stream_vwap is not None else _compute_vwap(bars_1m)
     rvol = _compute_rvol(bars_1m)
     orb_high, orb_low, orb_status = _compute_orb(bars_1m, config.orb_minutes)
     above_vwap = price >= vwap
@@ -512,6 +636,22 @@ def detect_setup(
         notes.append(f"volume_surge RVOL={rvol:.1f}x(+10)")
     elif rvol >= 1.8:
         score = min(100, score + 5)
+
+    # ── Premarket awareness bonus (improves scoring only; never creates a trade) ──
+    # Only strengthens an ALREADY-detected setup (best_setup != NONE) and only from a
+    # FRESH premarket quote. price > premarket_high + premarket relative strength +
+    # risk-on regime ⇒ stronger Alpha setup. Bounded to +8 so premarket data can never
+    # lift a non-setup over the entry threshold on its own.
+    if best_setup != "NONE" and ev.premarket_high and not ev.premarket_stale:
+        pm_bonus = 0.0
+        if price > float(ev.premarket_high):
+            pm_bonus += 5.0
+            notes.append(f"premarket_breakout px={price:.2f}>pmH={float(ev.premarket_high):.2f}(+5)")
+        if (ev.premarket_relative_strength or 0.0) > 0 and (
+                "bull" in bias or "risk_on" in bias or "uptrend" in bias):
+            pm_bonus += 3.0
+            notes.append(f"premarket_rel_strength={ev.premarket_relative_strength:.2f}(+3)")
+        score = min(100, score + min(8.0, pm_bonus))
 
     ev.setup_type = best_setup
     ev.setup_score = round(score, 1)
@@ -1319,6 +1459,8 @@ class AlphaCallEngine:
         options_positions: list[dict],
         waterfall_callback: Any,
         market_context: dict | None = None,
+        indicator_snapshot: dict | None = None,
+        market_state: dict | None = None,
     ) -> list[dict]:
         """
         Manage all open calls using a 3R target / 1.7R trailing stop structure:
@@ -1333,6 +1475,20 @@ class AlphaCallEngine:
         """
         exit_orders = []
         pos_by_contract = {p.get("symbol", ""): p for p in options_positions}
+
+        # Dynamic-exit profile (rl_engine_levers) — gated, default OFF, paper-only, and only
+        # active when the RL deployment gate rates alpha_exit ≥ paper_mode_only. When active it
+        # ONLY re-times the partial/trail triggers (partial at +1R, trail the runner 1R below its
+        # peak). The hard stop, 3R cap, kill switch, daily-loss halt, and RiskManager below are
+        # untouched and always take priority. None → the engine's existing triggers run unchanged.
+        _dyn = None
+        try:
+            import rl_engine_levers as _levers
+            if _levers.dynamic_exit_active():
+                _dyn = _levers.exit_profile()
+                _alpha_event("dynamic_exit_active", {"profile": _dyn})
+        except Exception:
+            _dyn = None
 
         for key, call in list(self._active.items()):
             pos = pos_by_contract.get(call.contract_symbol)
@@ -1398,7 +1554,8 @@ class AlphaCallEngine:
                 del self._active[key]; self._save_state(); continue
 
             # ── +1R partial (sell half at first R) ───────────────────────────
-            if not call.partial_taken and current_value >= call.partial_value:
+            _partial_trigger = (call.entry_cost * (1 + _dyn["partial_r"])) if _dyn else call.partial_value
+            if not call.partial_taken and current_value >= _partial_trigger:
                 partial_qty = max(1, math.floor(qty_held * self.config.partial_size))
                 exit_orders.append({
                     "symbol": call.contract_symbol,
@@ -1421,14 +1578,16 @@ class AlphaCallEngine:
 
             # ── 1.7R trailing stop ────────────────────────────────────────────
             r_amount = call.entry_cost   # 1R = full premium paid
-            trail_activate_value = call.entry_cost * (1 + self.config.r_trail_activate)
+            _trail_activate_r = _dyn["trail_activate_r"] if _dyn else self.config.r_trail_activate
+            _trail_offset_r = _dyn["trail_offset_r"] if _dyn else self.config.r_trail_offset
+            trail_activate_value = call.entry_cost * (1 + _trail_activate_r)
             if current_value >= trail_activate_value:
                 call.trail_active = True
-                # Trail stop sits (r_trail_offset × trail_tightness) × R below the peak.
+                # Trail stop sits (offset × trail_tightness) × R below the peak.
                 # trail_tightness_mult <= 1.0 ⇒ stop sits CLOSER to the peak (more
                 # protective). Probability can only tighten this, never loosen it.
                 offset_mult = min(getattr(call, "trail_tightness_mult", 1.0) or 1.0, 1.0)
-                trail_stop = call.peak_value - (self.config.r_trail_offset * offset_mult * r_amount)
+                trail_stop = call.peak_value - (_trail_offset_r * offset_mult * r_amount)
                 # Never lower the trail stop once set
                 if trail_stop > call.trail_stop_value:
                     call.trail_stop_value = trail_stop
@@ -1528,6 +1687,21 @@ class AlphaCallEngine:
                         call.trail_tightness_mult = new_mult
                         self._save_state()
 
+        # Stamp exit-side diagnostics (market state + indicator provenance) onto every
+        # exit order so the Research Lab records the context the exit fired under. This is
+        # diagnostics only — it never changes whether an exit fires.
+        _ms = market_state or {}
+        _isnap = indicator_snapshot or {}
+        for _ex in exit_orders:
+            _ex.setdefault("market_state", _ms.get("regime"))
+            _ex.setdefault("market_state_confidence", _ms.get("confidence"))
+            _u = _ex.get("underlying") or _ex.get("symbol") or ""
+            _snap = _isnap.get(_u) if isinstance(_isnap, dict) else None
+            if isinstance(_snap, dict):
+                _ex.setdefault("indicator_source", _snap.get("source"))
+                _ex.setdefault("indicator_age_seconds", _snap.get("indicator_age_seconds"))
+                _ex.setdefault("streaming_indicator_available", _snap.get("streaming_indicator_available"))
+
         return exit_orders
 
     # ── scan and signal ───────────────────────────────────────────────────────
@@ -1542,6 +1716,9 @@ class AlphaCallEngine:
         chains_by_symbol: dict[str, list] | None = None,
         positions: dict | None = None,
         account_state: dict | None = None,
+        indicator_snapshot: dict | None = None,
+        premarket_snapshot: dict | None = None,
+        market_state: dict | None = None,
     ) -> list[CallSignal]:
         """
         Full Alpha pipeline on PRE-FETCHED data (I/O-light):
@@ -1580,6 +1757,21 @@ class AlphaCallEngine:
         exposure_blocked = options_exposure >= equity * self.config.max_options_exposure_pct
         positions_full = len(self._active) >= self.config.max_concurrent_positions
         entries_enabled = self.config.enabled and not exposure_blocked and not positions_full
+        # Regime gate (rl_engine_levers) — gated, default OFF, paper-only, active only when the
+        # deployment gate rates alpha_entry ≥ paper_mode_only. Suppresses NEW entries when SPY is
+        # not confirmed above its 200-DMA. Suppressive only: it can disable entries this cycle but
+        # never forces a trade and never touches exits/sells/RiskManager (existing crisis-regime
+        # halt in run.py is separate and still applies).
+        regime_suppressed = False
+        try:
+            import rl_engine_levers as _levers
+            if _levers.suppress_entry("alpha_entry", market_state, indicator_snapshot):
+                regime_suppressed = True
+                entries_enabled = False
+                _alpha_event("regime_gate_suppressed_entries",
+                             {"reason": "SPY_not_confirmed_above_200DMA", "lever": "ENABLE_RL_REGIME_GATE"})
+        except Exception:
+            regime_suppressed = False
         if exposure_blocked:
             _alpha_event("options_exposure_limit", {"exposure": options_exposure,
                 "limit": equity * self.config.max_options_exposure_pct, "reason": "rejected_by_exposure_limit"})
@@ -1590,8 +1782,23 @@ class AlphaCallEngine:
             bars = bars_by_symbol.get(symbol)
             if bars is None:
                 bars = pd.DataFrame()
-            ev = detect_setup(symbol, bars, self.config, market_context)
+            ev = detect_setup(symbol, bars, self.config, market_context,
+                              indicator_snapshot, premarket_snapshot)
             urow = _alpha_momentum_row(symbol, ev, market_context)
+            urow["indicator_source"] = ev.indicator_source
+            urow["fallback_used"] = ev.fallback_used
+            urow["premarket_source"] = ev.premarket_source
+            urow["premarket_gap_pct"] = ev.premarket_gap_pct
+            # Premarket rank score (advisory): gap + RVOL + sector + risk-on. It ONLY
+            # influences candidate ordering below — never eligibility or order creation.
+            _pmq = (premarket_snapshot or {}).get("quotes", {}).get(symbol) if premarket_snapshot else None
+            if _pmq:
+                try:
+                    import premarket_live_feed as _plf
+                    ev.premarket_rank_score = _plf.compute_premarket_rank_score(_pmq, market_state)
+                except Exception:
+                    ev.premarket_rank_score = None
+            urow["premarket_rank_score"] = ev.premarket_rank_score
 
             # Resolve the PRE-FETCHED chain (fall back to broker only if not supplied).
             chain = chains_by_symbol.get(symbol)
@@ -1632,7 +1839,7 @@ class AlphaCallEngine:
 
             # ── entry decision (engine authority) ───────────────────────────────
             if not entries_enabled:
-                urow["reject_reason"] = "entries_disabled"
+                urow["reject_reason"] = "regime_gate:SPY_not_confirmed_above_200DMA" if regime_suppressed else "entries_disabled"
                 universe_rows.append(urow); continue
             if ev.setup_score < self.config.min_setup_score or ev.reject_reason:
                 urow["reject_reason"] = ev.reject_reason or \
@@ -1682,7 +1889,19 @@ class AlphaCallEngine:
                 except Exception as _oe:
                     _alpha_event("oops_optimizer_error", {"symbol": symbol, "error": str(_oe)[:160]})
             sig = CallSignal(symbol=symbol, setup_type=ev.setup_type, setup_score=ev.setup_score,
-                             grade=ev.grade, signal_at_utc=datetime.now(timezone.utc).isoformat())
+                             grade=ev.grade, signal_at_utc=datetime.now(timezone.utc).isoformat(),
+                             indicator_source=ev.indicator_source,
+                             indicator_age_seconds=ev.indicator_age_seconds,
+                             streaming_indicator_available=ev.streaming_indicator_available,
+                             fallback_used=ev.fallback_used,
+                             premarket_source=ev.premarket_source,
+                             premarket_gap_pct=ev.premarket_gap_pct,
+                             premarket_volume=ev.premarket_volume,
+                             premarket_high=ev.premarket_high,
+                             premarket_low=ev.premarket_low,
+                             premarket_relative_strength=ev.premarket_relative_strength,
+                             premarket_stale=ev.premarket_stale,
+                             premarket_rank_score=ev.premarket_rank_score)
             _apply_vol_fields(sig, vol_diag)
             if contract is not None:
                 _apply_oops_fields(sig, contract, oops_selected)
@@ -1708,6 +1927,60 @@ class AlphaCallEngine:
             sig.bid = contract["bid"]; sig.ask = contract["ask"]; sig.mid = contract["mid"]
             sig.open_interest = contract["open_interest"]; sig.volume = contract["volume"]
             _apply_bs_fields(sig, contract)
+
+            # ── OptionLab payoff/risk profile (advisory) ────────────────────────
+            # Validates the CHOSEN call's payoff geometry. MAY raise/lower the combined
+            # score; NEVER bypasses liquidity, RiskManager, hard stops, kill switch, or
+            # the daily-loss halt, and never places an order. Fully fail-safe.
+            _optionlab_ran = False
+            if self.config.optionlab_enabled:
+                try:
+                    import optionlab_evaluator as _ole
+                    _iv = float(sig.implied_volatility or 0.0)
+                    _iv = _iv if 0.0 < _iv < 3.0 else None
+                    _olr = _ole.get_evaluator().evaluate_long_call(
+                        underlying_price=float(ev.price),
+                        strike=float(contract.get("strike", 0.0)),
+                        premium=float(sig.mid or contract.get("mid", 0.0)),
+                        dte=float(contract.get("dte", 30) or 30),
+                        iv=_iv, contracts=1,
+                        delta=sig.delta, gamma=sig.gamma, theta=sig.theta, vega=sig.vega,
+                        expected_move=float(vol_diag.get("expected_move", 0.0) or 0.0) or None,
+                        symbol=symbol, market_state=market_state)
+                    sig.optionlab_score = float(_olr.get("optionlab_score", 0.0) or 0.0)
+                    sig.break_even_price = _olr.get("break_even_price")
+                    sig.break_even_distance_pct = _olr.get("break_even_distance_pct")
+                    sig.profitable_price_range = _olr.get("profitable_price_range")
+                    sig.max_loss = _olr.get("max_loss")
+                    sig.max_gain_estimate = _olr.get("max_gain_estimate")
+                    sig.payoff_asymmetry = _olr.get("payoff_asymmetry")
+                    sig.payoff_quality = _olr.get("payoff_quality", "")
+                    sig.optionlab_greeks = _olr.get("optionlab_greeks")
+                    sig.optionlab_reject_reason = _olr.get("optionlab_reject_reason", "")
+                    _optionlab_ran = True   # a real OptionLab evaluation produced a score
+                except Exception as _ole_e:
+                    _alpha_event("optionlab_error", {"symbol": symbol, "error": str(_ole_e)[:160]})
+                    sig.optionlab_reject_reason = "optionlab_failed"
+
+            # ── Final ensemble combined option score (configurable, renormalised) ──
+            # combined = w_bs·BS + w_oops·OOPS + w_optionlab·OptionLab + w_liq·liquidity.
+            # ONLY recompute when OptionLab actually executed successfully; when OptionLab
+            # is disabled or failed, PRESERVE the OOPS-computed combined_option_score so a
+            # default optionlab_score=0 can never deflate every signal.
+            if _optionlab_ran:
+                try:
+                    _liq = float(urow.get("liquidity_score", 0.0) or 0.0)
+                    _wb = self.config.combined_bs_weight; _wo = self.config.combined_oops_weight
+                    _wol = self.config.combined_optionlab_weight; _wl = self.config.combined_liq_weight
+                    _wsum = _wb + _wo + _wol + _wl
+                    if _wsum > 0:
+                        sig.combined_option_score = round(
+                            (_wb * float(sig.black_scholes_score or 0.0)
+                             + _wo * float(sig.oops_score or 0.0)
+                             + _wol * float(sig.optionlab_score or 0.0)
+                             + _wl * _liq) / _wsum, 3)
+                except Exception:
+                    pass
 
             available = min(equity * self.config.risk_per_trade_pct, waterfall_budget) \
                 if waterfall_budget > 0 else equity * self.config.risk_per_trade_pct
@@ -1763,7 +2036,12 @@ class AlphaCallEngine:
                 "score": ev.setup_score, "contract": sig.contract_symbol, "delta": sig.delta, "dte": sig.dte,
                 "mid": sig.mid, "contracts": sig.contracts, "premium": sig.premium_cost})
 
-        signals.sort(key=lambda s: s.setup_score, reverse=True)
+        # Rank by setup score, with a BOUNDED premarket-rank tiebreaker/nudge (advisory).
+        # Eligibility was already decided by the gates above (status=='ready'); this only
+        # reorders candidates and can never make a non-setup tradeable.
+        signals.sort(
+            key=lambda s: s.setup_score + min(10.0, 0.1 * float(s.premarket_rank_score or 0.0)),
+            reverse=True)
         self._signals_today.extend([asdict(s) for s in signals if s.status == "ready"])
         # Merge OOPS summary into the volatility diagnostic rows.
         for vr in vol_rows:
@@ -1778,6 +2056,12 @@ class AlphaCallEngine:
                 oops_opt.write_oops_diagnostic(oops_all_rows, market_context)
             except Exception as _oe:
                 _alpha_event("oops_report_error", {"error": str(_oe)[:160]})
+        if self.config.optionlab_enabled:
+            try:
+                import optionlab_evaluator as _ole
+                _ole.get_evaluator().write_report()
+            except Exception as _oe:
+                _alpha_event("optionlab_report_error", {"error": str(_oe)[:160]})
         return signals
 
     def _save_volatility_diagnostic(self, rows: list[dict], market_context: dict) -> None:
@@ -1832,14 +2116,22 @@ class AlphaCallEngine:
 
     def check_active_positions(self, options_positions: list[dict],
                                waterfall_callback: Any = None,
-                               market_context: dict | None = None) -> list[dict]:
+                               market_context: dict | None = None,
+                               indicator_snapshot: dict | None = None,
+                               market_state: dict | None = None) -> list[dict]:
         """
         Public EXIT pass. Manages all open calls (hard stop / +partial / 1.7R trail /
         3R target) and an optional Black-Scholes theta-decay exit. Returns exit orders.
         Must be called BEFORE evaluate_universe() each cycle (exit-before-buy).
+
+        indicator_snapshot is accepted for shared real-time indicator state (volatility
+        diagnostics). Exits are governed by hard 3R/stop/trail rules and are never
+        blocked or created by streaming indicators; the args are forwarded for diagnostics.
         """
         return self._check_active_positions(options_positions, waterfall_callback,
-                                            market_context=market_context)
+                                            market_context=market_context,
+                                            indicator_snapshot=indicator_snapshot,
+                                            market_state=market_state)
 
     def select_best_contract(self, symbol: str, price: float, chain: list[dict],
                              market_context: dict | None = None) -> Optional[dict]:

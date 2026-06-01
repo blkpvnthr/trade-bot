@@ -262,6 +262,12 @@ class DCASignal:
     insider_buy_confidence: float = 0.0
     insider_buy_used_in_conviction: bool = False
     insider_buy_rejected_reason: str = ""
+    # ── Black-Litterman / Efficient-Frontier optimizer target weight ─────────────
+    optimized_target_weight: float | None = None
+    current_weight: float | None = None
+    weight_gap: float | None = None
+    optimizer_allocation_reason: str = ""
+    optimizer_objective_weights: dict | None = None
 
 
 # ── event logging ──────────────────────────────────────────────────────────────
@@ -1648,10 +1654,19 @@ class BuffettAccumulationLayer:
         fd_by_symbol: dict[str, FundamentalData] | None = None,
         insider_data_by_symbol: dict[str, dict] | None = None,
         target_weights_by_symbol: dict[str, float] | None = None,
+        indicator_snapshot: dict | None = None,
+        market_state: dict | None = None,
+        optimizer_objective_weights: dict | None = None,
     ) -> list[dict]:
         """
         Composite DCA evaluation with multi-model valuation, conviction-driven
         allocation, and an insider-purchase conviction modifier.
+
+        indicator_snapshot (optional): shared StreamingIndicatorEngine state. It is
+        used for TIMING ONLY — it fills the per-symbol VWAP into bars_ctx when one is
+        not already present, and stamps indicator provenance onto each order for the
+        Research Lab. It NEVER overrides the BAL score, valuation, conviction, the
+        composite DCA decision, or RiskManager.
 
         Decision order (final rule):
             Quality determines ELIGIBILITY (business-quality gate),
@@ -1676,8 +1691,33 @@ class BuffettAccumulationLayer:
         val_rows: list[dict] = []
         conv_rows: list[dict] = []
 
+        indicator_snapshot = indicator_snapshot or {}
+        # Regime gate (rl_engine_levers) — gated, default OFF, paper-only, active only when the
+        # deployment gate rates buffett_dca ≥ paper_mode_only. Suppresses NEW DCA buys when SPY
+        # is not confirmed above its 200-DMA (avoid accumulating into a confirmed downtrend).
+        # Suppressive only: it can reject buys but never forces one and never affects sells/exits
+        # or RiskManager (the hard gate in run.py).
+        _regime_suppressed = False
+        try:
+            import rl_engine_levers as _levers
+            _regime_suppressed = _levers.suppress_entry("buffett_dca", market_state, indicator_snapshot)
+        except Exception:
+            _regime_suppressed = False
         for symbol in symbols:
-            bars_ctx = bars_ctx_by_symbol.get(symbol, {})
+            bars_ctx = dict(bars_ctx_by_symbol.get(symbol, {}))
+            # Shared real-time indicator state (TIMING ONLY). Use the streaming VWAP to
+            # fill bars_ctx when fresh and not already present; never alter fd.* authority.
+            ind_state = indicator_snapshot.get(symbol)
+            ind_source, ind_age, ind_avail, ind_fallback = "fallback_static", None, False, True
+            if ind_state:
+                ind_avail = bool(ind_state.get("streaming_indicator_available"))
+                ind_age = ind_state.get("indicator_age_seconds")
+                if not ind_state.get("stale"):
+                    s_vwap = (ind_state.get("indicators") or {}).get("vwap")
+                    if bars_ctx.get("vwap") in (None, 0, 0.0) and isinstance(s_vwap, (int, float)) and s_vwap > 0:
+                        bars_ctx["vwap"] = float(s_vwap)
+                    ind_source = ind_state.get("source", "streaming")
+                    ind_fallback = bool(ind_state.get("fallback_used", False))
             fd = (fd_by_symbol or {}).get(symbol)
             if fd is None:
                 fd = get_fundamentals(symbol, self.config)
@@ -1729,10 +1769,12 @@ class BuffettAccumulationLayer:
             # DESIRED target weight (capped at the single-stock limit). Composite DCA still
             # decides WHEN to buy and RiskManager still decides whether allowed. Conviction
             # is the fallback when no optimizer weight is available.
+            optimized_target_weight = None
             if target_weights_by_symbol and symbol in target_weights_by_symbol:
                 opt_w = float(target_weights_by_symbol.get(symbol) or 0.0)
                 if opt_w > 0:
-                    target_pct = round(min(opt_w, cfg.max_single_stock_weight), 4)
+                    optimized_target_weight = round(min(opt_w, cfg.max_single_stock_weight), 4)
+                    target_pct = optimized_target_weight
                     alloc_reason = f"optimizer_target_weight:{target_pct:.4f}"
 
             rec = self._ownership.get(symbol, {})
@@ -1771,6 +1813,13 @@ class BuffettAccumulationLayer:
                 insider_buy_used_in_conviction=insider_used,
                 insider_buy_rejected_reason=insider_reject,
             )
+            # Optimizer target-weight provenance (advisory; Composite DCA controls timing).
+            sig.optimized_target_weight = optimized_target_weight
+            sig.current_weight = cur_pct
+            sig.weight_gap = (round(optimized_target_weight - cur_pct, 4)
+                              if optimized_target_weight is not None else None)
+            sig.optimizer_allocation_reason = alloc_reason if optimized_target_weight is not None else ""
+            sig.optimizer_objective_weights = optimizer_objective_weights
 
             # diagnostics rows (written for EVERY scanned symbol, pass or fail)
             val_rows.append({"symbol": symbol, "price": round(price, 4), "intrinsic_value": iv,
@@ -1794,6 +1843,10 @@ class BuffettAccumulationLayer:
                 _bal_event("dca_reject", {"symbol": symbol, "reason": journal,
                                           "composite": composite, "p2iv": p2iv,
                                           "conviction": conviction, "bal_score": round(card.bal_score, 1)})
+
+            # ── 0. Regime gate — suppress NEW buys in an unconfirmed/bearish SPY regime ──
+            if _regime_suppressed:
+                _reject("regime_gate:SPY_not_confirmed_above_200DMA", "rejected_dca_regime_gate"); continue
 
             # ── 1. Quality gate — ELIGIBILITY (worth owning?) ───────────────────
             if price <= 0 or (fd.fetch_error and price <= 0):
@@ -1834,6 +1887,11 @@ class BuffettAccumulationLayer:
             if dca_count >= cfg.max_dca_count_per_symbol:
                 _reject(f"max_tranches={dca_count}>={cfg.max_dca_count_per_symbol}",
                         "rejected_dca_max_tranches"); continue
+            # Optimizer ceiling: never accumulate ABOVE the Black-Litterman/Efficient-
+            # Frontier optimized target weight (Composite DCA still controls timing below it).
+            if optimized_target_weight is not None and cur_pct >= optimized_target_weight - 1e-6:
+                _reject(f"above_optimized_target:{cur_pct:.2%}>={optimized_target_weight:.2%}",
+                        "rejected_dca_above_optimized_target"); continue
             if cur_pct >= target_pct - 1e-6:
                 _reject(f"target_reached:{cur_pct:.2%}>={target_pct:.2%}",
                         "rejected_dca_concentration"); continue
@@ -1906,6 +1964,13 @@ class BuffettAccumulationLayer:
                 "reason": f"buffett_dca:{final_action}:{journal}:conv={conviction:.0f}:score={composite:.0f}:p2iv={p2iv:.2f}",
                 "journal_reason": journal, "dca_reason": sig.dca_reason,
                 "hold_intent": "long_term_indefinite", "bracket_attached": False,
+                "indicator_source": ind_source, "indicator_age_seconds": ind_age,
+                "streaming_indicator_available": ind_avail, "fallback_used": ind_fallback,
+                "optimized_target_weight": optimized_target_weight, "current_weight": cur_pct,
+                "weight_gap": sig.weight_gap, "optimizer_allocation_reason": sig.optimizer_allocation_reason,
+                "optimizer_objective_weights": optimizer_objective_weights,
+                "market_state": (market_state or {}).get("regime"),
+                "market_state_confidence": (market_state or {}).get("confidence"),
             })
 
             # ── 8. Persist tranche state on the ownership record ────────────────
