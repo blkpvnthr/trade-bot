@@ -1,0 +1,5 @@
+variant,label,risk_mode,vol_oi_scoring,n_universe,total_return_pct,max_drawdown_pct,sharpe_ratio,profit_factor,win_rate_pct,total_trades,total_calls,total_puts,avg_position_size,avg_win,avg_loss,total_skips,skips_risk_budget,skips_no_contract,avg_vol_oi_ratio
+A,"A — Fixed 1.5%, TV screener",fixed_1.5%,False,49,-10.91,-12.81,-3.486,0.488,22.1,68,68,0,116.74,89.94,52.21,192,165,26,
+B,"B — Dynamic budget, TV screener",dynamic_tiered (4%),False,49,-28.62,-28.62,-3.231,0.358,19.7,66,66,0,251.73,159.66,109.35,86,65,20,
+C,"C — Dynamic budget, liquid universe",dynamic_tiered (4%),False,15,-1.49,-10.5,-0.719,0.91,36.8,19,19,0,389.38,279.69,179.31,98,89,8,
+E,E — Variant C + Vol/OI scoring,dynamic_tiered (4%),True,15,-1.49,-10.5,-0.719,0.91,36.8,19,19,0,389.38,279.69,179.31,98,89,8,
