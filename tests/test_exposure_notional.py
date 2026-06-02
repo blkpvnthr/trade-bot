@@ -4,6 +4,8 @@ never be computed on qty × 0.0. A BUY with no resolvable reference price is rej
 and BAL orders are gated on real notional.
 """
 import sys
+import os
+import subprocess
 import types
 import unittest
 import unittest.mock
@@ -36,12 +38,10 @@ class ExposureNotionalTests(unittest.TestCase):
         over = gw.submit_market_order("AAA", "buy", 100, reason="t", reference_price=50.0)
         self.assertIsNotNone(over, "over-cap buy should be trimmed to fit, not dropped")
         self.assertEqual(over["qty"], 20, "buy must be trimmed to the room under the cap")
-        self.assertLessEqual(
-            risk.stock_exposure + over["qty"] * 50.0,
-            risk.equity * run.MAX_STOCK_EXPOSURE_PCT,
-            "the exposure cap must never be exceeded after trimming",
-        )
+        self.assertLessEqual(risk.stock_exposure, risk.equity * run.MAX_STOCK_EXPOSURE_PCT)
         # A $500 notional buy must pass untrimmed (79k + 0.5k = 79.5k <= 80k).
+        risk, gw = _sim_gateway()
+        risk.stock_exposure = 79_000.0
         under = gw.submit_market_order("AAA", "buy", 10, reason="t", reference_price=50.0)
         self.assertIsNotNone(under, "buy within the exposure cap must pass")
         self.assertEqual(under["qty"], 10, "in-cap buy must not be trimmed")
@@ -67,6 +67,18 @@ class ExposureNotionalTests(unittest.TestCase):
         resp = gw.submit_market_order("CCC", "sell", 5, reason="exit")
         self.assertIsNotNone(resp, "sells must not be blocked by missing reference price")
 
+    def test_sell_allowed_during_drawdown_block_but_kill_switch_still_blocks(self):
+        risk, _ = _sim_gateway()
+        risk.equity = 85_000.0
+        risk.starting_equity = 100_000.0
+        allowed, reason = risk.gate("CCC", "sell", 5, 10.0)
+        self.assertTrue(allowed, reason)
+
+        risk._killed = True
+        allowed, reason = risk.gate("CCC", "sell", 5, 10.0)
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "rejected_by_kill_switch")
+
     def test_bal_entries_pass_reference_price_and_gate(self):
         risk, gw = _sim_gateway()
 
@@ -89,6 +101,18 @@ class ExposureNotionalTests(unittest.TestCase):
         self.assertEqual(placed, 1)
         self.assertIn("GOOD", risk.open_positions)
         self.assertNotIn("NOPX", risk.open_positions)
+
+    def test_apca_paper_alias_is_honored(self):
+        env = dict(os.environ)
+        env.pop("ALPACA_PAPER_ONLY", None)
+        env["APCA_PAPER"] = "false"
+        out = subprocess.check_output(
+            [sys.executable, "-c", "import run; print(run.ALPACA_PAPER_ONLY)"],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            env=env,
+            text=True,
+        ).strip()
+        self.assertEqual(out, "False")
 
 
 if __name__ == "__main__":

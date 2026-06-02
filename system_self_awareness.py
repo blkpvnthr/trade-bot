@@ -65,7 +65,10 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 SA_MAX_FILE_AGE_MINUTES: float = float(os.getenv("SA_MAX_FILE_AGE_MINUTES", "20"))
 SA_SESSION_FILE_AGE_MINUTES: float = float(os.getenv("SA_SESSION_FILE_AGE_MINUTES", "600"))
-SA_CRITICAL_FILE_AGE_MINUTES: float = float(os.getenv("SA_CRITICAL_FILE_AGE_MINUTES", "60"))
+# Critical age raised from 60→90 min: market_context is refreshed by the premarket
+# collector but is not written every minute; 60 min was too tight and caused spurious
+# SAFE mode during normal trading windows when the context is <2 hours old.
+SA_CRITICAL_FILE_AGE_MINUTES: float = float(os.getenv("SA_CRITICAL_FILE_AGE_MINUTES", "90"))
 SA_HALT_EXEC_RISK: float = float(os.getenv("SA_HALT_EXEC_RISK", "0.85"))
 SA_SAFE_EXEC_RISK: float = float(os.getenv("SA_SAFE_EXEC_RISK", "0.65"))
 SA_SAFE_DATA_QUALITY: float = float(os.getenv("SA_SAFE_DATA_QUALITY", "0.50"))

@@ -373,6 +373,11 @@ class ProductionOrderExecutor:
             has_bracket = bool(run._BRACKET_ORDERS_AVAILABLE) and run.row_has_complete_bracket_plan(row)
             if has_bracket:
                 resp = broker.submit_bracket_buy(symbol, qty, stop_price, target_price, client_order_id, tif)
+            elif side == "sell":
+                if not hasattr(broker, "submit_market_sell"):
+                    run.write_event("executor_sell_not_supported", {"symbol": symbol, "qty": qty})
+                    continue
+                resp = broker.submit_market_sell(symbol, qty, client_order_id, tif)
             else:
                 resp = broker.submit_market_buy(symbol, qty, client_order_id, tif)
             bracket_attached = bool(has_bracket)

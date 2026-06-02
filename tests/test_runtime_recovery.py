@@ -188,6 +188,69 @@ class BracketSubmissionTests(unittest.TestCase):
         self.assertEqual(broker.payload["target_price"], 21.45)
         self.assertTrue(bool(results.iloc[0]["bracket_attached"]))
 
+    def test_sell_plan_uses_market_sell_not_market_buy(self):
+        executor = run.ProductionOrderExecutor.__new__(run.ProductionOrderExecutor)
+        executor.config = run.build_default_config()
+        executor.config.scanner.require_direction_confirmation_before_buy = False
+        executor.config.scanner.stream_confirmed_append_direction_rejects = False
+        executor.config.scanner.stream_confirmed_submit_trailing_stop_after_fill = False
+        executor.config.min_notional_to_trade = 1.0
+        executor.scanner = None
+
+        calls = {"buy": 0, "sell": 0}
+
+        class Broker:
+            def get_position(self, symbol):
+                return run.BrokerPosition(symbol=symbol, qty=10)
+
+            def has_open_order_for_symbol(self, symbol):
+                return False
+
+            def submit_market_buy(self, *args, **kwargs):
+                calls["buy"] += 1
+                return types.SimpleNamespace(id="buy-1", status="submitted")
+
+            def submit_market_sell(self, *args, **kwargs):
+                calls["sell"] += 1
+                return types.SimpleNamespace(id="sell-1", status="submitted")
+
+            def get_all_open_positions(self):
+                return []
+
+        executor.broker = Broker()
+        executor._record_account_snapshot = lambda label, cycle_id: {
+            "equity": 13000.0,
+            "cash": 13000.0,
+            "buying_power": 26000.0,
+        }
+        executor._gross_exposure = lambda equity: 0.0
+        executor._latest_feature_by_symbol = lambda: {}
+        executor._cash_buffer = lambda equity: 0.0
+        executor._max_order_notional = lambda equity: 1500.0
+        executor._risk_profile = lambda equity: types.SimpleNamespace(max_gross_exposure=1.0, min_notional_to_trade=1.0)
+        executor._read_kill_state = lambda: {"start_equity": 13000.0}
+        executor._mark_order = lambda: None
+        executor._poll_fill = lambda order_id, price: {"fill_status": "submitted", "filled_qty": 0, "filled_avg_price": 0.0, "slippage_pct": 0.0}
+        executor._order_log_context = lambda **kwargs: {}
+        executor._journal_order = lambda *args, **kwargs: None
+        executor._safe_log_live_experience = lambda **kwargs: None
+
+        plan = pd.DataFrame([{
+            "symbol": "MNTS",
+            "side": "sell",
+            "order_qty": 4,
+            "price": 19.5195,
+            "client_order_id": "qq_20260527_test_MNTS_sell",
+            "reason": "test_exit",
+        }])
+
+        with patch.object(run, "log_executed_order", lambda **kwargs: None), patch.object(run, "write_event", lambda *args, **kwargs: None):
+            results = executor._execute_order_plan(plan, "cycle-1")
+
+        self.assertEqual(calls["sell"], 1)
+        self.assertEqual(calls["buy"], 0)
+        self.assertEqual(len(results), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

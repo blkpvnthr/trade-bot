@@ -66,30 +66,79 @@ alpaca = TradingClient(
 # CONFIG
 # ============================================================
 
-WATCHLIST = [
-    "SPY",
-    "QQQ",
-    "IWM",
-    "AAPL",
-    "NVDA",
-    "AMD",
-    "TSLA",
-    "META",
-    "MSFT",
-    "PLTR",
-    "SOFI",
-    "RGTI",
-    "QBTS",
-    "IONQ",
-]
+import csv
 
+WATCHLIST_FILE = "tv_screener_tickers.txt"
+
+def load_watchlist(path: str) -> List[str]:
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Watchlist file not found: {path}")
+
+    with open(path, "r", newline="") as f:
+        raw = f.read().strip()
+
+    if not raw:
+        return []
+
+    # Supports: "AAPL","MSFT","NVDA"
+    # Also supports accidental line-by-line tickers
+    rows = csv.reader(raw.splitlines())
+    symbols = []
+
+    for row in rows:
+        for item in row:
+            symbol = item.strip().strip('"').strip("'").upper()
+            if symbol:
+                symbols.append(symbol)
+
+    # Remove duplicates while preserving order
+    seen = set()
+    clean = []
+    for symbol in symbols:
+        if symbol not in seen:
+            seen.add(symbol)
+            clean.append(symbol)
+
+    return clean
+
+WATCHLIST = [
+   "QQQ", "TQQQ", "SQQQ", "SPY", "DIA", "IWM", "XLK", "SOXX", "SMH",
+ "NVDA", "AVGO", "AAPL", "MSFT", "AMZN", "META", "GOOGL",
+   "PLTR", "MU", "LMT", "CZR", "C", "XSP", "CVX"
+]
+# WATCHLIST = load_watchlist(WATCHLIST_FILE)
+
+# Remove this:
 ACCOUNTS = {
-    "INDIVIDUAL_5632": 195.42,
-    "BLKPVNTHR_TRUST_6418": 653.25,
-    "INDIVIDUAL_9803": 114.25,
-    "BLKPVNTHR_LLC_1767": 164.73,
-    "ROTH_IRA_1514": 396.08,
+    ...
 }
+
+def get_alpaca_account_info() -> Dict[str, float]:
+    account = alpaca.get_account()
+
+    equity = safe_float(account.equity)
+    buying_power = safe_float(account.buying_power)
+    cash = safe_float(account.cash)
+    options_buying_power = safe_float(
+        getattr(account, "options_buying_power", None),
+        default=buying_power,
+    )
+
+    print("\nAlpaca account info:")
+    print(f"Account number: {account.account_number}")
+    print(f"Status: {account.status}")
+    print(f"Equity: ${equity:,.2f}")
+    print(f"Cash: ${cash:,.2f}")
+    print(f"Buying power: ${buying_power:,.2f}")
+    print(f"Options buying power: ${options_buying_power:,.2f}")
+
+    return {
+        "account": f"ALPACA_{account.account_number[-4:]}",
+        "equity": equity,
+        "cash": cash,
+        "buying_power": buying_power,
+        "options_buying_power": options_buying_power,
+    }
 
 MIN_DTE = 7
 MAX_DTE = 45
@@ -511,44 +560,41 @@ def scan_market() -> pd.DataFrame:
 # ACCOUNT ASSIGNMENT
 # ============================================================
 
-def assign_best_contracts_to_accounts(ranked: pd.DataFrame) -> pd.DataFrame:
-    rows = []
+def assign_best_contracts_to_account(ranked: pd.DataFrame) -> pd.DataFrame:
+    account = get_alpaca_account_info()
 
-    for account_name, equity in ACCOUNTS.items():
-        max_budget = max_option_budget(equity)
+    equity = account["equity"]
+    options_buying_power = account["options_buying_power"]
+    max_budget = min(
+        max_option_budget(equity),
+        round(options_buying_power * 0.95, 2),
+    )
 
-        if ranked.empty:
-            rows.append({
-                "account": account_name,
-                "equity": equity,
-                "max_budget": max_budget,
-                "action": "NO_TRADE",
-                "reason": "No ranked contracts available",
-            })
-            continue
+    if ranked.empty:
+        return pd.DataFrame([{
+            **account,
+            "max_budget": max_budget,
+            "action": "NO_TRADE",
+            "reason": "No ranked contracts available",
+        }])
 
-        affordable = ranked[ranked["cost"] <= max_budget].copy()
+    affordable = ranked[ranked["cost"] <= max_budget].copy()
 
-        if affordable.empty:
-            rows.append({
-                "account": account_name,
-                "equity": equity,
-                "max_budget": max_budget,
-                "action": "NO_TRADE",
-                "reason": "No contract fits account budget",
-            })
-            continue
+    if affordable.empty:
+        return pd.DataFrame([{
+            **account,
+            "max_budget": max_budget,
+            "action": "NO_TRADE",
+            "reason": "No contract fits live Alpaca account budget",
+        }])
 
-        best = affordable.iloc[0].to_dict()
-        best["account"] = account_name
-        best["equity"] = equity
-        best["max_budget"] = max_budget
-        best["contracts_to_buy"] = 1
-        best["action"] = "BUY_TO_OPEN_LONG_CALL"
-        rows.append(best)
+    best = affordable.iloc[0].to_dict()
+    best.update(account)
+    best["max_budget"] = max_budget
+    best["contracts_to_buy"] = 1
+    best["action"] = "BUY_TO_OPEN_LONG_CALL"
 
-    return pd.DataFrame(rows)
-
+    return pd.DataFrame([best])
 
 # ============================================================
 # ALPACA EXECUTION
@@ -602,7 +648,7 @@ def main():
 
     ranked.to_csv("av_ranked_long_calls.csv", index=False)
 
-    account_picks = assign_best_contracts_to_accounts(ranked)
+    account_picks = assign_best_contracts_to_account(ranked)
     account_picks.to_csv("av_account_call_picks.csv", index=False)
 
     print("\nTop ranked contracts:")
