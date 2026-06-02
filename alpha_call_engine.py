@@ -67,7 +67,20 @@ class AlphaCallConfig:
     enabled: bool = os.getenv("ENABLE_ALPHA_CALL_ENGINE", "true").lower() in {"1", "true"}
     # Regime requirement
     require_bullish_regime: bool = True
-    allowed_regimes: tuple = ("bullish", "risk_on", "uptrend", "constructive", "trend_risk_on", "neutral")
+    # "mixed" and "cautious" are allowed but trigger reduced sizing + tighter score gate.
+    # Override via ALPHA_ALLOWED_REGIMES (comma-separated) if desired.
+    allowed_regimes: tuple = tuple(
+        r.strip() for r in os.getenv(
+            "ALPHA_ALLOWED_REGIMES",
+            "bullish,risk_on,uptrend,constructive,trend_risk_on,neutral,mixed,cautious"
+        ).split(",") if r.strip()
+    )
+    # On mixed/cautious days use a lower score floor (B quality acceptable) but still
+    # require a real technical trigger (ORB/VWAP/ACCUM). Override via ALPHA_MIXED_MIN_SCORE.
+    mixed_regime_min_score: float = float(os.getenv("ALPHA_MIXED_MIN_SCORE", "40"))
+    # Risk per trade is halved on mixed/cautious days to preserve capital under uncertainty.
+    # Override via ALPHA_MIXED_RISK_MULT (0.0–1.0).
+    mixed_regime_risk_multiplier: float = float(os.getenv("ALPHA_MIXED_RISK_MULT", "0.50"))
     # Setup thresholds
     min_setup_score: float = float(os.getenv("ALPHA_MIN_SETUP_SCORE", "70"))   # A = 70-84, A+ = 85+
     # Risk per trade
@@ -549,6 +562,9 @@ def detect_setup(
     elif "neutral" in bias or "constructive" in bias:
         score += 8
         notes.append(f"regime={bias}(+8)")
+    elif "mixed" in bias or "cautious" in bias:
+        score += 3
+        notes.append(f"regime={bias}(+3,mixed_caution)")
 
     # ── ORB breakout ─────────────────────────────────────────────────────────
     if orb_high > 0:
@@ -1259,7 +1275,12 @@ def size_position(
     mid: float,
     config: AlphaCallConfig,
 ) -> tuple[int, float, float]:
-    """Return (contracts, premium_cost, max_risk) for a call trade."""
+    """Return (contracts, premium_cost, max_risk) for a call trade.
+
+    NOTE: callers that apply a mixed-regime risk multiplier should pass an
+    overridden available-budget cap separately (see _eff_risk_pct in AlphaCallEngine.run).
+    This function uses config.risk_per_trade_pct as the base position ceiling.
+    """
     max_risk_dollars = equity * config.risk_per_trade_pct
     cost_per_contract = mid * 100  # options multiplier
     if cost_per_contract <= 0:
@@ -1786,6 +1807,23 @@ class AlphaCallEngine:
         if positions_full:
             _alpha_event("max_positions_reached", {"count": len(self._active)})
 
+        # Detect mixed/cautious regime so per-symbol logic can apply cautious sizing.
+        # "mixed" and "cautious" are now in allowed_regimes but trigger reduced thresholds
+        # and halved risk_per_trade to preserve capital under directional uncertainty.
+        _cycle_bias = str(
+            market_context.get("overall_market_bias") or market_context.get("market_bias") or ""
+        ).lower()
+        _is_mixed_regime = "mixed" in _cycle_bias or "cautious" in _cycle_bias
+        # Effective minimum score: use mixed_regime_min_score on mixed/cautious days.
+        _eff_min_score = (
+            self.config.mixed_regime_min_score if _is_mixed_regime else self.config.min_setup_score
+        )
+        # Effective risk per trade: halved on mixed/cautious days.
+        _eff_risk_pct = (
+            self.config.risk_per_trade_pct * self.config.mixed_regime_risk_multiplier
+            if _is_mixed_regime else self.config.risk_per_trade_pct
+        )
+
         for symbol in symbols:
             bars = bars_by_symbol.get(symbol)
             if bars is None:
@@ -1849,9 +1887,9 @@ class AlphaCallEngine:
             if not entries_enabled:
                 urow["reject_reason"] = "regime_gate:SPY_not_confirmed_above_200DMA" if regime_suppressed else "entries_disabled"
                 universe_rows.append(urow); continue
-            if ev.setup_score < self.config.min_setup_score or ev.reject_reason:
+            if ev.setup_score < _eff_min_score or ev.reject_reason:
                 urow["reject_reason"] = ev.reject_reason or \
-                    f"rejected_by_setup_quality:score={ev.setup_score:.0f}<{self.config.min_setup_score:.0f}"
+                    f"rejected_by_setup_quality:score={ev.setup_score:.0f}<{_eff_min_score:.0f}"
                 _alpha_event("setup_rejected", {"symbol": symbol, "score": ev.setup_score, "reason": urow["reject_reason"]})
                 universe_rows.append(urow); continue
             if symbol in self._active:
@@ -1990,8 +2028,9 @@ class AlphaCallEngine:
                 except Exception:
                     pass
 
-            available = min(equity * self.config.risk_per_trade_pct, waterfall_budget) \
-                if waterfall_budget > 0 else equity * self.config.risk_per_trade_pct
+            # Apply mixed-regime risk reduction: _eff_risk_pct is halved on mixed/cautious days.
+            available = min(equity * _eff_risk_pct, waterfall_budget) \
+                if waterfall_budget > 0 else equity * _eff_risk_pct
             contracts, premium, max_risk = size_position(equity, sig.mid, self.config)
             if contracts < 1 or premium > available:
                 sig.reject_reason = f"rejected_by_cash_buffer:premium={premium:.0f}>available={available:.0f}"

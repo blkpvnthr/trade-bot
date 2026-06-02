@@ -56,10 +56,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+ET = ZoneInfo("America/New_York")
 
 # Load .env before any module-level env reads so creds/config are populated.
 try:
@@ -71,6 +73,14 @@ except Exception:
 # ---------------------------------------------------------------------------
 # Environment / config
 # ---------------------------------------------------------------------------
+
+def _env_bool_any(names: List[str], default: bool = False) -> bool:
+    """Read the first configured boolean env var from a list of common aliases."""
+    for name in names:
+        value = os.environ.get(name)
+        if value not in (None, ""):
+            return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "paper"}
+    return default
 
 MODE               = os.environ.get("MODE",             "paper").lower()   # paper | live | train | scalp
 SYMBOLS_ENV        = os.environ.get("SYMBOLS",          "")
@@ -96,7 +106,7 @@ EQUITY_FLOOR_OVERRIDE = os.environ.get("EQUITY_FLOOR")
 MAX_ORDER_DOLLARS_OVERRIDE = os.environ.get("MAX_ORDER_DOLLARS")
 MAX_ORDER_SIZE_OVERRIDE = os.environ.get("MAX_ORDER_SIZE")  # optional share/contract-count cap
 
-ALPACA_PAPER_ONLY  = os.environ.get("ALPACA_PAPER_ONLY",       "true").lower() == "true"
+ALPACA_PAPER_ONLY  = _env_bool_any(["ALPACA_PAPER_ONLY", "APCA_PAPER_ONLY", "APCA_PAPER", "ALPACA_PAPER"], True)
 KILL_SWITCH_PATH   = os.environ.get("KILL_SWITCH_PATH",        ".kill_switch")
 BAR_INTERVAL_SEC   = float(os.environ.get("BAR_INTERVAL_SEC",  60.0))
 ACCOUNT_STATS_LOG_SEC = float(os.environ.get("ACCOUNT_STATS_LOG_SEC", 300.0))
@@ -327,6 +337,13 @@ class RiskManager:
 
         self.refresh_dynamic_limits()
 
+        side = str(side or "").lower()
+        # Risk-reducing exits must be able to leave the account during drawdown,
+        # daily-loss, equity-floor, or max-size states. The manual kill switch
+        # above remains absolute and still halts every order.
+        if side != "buy":
+            return True, ""
+
         if self.equity < self.equity_floor:
             return False, f"rejected_by_equity_floor:equity={self.equity:.0f}<{self.equity_floor:.0f}"
 
@@ -398,11 +415,21 @@ class RiskManager:
 
     def record_fill(self, symbol: str, side: str, qty: int, price: float,
                     asset_class: str = "equity"):
+        side = str(side or "").lower()
+        notional = max(0.0, float(qty) * float(price) * (100.0 if asset_class == "option" else 1.0))
         if side == "buy":
             self.open_positions[symbol] = self.open_positions.get(symbol, 0) + qty
+            if asset_class == "option":
+                self.options_exposure += notional
+            else:
+                self.stock_exposure += notional
         else:
             prev = self.open_positions.get(symbol, 0)
             self.open_positions[symbol] = max(0, prev - qty)
+            if asset_class == "option":
+                self.options_exposure = max(0.0, self.options_exposure - notional)
+            else:
+                self.stock_exposure = max(0.0, self.stock_exposure - notional)
 
     def record_pnl(self, pnl: float):
         self.daily_pnl += pnl
@@ -652,6 +679,8 @@ class AlpacaGateway:
         """
         if not self._available or self._mode != "alpaca_py":
             return 0.0
+        if is_option_symbol(symbol):
+            return self._resolve_option_reference_price(symbol)
         try:
             from alpaca.data.historical import StockHistoricalDataClient
             from alpaca.data.requests import (StockLatestTradeRequest,
@@ -690,6 +719,44 @@ class AlpacaGateway:
                 pass
         except Exception as e:
             logger.debug("_resolve_reference_price(%s) failed: %s", symbol, e)
+        return 0.0
+
+    def _resolve_option_reference_price(self, symbol: str) -> float:
+        """Resolve an OCC option reference price from option trade/quote data."""
+        try:
+            if self._opt_data is None:
+                from alpaca.data.historical.option import OptionHistoricalDataClient
+                self._opt_data = OptionHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET)
+            from alpaca.data.requests import OptionLatestQuoteRequest, OptionLatestTradeRequest
+
+            try:
+                trades = self._opt_data.get_option_latest_trade(
+                    OptionLatestTradeRequest(symbol_or_symbols=symbol))
+                data = trades if isinstance(trades, dict) else (getattr(trades, "data", None) or {})
+                trade = data.get(symbol)
+                px = float(getattr(trade, "price", 0) or 0)
+                if px > 0:
+                    return px
+            except Exception:
+                pass
+
+            try:
+                quotes = self._opt_data.get_option_latest_quote(
+                    OptionLatestQuoteRequest(symbol_or_symbols=symbol))
+                data = quotes if isinstance(quotes, dict) else (getattr(quotes, "data", None) or {})
+                quote = data.get(symbol)
+                bid = float(getattr(quote, "bid_price", 0) or 0)
+                ask = float(getattr(quote, "ask_price", 0) or 0)
+                if bid > 0 and ask > 0:
+                    return (bid + ask) / 2.0
+                if ask > 0:
+                    return ask
+                if bid > 0:
+                    return bid
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug("_resolve_option_reference_price(%s) failed: %s", symbol, e)
         return 0.0
 
     def submit_market_order(self, symbol: str, side: str, qty: int,
@@ -786,22 +853,21 @@ class AlpacaGateway:
 # ---------------------------------------------------------------------------
 
 def is_market_open() -> bool:
-    now = datetime.now(timezone.utc)
-    # NYSE RTH: Mon-Fri 13:30-20:00 UTC
+    now = datetime.now(ET)
     if now.weekday() >= 5:
         return False
     h, m = now.hour, now.minute
     mins = h * 60 + m
-    return 13 * 60 + 30 <= mins <= 20 * 60
+    return 9 * 60 + 30 <= mins <= 16 * 60
 
 
 def is_premarket() -> bool:
-    """Premarket session (UTC, EDT-aligned with is_market_open): 08:00–13:30 UTC ≈ 04:00–09:30 ET."""
-    now = datetime.now(timezone.utc)
+    """Premarket session in New York local time: 04:00-09:30 ET."""
+    now = datetime.now(ET)
     if now.weekday() >= 5:
         return False
     mins = now.hour * 60 + now.minute
-    return 8 * 60 <= mins < 13 * 60 + 30
+    return 4 * 60 <= mins < 9 * 60 + 30
 
 
 # ---------------------------------------------------------------------------
@@ -1956,6 +2022,7 @@ def run_two_engine_trading():
     last_context_build = 0.0
     last_account_log = time.time()
     cycle_count = 0
+    _premarket_planner_spawned = False  # spawn once per session
 
     logger.info("Entering two-engine loop (Ctrl-C to stop) …")
     while True:
@@ -1977,6 +2044,34 @@ def run_two_engine_trading():
                 if is_premarket():
                     if not market_context:
                         market_context = _build_context_safe()
+                    # Spawn premarket_trade_planner.py once per session as a background
+                    # process. It self-waits until market open (09:30 ET), then writes
+                    # YYYYMMDD_premarket_trade_plan.json and YYYYMMDD_intraday_structure_map.json
+                    # so they are available for the first trading cycle. Fail-safe: any
+                    # launch error is logged and never blocks the premarket phase.
+                    if not _premarket_planner_spawned:
+                        try:
+                            import subprocess as _sp
+                            _planner_script = Path(__file__).parent / "premarket_trade_planner.py"
+                            if _planner_script.exists():
+                                _planner_proc = _sp.Popen(
+                                    [sys.executable, str(_planner_script)],
+                                    stdout=_sp.DEVNULL,
+                                    stderr=_sp.DEVNULL,
+                                )
+                                logger.info(
+                                    "premarket_trade_planner spawned (pid=%d) — "
+                                    "will write plan+structure_map at market open",
+                                    _planner_proc.pid,
+                                )
+                            else:
+                                logger.warning(
+                                    "premarket_trade_planner.py not found — "
+                                    "plan+structure_map will be missing"
+                                )
+                        except Exception as _e:
+                            logger.warning("premarket_trade_planner spawn failed: %s", _e)
+                        _premarket_planner_spawned = True
                     try:
                         run_premarket_phase(gateway, bal, market_context)
                     except Exception as e:
