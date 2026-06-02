@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 import os
 import sys
@@ -36,6 +37,12 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
+
+try:
+    import requests
+except Exception as e:
+    print(f"[voi] requests import failed: {e}")
+    raise
 
 warnings.filterwarnings("ignore")
 
