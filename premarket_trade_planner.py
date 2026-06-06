@@ -373,6 +373,34 @@ def load_universe() -> list[str]:
             if normalize_symbol(line)
         ]
 
+    # Fallback chain when today's dated file isn't written yet (planner runs before
+    # run.py creates it): try yesterday → non-dated fallback. Safe: these files
+    # represent the approved universe from the most recent prior session.
+    if not symbols:
+        try:
+            from datetime import timedelta
+            _yesterday_tag = (datetime.now(ET) - timedelta(days=1)).strftime("%Y%m%d")
+            _yesterday_path = PROJECT_ROOT / f"{_yesterday_tag}_locked_trading_universe.txt"
+            if _yesterday_path.exists():
+                symbols = [
+                    normalize_symbol(line)
+                    for line in _yesterday_path.read_text(encoding="utf-8").splitlines()
+                    if normalize_symbol(line)
+                ]
+                print(f"[universe] using yesterday's locked universe ({_yesterday_tag}): {len(symbols)} symbols")
+        except Exception as _exc:
+            print(f"[universe] yesterday fallback failed: {_exc}")
+
+    if not symbols:
+        _fallback_path = PROJECT_ROOT / "locked_trading_universe.txt"
+        if _fallback_path.exists():
+            symbols = [
+                normalize_symbol(line)
+                for line in _fallback_path.read_text(encoding="utf-8").splitlines()
+                if normalize_symbol(line)
+            ]
+            print(f"[universe] using non-dated locked_trading_universe.txt: {len(symbols)} symbols")
+
     symbols = sorted(set(s for s in symbols if s))
     print(f"[universe] symbols={len(symbols)}")
     return symbols

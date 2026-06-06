@@ -110,6 +110,9 @@ ALPACA_PAPER_ONLY  = _env_bool_any(["ALPACA_PAPER_ONLY", "APCA_PAPER_ONLY", "APC
 KILL_SWITCH_PATH   = os.environ.get("KILL_SWITCH_PATH",        ".kill_switch")
 BAR_INTERVAL_SEC   = float(os.environ.get("BAR_INTERVAL_SEC",  60.0))
 ACCOUNT_STATS_LOG_SEC = float(os.environ.get("ACCOUNT_STATS_LOG_SEC", 300.0))
+# Fallback seed only. The real anchor is sourced live from the Alpaca account at
+# startup (seed_risk_from_broker); STARTING_EQUITY is used solely when the broker
+# is unreachable so the daemon can still boot in simulation.
 STARTING_EQUITY    = float(os.environ.get("STARTING_EQUITY", 100_000.0))
 
 # Two-engine toggles & exposure controls (also consumed by the engine configs via env)
@@ -125,6 +128,13 @@ MAX_STOCK_EXPOSURE_PCT          = float(os.environ.get("MAX_STOCK_EXPOSURE_PCT",
 # cap is never breached; hard risk blocks (kill-switch, drawdown, PDT, …) still reject.
 SIZE_TO_FIT_EXPOSURE            = os.environ.get("SIZE_TO_FIT_EXPOSURE", "1").lower() not in {"0", "false", "no"}
 MAX_SINGLE_STOCK_WEIGHT         = float(os.environ.get("MAX_SINGLE_STOCK_WEIGHT", 0.10))
+# Self-assessment BUY throttle (downside protection). system_self_awareness.py writes a
+# recommended_size_multiplier (∈[0,1]) and SAFE-mode flag derived from data-freshness, model,
+# regime-risk and execution-risk checks. When enabled, BUY sizes are scaled by that multiplier
+# and a 0.0 multiplier skips the buy. Applies to BUYS ONLY — exits/sells are never throttled.
+# Reversible via SELF_ASSESSMENT_SIZING=0.
+SELF_ASSESSMENT_SIZING          = os.environ.get("SELF_ASSESSMENT_SIZING", "1").lower() not in {"0", "false", "no"}
+SELF_ASSESSMENT_TTL_SEC         = float(os.environ.get("SELF_ASSESSMENT_TTL_SEC", "60"))
 OPTIONS_RISK_PER_TRADE_PCT      = float(os.environ.get("OPTIONS_RISK_PER_TRADE_PCT", 0.015))
 BAL_MIN_SCORE_TO_BUY            = float(os.environ.get("BAL_MIN_SCORE_TO_BUY", 55))
 BAL_AGGRESSIVE_SCORE            = float(os.environ.get("BAL_AGGRESSIVE_SCORE", 85))
@@ -142,7 +152,7 @@ OPTIONS_PROFIT_TO_BAL_PCT       = float(os.environ.get("OPTIONS_PROFIT_TO_BAL_PC
 OPTIONS_PROFIT_TO_ALPHA_PCT     = float(os.environ.get("OPTIONS_PROFIT_TO_ALPHA_PCT", 0.30))
 OPTIONS_PROFIT_TO_CASH_PCT      = float(os.environ.get("OPTIONS_PROFIT_TO_CASH_PCT", 0.10))
 CASH_BUFFER_PCT                 = float(os.environ.get("CASH_BUFFER_PCT", 0.08))
-CONTEXT_REFRESH_MIN             = float(os.environ.get("CONTEXT_REFRESH_MIN", 30.0))
+CONTEXT_REFRESH_MIN             = float(os.environ.get("CONTEXT_REFRESH_MIN", 25.0))   # was 30.0; tightened to reduce staleness
 ALPHA_BARS_LOOKBACK_MIN         = int(os.environ.get("ALPHA_BARS_LOOKBACK_MIN", 120))
 
 # Alpaca creds (required for live/paper modes).
@@ -188,6 +198,7 @@ SKIP_REASONS = {
     "rejected_by_drawdown",
     "rejected_by_order_size",
     "rejected_by_data_unavailable",
+    "throttled_by_self_assessment",
 }
 
 
@@ -212,6 +223,34 @@ def log_skip(symbol: str, reason: str, **detail) -> None:
             f.write(json.dumps(record, default=str) + "\n")
     except Exception:
         pass
+
+
+_SA_CACHE: Dict[str, Any] = {"ts": 0.0, "mult": 1.0, "mode": "NORMAL"}
+
+
+def _self_assessment_buy_multiplier() -> float:
+    """BUY-side size multiplier from system_self_awareness (∈[0,1]); 1.0 if disabled/unavailable.
+
+    Cached for SELF_ASSESSMENT_TTL_SEC so the per-order disk read stays cheap while still
+    picking up premarket-collector refreshes of the assessment file. NEVER applied to
+    sells/exits — the caller guards on side == "buy".
+    """
+    if not SELF_ASSESSMENT_SIZING:
+        return 1.0
+    now = time.time()
+    if now - _SA_CACHE["ts"] < SELF_ASSESSMENT_TTL_SEC:
+        return _SA_CACHE["mult"]
+    mult, mode = 1.0, "NORMAL"
+    try:
+        from system_self_awareness import load_self_assessment, self_assessment_size_multiplier
+        a = load_self_assessment()
+        mult = self_assessment_size_multiplier(a)
+        mode = str(a.get("execution_mode_recommendation") or "NORMAL")
+    except Exception as e:
+        logger.debug("self-assessment load failed (%s) — buy multiplier defaults to 1.0", e)
+        mult, mode = 1.0, "NORMAL"
+    _SA_CACHE.update(ts=now, mult=mult, mode=mode)
+    return mult
 
 
 def is_option_symbol(symbol: str) -> bool:
@@ -265,6 +304,22 @@ class RiskManager:
         self.pdt_restricted   = False   # account flagged & < $25k & near daytrade cap
         self._killed         = False
         self._account_anchor_set = False
+        # Live broker snapshot fields — seeded here, refreshed every sync_account().
+        self.account: Dict[str, Any] = {}
+        self.cash                    = float(equity)
+        self.last_equity             = float(equity)
+        self.portfolio_value         = float(equity)
+        self.options_buying_power    = 0.0
+        self.daytrading_buying_power = 0.0
+        self.long_market_value       = 0.0
+        self.short_market_value      = 0.0
+        self.multiplier              = 1.0
+        self.shorting_enabled        = False
+        self.account_status          = ""
+        self.trading_blocked         = False
+        self.account_blocked         = False
+        self.pattern_day_trader      = False
+        self.daytrade_count          = 0
         self.refresh_dynamic_limits()
 
     # ------------------------------------------------------------------
@@ -436,7 +491,15 @@ class RiskManager:
         self.equity    += pnl
 
     def sync_account(self, account: Dict):
-        """Refresh equity/buying-power/PDT from a broker account snapshot and rescale risk."""
+        """Refresh all account state from a live broker snapshot and rescale risk.
+
+        Every value here is sourced dynamically from Alpaca (see AlpacaGateway.get_account).
+        The full snapshot is retained on ``self.account`` so any consumer can read live
+        broker fields (cash, buying-power variants, margin, status flags) without re-querying.
+        """
+        if not account:
+            return
+        self.account = dict(account)            # full live snapshot, for system-wide reads
         if account.get("equity"):
             self.equity = float(account["equity"])
             if not self._account_anchor_set and self.equity > 0:
@@ -444,9 +507,24 @@ class RiskManager:
                 self._account_anchor_set = True
         if account.get("buying_power") is not None:
             self.buying_power = float(account["buying_power"])
+        # Dynamic broker fields kept as first-class attributes for downstream sizing/telemetry.
+        self.cash                    = float(account.get("cash", self.cash) or 0.0)
+        self.last_equity             = float(account.get("last_equity", self.equity) or self.equity)
+        self.portfolio_value         = float(account.get("portfolio_value", self.equity) or self.equity)
+        self.options_buying_power    = float(account.get("options_buying_power", 0.0) or 0.0)
+        self.daytrading_buying_power = float(account.get("daytrading_buying_power", 0.0) or 0.0)
+        self.long_market_value       = float(account.get("long_market_value", 0.0) or 0.0)
+        self.short_market_value      = float(account.get("short_market_value", 0.0) or 0.0)
+        self.multiplier              = float(account.get("multiplier", self.multiplier) or 1.0)
+        self.shorting_enabled        = bool(account.get("shorting_enabled", self.shorting_enabled))
+        self.account_status          = str(account.get("status", self.account_status) or "")
+        self.trading_blocked         = bool(account.get("trading_blocked", False))
+        self.account_blocked         = bool(account.get("account_blocked", False))
         # PDT: flagged AND under the $25k pattern-day-trader floor AND near the daytrade cap
         flagged   = bool(account.get("pattern_day_trader", False))
         dt_count  = int(account.get("daytrade_count", 0) or 0)
+        self.pattern_day_trader = flagged
+        self.daytrade_count     = dt_count
         self.pdt_restricted = flagged and self.equity < 25_000 and dt_count >= 3
         self.refresh_dynamic_limits()
 
@@ -507,6 +585,23 @@ class AlpacaGateway:
             self._mode      = "alpaca_py"
             self._available = True
             logger.info("Alpaca-py client initialised  paper=%s  url=%s", ALPACA_PAPER_ONLY, ALPACA_URL)
+            # Patch session-level default timeout: alpaca-py uses a requests.Session
+            # internally and has no constructor parameter for timeout. Without this,
+            # any Alpaca API call (get_account, get_all_positions, get_option_contracts,
+            # etc.) can hang indefinitely on a stalled connection, blocking the whole
+            # trading loop. 30 seconds is generous for paper-trading; adjust if needed.
+            _ALPACA_TIMEOUT = 30
+            try:
+                if hasattr(self._client, "_session"):
+                    _orig_req = self._client._session.request
+                    def _session_request_with_timeout(*_a, **_kw):
+                        if "timeout" not in _kw:
+                            _kw["timeout"] = _ALPACA_TIMEOUT
+                        return _orig_req(*_a, **_kw)
+                    self._client._session.request = _session_request_with_timeout
+                    logger.debug("Alpaca session timeout patched to %ds", _ALPACA_TIMEOUT)
+            except Exception as _tp:
+                logger.debug("Could not patch Alpaca session timeout: %s", _tp)
         except ImportError:
             try:
                 import alpaca_trade_api as tradeapi
@@ -520,6 +615,17 @@ class AlpacaGateway:
         try:
             from alpaca.data.historical.option import OptionHistoricalDataClient
             self._opt_data = OptionHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET)
+            # Patch options data client session timeout as well
+            try:
+                if hasattr(self._opt_data, "_session"):
+                    _orig_opt_req = self._opt_data._session.request
+                    def _opt_session_request_with_timeout(*_a, **_kw):
+                        if "timeout" not in _kw:
+                            _kw["timeout"] = 20
+                        return _orig_opt_req(*_a, **_kw)
+                    self._opt_data._session.request = _opt_session_request_with_timeout
+            except Exception:
+                pass
         except Exception:
             self._opt_data = None
 
@@ -529,17 +635,84 @@ class AlpacaGateway:
 
     # ── account / positions ─────────────────────────────────────────────────
     def get_account(self) -> Dict:
+        """Return a full, live Alpaca account snapshot.
+
+        Every numeric/flag field is sourced dynamically from the broker — nothing
+        is hardcoded. When the broker is unavailable a clearly-flagged simulation
+        snapshot is returned so downstream consumers still receive the same keys.
+        """
         if not self._available:
-            return {"equity": self.risk.equity, "buying_power": self.risk.buying_power, "sim": True}
+            return {
+                "equity":             float(self.risk.equity),
+                "last_equity":        float(self.risk.equity),
+                "portfolio_value":    float(self.risk.equity),
+                "buying_power":       float(self.risk.buying_power),
+                "cash":               float(self.risk.buying_power),
+                "pattern_day_trader": False,
+                "daytrade_count":     0,
+                "sim":                True,
+            }
         try:
             acc = self._client.get_account()
-            return {
-                "equity":            float(acc.equity),
-                "buying_power":      float(acc.buying_power),
-                "cash":              float(getattr(acc, "cash", 0) or 0),
-                "pattern_day_trader": bool(getattr(acc, "pattern_day_trader", False)),
-                "daytrade_count":    int(getattr(acc, "daytrade_count", 0) or 0),
+
+            def _num(name: str, default: float = 0.0) -> float:
+                try:
+                    v = getattr(acc, name, default)
+                    return float(v) if v not in (None, "") else default
+                except (TypeError, ValueError):
+                    return default
+
+            def _flag(name: str) -> bool:
+                return bool(getattr(acc, name, False))
+
+            def _txt(name: str) -> str:
+                v = getattr(acc, name, "")
+                # Enums (AccountStatus) stringify to their value via .value
+                return str(getattr(v, "value", v) or "")
+
+            snapshot = {
+                # identity / status
+                "account_number":              _txt("account_number"),
+                "account_id":                  _txt("id"),
+                "status":                       _txt("status"),
+                "currency":                     _txt("currency") or "USD",
+                "created_at":                   _txt("created_at"),
+                # equity / value
+                "equity":                       _num("equity"),
+                "last_equity":                  _num("last_equity"),
+                "portfolio_value":              _num("portfolio_value"),
+                "cash":                         _num("cash"),
+                "accrued_fees":                 _num("accrued_fees"),
+                "pending_transfer_in":          _num("pending_transfer_in"),
+                # buying power (all variants Alpaca exposes)
+                "buying_power":                 _num("buying_power"),
+                "regt_buying_power":            _num("regt_buying_power"),
+                "daytrading_buying_power":      _num("daytrading_buying_power"),
+                "non_marginable_buying_power":  _num("non_marginable_buying_power"),
+                "options_buying_power":         _num("options_buying_power"),
+                # market value / margin
+                "long_market_value":            _num("long_market_value"),
+                "short_market_value":           _num("short_market_value"),
+                "position_market_value":        _num("position_market_value"),
+                "initial_margin":               _num("initial_margin"),
+                "maintenance_margin":           _num("maintenance_margin"),
+                "last_maintenance_margin":      _num("last_maintenance_margin"),
+                "sma":                          _num("sma"),
+                "multiplier":                   _num("multiplier", 1.0),
+                # PDT / day-trading
+                "pattern_day_trader":           _flag("pattern_day_trader"),
+                "daytrade_count":               int(_num("daytrade_count")),
+                # options approval
+                "options_approved_level":       int(_num("options_approved_level")),
+                "options_trading_level":        int(_num("options_trading_level")),
+                # account flags
+                "shorting_enabled":             _flag("shorting_enabled"),
+                "trading_blocked":              _flag("trading_blocked"),
+                "transfers_blocked":            _flag("transfers_blocked"),
+                "account_blocked":              _flag("account_blocked"),
+                "trade_suspended_by_user":      _flag("trade_suspended_by_user"),
             }
+            return snapshot
         except Exception as e:
             logger.error("get_account error: %s", e)
             return {}
@@ -598,12 +771,26 @@ class AlpacaGateway:
         Strikes / expirations / open-interest come from the trading client's
         option-contracts endpoint; bid/ask/greeks are merged from the options
         data snapshot when available. Returns [] gracefully on any failure.
+
+        When USE_AV_OPTIONS_CHAIN is set, real Alpha Vantage REALTIME_OPTIONS chains
+        (full greeks+IV) are used instead — see av_options_adapter. Falls back to the
+        Alpaca path on any error so the live engine never loses its chain source.
         """
+        if _env_bool_any(["USE_AV_OPTIONS_CHAIN", "ALPHA_USE_AV_CHAINS"], False):
+            try:
+                import av_options_adapter as _av
+                _ch = _av.realtime_chain(symbol)
+                if _ch:
+                    return _ch
+                logger.debug("AV realtime chain empty for %s — falling back to Alpaca", symbol)
+            except Exception as _ave:
+                logger.debug("AV realtime chain failed for %s: %s — falling back", symbol, _ave)
         if not self._available or self._mode != "alpaca_py":
             return []
         contracts: Dict[str, Dict] = {}
         # 1. Contract metadata (strike / expiry / type / open_interest)
         try:
+            import concurrent.futures as _cf_chain
             from alpaca.trading.requests import GetOptionContractsRequest
             from alpaca.trading.enums import ContractType, AssetStatus
             from datetime import timedelta
@@ -619,7 +806,22 @@ class AlpacaGateway:
                 expiration_date_lte=_today + timedelta(days=ALPHA_MAX_DTE),
                 limit=1000,
             )
-            resp = self._client.get_option_contracts(req)
+            # Hard 25-second timeout — Alpaca option-contract requests occasionally
+            # hang indefinitely; without this the whole process stalls.
+            # Use shutdown(wait=False) — `with` context-manager exit blocks until the
+            # worker finishes, defeating the timeout.
+            _pool_chain = _cf_chain.ThreadPoolExecutor(max_workers=1)
+            _fut_chain = _pool_chain.submit(self._client.get_option_contracts, req)
+            resp = None
+            try:
+                resp = _fut_chain.result(timeout=25)
+            except Exception as _te:
+                _pool_chain.shutdown(wait=False)
+                logger.debug("get_option_contracts timeout/error for %s: %s", symbol, _te)
+                return []
+            _pool_chain.shutdown(wait=False)
+            if resp is None:
+                return []
             for c in getattr(resp, "option_contracts", []) or []:
                 occ = str(getattr(c, "symbol", ""))
                 if not occ:
@@ -643,7 +845,21 @@ class AlpacaGateway:
         if self._opt_data is not None and contracts:
             try:
                 from alpaca.data.requests import OptionChainRequest
-                chain = self._opt_data.get_option_chain(OptionChainRequest(underlying_symbol=symbol))
+                # Hard 15-second timeout on the snapshot merge — can also hang if
+                # the data client stalls. Timeouts here lose greeks/bid/ask but
+                # the engine gracefully falls back to ATM-strike selection.
+                # Use shutdown(wait=False) — `with` context-manager exit blocks until
+                # the worker finishes, defeating the timeout.
+                _pool_snap = _cf_chain.ThreadPoolExecutor(max_workers=1)
+                _opt_req = OptionChainRequest(underlying_symbol=symbol)
+                _fut_snap = _pool_snap.submit(self._opt_data.get_option_chain, _opt_req)
+                chain = {}
+                try:
+                    chain = _fut_snap.result(timeout=15)
+                except Exception as _te:
+                    logger.debug("get_option_chain snapshot timeout/error for %s: %s", symbol, _te)
+                finally:
+                    _pool_snap.shutdown(wait=False)
                 snap_map = chain if isinstance(chain, dict) else getattr(chain, "data", {}) or {}
                 for occ, snap in snap_map.items():
                     if occ not in contracts:
@@ -789,6 +1005,22 @@ class AlpacaGateway:
                      side=side, qty=qty, source=reason or "broker")
             return None
 
+        # Self-assessment BUY throttle (downside protection): scale BUY size by the
+        # data/model/regime/execution-risk multiplier from system_self_awareness. Buys only —
+        # exits are never throttled. multiplier ∈ [0,1]; 0 → skip the buy entirely.
+        if side == "buy":
+            sa_mult = _self_assessment_buy_multiplier()
+            if sa_mult < 1.0:
+                new_qty = int(qty * sa_mult)
+                if new_qty <= 0:
+                    log_skip(symbol, f"throttled_by_self_assessment:mult={sa_mult:.2f}",
+                             side=side, qty=qty, source=reason or "broker")
+                    return None
+                if new_qty < qty:
+                    logger.info("[self-assess] %s BUY size x%.2f (mode=%s): %d->%d",
+                                symbol, sa_mult, _SA_CACHE.get("mode", "NORMAL"), qty, new_qty)
+                    qty = new_qty
+
         # Size-to-fit: trim a BUY to the room remaining under the trimmable
         # notional/exposure caps rather than rejecting it whole. Cap never breached.
         if SIZE_TO_FIT_EXPOSURE and side == "buy":
@@ -932,7 +1164,30 @@ def fetch_1m_bars(gateway: AlpacaGateway, symbols: List[str]) -> Dict[str, "Any"
             feed = DataFeed.IEX
             req = StockBarsRequest(symbol_or_symbols=symbols, timeframe=TimeFrame.Minute,
                                    start=start, end=end, feed=feed)
-            df = data_client.get_stock_bars(req).df
+            # Hard timeout: Alpaca IEX batch requests can hang indefinitely on large
+            # universe / slow feeds. Cap at 30s and fall through to simulation.
+            # IMPORTANT: do NOT use `with ThreadPoolExecutor()` here — the context
+            # manager's __exit__ calls shutdown(wait=True) and BLOCKS until the worker
+            # thread finishes, defeating the timeout entirely. Shutdown with wait=False.
+            import concurrent.futures as _cf
+            # Scale timeout with universe size: 1.2s/symbol, min 45s, max 120s.
+            # The old 30s cap was too tight for 60+ symbols — IEX needs ~1s/symbol
+            # on a slow connection before the Alpaca SDK buffers the response.
+            _bar_timeout = max(45, min(120, int(len(symbols) * 1.2)))
+            _pool_bars = _cf.ThreadPoolExecutor(max_workers=1)
+            _fut_bars = _pool_bars.submit(lambda: data_client.get_stock_bars(req).df)
+            df = None
+            try:
+                df = _fut_bars.result(timeout=_bar_timeout)
+            except (_cf.TimeoutError, Exception) as _e_bars:
+                if isinstance(_e_bars, _cf.TimeoutError):
+                    logger.warning(
+                        "fetch_1m_bars: Alpaca batch request timed out (>%ds) "
+                        "for %d symbols — using simulation", _bar_timeout, len(symbols))
+                else:
+                    raise
+            finally:
+                _pool_bars.shutdown(wait=False)  # release immediately; worker is a daemon
             if df is not None and not df.empty:
                 df = df.reset_index()
                 for sym, grp in df.groupby("symbol"):
@@ -1182,10 +1437,12 @@ def _build_premarket_universe(dynamic_symbols, insider_data, buffett_candidates,
     """Assemble the premarket watch universe from all candidate sources (de-duped)."""
     syms: List[str] = []
 
+    _INVALID_SYMS = {"N/A", "NA", "NAN", "NONE", "NULL", "N\\A", ""}
+
     def add(items):
         for s in (items or []):
             su = str(s or "").upper().strip()
-            if su:
+            if su and su not in _INVALID_SYMS and len(su) <= 10:
                 syms.append(su)
 
     try:
@@ -1502,7 +1759,8 @@ def _alpaca_feed_cycle(session: str = "rth") -> Optional[str]:
 def run_alpha_exits(engine, gateway: AlpacaGateway, waterfall,
                     option_positions: List[Dict], market_context: dict,
                     indicator_snapshot: Optional[dict] = None,
-                    market_state: Optional[dict] = None) -> int:
+                    market_state: Optional[dict] = None,
+                    risk: Optional["RiskManager"] = None) -> int:
     """Manage open calls via the engine's public exit pass. ALWAYS runs."""
     try:
         exits = engine.check_active_positions(option_positions, _alpha_waterfall_cb(waterfall),
@@ -1516,6 +1774,14 @@ def run_alpha_exits(engine, gateway: AlpacaGateway, waterfall,
         gateway.submit_market_order(ex["symbol"], ex["side"], ex["qty"],
                                     reason=ex.get("source", "alpha_exit"))
         _research("record_alpha_exit_safe", ex, market_context)   # evidence: realized result
+        # Wire realized option P&L into RiskManager so daily_pnl reflects options activity
+        if risk is not None:
+            try:
+                pnl = float(ex.get("realized_pnl") or 0.0)
+                if pnl != 0.0:
+                    risk.record_pnl(pnl)
+            except Exception:
+                pass
     return len(exits)
 
 
@@ -1543,7 +1809,8 @@ def run_alpha_entries(engine, gateway: AlpacaGateway, waterfall, risk: RiskManag
             market_state=market_state,
         )
     except Exception as e:
-        logger.error("alpha evaluate_universe failed: %s", e)
+        import traceback as _etb
+        logger.error("alpha evaluate_universe failed: %s\n%s", e, _etb.format_exc())
         return 0
     placed = 0
     for sig in signals:
@@ -1565,6 +1832,24 @@ def run_alpha_entries(engine, gateway: AlpacaGateway, waterfall, risk: RiskManag
                 waterfall.consume_alpha(sig.premium_cost)
             except Exception as e:
                 logger.debug("register_filled/consume_alpha failed: %s", e)
+            # Journal the submission so funnel_report sees submitted > 0
+            try:
+                log_executed_order(
+                    event="order_submitted",
+                    symbol=sig.contract_symbol,
+                    underlying=sig.symbol,
+                    side="buy",
+                    qty=sig.contracts,
+                    limit_price=limit_px,
+                    setup_type=getattr(sig, "setup_type", ""),
+                    grade=getattr(sig, "grade", ""),
+                    setup_score=getattr(sig, "setup_score", 0),
+                    engine="alpha",
+                    order_id=resp.get("id", "") if isinstance(resp, dict) else getattr(resp, "id", ""),
+                    sim=resp.get("sim", False) if isinstance(resp, dict) else False,
+                )
+            except Exception as _je:
+                logger.debug("alpha log_executed_order failed: %s", _je)
     return placed
 
 
@@ -1585,14 +1870,31 @@ def run_alpha_screener(engine, gateway: AlpacaGateway, market_context: dict,
     else:
         watch = base
         funnel = {"scanned": len(base), "passed_momentum": len(base), "note": "screener_disabled"}
-    # Fetch option chains ONLY for the watch list (fetching, not filtering).
+    # Fetch option chains ONLY for the watch list — parallel with a hard wall-clock cap.
+    # Each get_options_chain call already has per-call timeouts (25s contracts + 15s
+    # snapshot). Parallel fetching keeps the total bounded to ~50s regardless of
+    # watch-list size, vs N×45s with a serial loop.
     chains: Dict[str, list] = {}
-    for sym in watch:
-        try:
-            chains[sym] = gateway.get_options_chain(sym) or []
-        except Exception as e:
-            logger.debug("chain fetch failed for %s: %s", sym, e)
-            chains[sym] = []
+    if watch:
+        import concurrent.futures as _cf_scr
+        CHAIN_WORKERS = min(8, len(watch))
+        with _cf_scr.ThreadPoolExecutor(max_workers=CHAIN_WORKERS) as _pool_scr:
+            _fut_map = {_pool_scr.submit(gateway.get_options_chain, sym): sym for sym in watch}
+            try:
+                for _fut in _cf_scr.as_completed(_fut_map, timeout=50):
+                    _sym = _fut_map[_fut]
+                    try:
+                        chains[_sym] = _fut.result() or []
+                    except Exception as _e:
+                        logger.debug("chain fetch failed for %s: %s", _sym, _e)
+                        chains[_sym] = []
+            except _cf_scr.TimeoutError:
+                logger.warning("chain fetch wall-clock timeout (50s) — proceeding with partial chains")
+            # Any symbols that still didn't complete get empty chains
+            for _sym in watch:
+                if _sym not in chains:
+                    logger.debug("chain fetch incomplete for %s — using empty chain", _sym)
+                    chains[_sym] = []
     return {"base": base, "bars": bars, "chains": chains, "watch": watch, "funnel": funnel}
 
 
@@ -1696,7 +1998,9 @@ def run_buffett_screener(market_context: dict, premarket_snapshot: Optional[dict
 
 
 def write_screener_funnel_report(alpha_screen_funnel: dict, buffett_res: dict,
-                                 market_context: dict) -> None:
+                                 market_context: dict,
+                                 alpha_placed: int = 0,
+                                 bal_placed: int = 0) -> None:
     """Combined funnel diagnostics for both screeners."""
     alpha_candidates = 0
     alpha_liquidity_rejects = 0
@@ -1732,6 +2036,8 @@ def write_screener_funnel_report(alpha_screen_funnel: dict, buffett_res: dict,
             "final_candidates_sent_to_bal": len(buffett_res.get("candidates", [])),
         },
         "universes_independent": True,
+        "cycle_orders_placed": {"alpha": alpha_placed, "bal": bal_placed,
+                                 "total": alpha_placed + bal_placed},
     }
     try:
         SCREENER_FUNNEL_PATH.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
@@ -1827,7 +2133,7 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     if alpha is not None:
         summary["alpha_exits"] = run_alpha_exits(alpha, gateway, waterfall, option_positions,
                                                  market_context, indicator_snapshot=indicator_snapshot,
-                                                 market_state=market_state)
+                                                 market_state=market_state, risk=risk)
     if bal is not None:
         try:
             summary["bal_exits"] = run_bal_exits(bal, gateway, equity_positions, market_context)
@@ -1869,12 +2175,32 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     indicator_snapshot = _indicator_snapshot()
     # Alpha entries ALWAYS call evaluate_universe so the universe file is written; the
     # ENGINE rejects entries internally when the regime is hostile (engine setup gate).
-    if alpha is not None:
+    # Hard entry cutoff: no new BUYs after 15:45 ET — options orders need ~15 min to
+    # settle before the 16:00 ET market close. EOD forced closes still run (separate path).
+    _now_et_entries = datetime.now(ZoneInfo("America/New_York"))
+    _entry_cutoff_et = _now_et_entries.replace(hour=15, minute=45, second=0, microsecond=0)
+    _entries_blocked = (is_market_open() and _now_et_entries >= _entry_cutoff_et) or not is_market_open()
+    if _entries_blocked and is_market_open():
+        logger.info("Alpha entries blocked: past 15:45 ET entry cutoff (%s ET)", _now_et_entries.strftime("%H:%M:%S"))
+    if alpha is not None and not _entries_blocked:
         summary["alpha_entries"] = run_alpha_entries(
             alpha, gateway, waterfall, risk,
             alpha_scr["base"], alpha_scr["bars"], alpha_scr["chains"],
             market_context, positions=equity_positions, indicator_snapshot=indicator_snapshot,
             premarket_snapshot=premarket_snapshot, market_state=market_state)
+    elif alpha is not None and _entries_blocked and not is_market_open():
+        # Market closed: still run evaluate_universe to keep universe artifact fresh
+        # but pass empty symbols to avoid chain fetches / wasted API calls.
+        try:
+            alpha.evaluate_universe(
+                symbols=[], bars_by_symbol={}, market_context=market_context,
+                equity=risk.equity, options_exposure=risk.options_exposure, waterfall_budget=0.0,
+                chains_by_symbol={}, positions=equity_positions,
+                account_state={"equity": risk.equity, "buying_power": risk.buying_power},
+                indicator_snapshot=indicator_snapshot, premarket_snapshot=premarket_snapshot,
+                market_state=market_state)
+        except Exception:
+            pass
     # Black-Litterman + Efficient-Frontier optimizer: produce DESIRED target weights
     # (how much to own). Composite DCA decides WHEN; RiskManager decides whether ALLOWED.
     # Fully fail-safe — any failure leaves target_weights empty and BAL uses conviction.
@@ -1922,7 +2248,9 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
         run_portfolio_monitor(monitor, gateway, risk, equity_positions, market_context)
     if waterfall is not None:
         write_capital_waterfall(waterfall)
-    write_screener_funnel_report(alpha_scr.get("funnel", {}), buffett_res, market_context)
+    write_screener_funnel_report(alpha_scr.get("funnel", {}), buffett_res, market_context,
+                                 alpha_placed=summary.get("alpha_entries", 0),
+                                 bal_placed=summary.get("bal_entries", 0))
     # Observational execution-funnel line (read-only; reads the artifacts just written above).
     # Universe→Tradable→Signals→Qualified→Approved→Submitted→Filled + categorised rejections.
     # Never alters thresholds/gates/decisions and never raises.
@@ -1935,7 +2263,7 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     # 6. Evidence System — regenerate research analytics from the recorded events.
     bal_value = sum(float(getattr(p, "market_value", 0) or 0) for p in equity_positions.values())
     _research("generate_all_reports_safe", market_context=market_context,
-              start_equity=STARTING_EQUITY, bal_current_value=bal_value)
+              start_equity=float(risk.starting_equity), bal_current_value=bal_value)
     # 7. Adaptive Capital Allocation — turn the evidence into an allocation PLAN.
     # Advisory only: it never submits orders, never overrides RiskManager, and all
     # recommended sizes are clamped to the configured caps. Fully fail-safe.
@@ -1962,6 +2290,41 @@ def _account_num(account: Dict[str, Any], key: str, default: float = 0.0) -> flo
         return default
 
 
+def seed_risk_from_broker(risk: RiskManager, gateway: AlpacaGateway) -> Dict[str, Any]:
+    """Seed the RiskManager anchor from a live Alpaca account snapshot at startup.
+
+    Pulls account state from the broker BEFORE the trading loop so the equity anchor,
+    drawdown floor, and downstream research/sizing all use the real account equity
+    instead of the STARTING_EQUITY fallback. STARTING_EQUITY is only used if the broker
+    is unreachable. Fail-safe: a transient error never blocks startup.
+    """
+    account: Dict[str, Any] = {}
+    try:
+        account = gateway.get_account() or {}
+    except Exception as exc:
+        logger.warning("Account seed unavailable (%s) — using STARTING_EQUITY=$%.2f fallback",
+                       exc, STARTING_EQUITY)
+        return {}
+
+    if account and account.get("equity"):
+        risk.sync_account(account)          # sets equity + anchor (first call) + rescales gates
+        live = not account.get("sim")
+        logger.info(
+            "Account seeded from %s: equity=$%.2f anchor=$%.2f cash=$%.2f bp=$%.2f "
+            "opt_bp=$%.2f status=%s PDT=%s daytrades=%d",
+            "Alpaca" if live else "sim", risk.equity, risk.starting_equity, risk.cash,
+            risk.buying_power, risk.options_buying_power, risk.account_status or "n/a",
+            risk.pattern_day_trader, risk.daytrade_count,
+        )
+        if risk.trading_blocked or risk.account_blocked:
+            logger.warning("Account flags: trading_blocked=%s account_blocked=%s",
+                           risk.trading_blocked, risk.account_blocked)
+    else:
+        logger.warning("Account seed: no live equity from broker — anchor stays at fallback $%.2f",
+                       risk.starting_equity)
+    return account
+
+
 def log_account_stats(gateway: AlpacaGateway, risk: RiskManager,
                       label: str = "Account") -> Dict[str, Any]:
     """
@@ -1985,19 +2348,21 @@ def log_account_stats(gateway: AlpacaGateway, risk: RiskManager,
     except Exception as exc:
         logger.debug("Account exposure refresh skipped: %s", exc)
 
-    equity = float(risk.equity or _account_num(account, "equity", STARTING_EQUITY))
-    buying_power = float(risk.buying_power or _account_num(account, "buying_power", equity))
-    cash = _account_num(account, "cash", 0.0)
+    # All fields are read from the live-synced RiskManager state (populated by
+    # sync_account above) so the telemetry always reflects the latest broker snapshot.
+    equity = float(risk.equity or STARTING_EQUITY)
+    buying_power = float(risk.buying_power or equity)
+    cash = float(risk.cash)
     cash_pct = (cash / equity * 100.0) if equity > 0 else 0.0
-    pdt = bool(account.get("pattern_day_trader", False)) if isinstance(account, dict) else False
-    daytrades = int(_account_num(account, "daytrade_count", 0.0))
+    day_pnl = equity - float(risk.last_equity or equity)   # broker-side intraday P/L
     source = "sim" if account.get("sim") else ("alpaca" if gateway.available else "sim")
 
     logger.info(
-        "%s: equity=$%.2f cash=$%.2f bp=$%.2f daily_pnl=$%.2f "
-        "stock_exp=$%.2f opt_exp=$%.2f cash=%.1f%% PDT=%s daytrades=%d source=%s",
-        label, equity, cash, buying_power, risk.daily_pnl,
-        risk.stock_exposure, risk.options_exposure, cash_pct, pdt, daytrades, source,
+        "%s: equity=$%.2f cash=$%.2f bp=$%.2f opt_bp=$%.2f day_pnl=$%.2f "
+        "stock_exp=$%.2f opt_exp=$%.2f cash=%.1f%% PDT=%s daytrades=%d status=%s source=%s",
+        label, equity, cash, buying_power, risk.options_buying_power, day_pnl,
+        risk.stock_exposure, risk.options_exposure, cash_pct,
+        risk.pattern_day_trader, risk.daytrade_count, risk.account_status or "n/a", source,
     )
     return account
 
@@ -2007,6 +2372,9 @@ def run_two_engine_trading():
     gateway = AlpacaGateway(risk)
 
     logger.info("=== TWO-ENGINE TRADING  mode=%s ===", MODE)
+    # Pull the full live account snapshot from Alpaca and anchor risk to real equity
+    # BEFORE any sizing/research runs (falls back to STARTING_EQUITY only if unreachable).
+    seed_risk_from_broker(risk, gateway)
     # Required first line after the banner: live/sim account telemetry.
     log_account_stats(gateway, risk)
     _log_config(risk)
@@ -2087,6 +2455,31 @@ def run_two_engine_trading():
             # the frozen snapshot stays available for early-session gap / ORB context.
             _stop_premarket_feed()
 
+            # Stale-plan audit at market open: warn loudly if the premarket plan or
+            # structure map is older than MAX_PLAN_AGE_MINUTES. These files drive entry
+            # scoring; staleness causes SAFE mode and suppresses all new buys.
+            try:
+                _plan_path = SYSTEM_DATA_DIR / f"{DATA_TAG}_premarket_trade_plan.json"
+                _map_path  = SYSTEM_DATA_DIR / f"{DATA_TAG}_intraday_structure_map.json"
+                _max_age   = int(os.getenv("MAX_PLAN_AGE_MINUTES", "90"))
+                for _label, _p in [("premarket_plan", _plan_path), ("structure_map", _map_path)]:
+                    if _p.exists():
+                        _age_min = (time.time() - _p.stat().st_mtime) / 60.0
+                        if _age_min > _max_age:
+                            logger.warning(
+                                "STALE ARTIFACT at market open: %s age=%.0fmin (limit=%dmin) — "
+                                "new buys may be suppressed; re-run premarket_trade_planner.py",
+                                _label, _age_min, _max_age,
+                            )
+                    else:
+                        logger.warning(
+                            "MISSING ARTIFACT at market open: %s not found at %s — "
+                            "structure-based entries will be blocked",
+                            _label, _p,
+                        )
+            except Exception:
+                pass
+
             if (time.time() - last_context_build) > CONTEXT_REFRESH_MIN * 60 or not market_context:
                 market_context = _build_context_safe()
                 last_context_build = time.time()
@@ -2130,8 +2523,21 @@ def _build_context_safe() -> dict:
                     ctx.get("overall_market_bias"), ctx.get("trade_permission"), ctx.get("risk_level"))
         return ctx or {}
     except Exception as e:
-        logger.error("build_market_context failed (%s) — defaulting to cautious context", e)
-        return {"overall_market_bias": "mixed", "trade_permission": "cautious", "risk_level": "high"}
+        logger.error(
+            "build_market_context failed (%s) — defaulting to cautious/neutral context "
+            "(install yfinance + openai to enable live regime detection)",
+            e,
+        )
+        # Return "neutral" (allowed regime) with cautious permission and reduced sizing.
+        # Using "mixed" was also valid but "neutral" is semantically cleaner for a
+        # dependency-missing failure — the market hasn't been assessed, not assessed bearish.
+        return {
+            "overall_market_bias": "neutral",
+            "trade_permission": "cautious",
+            "risk_level": "high",
+            "_fallback": True,
+            "_fallback_reason": str(e),
+        }
 
 
 def _log_config(risk: Optional[RiskManager] = None) -> None:
@@ -2202,6 +2608,8 @@ def run_scalping():
 
     risk    = RiskManager(equity=STARTING_EQUITY)
     gateway = AlpacaGateway(risk)
+    # Anchor risk to the live Alpaca account equity before trading (fallback: STARTING_EQUITY).
+    seed_risk_from_broker(risk, gateway)
 
     def order_callback(symbol, side, qty, order_type, limit_price):
         gateway.submit_order(symbol, side, qty, order_type, limit_price)
@@ -2210,7 +2618,7 @@ def run_scalping():
 
     monitor = TradingDayMonitorAgent(
         symbols          = symbols,
-        starting_equity  = STARTING_EQUITY,
+        starting_equity  = float(risk.starting_equity),
         session_csv      = "logs/session_summary.csv",
     )
     for sym in symbols:
@@ -2227,8 +2635,8 @@ def run_scalping():
                 time.sleep(60)
                 continue
             acc = gateway.get_account()
-            if acc.get("equity"):
-                risk.equity = float(acc["equity"])
+            if acc:
+                risk.sync_account(acc)
             bars = _fetch_latest_bars(symbols)
             for symbol, bar in bars.items():
                 monitor.update(symbol, bar)
@@ -2304,16 +2712,22 @@ class BrokerPosition:
 
 def write_event(event: str, payload: Optional[dict] = None) -> None:
     """Best-effort execution-event journal line. Patched in tests."""
+    import traceback as _tb
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         path = LOG_DIR / f"{DATA_TAG}_execution_events.jsonl"
+        # Serialize first so a failure here doesn't create a 0-byte file entry
+        _line = json.dumps({
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "event": event, "payload": payload or {},
+        }, default=str) + "\n"
         with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                "event": event, "payload": payload or {},
-            }, default=str) + "\n")
-    except Exception:
-        pass
+            f.write(_line)
+    except Exception as _we:
+        try:
+            logger.warning("write_event(%s) failed: %s\n%s", event, _we, _tb.format_exc())
+        except Exception:
+            pass
 
 
 def save_df(df: "Any", path: "Any") -> None:
@@ -2328,11 +2742,74 @@ def save_df(df: "Any", path: "Any") -> None:
 
 
 def log_executed_order(**kwargs) -> None:
-    """Best-effort executed-order log. Patched in tests."""
+    """
+    Best-effort executed-order log.
+    Writes to both execution_events.jsonl (raw event stream) AND the
+    executor_journal.csv that funnel_report.py reads for submitted/filled counts.
+    Patched in tests.
+    """
+    import traceback as _tb
+    # Sanitize kwargs — convert any non-primitive values to strings so json.dumps
+    # never fails.  UUID, Pydantic models, and Alpaca response objects have all
+    # caused silent serialization failures here in the past.
+    _safe_kwargs: dict = {}
+    for _k, _v in kwargs.items():
+        if isinstance(_v, (str, int, float, bool, type(None))):
+            _safe_kwargs[_k] = _v
+        else:
+            try:
+                _safe_kwargs[_k] = str(_v)
+            except Exception:
+                _safe_kwargs[_k] = "<unserializable>"
     try:
-        write_event("executed_order", kwargs)
-    except Exception:
-        pass
+        write_event("executed_order", _safe_kwargs)
+    except Exception as _we:
+        logger.warning("log_executed_order write_event failed: %s\n%s", _we, _tb.format_exc())
+    # Also append a minimal row to executor_journal.csv so funnel_report sees
+    # submitted > 0.  Uses the same columns as ensure_runtime_outputs.JOURNAL_COLUMNS.
+    try:
+        import csv as _csv
+        _jpath = LOG_DIR / f"{DATA_TAG}_executor_journal.csv"
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        _write_header = not _jpath.exists() or _jpath.stat().st_size < 5
+        _row = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "cycle_id": "",
+            "event": _safe_kwargs.get("event", "order_submitted"),
+            "market_open": True,
+            "equity_before": "", "equity_after": "",
+            "cash_before": "", "cash_after": "",
+            "buying_power_before": "", "buying_power_after": "",
+            "gross_exposure_before": "", "gross_exposure_after": "",
+            "trade_symbol": _safe_kwargs.get("symbol", ""),
+            "trade_side": _safe_kwargs.get("side", ""),
+            "trade_qty": _safe_kwargs.get("qty", ""),
+            "trade_price": _safe_kwargs.get("limit_price", ""),
+            "estimated_notional": "",
+            "target_weight": "", "current_weight": "", "delta_weight": "",
+            "confidence": _safe_kwargs.get("setup_score", ""),
+            "cash_buffer": "", "max_gross_exposure": "", "max_position_weight": "",
+            "max_order_notional": "",
+            "stop_price": "", "target_price": "",
+            "bracket_attached": False,
+            "client_order_id": "",
+            "order_id": _safe_kwargs.get("order_id", ""),
+            "order_status": "submitted",
+            "filled_qty": "",
+            "filled_avg_price": "",
+            "slippage_pct": "",
+            "skip_reason": "",
+            "broker_message": "sim" if _safe_kwargs.get("sim") else "",
+            "message": f"engine={_safe_kwargs.get('engine','')} grade={_safe_kwargs.get('grade','')}",
+        }
+        _cols = list(_row.keys())
+        with _jpath.open("a", newline="", encoding="utf-8") as _fh:
+            _w = _csv.DictWriter(_fh, fieldnames=_cols)
+            if _write_header:
+                _w.writeheader()
+            _w.writerow(_row)
+    except Exception as _ce:
+        logger.warning("log_executed_order CSV write failed: %s\n%s", _ce, _tb.format_exc())
 
 
 def row_has_complete_bracket_plan(row: "Any") -> bool:
@@ -2438,6 +2915,12 @@ def main():
         handlers=[logging.StreamHandler(sys.stdout),
                   logging.FileHandler("logs/run.log", mode="a")],
     )
+    # Suppress yfinance's verbose HTTP error bodies (e.g. full Yahoo Finance "Will be
+    # right back" HTML) which pollute the log when Yahoo Finance is down.  Keep ERROR
+    # so genuine authentication / import failures still surface.
+    logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+    logging.getLogger("yfinance.base").setLevel(logging.CRITICAL)
+    logging.getLogger("peewee").setLevel(logging.WARNING)
 
     logger.info("QuantumQuant  mode=%s  paper_only=%s  data_tag=%s", MODE, ALPACA_PAPER_ONLY, DATA_TAG)
 

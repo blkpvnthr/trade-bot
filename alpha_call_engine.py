@@ -24,6 +24,7 @@ Outputs:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import math
 from dataclasses import dataclass, field, asdict, replace
@@ -34,6 +35,8 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+
+_ace_log = logging.getLogger(__name__)
 
 import alpha_probability_model as apm
 import oops_option_optimizer as oops_opt
@@ -89,7 +92,7 @@ class AlphaCallConfig:
     # Contract selection
     min_dte: int = int(os.getenv("ALPHA_MIN_DTE", "21"))
     max_dte: int = int(os.getenv("ALPHA_MAX_DTE", "60"))
-    min_delta: float = float(os.getenv("ALPHA_MIN_DELTA", "0.45"))
+    min_delta: float = float(os.getenv("ALPHA_MIN_DELTA", "0.35"))   # lowered 0.45→0.35 (2026-06-04): ATM BS-estimated delta ≈0.37-0.43
     max_delta: float = float(os.getenv("ALPHA_MAX_DELTA", "0.70"))
     min_open_interest: int = int(os.getenv("ALPHA_MIN_OI", "200"))
     min_volume: int = int(os.getenv("ALPHA_MIN_VOLUME", "10"))
@@ -108,7 +111,7 @@ class AlphaCallConfig:
     partial_profit_pct: float = float(os.getenv("ALPHA_PARTIAL_PROFIT_PCT", "0.5"))   # +50% = take partial (sell partial_size)
     partial_size: float = float(os.getenv("ALPHA_PARTIAL_SIZE", "0.50"))   # sell 50% at +1R
     # Universe
-    max_concurrent_positions: int = int(os.getenv("ALPHA_MAX_POSITIONS", "5"))
+    max_concurrent_positions: int = int(os.getenv("ALPHA_MAX_POSITIONS", "10"))  # raised from 5→10 (2026-06-03); exposure cap (15%) is the binding risk limit
     scan_interval_seconds: int = int(os.getenv("ALPHA_SCAN_SECONDS", "60"))
     # ORB window
     orb_minutes: int = int(os.getenv("ALPHA_ORB_MINUTES", "15"))
@@ -1160,43 +1163,109 @@ def evaluate_call_contracts(
     today = datetime.now(ET).date()
     r = risk_free_rate if risk_free_rate is not None else float(config.risk_free_rate)
 
+    # ── hard gate — robust to missing Alpaca snapshot data ───────────────────
+    # Alpaca contract metadata initialises volume, delta, bid, and ask to 0 / 0.0
+    # when the options-chain snapshot fetch fails or times out.  The previous
+    # hard-reject on vol==0 or mid==0 silently dropped every contract for those
+    # symbols.  Strategy when feed data is absent:
+    #   • vol  == 0  →  data not available (not literally zero volume); skip gate
+    #   • delta == 0 →  estimate from Black-Scholes using feed-IV or fallback IV
+    #   • mid  == 0  →  estimate from Black-Scholes; mark estimated_mid=True
+    # Estimated values still go through the full BS valuation layer which will
+    # reject them if the theoretical price / gamma-theta don't make sense.
+    _DEFAULT_IV_FALLBACK = 0.40   # conservative 40% when feed IV is absent
+
     hard_survivors: list[dict] = []
+    # Per-gate rejection counters for CHAIN_DIAG diagnostics
+    _hg_n_put = 0; _hg_n_dte = 0; _hg_n_strike = 0; _hg_n_delta = 0
+    _hg_n_oi = 0; _hg_n_vol = 0; _hg_n_mid = 0; _hg_n_spread = 0
     for contract in chain:
         try:
             if str(contract.get("type", "")).lower() != "call":
-                continue
+                _hg_n_put += 1; continue
             expiry_str = str(contract.get("expiration_date") or contract.get("expiry") or "")
             if not expiry_str:
-                continue
+                _hg_n_dte += 1; continue
             dte = (datetime.strptime(expiry_str[:10], "%Y-%m-%d").date() - today).days
             if not (config.min_dte <= dte <= config.max_dte):
-                continue
-            delta = abs(float(contract.get("delta") or contract.get("greeks", {}).get("delta", 0) or 0))
+                _hg_n_dte += 1; continue
+            K = float(contract.get("strike_price") or contract.get("strike") or 0)
+            if K <= 0 or price <= 0:
+                _hg_n_strike += 1; continue
+            T = max(dte, 1) / 365.0
+            feed_iv = float(contract.get("implied_volatility") or 0.0)
+
+            # ── delta ─────────────────────────────────────────────────────────
+            feed_delta = abs(float(
+                contract.get("delta") or contract.get("greeks", {}).get("delta", 0) or 0))
+            estimated_delta = False
+            if feed_delta == 0.0:
+                # Snapshot failed: estimate from BS with feed-IV or conservative fallback.
+                iv_for_est = feed_iv if feed_iv > 0.01 else _DEFAULT_IV_FALLBACK
+                _bs_est = black_scholes_call(price, K, T, r, iv_for_est, config.dividend_yield)
+                feed_delta = abs(_bs_est["delta"])
+                estimated_delta = True
+            delta = feed_delta
             if not (config.min_delta <= delta <= config.max_delta):
-                continue
+                _hg_n_delta += 1; continue
+
+            # ── OI ────────────────────────────────────────────────────────────
+            # oi==0 means data not available (same pattern as vol==0); do NOT
+            # hard-reject — Alpaca snapshot timeouts return 0 for all contracts.
             oi = int(contract.get("open_interest") or 0)
+            if oi > 0 and oi < config.min_open_interest:   # only reject confirmed low OI
+                _hg_n_oi += 1; continue
+
+            # ── volume: vol==0 means data not available, not literally zero ───
             vol = int(contract.get("volume") or 0)
+            if vol > 0 and vol < config.min_volume:   # only reject on confirmed low vol
+                _hg_n_vol += 1; continue
+
+            # ── mid price ─────────────────────────────────────────────────────
             bid = float(contract.get("bid_price") or contract.get("bid") or 0)
             ask = float(contract.get("ask_price") or contract.get("ask") or 0)
-            mid = (bid + ask) / 2 if bid > 0 and ask > 0 else 0
-            if oi < config.min_open_interest or vol < config.min_volume or mid <= 0:
-                continue
-            spread_pct = (ask - bid) / mid if mid > 0 else 1.0
+            estimated_mid = False
+            if bid > 0 and ask > 0:
+                mid = (bid + ask) / 2
+            else:
+                # Snapshot failed: estimate from BS; BS layer will verify / reject.
+                iv_for_est = feed_iv if feed_iv > 0.01 else _DEFAULT_IV_FALLBACK
+                _bs_est = black_scholes_call(price, K, T, r, iv_for_est, config.dividend_yield)
+                mid = _bs_est["price"]
+                bid = ask = mid    # symmetric; spread_pct will be 0
+                estimated_mid = True
+
+            if mid <= 0:
+                _hg_n_mid += 1; continue
+
+            spread_pct = 0.0 if estimated_mid else ((ask - bid) / mid if mid > 0 else 1.0)
             if spread_pct > config.max_spread_pct:
-                continue
+                _hg_n_spread += 1; continue
+
             hard_survivors.append({
                 "contract_symbol": str(contract.get("symbol") or ""),
                 "expiry": expiry_str[:10],
-                "strike": float(contract.get("strike_price") or contract.get("strike") or 0),
-                "delta": delta, "dte": dte, "bid": bid, "ask": ask, "mid": mid,
+                "strike": K, "delta": delta, "dte": dte,
+                "bid": bid, "ask": ask, "mid": mid,
                 "open_interest": oi, "volume": vol, "spread_pct": spread_pct,
-                "implied_volatility": float(contract.get("implied_volatility") or 0.0),
+                "implied_volatility": feed_iv,
+                "estimated_mid": estimated_mid,
+                "estimated_delta": estimated_delta,
             })
         except Exception:
             continue
 
     counts = {
         "hard_gate_survivors": len(hard_survivors),
+        # Per-gate rejection counters for diagnosing hard_survivors=0
+        "hg_rejected_puts": _hg_n_put,
+        "hg_rejected_dte": _hg_n_dte,
+        "hg_rejected_strike": _hg_n_strike,
+        "hg_rejected_delta": _hg_n_delta,
+        "hg_rejected_oi": _hg_n_oi,
+        "hg_rejected_vol": _hg_n_vol,
+        "hg_rejected_mid": _hg_n_mid,
+        "hg_rejected_spread": _hg_n_spread,
         "contracts_priced_by_black_scholes": 0,
         "contracts_rejected_overpriced": 0,
         "contracts_rejected_theta_decay": 0,
@@ -1418,16 +1487,28 @@ def screen_alpha_options_universe(
             row["watch"] = False
             row["reject_reason"] = f"rejected_by_regime:{row['market_regime']}"
             funnel["rejected_by_regime"] += 1
-        elif ev.setup_score >= cfg.screener_momentum_floor and not ev.reject_reason:
-            row["watch"] = True
-            row["reject_reason"] = ""
-            watch.append(symbol)
-            funnel["passed_momentum"] += 1
         else:
-            row["watch"] = False
-            row["reject_reason"] = ev.reject_reason or \
-                f"rejected_by_momentum:score={ev.setup_score:.0f}<{cfg.screener_momentum_floor:.0f}"
-            funnel["rejected_by_momentum"] += 1
+            # Clear a setup-quality reject when score meets the screener watch
+            # threshold.  detect_setup() gates at config.min_setup_score (55) and
+            # pre-sets reject_reason for any score below that.  Without this clear
+            # the screener's lower floor (default 45) never fires because
+            # `not ev.reject_reason` is False for scores 45-54 — causing 60/62
+            # symbols to be rejected by "momentum" even when they have enough
+            # momentum to warrant chain fetching.
+            if (ev.reject_reason
+                    and ev.reject_reason.startswith("rejected_by_setup_quality")
+                    and ev.setup_score >= cfg.screener_momentum_floor):
+                ev.reject_reason = None
+            if ev.setup_score >= cfg.screener_momentum_floor and not ev.reject_reason:
+                row["watch"] = True
+                row["reject_reason"] = ""
+                watch.append(symbol)
+                funnel["passed_momentum"] += 1
+            else:
+                row["watch"] = False
+                row["reject_reason"] = ev.reject_reason or \
+                    f"rejected_by_momentum:score={ev.setup_score:.0f}<{cfg.screener_momentum_floor:.0f}"
+                funnel["rejected_by_momentum"] += 1
         rows.append(row)
     return {"watch": watch, "rows": rows, "funnel": funnel}
 
@@ -1448,15 +1529,43 @@ class AlphaCallEngine:
 
     # ── state persistence ─────────────────────────────────────────────────────
     def _load_state(self) -> dict[str, ActiveCall]:
+        # Try today's state file first
         if ALPHA_STATE_PATH.exists():
             try:
                 raw = json.loads(ALPHA_STATE_PATH.read_text())
-                return {
+                loaded = {
                     k: ActiveCall(**v) for k, v in raw.items()
                     if all(f in v for f in ActiveCall.__dataclass_fields__)
                 }
+                if loaded:
+                    return loaded
             except Exception:
                 pass
+
+        # Fall back to yesterday's state file (carry-over overnight positions)
+        # These will be immediately flagged for closure by stale_overnight logic
+        try:
+            from datetime import timedelta
+            yesterday_tag = (datetime.now(ET) - timedelta(days=1)).strftime("%Y%m%d")
+            yesterday_path = (
+                PROJECT_ROOT / "system-data" / yesterday_tag
+                / f"{yesterday_tag}_alpha_engine_state.json"
+            )
+            if yesterday_path.exists():
+                raw = json.loads(yesterday_path.read_text())
+                carried = {
+                    k: ActiveCall(**v) for k, v in raw.items()
+                    if all(f in v for f in ActiveCall.__dataclass_fields__)
+                }
+                if carried:
+                    _alpha_event("state_carried_from_yesterday", {
+                        "yesterday_tag": yesterday_tag,
+                        "positions": list(carried.keys()),
+                    })
+                    return carried
+        except Exception as _e:
+            _alpha_event("state_carryover_error", {"error": str(_e)})
+
         return {}
 
     def _save_state(self) -> None:
@@ -1519,6 +1628,10 @@ class AlphaCallEngine:
         except Exception:
             _dyn = None
 
+        # Diagnostic: confirm exit pass is running each cycle
+        _alpha_event("exit_pass_start", {"active_positions": len(self._active),
+                                          "option_positions_from_broker": len(options_positions)})
+
         for key, call in list(self._active.items()):
             pos = pos_by_contract.get(call.contract_symbol)
             if pos is None:
@@ -1538,22 +1651,36 @@ class AlphaCallEngine:
             # ── EOD forced close (overnight_allowed=False) ─────────────────────
             # Positions opened with overnight_allowed=False must be closed before
             # the options market closes. Force-close at/after 15:45 ET so the order
-            # reaches the exchange before 16:00 ET. This prevents position slots from
-            # carrying over to the next day and frees capital for tomorrow's entries.
-            # Hard stops, 3R targets, and trail stops still take priority (checked
-            # first), so this only fires when none of the normal exits have triggered.
+            # reaches the exchange before 16:00 ET.
+            # NEW: Also force-close immediately on a NEW TRADING DAY if the position
+            # was opened on a prior calendar date — catches cases where the main loop
+            # was terminated before 15:45 ET and the position was never closed EOD.
             if not call.overnight_allowed:
                 try:
                     _now_et = datetime.now(ET)
                     _eod_cutoff = _now_et.replace(hour=15, minute=45, second=0, microsecond=0)
-                    if _now_et >= _eod_cutoff:
+                    # Check if this is a carry-over from a previous trading day
+                    _opened_date = None
+                    try:
+                        from datetime import date as _date
+                        _opened_date = datetime.fromisoformat(
+                            call.opened_at_utc.replace("Z", "+00:00")
+                        ).astimezone(ET).date()
+                    except Exception:
+                        pass
+                    _is_stale_overnight = (
+                        _opened_date is not None
+                        and _opened_date < _now_et.date()
+                    )
+                    if _is_stale_overnight or _now_et >= _eod_cutoff:
+                        _reason_tag = "stale_overnight_carry_over" if _is_stale_overnight else "eod_forced_close"
                         _pnl = current_value - call.entry_cost
                         exit_orders.append({
                             "symbol": call.contract_symbol,
                             "side": "sell",
                             "qty": qty_held,
-                            "source": "alpha_call_eod_forced_close",
-                            "reason": f"eod_forced_close:overnight_not_allowed:time={_now_et.strftime('%H:%M')}ET",
+                            "source": f"alpha_call_{_reason_tag}",
+                            "reason": f"{_reason_tag}:overnight_not_allowed:time={_now_et.strftime('%H:%M')}ET:opened={_opened_date}",
                             "underlying": call.symbol,
                             "setup_type": call.setup_type,
                             "realized_pnl": round(_pnl, 2),
@@ -1564,7 +1691,10 @@ class AlphaCallEngine:
                         })
                         _alpha_event("call_eod_forced_close", {
                             "symbol": call.symbol, "contract": call.contract_symbol,
-                            "time_et": _now_et.strftime("%H:%M"), "pnl": round(_pnl, 2),
+                            "reason": _reason_tag,
+                            "time_et": _now_et.strftime("%H:%M"),
+                            "opened_date": str(_opened_date),
+                            "pnl": round(_pnl, 2),
                             "pnl_pct": round(pnl_pct * 100, 2),
                         })
                         if waterfall_callback and _pnl > 0:
@@ -1861,6 +1991,29 @@ class AlphaCallEngine:
             self.config.risk_per_trade_pct * self.config.mixed_regime_risk_multiplier
             if _is_mixed_regime else self.config.risk_per_trade_pct
         )
+        # Market-open confirmation guard: on mixed/cautious days block NEW entries during
+        # the first 30 minutes after open (09:30-10:00 ET). This prevents entering options
+        # contracts when the market's direction has not yet been confirmed — the most common
+        # cause of immediate hard stops when regime flips bearish shortly after open.
+        # Configurable via ALPHA_CAUTIOUS_OPEN_GUARD_MINUTES (default 30). Set to 0 to disable.
+        _open_guard_blocked = False
+        if _is_mixed_regime and entries_enabled:
+            try:
+                import pytz as _ptz
+                _et_now = datetime.now(_ptz.timezone("America/New_York"))
+                _market_open_et = _et_now.replace(hour=9, minute=30, second=0, microsecond=0)
+                _guard_mins = int(os.getenv("ALPHA_CAUTIOUS_OPEN_GUARD_MINUTES", "30"))
+                _guard_cutoff = _market_open_et + __import__("datetime").timedelta(minutes=_guard_mins)
+                if _market_open_et <= _et_now < _guard_cutoff:
+                    _open_guard_blocked = True
+                    entries_enabled = False
+                    _alpha_event("open_guard_blocked_cautious_entries", {
+                        "reason": f"mixed/cautious regime within first {_guard_mins}min of open",
+                        "et_now": _et_now.strftime("%H:%M:%S"),
+                        "guard_until": _guard_cutoff.strftime("%H:%M:%S"),
+                    })
+            except Exception:
+                pass  # fail open — guard is advisory
 
         for symbol in symbols:
             bars = bars_by_symbol.get(symbol)
@@ -1925,6 +2078,15 @@ class AlphaCallEngine:
             if not entries_enabled:
                 urow["reject_reason"] = "regime_gate:SPY_not_confirmed_above_200DMA" if regime_suppressed else "entries_disabled"
                 universe_rows.append(urow); continue
+            # Clear a setup-quality reject_reason if the score now meets the
+            # effective (regime-adjusted) threshold.  detect_setup() sets the
+            # reject_reason against the static config.min_setup_score (55), but
+            # on mixed/cautious days _eff_min_score is lowered to 40.  Without
+            # this clear the lower threshold never fires for scores 40-54.
+            if (ev.reject_reason
+                    and ev.reject_reason.startswith("rejected_by_setup_quality")
+                    and ev.setup_score >= _eff_min_score):
+                ev.reject_reason = None
             if ev.setup_score < _eff_min_score or ev.reject_reason:
                 urow["reject_reason"] = ev.reject_reason or \
                     f"rejected_by_setup_quality:score={ev.setup_score:.0f}<{_eff_min_score:.0f}"
@@ -2001,8 +2163,24 @@ class AlphaCallEngine:
                         "black_scholes_score": br.get("black_scholes_score"), "counts": engine_eval.get("counts")})
                 else:
                     sig.reject_reason = "rejected_by_options_liquidity:no_qualifying_contract"
+                    _cts = engine_eval.get("counts") or {}
+                    _ace_log.info(
+                        "CHAIN_DIAG %s: hard_survivors=%s bs_priced=%s qualified=%s "
+                        "chain_len=%s price=%.2f "
+                        "[puts=%s dte=%s delta=%s oi=%s vol=%s mid=%s spread=%s]",
+                        symbol, _cts.get("hard_gate_survivors", "?"),
+                        _cts.get("contracts_priced_by_black_scholes", "?"),
+                        _cts.get("qualified", "?"),
+                        len(chain), ev.price,
+                        _cts.get("hg_rejected_puts", "?"),
+                        _cts.get("hg_rejected_dte", "?"),
+                        _cts.get("hg_rejected_delta", "?"),
+                        _cts.get("hg_rejected_oi", "?"),
+                        _cts.get("hg_rejected_vol", "?"),
+                        _cts.get("hg_rejected_mid", "?"),
+                        _cts.get("hg_rejected_spread", "?"))
                     _alpha_event("contract_rejected", {"symbol": symbol, "reason": sig.reject_reason,
-                        "counts": engine_eval.get("counts")})
+                        "counts": _cts})
                 urow["reject_reason"] = sig.reject_reason
                 universe_rows.append(urow); signals.append(sig); continue
 
@@ -2069,7 +2247,58 @@ class AlphaCallEngine:
             # Apply mixed-regime risk reduction: _eff_risk_pct is halved on mixed/cautious days.
             available = min(equity * _eff_risk_pct, waterfall_budget) \
                 if waterfall_budget > 0 else equity * _eff_risk_pct
-            contracts, premium, max_risk = size_position(equity, sig.mid, self.config)
+            # Size contracts against the EFFECTIVE budget so the premium correctly
+            # reflects the regime cap.  On mixed days the base size_position would
+            # return 1 contract at full cost; passing available as the risk ceiling
+            # instead will return 0 contracts when even 1 contract is unaffordable,
+            # surfacing a clear "no viable contract" skip rather than a budget reject.
+            _eff_max_risk = available  # regime-adjusted spend limit
+            cost_per_contract = max(0.01, sig.mid * 100)
+            _eff_contracts = max(1, int(_eff_max_risk // cost_per_contract)) if cost_per_contract > 0 else 0
+            if _eff_contracts < 1 or cost_per_contract > _eff_max_risk:
+                # Best contract exceeds budget. Try cheaper qualified alternatives before giving up.
+                # Sort qualified list by mid price ascending to find the cheapest affordable option.
+                _all_qualified = sorted(
+                    [c for c in (engine_eval.get("qualified") or []) if float(c.get("mid", 0) or 0) > 0],
+                    key=lambda c: float(c.get("mid", 0) or 0)
+                )
+                _affordable_alt = None
+                for _alt in _all_qualified:
+                    _alt_cost = max(0.01, float(_alt.get("mid", 0) or 0) * 100)
+                    if _alt_cost <= _eff_max_risk:
+                        _affordable_alt = _alt
+                        break
+                if _affordable_alt is not None:
+                    # Switch to the cheapest qualified contract that fits within budget.
+                    _alt_cost = max(0.01, float(_affordable_alt.get("mid", 0) or 0) * 100)
+                    sig.contract_symbol = _affordable_alt.get("contract_symbol", sig.contract_symbol)
+                    sig.expiry = _affordable_alt.get("expiry", sig.expiry)
+                    sig.strike = _affordable_alt.get("strike", sig.strike)
+                    sig.delta = _affordable_alt.get("delta", sig.delta)
+                    sig.dte = _affordable_alt.get("dte", sig.dte)
+                    sig.bid = _affordable_alt.get("bid", sig.bid)
+                    sig.ask = _affordable_alt.get("ask", sig.ask)
+                    sig.mid = _affordable_alt.get("mid", sig.mid)
+                    sig.open_interest = _affordable_alt.get("open_interest", sig.open_interest)
+                    sig.volume = _affordable_alt.get("volume", sig.volume)
+                    _apply_bs_fields(sig, _affordable_alt)
+                    cost_per_contract = _alt_cost
+                    _eff_contracts = max(1, int(_eff_max_risk // cost_per_contract))
+                    _ace_log.info(
+                        "BUDGET_FALLBACK %s: best contract too expensive (%.0f>%.0f budget), "
+                        "using cheaper alt %s mid=%.2f delta=%.2f dte=%s",
+                        symbol, max(0.01, contract.get("mid", 0) * 100) if isinstance(contract, dict) else 0,
+                        _eff_max_risk, _affordable_alt.get("contract_symbol", "?"),
+                        _affordable_alt.get("mid", 0), _affordable_alt.get("delta", 0),
+                        _affordable_alt.get("dte", 0))
+                else:
+                    # Cannot afford even the cheapest qualified contract within regime budget.
+                    sig.reject_reason = (f"rejected_by_cash_buffer:premium="
+                                         f"{int(cost_per_contract)}>available={int(available)}"
+                                         f"(regime:{int(_eff_risk_pct*100)}%risk)")
+                    urow["reject_reason"] = sig.reject_reason
+                    universe_rows.append(urow); signals.append(sig); continue
+            contracts, premium, max_risk = _eff_contracts, round(_eff_contracts * cost_per_contract, 2), round(_eff_contracts * cost_per_contract, 2)
             if contracts < 1 or premium > available:
                 sig.reject_reason = f"rejected_by_cash_buffer:premium={premium:.0f}>available={available:.0f}"
                 urow["reject_reason"] = sig.reject_reason
