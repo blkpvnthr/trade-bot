@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import re
+import ssl
 import time
 import hashlib
 import urllib.request
@@ -47,6 +48,20 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 ET_TZ = ZoneInfo("America/New_York")
+
+# SSL context: use system CA bundle, fall back to unverified if cert store is incomplete.
+def _make_ssl_ctx() -> ssl.SSLContext:
+    try:
+        ctx = ssl.create_default_context()
+        ctx.load_default_certs()
+        return ctx
+    except Exception:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
+_SSL_CTX = _make_ssl_ctx()
 DATA_TAG = os.getenv("RUN_DATA_DATE", datetime.now(ET_TZ).strftime("%Y%m%d"))
 DAILY_OUTPUTS = PROJECT_ROOT / "daily_system_outputs"
 DAILY_OUTPUTS.mkdir(parents=True, exist_ok=True)
@@ -72,7 +87,7 @@ class SECForm4Config:
     enabled: bool = os.getenv("ENABLE_SEC_FORM4_FEED", "true").lower() in {"1", "true"}
     user_agent: str = os.getenv("SEC_USER_AGENT", "QuantumQuant/1.0 contact@example.com")
     lookback_days: int = int(os.getenv("SEC_FORM4_LOOKBACK_DAYS", "30"))
-    min_transaction_value: float = float(os.getenv("SEC_FORM4_MIN_TRANSACTION_VALUE", "100000000"))
+    min_transaction_value: float = float(os.getenv("SEC_FORM4_MIN_TRANSACTION_VALUE", "1000000"))  # lowered 100M→1M (2026-06-03); $100M was filtering out all candidates
     cache_dir: str = os.getenv("SEC_FORM4_CACHE_DIR", "data/sec_cache")
     rate_limit_seconds: float = float(os.getenv("SEC_FORM4_RATE_LIMIT_SECONDS", "0.2"))
     # Bounds so a single run can never hammer SEC or hang the cycle.
@@ -467,7 +482,7 @@ class SECForm4Feed:
                 "User-Agent": self.cfg.user_agent,
                 "Accept-Encoding": "gzip, deflate",
             })
-            with urllib.request.urlopen(req, timeout=self.cfg.request_timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self.cfg.request_timeout, context=_SSL_CTX) as resp:
                 raw = resp.read()
                 enc = resp.headers.get("Content-Encoding", "")
                 if "gzip" in enc:

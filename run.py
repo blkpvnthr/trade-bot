@@ -142,7 +142,7 @@ OPTIONS_PROFIT_TO_BAL_PCT       = float(os.environ.get("OPTIONS_PROFIT_TO_BAL_PC
 OPTIONS_PROFIT_TO_ALPHA_PCT     = float(os.environ.get("OPTIONS_PROFIT_TO_ALPHA_PCT", 0.30))
 OPTIONS_PROFIT_TO_CASH_PCT      = float(os.environ.get("OPTIONS_PROFIT_TO_CASH_PCT", 0.10))
 CASH_BUFFER_PCT                 = float(os.environ.get("CASH_BUFFER_PCT", 0.08))
-CONTEXT_REFRESH_MIN             = float(os.environ.get("CONTEXT_REFRESH_MIN", 25.0))   # was 30.0; tightened to reduce staleness
+CONTEXT_REFRESH_MIN             = float(os.environ.get("CONTEXT_REFRESH_MIN", 30.0))
 ALPHA_BARS_LOOKBACK_MIN         = int(os.environ.get("ALPHA_BARS_LOOKBACK_MIN", 120))
 
 # Alpaca creds (required for live/paper modes).
@@ -507,23 +507,6 @@ class AlpacaGateway:
             self._mode      = "alpaca_py"
             self._available = True
             logger.info("Alpaca-py client initialised  paper=%s  url=%s", ALPACA_PAPER_ONLY, ALPACA_URL)
-            # Patch session-level default timeout: alpaca-py uses a requests.Session
-            # internally and has no constructor parameter for timeout. Without this,
-            # any Alpaca API call (get_account, get_all_positions, get_option_contracts,
-            # etc.) can hang indefinitely on a stalled connection, blocking the whole
-            # trading loop. 30 seconds is generous for paper-trading; adjust if needed.
-            _ALPACA_TIMEOUT = 30
-            try:
-                if hasattr(self._client, "_session"):
-                    _orig_req = self._client._session.request
-                    def _session_request_with_timeout(*_a, **_kw):
-                        if "timeout" not in _kw:
-                            _kw["timeout"] = _ALPACA_TIMEOUT
-                        return _orig_req(*_a, **_kw)
-                    self._client._session.request = _session_request_with_timeout
-                    logger.debug("Alpaca session timeout patched to %ds", _ALPACA_TIMEOUT)
-            except Exception as _tp:
-                logger.debug("Could not patch Alpaca session timeout: %s", _tp)
         except ImportError:
             try:
                 import alpaca_trade_api as tradeapi
@@ -537,17 +520,6 @@ class AlpacaGateway:
         try:
             from alpaca.data.historical.option import OptionHistoricalDataClient
             self._opt_data = OptionHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET)
-            # Patch options data client session timeout as well
-            try:
-                if hasattr(self._opt_data, "_session"):
-                    _orig_opt_req = self._opt_data._session.request
-                    def _opt_session_request_with_timeout(*_a, **_kw):
-                        if "timeout" not in _kw:
-                            _kw["timeout"] = 20
-                        return _orig_opt_req(*_a, **_kw)
-                    self._opt_data._session.request = _opt_session_request_with_timeout
-            except Exception:
-                pass
         except Exception:
             self._opt_data = None
 
@@ -632,7 +604,6 @@ class AlpacaGateway:
         contracts: Dict[str, Dict] = {}
         # 1. Contract metadata (strike / expiry / type / open_interest)
         try:
-            import concurrent.futures as _cf_chain
             from alpaca.trading.requests import GetOptionContractsRequest
             from alpaca.trading.enums import ContractType, AssetStatus
             from datetime import timedelta
@@ -648,22 +619,7 @@ class AlpacaGateway:
                 expiration_date_lte=_today + timedelta(days=ALPHA_MAX_DTE),
                 limit=1000,
             )
-            # Hard 25-second timeout — Alpaca option-contract requests occasionally
-            # hang indefinitely; without this the whole process stalls.
-            # Use shutdown(wait=False) — `with` context-manager exit blocks until the
-            # worker finishes, defeating the timeout.
-            _pool_chain = _cf_chain.ThreadPoolExecutor(max_workers=1)
-            _fut_chain = _pool_chain.submit(self._client.get_option_contracts, req)
-            resp = None
-            try:
-                resp = _fut_chain.result(timeout=25)
-            except Exception as _te:
-                _pool_chain.shutdown(wait=False)
-                logger.debug("get_option_contracts timeout/error for %s: %s", symbol, _te)
-                return []
-            _pool_chain.shutdown(wait=False)
-            if resp is None:
-                return []
+            resp = self._client.get_option_contracts(req)
             for c in getattr(resp, "option_contracts", []) or []:
                 occ = str(getattr(c, "symbol", ""))
                 if not occ:
@@ -687,21 +643,7 @@ class AlpacaGateway:
         if self._opt_data is not None and contracts:
             try:
                 from alpaca.data.requests import OptionChainRequest
-                # Hard 15-second timeout on the snapshot merge — can also hang if
-                # the data client stalls. Timeouts here lose greeks/bid/ask but
-                # the engine gracefully falls back to ATM-strike selection.
-                # Use shutdown(wait=False) — `with` context-manager exit blocks until
-                # the worker finishes, defeating the timeout.
-                _pool_snap = _cf_chain.ThreadPoolExecutor(max_workers=1)
-                _opt_req = OptionChainRequest(underlying_symbol=symbol)
-                _fut_snap = _pool_snap.submit(self._opt_data.get_option_chain, _opt_req)
-                chain = {}
-                try:
-                    chain = _fut_snap.result(timeout=15)
-                except Exception as _te:
-                    logger.debug("get_option_chain snapshot timeout/error for %s: %s", symbol, _te)
-                finally:
-                    _pool_snap.shutdown(wait=False)
+                chain = self._opt_data.get_option_chain(OptionChainRequest(underlying_symbol=symbol))
                 snap_map = chain if isinstance(chain, dict) else getattr(chain, "data", {}) or {}
                 for occ, snap in snap_map.items():
                     if occ not in contracts:
@@ -990,30 +932,7 @@ def fetch_1m_bars(gateway: AlpacaGateway, symbols: List[str]) -> Dict[str, "Any"
             feed = DataFeed.IEX
             req = StockBarsRequest(symbol_or_symbols=symbols, timeframe=TimeFrame.Minute,
                                    start=start, end=end, feed=feed)
-            # Hard timeout: Alpaca IEX batch requests can hang indefinitely on large
-            # universe / slow feeds. Cap at 30s and fall through to simulation.
-            # IMPORTANT: do NOT use `with ThreadPoolExecutor()` here — the context
-            # manager's __exit__ calls shutdown(wait=True) and BLOCKS until the worker
-            # thread finishes, defeating the timeout entirely. Shutdown with wait=False.
-            import concurrent.futures as _cf
-            # Scale timeout with universe size: 1.2s/symbol, min 45s, max 120s.
-            # The old 30s cap was too tight for 60+ symbols — IEX needs ~1s/symbol
-            # on a slow connection before the Alpaca SDK buffers the response.
-            _bar_timeout = max(45, min(120, int(len(symbols) * 1.2)))
-            _pool_bars = _cf.ThreadPoolExecutor(max_workers=1)
-            _fut_bars = _pool_bars.submit(lambda: data_client.get_stock_bars(req).df)
-            df = None
-            try:
-                df = _fut_bars.result(timeout=_bar_timeout)
-            except (_cf.TimeoutError, Exception) as _e_bars:
-                if isinstance(_e_bars, _cf.TimeoutError):
-                    logger.warning(
-                        "fetch_1m_bars: Alpaca batch request timed out (>%ds) "
-                        "for %d symbols — using simulation", _bar_timeout, len(symbols))
-                else:
-                    raise
-            finally:
-                _pool_bars.shutdown(wait=False)  # release immediately; worker is a daemon
+            df = data_client.get_stock_bars(req).df
             if df is not None and not df.empty:
                 df = df.reset_index()
                 for sym, grp in df.groupby("symbol"):
@@ -1646,24 +1565,6 @@ def run_alpha_entries(engine, gateway: AlpacaGateway, waterfall, risk: RiskManag
                 waterfall.consume_alpha(sig.premium_cost)
             except Exception as e:
                 logger.debug("register_filled/consume_alpha failed: %s", e)
-            # Journal the submission so funnel_report sees submitted > 0
-            try:
-                log_executed_order(
-                    event="order_submitted",
-                    symbol=sig.contract_symbol,
-                    underlying=sig.symbol,
-                    side="buy",
-                    qty=sig.contracts,
-                    limit_price=limit_px,
-                    setup_type=getattr(sig, "setup_type", ""),
-                    grade=getattr(sig, "grade", ""),
-                    setup_score=getattr(sig, "setup_score", 0),
-                    engine="alpha",
-                    order_id=resp.get("id", "") if isinstance(resp, dict) else getattr(resp, "id", ""),
-                    sim=resp.get("sim", False) if isinstance(resp, dict) else False,
-                )
-            except Exception as _je:
-                logger.debug("alpha log_executed_order failed: %s", _je)
     return placed
 
 
@@ -1684,31 +1585,14 @@ def run_alpha_screener(engine, gateway: AlpacaGateway, market_context: dict,
     else:
         watch = base
         funnel = {"scanned": len(base), "passed_momentum": len(base), "note": "screener_disabled"}
-    # Fetch option chains ONLY for the watch list — parallel with a hard wall-clock cap.
-    # Each get_options_chain call already has per-call timeouts (25s contracts + 15s
-    # snapshot). Parallel fetching keeps the total bounded to ~50s regardless of
-    # watch-list size, vs N×45s with a serial loop.
+    # Fetch option chains ONLY for the watch list (fetching, not filtering).
     chains: Dict[str, list] = {}
-    if watch:
-        import concurrent.futures as _cf_scr
-        CHAIN_WORKERS = min(8, len(watch))
-        with _cf_scr.ThreadPoolExecutor(max_workers=CHAIN_WORKERS) as _pool_scr:
-            _fut_map = {_pool_scr.submit(gateway.get_options_chain, sym): sym for sym in watch}
-            try:
-                for _fut in _cf_scr.as_completed(_fut_map, timeout=50):
-                    _sym = _fut_map[_fut]
-                    try:
-                        chains[_sym] = _fut.result() or []
-                    except Exception as _e:
-                        logger.debug("chain fetch failed for %s: %s", _sym, _e)
-                        chains[_sym] = []
-            except _cf_scr.TimeoutError:
-                logger.warning("chain fetch wall-clock timeout (50s) — proceeding with partial chains")
-            # Any symbols that still didn't complete get empty chains
-            for _sym in watch:
-                if _sym not in chains:
-                    logger.debug("chain fetch incomplete for %s — using empty chain", _sym)
-                    chains[_sym] = []
+    for sym in watch:
+        try:
+            chains[sym] = gateway.get_options_chain(sym) or []
+        except Exception as e:
+            logger.debug("chain fetch failed for %s: %s", sym, e)
+            chains[sym] = []
     return {"base": base, "bars": bars, "chains": chains, "watch": watch, "funnel": funnel}
 
 
@@ -1985,32 +1869,12 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     indicator_snapshot = _indicator_snapshot()
     # Alpha entries ALWAYS call evaluate_universe so the universe file is written; the
     # ENGINE rejects entries internally when the regime is hostile (engine setup gate).
-    # Hard entry cutoff: no new BUYs after 15:45 ET — options orders need ~15 min to
-    # settle before the 16:00 ET market close. EOD forced closes still run (separate path).
-    _now_et_entries = datetime.now(ZoneInfo("America/New_York"))
-    _entry_cutoff_et = _now_et_entries.replace(hour=15, minute=45, second=0, microsecond=0)
-    _entries_blocked = (is_market_open() and _now_et_entries >= _entry_cutoff_et) or not is_market_open()
-    if _entries_blocked and is_market_open():
-        logger.info("Alpha entries blocked: past 15:45 ET entry cutoff (%s ET)", _now_et_entries.strftime("%H:%M:%S"))
-    if alpha is not None and not _entries_blocked:
+    if alpha is not None:
         summary["alpha_entries"] = run_alpha_entries(
             alpha, gateway, waterfall, risk,
             alpha_scr["base"], alpha_scr["bars"], alpha_scr["chains"],
             market_context, positions=equity_positions, indicator_snapshot=indicator_snapshot,
             premarket_snapshot=premarket_snapshot, market_state=market_state)
-    elif alpha is not None and _entries_blocked and not is_market_open():
-        # Market closed: still run evaluate_universe to keep universe artifact fresh
-        # but pass empty symbols to avoid chain fetches / wasted API calls.
-        try:
-            alpha.evaluate_universe(
-                symbols=[], bars_by_symbol={}, market_context=market_context,
-                equity=risk.equity, options_exposure=risk.options_exposure, waterfall_budget=0.0,
-                chains_by_symbol={}, positions=equity_positions,
-                account_state={"equity": risk.equity, "buying_power": risk.buying_power},
-                indicator_snapshot=indicator_snapshot, premarket_snapshot=premarket_snapshot,
-                market_state=market_state)
-        except Exception:
-            pass
     # Black-Litterman + Efficient-Frontier optimizer: produce DESIRED target weights
     # (how much to own). Composite DCA decides WHEN; RiskManager decides whether ALLOWED.
     # Fully fail-safe — any failure leaves target_weights empty and BAL uses conviction.
@@ -2266,21 +2130,8 @@ def _build_context_safe() -> dict:
                     ctx.get("overall_market_bias"), ctx.get("trade_permission"), ctx.get("risk_level"))
         return ctx or {}
     except Exception as e:
-        logger.error(
-            "build_market_context failed (%s) — defaulting to cautious/neutral context "
-            "(install yfinance + openai to enable live regime detection)",
-            e,
-        )
-        # Return "neutral" (allowed regime) with cautious permission and reduced sizing.
-        # Using "mixed" was also valid but "neutral" is semantically cleaner for a
-        # dependency-missing failure — the market hasn't been assessed, not assessed bearish.
-        return {
-            "overall_market_bias": "neutral",
-            "trade_permission": "cautious",
-            "risk_level": "high",
-            "_fallback": True,
-            "_fallback_reason": str(e),
-        }
+        logger.error("build_market_context failed (%s) — defaulting to cautious context", e)
+        return {"overall_market_bias": "mixed", "trade_permission": "cautious", "risk_level": "high"}
 
 
 def _log_config(risk: Optional[RiskManager] = None) -> None:
@@ -2477,59 +2328,9 @@ def save_df(df: "Any", path: "Any") -> None:
 
 
 def log_executed_order(**kwargs) -> None:
-    """
-    Best-effort executed-order log.
-    Writes to both execution_events.jsonl (raw event stream) AND the
-    executor_journal.csv that funnel_report.py reads for submitted/filled counts.
-    Patched in tests.
-    """
+    """Best-effort executed-order log. Patched in tests."""
     try:
         write_event("executed_order", kwargs)
-    except Exception:
-        pass
-    # Also append a minimal row to executor_journal.csv so funnel_report sees
-    # submitted > 0.  Uses the same columns as ensure_runtime_outputs.JOURNAL_COLUMNS.
-    try:
-        import csv as _csv
-        _jpath = LOG_DIR / f"{DATA_TAG}_executor_journal.csv"
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        _write_header = not _jpath.exists() or _jpath.stat().st_size < 5
-        _row = {
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "cycle_id": "",
-            "event": kwargs.get("event", "order_submitted"),
-            "market_open": True,
-            "equity_before": "", "equity_after": "",
-            "cash_before": "", "cash_after": "",
-            "buying_power_before": "", "buying_power_after": "",
-            "gross_exposure_before": "", "gross_exposure_after": "",
-            "trade_symbol": kwargs.get("symbol", ""),
-            "trade_side": kwargs.get("side", ""),
-            "trade_qty": kwargs.get("qty", ""),
-            "trade_price": kwargs.get("limit_price", ""),
-            "estimated_notional": "",
-            "target_weight": "", "current_weight": "", "delta_weight": "",
-            "confidence": kwargs.get("setup_score", ""),
-            "cash_buffer": "", "max_gross_exposure": "", "max_position_weight": "",
-            "max_order_notional": "",
-            "stop_price": "", "target_price": "",
-            "bracket_attached": False,
-            "client_order_id": "",
-            "order_id": kwargs.get("order_id", ""),
-            "order_status": "submitted",
-            "filled_qty": "",
-            "filled_avg_price": "",
-            "slippage_pct": "",
-            "skip_reason": "",
-            "broker_message": "sim" if kwargs.get("sim") else "",
-            "message": f"engine={kwargs.get('engine','')} grade={kwargs.get('grade','')}",
-        }
-        _cols = list(_row.keys())
-        with _jpath.open("a", newline="", encoding="utf-8") as _fh:
-            _w = _csv.DictWriter(_fh, fieldnames=_cols)
-            if _write_header:
-                _w.writeheader()
-            _w.writerow(_row)
     except Exception:
         pass
 
@@ -2637,12 +2438,6 @@ def main():
         handlers=[logging.StreamHandler(sys.stdout),
                   logging.FileHandler("logs/run.log", mode="a")],
     )
-    # Suppress yfinance's verbose HTTP error bodies (e.g. full Yahoo Finance "Will be
-    # right back" HTML) which pollute the log when Yahoo Finance is down.  Keep ERROR
-    # so genuine authentication / import failures still surface.
-    logging.getLogger("yfinance").setLevel(logging.CRITICAL)
-    logging.getLogger("yfinance.base").setLevel(logging.CRITICAL)
-    logging.getLogger("peewee").setLevel(logging.WARNING)
 
     logger.info("QuantumQuant  mode=%s  paper_only=%s  data_tag=%s", MODE, ALPACA_PAPER_ONLY, DATA_TAG)
 

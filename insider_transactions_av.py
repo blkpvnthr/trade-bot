@@ -25,6 +25,7 @@ import json
 import logging
 import math
 import os
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -32,6 +33,23 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
+
+# SSL context that accepts the system CA bundle but falls back to unverified
+# if the platform certificate store is incomplete (common on macOS without
+# the certifi bundle installed by /Applications/Python 3.x/Install Certificates.command).
+def _make_ssl_ctx() -> ssl.SSLContext:
+    try:
+        ctx = ssl.create_default_context()
+        ctx.load_default_certs()
+        return ctx
+    except Exception:
+        # Last resort: skip verification entirely for this read-only advisory endpoint.
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
+_SSL_CTX = _make_ssl_ctx()
 from typing import Any, Dict, List, Optional
 
 try:
@@ -136,7 +154,7 @@ class AVInsiderConfig:
     rate_limit_seconds: float = field(
         default_factory=lambda: _env_float("AV_INSIDER_RATE_LIMIT_SECONDS", 15.0)
     )
-    request_timeout: int = field(default_factory=lambda: _env_int("AV_INSIDER_REQUEST_TIMEOUT", 20))
+    request_timeout: int = field(default_factory=lambda: _env_int("AV_INSIDER_REQUEST_TIMEOUT", 8))
     scale_usd: float = field(default_factory=lambda: _env_float("AV_INSIDER_SCALE_USD", 1_000_000.0))
     sell_discount: float = field(default_factory=lambda: _env_float("AV_INSIDER_SELL_DISCOUNT", 0.70))
 
@@ -278,6 +296,7 @@ def normalize_transaction(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 _last_request_ts = 0.0
+_daily_limit_hit = False  # circuit breaker: skip remaining symbols when AV daily quota exhausted
 
 
 def _api_url(symbol: str, api_key: str) -> str:
@@ -293,31 +312,40 @@ def _api_url(symbol: str, api_key: str) -> str:
 
 def _fetch_from_api(symbol: str, config: AVInsiderConfig) -> List[Dict[str, Any]]:
     """Fetch raw rows. Returns [] on any failure."""
-    global _last_request_ts
+    global _last_request_ts, _daily_limit_hit
 
     if not config.api_key:
         logger.warning("AV_INSIDER: ALPHA_VANTAGE_API_KEY not set; returning empty")
+        return []
+
+    # Circuit breaker: AV daily quota exhausted — skip all remaining symbols instantly
+    if _daily_limit_hit:
         return []
 
     wait = config.rate_limit_seconds - (time.time() - _last_request_ts)
     if wait > 0:
         time.sleep(wait)
 
+    _api_reached = False  # only consume rate-limit slot when we actually hit the API
     try:
         req = urllib.request.Request(
             _api_url(symbol, config.api_key),
             headers={"User-Agent": "QuantumQuant/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=config.request_timeout) as response:
+        with urllib.request.urlopen(req, timeout=config.request_timeout, context=_SSL_CTX) as response:
             raw_text = response.read().decode("utf-8", errors="replace")
+        _api_reached = True
     except urllib.error.HTTPError as exc:
+        _api_reached = True  # HTTP error means we reached the API
         logger.warning("AV_INSIDER: HTTP %s for %s", exc.code, symbol)
         return []
     except Exception as exc:
+        # Connection/SSL/timeout failures don't consume API quota — skip rate-limit sleep
         logger.warning("AV_INSIDER: request failed for %s: %s", symbol, exc)
         return []
     finally:
-        _last_request_ts = time.time()
+        if _api_reached:
+            _last_request_ts = time.time()
 
     try:
         payload = json.loads(raw_text)
@@ -327,7 +355,8 @@ def _fetch_from_api(symbol: str, config: AVInsiderConfig) -> List[Dict[str, Any]
 
     info_message = payload.get("Note") or payload.get("Information") or payload.get("Error Message")
     if info_message:
-        logger.warning("AV_INSIDER: Alpha Vantage message for %s: %s", symbol, str(info_message)[:160])
+        _daily_limit_hit = True  # set circuit breaker — all remaining symbols skip instantly
+        logger.warning("AV_INSIDER: daily quota exhausted — skipping remaining symbols for this cycle")
         return []
 
     data = payload.get("data")

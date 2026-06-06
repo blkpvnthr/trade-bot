@@ -760,6 +760,15 @@ def detect_anomalies(
     if rl_info.get("exists") and not rl_info.get("production_ready", True):
         _flag("medium", "rl_not_production_ready", "held_out evaluation failed or insufficient test set")
 
+    # Missing ML model files (rl_intraday, evolution_strategy, forecast_ensemble, options_booster)
+    artifact_details = artifacts.get("artifacts", {}) or {}
+    _model_keys = ["rl_model", "evolution_strategy_state", "forecast_ensemble", "options_booster"]
+    missing_models = [k for k in _model_keys if not artifact_details.get(k, {}).get("exists", True)]
+    if missing_models:
+        _flag("medium", "ml_models_missing",
+              f"missing={','.join(missing_models)} — run trainers to generate checkpoints; "
+              "timing gate will default to neutral until models exist")
+
     # No sells despite open positions (possible exit suppression — flag for investigation)
     sells_today = outcomes.get("sells_today", None)
     buys_today = outcomes.get("buys_today", 0)

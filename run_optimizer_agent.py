@@ -744,6 +744,36 @@ def generate_recommendations(
             confidence="high",
         )
 
+    # --- Missing Python packages (yfinance / openai) ---
+    # Detect from run.log if build_market_context failed due to missing packages
+    _run_log = Path("logs/run.log")
+    _missing_pkg_errors: set[str] = set()
+    if _run_log.exists():
+        try:
+            import re as _re
+            _today = date_tag  # YYYYMMDD string
+            # Only scan last 500 lines to stay fast
+            _lines = _run_log.read_text(errors="replace").splitlines()[-500:]
+            for _ln in _lines:
+                if "build_market_context failed" in _ln and "No module named" in _ln:
+                    _m = _re.search(r"No module named '([^']+)'", _ln)
+                    if _m:
+                        _missing_pkg_errors.add(_m.group(1))
+        except Exception:
+            pass
+    if _missing_pkg_errors:
+        _pkgs = ", ".join(sorted(_missing_pkg_errors))
+        add(
+            f"Missing Python packages prevent live market-context: {_pkgs}",
+            f"build_market_context failed with 'No module named ...' for: {_pkgs}. "
+            "When the market context builder fails, the system falls back to a neutral/cautious context "
+            "instead of assessing the real regime. This means bearish market days may still allow trades "
+            "during the error window. Fix: run  pip install yfinance openai  in the same Python environment "
+            "used to launch run.py. Then verify: python -c \"import yfinance, openai; print('ok')\".",
+            impact="high",
+            confidence="high",
+        )
+
     return recs
 
 
