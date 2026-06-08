@@ -2308,6 +2308,14 @@ def run_bal_entries(bal, gateway: AlpacaGateway, waterfall, risk: RiskManager,
                 waterfall.consume_bal(float(o.get("order_dollars", 0.0)))
             except Exception:
                 pass
+        else:
+            # Order rejected by RiskManager/gateway → undo the trigger-time DCA stamp so a
+            # non-executed order never burns the min-days cooldown or a tranche (ADBE bug).
+            try:
+                if use_dca and hasattr(bal, "rollback_dca"):
+                    bal.rollback_dca(o["symbol"])
+            except Exception:
+                pass
     # Evidence: record BAL rejections from the just-written DCA signals file.
     try:
         from buffett_accumulation_layer import BUFFETT_DCA_SIGNALS_PATH

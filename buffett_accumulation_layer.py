@@ -1420,6 +1420,26 @@ class BuffettAccumulationLayer:
                 pass
         return {}
 
+    def rollback_dca(self, symbol: str) -> None:
+        """Undo the trigger-time DCA stamp for an order that did NOT execute (rejected by the
+        RiskManager/gateway). Restores last_dca_date / dca_count / remaining tranches so a rejected
+        order never burns the min-days cooldown or a tranche. Safe no-op without a snapshot."""
+        rec = self._ownership.get(symbol)
+        if not isinstance(rec, dict):
+            return
+        prev = rec.pop("_prev_dca", None)
+        if prev is None:
+            return
+        if prev.get("last_dca_date") is None:
+            rec.pop("last_dca_date", None)
+        else:
+            rec["last_dca_date"] = prev["last_dca_date"]
+        rec["dca_count"] = int(prev.get("dca_count", 0) or 0)
+        if prev.get("remaining_dca_tranches") is not None:
+            rec["remaining_dca_tranches"] = prev["remaining_dca_tranches"]
+        self._ownership[symbol] = rec
+        self._save_ownership()
+
     def _save_ownership(self) -> None:
         try:
             OWNERSHIP_UNIVERSE_PATH.write_text(
@@ -1993,6 +2013,10 @@ class BuffettAccumulationLayer:
             # ── 8. Persist tranche state on the ownership record ────────────────
             avg_cost = float(getattr(cur_pos, "avg_entry_price", 0) or 0) if cur_pos is not None else 0.0
             existing = self._ownership.get(symbol, {})
+            # snapshot the pre-stamp cooldown so a rejected (non-executed) order can roll it back
+            existing["_prev_dca"] = {"last_dca_date": existing.get("last_dca_date"),
+                                     "dca_count": existing.get("dca_count", 0),
+                                     "remaining_dca_tranches": existing.get("remaining_dca_tranches")}
             existing.update({
                 "symbol": symbol,
                 "first_accumulated_utc": existing.get("first_accumulated_utc", now_iso),
