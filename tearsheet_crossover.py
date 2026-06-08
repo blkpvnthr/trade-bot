@@ -95,17 +95,19 @@ except Exception as e:
 
 
 # ── sequential sim (identical engine) for no-kill + −1.5% kill, for comparison + buy/sell markers ──
-def simulate(kill=None):
+def simulate(kill=None, stop=None):
     cash, pos, peak = START_CASH, {}, START_CASH
     curve, orders, trades, cost = [], [], [], {}
     for d in closes.index:
         row, emr, smr, pvr = closes.loc[d], ema.loc[d], sma.loc[d], prev.loc[d]
         eq = cash + sum(pos.get(s, 0) * row[s] for s in pos if not np.isnan(row[s]))
-        for s in list(pos):                                   # exits
+        for s in list(pos):                                   # exits: 200-SMA break OR per-position stop
             p, sm = row[s], smr[s]
-            if np.isnan(p) or np.isnan(sm):
+            if np.isnan(p) or np.isnan(sm) or pos[s] <= 0:
                 continue
-            if p < sm and pos[s] > 0:
+            avg = cost.get(s, 0) / pos[s] if pos[s] > 0 else 0.0
+            stop_hit = stop is not None and avg > 0 and p < avg * (1 - stop)
+            if p < sm or stop_hit:
                 proceeds = pos[s] * p * (1 - SLIP)
                 trades.append(proceeds - cost.get(s, proceeds))
                 cash += proceeds; orders.append((d, "sell")); pos[s] = 0.0; cost[s] = 0.0
@@ -151,28 +153,28 @@ def metrics(curve, trades):
                 sortino=sortino, dd=dd, n=len(trades), wr=wr, pf=pf_, calmar=calmar)
 
 
-# ── sweep the kill switch ──
-KILLS = [("none", None), ("1.5%", 0.015), ("3%", 0.03), ("6%", 0.06),
-         ("10%", 0.10), ("15%", 0.15), ("20%", 0.20), ("30%", 0.30)]
+# ── sweep the per-position stop (DD halt disabled) ──
+STOPS = [("no stop", None), ("5%", 0.05), ("8%", 0.08), ("10%", 0.10),
+         ("12%", 0.12), ("15%", 0.15), ("20%", 0.20), ("25%", 0.25)]
 res = {}
-for label, k in KILLS:
-    c, o, t = simulate(kill=k)
+for label, st in STOPS:
+    c, o, t = simulate(kill=None, stop=st)
     res[label] = (c, metrics(c, t))
 ms = metrics(spy_curve, []) if spy_curve is not None else None
-best = max(KILLS, key=lambda lk: res[lk[0]][1]["calmar"])[0]   # best risk-adjusted return (Calmar)
+best = max(STOPS, key=lambda ls: res[ls[0]][1]["calmar"])[0]   # best risk-adjusted return (Calmar)
 
-PALETTE = ["#f85149", "#db6d28", "#d29922", "#3fb950", "#2ea043", "#58a6ff", "#a371f7", "#db61a2"]
+PALETTE = ["#8b949e", "#f85149", "#db6d28", "#d29922", "#3fb950", "#2ea043", "#58a6ff", "#a371f7"]
 fig = make_subplots(rows=2, cols=1, row_heights=[0.62, 0.38], vertical_spacing=0.1,
-                    subplot_titles=("Equity by kill-switch level ($10k start)",
+                    subplot_titles=("Equity by per-position stop ($10k start)",
                                     "Risk / return frontier — CAGR vs Max Drawdown (pick the knee)"))
-for i, (label, k) in enumerate(KILLS):
+for i, (label, st) in enumerate(STOPS):
     c = res[label][0]
-    fig.add_trace(go.Scatter(x=c.index, y=c, name=f"kill {label}" + (" \u2605" if label == best else ""),
+    fig.add_trace(go.Scatter(x=c.index, y=c, name=f"stop {label}" + (" \u2605" if label == best else ""),
                              line=dict(color=PALETTE[i], width=3 if label == best else 1.4)), row=1, col=1)
 if spy_curve is not None:
     fig.add_trace(go.Scatter(x=spy_curve.index, y=spy_curve, name="SPY",
-                             line=dict(color="#8b949e", width=1.4, dash="dot")), row=1, col=1)
-for i, (label, k) in enumerate(KILLS):
+                             line=dict(color="#6e7681", width=1.4, dash="dot")), row=1, col=1)
+for i, (label, st) in enumerate(STOPS):
     m = res[label][1]
     fig.add_trace(go.Scatter(x=[abs(m["dd"]) * 100], y=[m["cagr"] * 100], mode="markers+text",
                              text=[label], textposition="top center", showlegend=False,
@@ -180,13 +182,13 @@ for i, (label, k) in enumerate(KILLS):
 if ms:
     fig.add_trace(go.Scatter(x=[abs(ms["dd"]) * 100], y=[ms["cagr"] * 100], mode="markers+text",
                              text=["SPY"], textposition="bottom center", showlegend=False,
-                             marker=dict(color="#8b949e", size=12, symbol="diamond")), row=2, col=1)
+                             marker=dict(color="#6e7681", size=12, symbol="diamond")), row=2, col=1)
 fig.update_yaxes(title_text="$", row=1, col=1)
 fig.update_xaxes(title_text="Max Drawdown %", row=2, col=1)
 fig.update_yaxes(title_text="CAGR %", row=2, col=1)
 fig.update_layout(template="plotly_dark", height=830, margin=dict(t=70, l=50, r=20, b=30),
-                  title="Crossover Strategy — kill-switch sweep", legend=dict(orientation="h", y=1.05),
-                  paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
+                  title="Crossover Strategy — per-position stop sweep (DD halt off)",
+                  legend=dict(orientation="h", y=1.05), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
 chart = fig.to_html(full_html=False, include_plotlyjs="cdn")
 
 
@@ -199,33 +201,33 @@ def trow(label, m, star=False):
             f"<td>{m['sortino']:.2f}</td><td>{m['n']}</td><td>{m['wr']:.0f}%</td><td>{pf_}</td></tr>")
 
 
-tbl = ("<table><thead><tr><th>Kill switch</th><th>Final</th><th>CAGR</th><th>MaxDD</th><th>Calmar</th>"
+tbl = ("<table><thead><tr><th>Per-position stop</th><th>Final</th><th>CAGR</th><th>MaxDD</th><th>Calmar</th>"
        "<th>Sharpe</th><th>Sortino</th><th>Trades</th><th>Win%</th><th>PF</th></tr></thead><tbody>"
-       + "".join(trow(label, res[label][1], label == best) for label, k in KILLS)
+       + "".join(trow(label, res[label][1], label == best) for label, st in STOPS)
        + (trow("SPY b&h", ms) if ms else "") + "</tbody></table>")
 
 bm = res[best][1]
 html = f"""<!doctype html><html><head><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1"><title>Kill-switch sweep</title>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>Strategy \u2014 stop sweep</title>
 <style>body{{background:#0d1117;color:#e6edf3;font:14px -apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:14px}}
 h1{{font-size:18px}}table{{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}}
 th,td{{padding:7px 6px;text-align:right;border-bottom:1px solid #21262d;white-space:nowrap}}
 th:first-child,td:first-child{{text-align:left}}thead th{{color:#8b949e}}
 .note{{color:#8b949e;font-size:12px;line-height:1.5;margin-top:10px}}.scroll{{overflow-x:auto}}
 .pick{{background:#161b22;border:1px solid #2ea043;border-radius:10px;padding:10px 12px;margin:8px 0}}</style></head>
-<body><h1>Kill-switch sweep — $10,000 \u00b7 {res['none'][0].index[0]:%Y-%m-%d} \u2192 {res['none'][0].index[-1]:%Y-%m-%d}</h1>
-<div class=pick>\u2605 Best risk-adjusted (Calmar = CAGR/|MaxDD|): <b>kill {best}</b> \u2014
+<body><h1>Crossover Strategy \u2014 per-position stop sweep \u00b7 $10,000 \u00b7 {res['no stop'][0].index[0]:%Y-%m-%d} \u2192 {res['no stop'][0].index[-1]:%Y-%m-%d}</h1>
+<div class=pick>\u2605 Best risk-adjusted (Calmar = CAGR/|MaxDD|): <b>{best} stop</b> \u2014
 ${bm['final']:,.0f}, CAGR {bm['cagr']:+.1%}, MaxDD {bm['dd']:.1%}, Calmar {bm['calmar']:.2f}</div>
 <div class=scroll>{tbl}</div>{chart}
-<div class=note>Crossover strategy, clean universe (no leveraged ETFs/indices). Kill switch halts new buys
-when drawdown from the high-water mark exceeds the level (existing positions still exit below the 200-SMA,
-so realized drawdown can exceed the threshold). Sizing 20% of available cash, 45% buffer, 10%/name, 5bps/side.
-Selection/survivorship bias + mostly-bull 2020\u20132026 regime \u2014 backtest, not a forward guarantee.</div>
+<div class=note>Crossover strategy, clean universe (no leveraged ETFs/indices), DD buy-halt DISABLED. A
+position exits on the 200-SMA break OR when it falls the stop % below its average entry (whichever first).
+Sizing 20% of available cash, 45% buffer, 10%/name, 5bps/side. Selection/survivorship bias + mostly-bull
+2020\u20132026 regime \u2014 backtest, not a forward guarantee.</div>
 </body></html>"""
 open("crossover_tearsheet.html", "w").write(html)
-print("sweep results:")
-for label, k in KILLS:
+print("per-position stop sweep:")
+for label, st in STOPS:
     m = res[label][1]
-    print(f"  kill {label:>5}: ${m['final']:>8,.0f}  CAGR {m['cagr']:+6.1%}  DD {m['dd']:>6.1%}  Calmar {m['calmar']:.2f}  Sharpe {m['sharpe']:.2f}  ({m['n']} tr)")
-if ms: print(f"  SPY        : ${ms['final']:>8,.0f}  CAGR {ms['cagr']:+6.1%}  DD {ms['dd']:>6.1%}")
-print(f"\nBEST by Calmar: kill {best}")
+    print(f"  stop {label:>7}: ${m['final']:>8,.0f}  CAGR {m['cagr']:+6.1%}  DD {m['dd']:>6.1%}  Calmar {m['calmar']:.2f}  Sharpe {m['sharpe']:.2f}  ({m['n']} tr)")
+if ms: print(f"  SPY          : ${ms['final']:>8,.0f}  CAGR {ms['cagr']:+6.1%}  DD {ms['dd']:>6.1%}")
+print(f"\nBEST by Calmar: {best} stop")

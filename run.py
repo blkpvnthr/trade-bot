@@ -110,6 +110,8 @@ EMA_TRIM_WINNERS_ONLY = os.environ.get("EMA_TRIM_WINNERS_ONLY", "true").lower() 
 # 200-SMA long-term trend gate: only BUY / re-enter when price is above the daily 200-SMA.
 ENABLE_SMA200_GATE = os.environ.get("ENABLE_SMA200_GATE", "true").lower() in {"1", "true", "yes"}
 SMA200_PERIOD = int(os.environ.get("SMA200_PERIOD", "200"))
+# Per-position stop loss: exit a held share when it falls this % below its average entry (0 = off).
+POSITION_STOP_PCT = float(os.environ.get("POSITION_STOP_PCT", "0.0"))
 DYNAMIC_POSITION_EQUITY_UNIT = float(os.environ.get("DYNAMIC_POSITION_EQUITY_UNIT", "50000"))
 DYNAMIC_MIN_POSITIONS = int(os.environ.get("DYNAMIC_MIN_POSITIONS", "5"))
 DYNAMIC_MAX_POSITIONS = int(os.environ.get("DYNAMIC_MAX_POSITIONS", "50"))
@@ -2477,9 +2479,9 @@ def _ema_buy_blocked(symbol: str, price: float) -> str:
 
 
 def run_ema_exits(gateway: AlpacaGateway, equity_positions: Dict[str, Any]) -> int:
-    """SELL-the-200-SMA-DIP exit: sell any held SHARE whose price has dipped below its daily 200-SMA
-    (a major long-term trend break — the line in the sand). Unconditional exit pass. Fully fail-safe.
-    9-EMA dips are BUY opportunities, not exits; only a 200-SMA break exits. Returns # of sells."""
+    """Exit a held SHARE on a 200-SMA break (long-term trend break) OR a per-position STOP LOSS (price
+    down POSITION_STOP_PCT from average entry) — whichever triggers first. Unconditional exit pass.
+    Fully fail-safe. Returns # of sells."""
     if not ENABLE_EMA_EXIT:
         return 0
     n = 0
@@ -2488,16 +2490,22 @@ def run_ema_exits(gateway: AlpacaGateway, equity_positions: Dict[str, Any]) -> i
             qty = int(abs(float(getattr(pos, "qty", 0) or 0)))
             if qty <= 0 or is_option_symbol(sym):
                 continue
-            sma = _sma_value(sym, SMA200_PERIOD)
-            if sma <= 0:
-                continue
             price = gateway._resolve_reference_price(sym)
-            if 0 < price < sma:
-                gateway.submit_market_order(sym, "sell", qty, reason=f"sma200_exit:price={price:.2f}<sma={sma:.2f}")
-                logger.info("SMA200 EXIT %s x%d (price %.2f < 200SMA %.2f)", sym, qty, price, sma)
-                n += 1
+            if price <= 0:
+                continue
+            avg = float(getattr(pos, "avg_entry_price", 0) or 0)
+            stop_hit = POSITION_STOP_PCT > 0 and avg > 0 and price < avg * (1 - POSITION_STOP_PCT)
+            sma = _sma_value(sym, SMA200_PERIOD)
+            sma_hit = sma > 0 and price < sma
+            if not (stop_hit or sma_hit):
+                continue
+            reason = (f"stop_loss:price={price:.2f}<entry={avg:.2f}-{POSITION_STOP_PCT*100:.0f}%"
+                      if stop_hit and not sma_hit else f"sma200_exit:price={price:.2f}<sma200={sma:.2f}")
+            gateway.submit_market_order(sym, "sell", qty, reason=reason)
+            logger.info("EXIT %s x%d (%s)", sym, qty, reason)
+            n += 1
         except Exception as e:
-            logger.error("SMA200 exit failed for %s (rest unaffected): %s", sym, e)
+            logger.error("exit failed for %s (rest unaffected): %s", sym, e)
     return n
 
 

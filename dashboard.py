@@ -414,7 +414,7 @@ def page(title, body, active=""):
         return f'<a class="navlink{on}" href="{PREFIX}{href}">{label}</a>'
     nav = (navlink("/", "Overview", "home") + navlink("/monthly", "Monthly", "monthly")
            + navlink("/journal", "Journal", "journal") + navlink("/logs", "Logs", "logs")
-           + navlink("/backtest", "Backtest", "backtest"))
+           + navlink("/backtest", "Strategy", "backtest"))
     return Response(f"""<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>{title} · QuantumQuant</title><style>{CSS}</style></head>
