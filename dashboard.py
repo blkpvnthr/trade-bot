@@ -97,6 +97,56 @@ def ph_by_date(ph):
     return out
 
 
+def get_account_snapshot(ttl=30):
+    now = time.time()
+    if _CACHE.get("acct") is not None and now - _CACHE.get("acct_t", 0) < ttl:
+        return _CACHE["acct"]
+    a = _client().get_account()
+    eq = float(a.equity)
+    le = float(a.last_equity or eq)
+    snap = {"equity": eq, "last_equity": le, "cash": float(a.cash),
+            "day_pnl": eq - le, "day_pnl_pct": ((eq - le) / le if le else 0.0)}
+    _CACHE["acct"], _CACHE["acct_t"] = snap, now
+    return snap
+
+
+def equity_series(ph, current=None):
+    """[(datetime, equity)] from portfolio history (zeros/None dropped), with the live equity appended
+    as the latest point so the chart includes today's intraday value."""
+    out = []
+    ts, eq = ph.get("timestamp", []), ph.get("equity", [])
+    for i, e in enumerate(eq):
+        if e is None or e <= 0:
+            continue
+        out.append((datetime.fromtimestamp(ts[i], ET), float(e)))
+    if current and current > 0:
+        now = datetime.now(ET)
+        if out and out[-1][0].date() == now.date():
+            out[-1] = (now, current)
+        else:
+            out.append((now, current))
+    return out
+
+
+def equity_svg(series, w=720, h=170):
+    if len(series) < 2:
+        return '<div class="sub">building equity history…</div>'
+    vals = [v for _, v in series]
+    lo, hi = min(vals), max(vals)
+    rng = (hi - lo) or 1.0
+    n = len(series)
+    pts = [(i / (n - 1) * w, h - (v - lo) / rng * h) for i, (_, v) in enumerate(series)]
+    coords = " L".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+    line = "M" + coords
+    area = f"M{pts[0][0]:.1f},{h} L{coords} L{pts[-1][0]:.1f},{h} Z"
+    c = "#3fb950" if vals[-1] >= vals[0] else "#f85149"
+    return (f'<svg viewBox="0 0 {w} {h}" preserveAspectRatio="none" '
+            f'style="width:100%;height:{h}px;display:block">'
+            f'<path d="{area}" fill="{c}" fill-opacity="0.12"/>'
+            f'<path d="{line}" fill="none" stroke="{c}" stroke-width="2" '
+            f'vector-effect="non-scaling-stroke"/></svg>')
+
+
 def daily_from_trips(trips):
     days = defaultdict(lambda: {"pnl": 0.0, "n": 0, "wins": 0, "gw": 0.0, "gl": 0.0, "vol": 0.0,
                                 "best": None, "worst": None})
@@ -259,24 +309,34 @@ def page(title, body, active=""):
 def home():
     trips = get_trips()
     days = daily_from_trips(trips)
-    phd = ph_by_date(get_ph())
+    acct = get_account_snapshot()
+    ph = get_ph()
     today = datetime.now(ET).date().isoformat()
     ym = today[:7]
     td = days.get(today, {"pnl": 0, "n": 0, "wins": 0, "gw": 0, "gl": 0})
-    # month-to-date realized
     m_pnl = sum(d["pnl"] for k, d in days.items() if k.startswith(ym))
     m_n = sum(d["n"] for k, d in days.items() if k.startswith(ym))
     m_w = sum(d["wins"] for k, d in days.items() if k.startswith(ym))
     m_gw = sum(d["gw"] for k, d in days.items() if k.startswith(ym))
     m_gl = sum(d["gl"] for k, d in days.items() if k.startswith(ym))
-    acct_today = phd.get(today, {})
-    eq = acct_today.get("equity")
+    series = equity_series(ph, current=acct["equity"])
+    chart = equity_svg(series)
+    rng_lbl = ""
+    if series:
+        vals = [v for _, v in series]
+        rng_lbl = (f"high {_money(max(vals))} · low {_money(min(vals))} · "
+                   f"{series[0][0]:%b %d} → now")
     cards = f"""
     <div class=cards>
-      <div class=card><div class=k>Account equity</div><div class=v>{_money(eq)}</div></div>
-      <div class=card><div class=k>Today account P&L</div><div class=v>{_pnl(acct_today.get('pl'))} {_pct(acct_today.get('plp'))}</div></div>
+      <div class=card><div class=k>Account equity</div><div class=v>{_money(acct['equity'])}</div><div class=sub>cash {_money(acct['cash'])}</div></div>
+      <div class=card><div class=k>Today account P&L</div><div class=v>{_pnl(acct['day_pnl'])}</div><div class=sub>{_pct(acct['day_pnl_pct'])} vs prior close</div></div>
       <div class=card><div class=k>Today realized</div><div class=v>{_pnl(td['pnl'])}</div><div class=sub>{td['n']} trades · {(td['wins']/td['n']*100 if td['n'] else 0):.0f}% win</div></div>
       <div class=card><div class=k>Month realized</div><div class=v>{_pnl(m_pnl)}</div><div class=sub>{m_n} trades · {(m_w/m_n*100 if m_n else 0):.0f}% win · PF {_pf_str(_pf(m_gw,m_gl))}</div></div>
+    </div>
+    <div class=card style="margin-top:10px">
+      <div class=k>Account equity</div>
+      {chart}
+      <div class=sub>{rng_lbl}</div>
     </div>
     <h2>This month by day → <a href="{PREFIX}/monthly/{ym}">open {ym}</a></h2>
     """
