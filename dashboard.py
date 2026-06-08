@@ -58,6 +58,12 @@ app.config.update(SESSION_COOKIE_NAME="qqdash", SESSION_COOKIE_PATH=(PREFIX or "
 _CACHE = {}
 
 
+@app.after_request
+def _nocache(resp):
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    return resp
+
+
 def _client():
     from alpaca.trading.client import TradingClient
     return TradingClient(os.environ["APCA_API_KEY_ID"], os.environ["APCA_API_SECRET_KEY"], paper=False)
@@ -375,8 +381,8 @@ MODAL = """
   <div class=mrow><span>Qty</span><input id=m-qty type=number step=any min=0 inputmode=decimal class=minput></div>
   <div class=mrow><span>Pass</span><input id=m-pw type=password autocomplete=current-password class=minput placeholder="Password to confirm order"></div>
   <div id=m-result class=mresult></div>
-  <div class=mbtns><button class="btn buy" onclick="doTrade('buy')">BUY</button>
-  <button class="btn sell" onclick="doTrade('sell')">SELL</button></div>
+  <div class=mbtns><button type=button class="btn buy" onclick="doTrade('buy')">BUY</button>
+  <button type=button class="btn sell" onclick="doTrade('sell')">SELL</button></div>
   <div class=hint>Market order, DAY. Password required. Tap a side twice to confirm.</div>
  </div>
 </div>
