@@ -22,7 +22,7 @@ from datetime import datetime, timezone, timedelta
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask, request, Response, redirect, jsonify
+from flask import Flask, request, Response, redirect, jsonify, session
 
 ROOT = Path(__file__).resolve().parent
 PREFIX = os.environ.get("DASH_PREFIX", "/dash").rstrip("/")
@@ -49,7 +49,12 @@ from order_emailer import fetch_fills, round_trips, _occ   # reuse FIFO matcher
 
 LOG_FILE = ROOT / "logs" / "run.log"
 app = Flask(__name__)
-TOKEN = os.environ.get("DASH_TOKEN", "")
+DASH_TOKEN = os.environ.get("DASH_TOKEN", "")
+DASH_PASSWORD = os.environ.get("DASH_PASSWORD", "")
+app.secret_key = os.environ.get("DASH_SECRET") or ("qq-" + (DASH_PASSWORD or DASH_TOKEN or "dev"))
+app.config.update(SESSION_COOKIE_NAME="qqdash", SESSION_COOKIE_PATH=(PREFIX or "/"),
+                  SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SECURE=True,
+                  SESSION_COOKIE_SAMESITE="Lax", PERMANENT_SESSION_LIFETIME=timedelta(days=60))
 _CACHE = {}
 
 
@@ -262,20 +267,61 @@ def _pf_str(pf):
 
 
 # ── auth ──────────────────────────────────────────────────────────────────────
+def _authed():
+    if session.get("auth"):
+        return True
+    if DASH_TOKEN and (request.args.get("token") == DASH_TOKEN
+                       or request.cookies.get("dash_token") == DASH_TOKEN):
+        return True
+    return False
+
+
 def need_auth(f):
     @wraps(f)
     def w(*a, **k):
-        if TOKEN:
-            tok = request.args.get("token") or request.cookies.get("dash_token")
-            if tok != TOKEN:
-                return Response("Forbidden — open this link with ?token=YOUR_TOKEN", status=403,
-                                mimetype="text/plain")
+        if not _authed():
+            if request.method == "POST" or request.path.endswith(("/trade", "/logs/tail")):
+                return jsonify({"ok": False, "error": "unauthorized"}), 401
+            return redirect(PREFIX + "/login")
         resp = app.make_response(f(*a, **k))
-        if TOKEN and request.args.get("token") == TOKEN:
-            resp.set_cookie("dash_token", TOKEN, max_age=86400 * 60, secure=True,
+        if DASH_TOKEN and request.args.get("token") == DASH_TOKEN:
+            resp.set_cookie("dash_token", DASH_TOKEN, max_age=86400 * 60, secure=True,
                             httponly=True, samesite="Lax")
         return resp
     return w
+
+
+def login_page(err=""):
+    msg = f'<div class="neg" style="margin-bottom:10px">{err}</div>' if err else ""
+    return Response(f"""<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>Sign in · QuantumQuant</title>
+<style>{CSS}</style></head><body><div class=wrap>
+<div class="card" style="max-width:330px;margin:14vh auto;text-align:center">
+<h1 style="margin-bottom:16px">QuantumQuant</h1>{msg}
+<form method=post action="{PREFIX}/login">
+<input class=minput type=password name=password placeholder=Password autofocus autocomplete=current-password
+style="width:100%;margin-bottom:12px">
+<button class="btn" style="background:#1f6feb;width:100%">Sign in</button></form>
+</div></div></body></html>""", mimetype="text/html")
+
+
+@app.route(PREFIX + "/login", methods=["GET", "POST"])
+def login():
+    if _authed():
+        return redirect(PREFIX + "/")
+    if request.method == "POST":
+        if DASH_PASSWORD and (request.form.get("password") or "") == DASH_PASSWORD:
+            session.permanent = True
+            session["auth"] = True
+            return redirect(PREFIX + "/")
+        return login_page("Incorrect password")
+    return login_page("Sign in required" if not DASH_PASSWORD else "")
+
+
+@app.route(PREFIX + "/logout")
+def logout():
+    session.clear()
+    return redirect(PREFIX + "/login")
 
 
 # ── shared HTML chrome ────────────────────────────────────────────────────────
@@ -361,7 +407,7 @@ def page(title, body, active=""):
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>{title} · QuantumQuant</title><style>{CSS}</style></head>
 <body><div class=wrap><div class=nav>{nav}</div>{body}
-<div class=sub>QuantumQuant · live · updated {datetime.now(ET):%Y-%m-%d %H:%M ET}</div>
+<div class=sub>QuantumQuant · live · updated {datetime.now(ET):%Y-%m-%d %H:%M ET} · <a href="{PREFIX}/logout">sign out</a></div>
 </div>{MODAL}</body></html>""", mimetype="text/html")
 
 
