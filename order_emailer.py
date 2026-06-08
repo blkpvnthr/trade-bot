@@ -147,14 +147,31 @@ def send_email(subject: str, body: str):
     if os.environ.get("ORDER_EMAILER_DRYRUN"):
         print(f"--- DRYRUN (would email) ---\nSubject: {subject}\n{body}")
         return
+    to = os.environ.get("ORDER_EMAIL_TO", "contact@quantumquant.trade")
+    # Preferred: Resend HTTPS API (port 443 — not blocked by DigitalOcean's SMTP filter).
+    api_key = os.environ.get("RESEND_API_KEY")
+    if api_key:
+        import urllib.request
+        import urllib.error
+        frm = os.environ.get("RESEND_FROM", "QuantumQuant <onboarding@resend.dev>")
+        payload = json.dumps({"from": frm, "to": [to], "subject": subject, "text": body}).encode()
+        req = urllib.request.Request("https://api.resend.com/emails", data=payload, method="POST",
+                                     headers={"Authorization": f"Bearer {api_key}",
+                                              "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                r.read()
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"Resend API {e.code}: {e.read().decode()[:240]}")
+        return
+    # Fallback: SMTP (works locally; blocked on the DO droplet).
     host = os.environ.get("SMTP_HOST")
     user = os.environ.get("SMTP_USER")
-    pwd = os.environ.get("SMTP_PASS")
+    pwd = (os.environ.get("SMTP_PASS") or "").replace(" ", "")
     port = int(os.environ.get("SMTP_PORT", "587"))
-    to = os.environ.get("ORDER_EMAIL_TO", "contact@quantumquant.trade")
     frm = os.environ.get("SMTP_FROM", user or to)
     if not (host and user and pwd):
-        raise RuntimeError("SMTP not configured (need SMTP_HOST / SMTP_USER / SMTP_PASS in .env)")
+        raise RuntimeError("No email transport configured (set RESEND_API_KEY, or SMTP_HOST/USER/PASS)")
     msg = EmailMessage()
     msg["From"], msg["To"], msg["Subject"] = frm, to, subject
     msg.set_content(body)
@@ -203,9 +220,10 @@ def main():
     from alpaca.trading.client import TradingClient
     from alpaca.trading.requests import GetOrdersRequest
     from alpaca.trading.enums import QueryOrderStatus
-    # Skip cleanly until SMTP is configured (so the timer can be pre-staged without erroring/backlogging).
-    if not os.environ.get("ORDER_EMAILER_DRYRUN") and not (os.environ.get("SMTP_HOST") and os.environ.get("SMTP_PASS")):
-        print("SMTP not configured — skipping (add SMTP_PASS to .env to enable).")
+    # Skip cleanly until a transport is configured (so the timer can be pre-staged without backlogging).
+    if (not os.environ.get("ORDER_EMAILER_DRYRUN") and not os.environ.get("RESEND_API_KEY")
+            and not (os.environ.get("SMTP_HOST") and os.environ.get("SMTP_PASS"))):
+        print("No email transport configured — skipping (set RESEND_API_KEY in .env to enable).")
         return
     scope = os.environ.get("ORDER_EMAIL_SCOPE", "all").lower()   # all | equities (exclude OCC options)
     tc = TradingClient(os.environ["APCA_API_KEY_ID"], os.environ["APCA_API_SECRET_KEY"], paper=False)
