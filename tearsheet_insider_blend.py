@@ -127,11 +127,29 @@ best_wi, best_tv = max(pool, key=lambda k: grid[k]["calmar"])
 bm = grid[(best_wi, best_tv)]
 best_curve = blend_curve(best_wi, best_tv)
 
+# ── aggressive cash-only (no leverage): 60% insider / 40% SPY, regime ON vs OFF ──
+def _reg_below200(sym):
+    b = bic.load_bars(sym)
+    if b is None or b.empty:
+        return pd.Series(False, index=comp.index)
+    c = b["close"].copy(); c.index = [d.date() if hasattr(d, "date") else d for d in b.index]
+    c = c.reindex(comp.index).ffill()
+    return (c < c.rolling(200).mean())
+RISK_OFF = (sum(_reg_below200(x).astype(int) for x in ("SPY", "QQQ", "IWM")) >= 2).reindex(comp.index).fillna(False)
+W_AGG = 0.60
+agg_raw = W_AGG * comp["Insider"] + (1 - W_AGG) * comp["SPY"]      # weights sum to 1.0 -> cash-only, no margin
+agg_off_curve = curve(agg_raw.loc[start:])
+agg_on_curve = curve((agg_raw * (~RISK_OFF).astype(float)).loc[start:])   # flat (cash) on market risk-off
+agg_off_m, agg_on_m = met(agg_off_curve), met(agg_on_curve)
+print(f"AGG 60% insider cash-only, regime OFF: CAGR {agg_off_m['cagr']:+.1%}  DD {agg_off_m['dd']:.1%}  Sharpe {agg_off_m['sharpe']:.2f}")
+print(f"AGG 60% insider cash-only, regime ON : CAGR {agg_on_m['cagr']:+.1%}  DD {agg_on_m['dd']:.1%}  Sharpe {agg_on_m['sharpe']:.2f}")
+
 # equity chart: best blend vs SPY vs insider
 fig = make_subplots(rows=2, cols=1, row_heights=[0.64, 0.36], vertical_spacing=0.08,
                     subplot_titles=(f"Best blend ({best_wi:.0%} insider, vol-target {best_tv:.0%}) vs SPY", "Drawdown %"))
-for nm, c, col, wd in [("Best blend", best_curve, "#3fb950", 2.6), ("SPY", spy_curve, "#6e7681", 1.5),
-                       ("Insider standalone", ins_curve, "#a371f7", 1.3)]:
+for nm, c, col, wd in [("Aggressive 60% insider (regime OFF)", agg_off_curve, "#f85149", 2.0),
+                       ("Aggressive 60% insider (regime ON)", agg_on_curve, "#3fb950", 2.4),
+                       ("SPY", spy_curve, "#6e7681", 1.5), ("Insider standalone", ins_curve, "#a371f7", 1.1)]:
     fig.add_trace(go.Scatter(x=c.index, y=c, name=nm, line=dict(color=col, width=wd)), row=1, col=1)
     fig.add_trace(go.Scatter(x=c.index, y=(c / c.cummax() - 1) * 100, showlegend=False,
                   line=dict(color=col, width=wd * 0.5)), row=2, col=1)
