@@ -110,6 +110,26 @@ def get_account_snapshot(ttl=30):
     return snap
 
 
+def get_positions(ttl=30):
+    now = time.time()
+    if _CACHE.get("pos") is not None and now - _CACHE.get("pos_t", 0) < ttl:
+        return _CACHE["pos"]
+    try:
+        pos = _client().get_all_positions()
+    except Exception:
+        pos = []
+    _CACHE["pos"], _CACHE["pos_t"] = pos, now
+    return pos
+
+
+def _fmt_sym(sym):
+    """OCC option symbols -> readable 'AAPL 312.5C 06/08'; equities unchanged."""
+    if not _occ(sym):
+        return sym
+    und, exp, cp, strike = sym[:-15], sym[-15:-9], sym[-9], int(sym[-8:]) / 1000
+    return f"{und} {strike:g}{cp} {exp[2:4]}/{exp[4:6]}"
+
+
 def equity_series(ph, current=None):
     """[(datetime, equity)] from portfolio history (zeros/None dropped), with the live equity appended
     as the latest point so the chart includes today's intraday value."""
@@ -338,9 +358,34 @@ def home():
       {chart}
       <div class=sub>{rng_lbl}</div>
     </div>
+    {positions_html(get_positions())}
     <h2>This month by day → <a href="{PREFIX}/monthly/{ym}">open {ym}</a></h2>
     """
     return page("Overview", cards, "home")
+
+
+def positions_html(positions):
+    if not positions:
+        return ('<h2>Open positions</h2><div class="card"><span class="muted">Flat — no open positions.</span></div>')
+    rows = ""
+    tot_mv = tot_upl = 0.0
+    for p in sorted(positions, key=lambda x: -abs(float(getattr(x, "market_value", 0) or 0))):
+        mv = float(p.market_value or 0)
+        upl = float(p.unrealized_pl or 0)
+        uplpc = float(p.unrealized_plpc or 0)
+        tot_mv += mv
+        tot_upl += upl
+        side = str(getattr(p, "side", "")).split(".")[-1].lower()
+        tag = ' <span class="muted">opt</span>' if _occ(p.symbol) else (
+            ' <span class="neg">short</span>' if side == "short" else "")
+        rows += (f"<tr><td>{_fmt_sym(p.symbol)}{tag}</td><td>{float(p.qty):g}</td>"
+                 f"<td>${float(p.avg_entry_price):,.2f}</td><td>${float(p.current_price or 0):,.2f}</td>"
+                 f"<td>{_money(mv)}</td><td>{_pnl(upl)} {_pct(uplpc)}</td></tr>")
+    tot = (f"<tr class=tot><td>TOTAL</td><td>{len(positions)}</td><td></td><td></td>"
+           f"<td>{_money(tot_mv)}</td><td>{_pnl(tot_upl)}</td></tr>")
+    return (f"<h2>Open positions <span class=muted style=font-size:13px>· {len(positions)}</span></h2>"
+            f"<div class=scroll><table><thead><tr><th>Symbol</th><th>Qty</th><th>Avg</th><th>Last</th>"
+            f"<th>Value</th><th>Unreal P&L</th></tr></thead><tbody>{tot}{rows}</tbody></table></div>")
 
 
 def month_nav(ym):
