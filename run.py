@@ -379,6 +379,7 @@ SKIP_REASONS = {
     "rejected_by_cash_buffer",
     "rejected_by_below_9ema",
     "rejected_by_below_sma200",
+    "rejected_not_9ema_dip",
     "rejected_by_exposure_limit",
     "rejected_by_options_buying_power",
     "rejected_by_PDT",
@@ -2389,29 +2390,26 @@ def _sma_value(symbol: str, period: int = 200, ttl: float = 900.0) -> float:
 
 
 def _ema_buy_blocked(symbol: str, price: float) -> str:
-    """Trend BUY/re-entry gate. Returns '' if the buy is allowed, else a 'rejected_by_below_...'
-    reason — price below the daily 9-EMA (short-term) OR below the 200-SMA (long-term). Equities only."""
+    """BUY-the-9-EMA-DIP gate. '' if the buy is allowed, else a reason. Allowed ONLY in the dip zone:
+    price AT/BELOW the 9-EMA (a pullback) AND AT/ABOVE the 200-SMA (still a long-term uptrend). Blocked
+    when extended above the 9-EMA (no dip yet) or below the 200-SMA (downtrend). Equities only."""
     if is_option_symbol(symbol) or price <= 0:
         return ""
-    if ENABLE_EMA_GATE:
-        ema = _ema_value(symbol, EMA_PERIOD)
-        if ema > 0 and price < ema:
-            return f"rejected_by_below_9ema:price={price:.2f}<ema={ema:.2f}"
     if ENABLE_SMA200_GATE:
         sma = _sma_value(symbol, SMA200_PERIOD)
         if sma > 0 and price < sma:
             return f"rejected_by_below_sma200:price={price:.2f}<sma={sma:.2f}"
+    if ENABLE_EMA_GATE:
+        ema = _ema_value(symbol, EMA_PERIOD)
+        if ema > 0 and price > ema:
+            return f"rejected_not_9ema_dip:price={price:.2f}>ema={ema:.2f}"
     return ""
 
 
-_EMA_TRIM_STATE: Dict[str, bool] = {}
-
-
 def run_ema_exits(gateway: AlpacaGateway, equity_positions: Dict[str, Any]) -> int:
-    """9-EMA take-some-profit: when a held SHARE dips below its daily 9-EMA, TRIM a fraction
-    (EMA_TAKE_PROFIT_PCT) rather than exit — locking partial gains while keeping the position. Winners
-    only (skip losers) when EMA_TRIM_WINNERS_ONLY. Trims ONCE per cross-down (re-arms when price climbs
-    back above the 9-EMA), so it never grinds the position to zero. Fail-safe. Returns # of trims."""
+    """SELL-the-200-SMA-DIP exit: sell any held SHARE whose price has dipped below its daily 200-SMA
+    (a major long-term trend break — the line in the sand). Unconditional exit pass. Fully fail-safe.
+    9-EMA dips are BUY opportunities, not exits; only a 200-SMA break exits. Returns # of sells."""
     if not ENABLE_EMA_EXIT:
         return 0
     n = 0
@@ -2420,29 +2418,16 @@ def run_ema_exits(gateway: AlpacaGateway, equity_positions: Dict[str, Any]) -> i
             qty = int(abs(float(getattr(pos, "qty", 0) or 0)))
             if qty <= 0 or is_option_symbol(sym):
                 continue
-            ema = _ema_value(sym, EMA_PERIOD)
-            if ema <= 0:
+            sma = _sma_value(sym, SMA200_PERIOD)
+            if sma <= 0:
                 continue
             price = gateway._resolve_reference_price(sym)
-            if price <= 0:
-                continue
-            if price >= ema:                          # back above the 9-EMA → re-arm for the next dip
-                _EMA_TRIM_STATE.pop(sym, None)
-                continue
-            if _EMA_TRIM_STATE.get(sym):              # already trimmed this cross-down
-                continue
-            avg = float(getattr(pos, "avg_entry_price", 0) or 0)
-            if EMA_TRIM_WINNERS_ONLY and avg > 0 and price <= avg:
-                continue                              # at a loss — don't realize it on the 9-EMA dip
-            trim = min(qty, max(1, int(qty * EMA_TAKE_PROFIT_PCT)))
-            gateway.submit_market_order(sym, "sell", trim,
-                reason=f"ema9_take_profit:{trim}/{qty}@{price:.2f}<ema{ema:.2f}")
-            logger.info("9EMA TAKE-PROFIT %s trim %d/%d (price %.2f < 9EMA %.2f, avg %.2f)",
-                        sym, trim, qty, price, ema, avg)
-            _EMA_TRIM_STATE[sym] = True
-            n += 1
+            if 0 < price < sma:
+                gateway.submit_market_order(sym, "sell", qty, reason=f"sma200_exit:price={price:.2f}<sma={sma:.2f}")
+                logger.info("SMA200 EXIT %s x%d (price %.2f < 200SMA %.2f)", sym, qty, price, sma)
+                n += 1
         except Exception as e:
-            logger.error("9EMA take-profit failed for %s (rest unaffected): %s", sym, e)
+            logger.error("SMA200 exit failed for %s (rest unaffected): %s", sym, e)
     return n
 
 
