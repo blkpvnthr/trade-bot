@@ -14,6 +14,8 @@ portfolio-history (daily equity / account P&L). Mobile-first HTML, no external a
 Env (.env): APCA_API_KEY_ID, APCA_API_SECRET_KEY, DASH_TOKEN (required to view), DASH_PREFIX (/dash).
 """
 import os
+import re
+import subprocess
 import time
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
@@ -112,6 +114,55 @@ def daily_from_trips(trips):
     return days
 
 
+_ORDER_RE = re.compile(
+    r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+\s+\w+\s+\[[^\]]*\]\s+ORDER (buy|sell) (\S+)\b.*?reason=(\S+)')
+
+
+def reason_index(ttl=60):
+    """Parse run.log 'ORDER <side> <SYM> ... reason=...' lines -> [(utc_time, side, symbol, reason)]."""
+    now = time.time()
+    if _CACHE.get("ridx") is not None and now - _CACHE.get("ridx_t", 0) < ttl:
+        return _CACHE["ridx"]
+    idx = []
+    try:
+        out = subprocess.run(["tail", "-n", "80000", str(LOG_FILE)],
+                             capture_output=True, text=True, timeout=15).stdout
+        for line in out.splitlines():
+            m = _ORDER_RE.match(line)
+            if m:
+                t = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                idx.append((t, m.group(2), m.group(3), m.group(4)))
+    except Exception:
+        pass
+    _CACHE["ridx"], _CACHE["ridx_t"] = idx, now
+    return idx
+
+
+def reason_at(idx, side, symbol, when, window=180):
+    """Closest run.log reason for (side, symbol) within `window` seconds of `when`. None if no match."""
+    if when is None:
+        return None
+    best, best_d = None, window + 1
+    for (t, sd, sym, reason) in idx:
+        if sd == side and sym == symbol:
+            d = abs((t - when).total_seconds())
+            if d < best_d:
+                best_d, best = d, reason
+    return best
+
+
+def trip_logic(idx, t):
+    """(entry_reason, exit_reason) for a round-trip; webhook options fall back to a TradingView label."""
+    sym = t["symbol"]
+    entry_t = t.get("entry_time") or (t["exit_time"] - timedelta(hours=t.get("hold_h", 0)))
+    er = reason_at(idx, "buy", sym, entry_t)
+    xr = reason_at(idx, "sell", sym, t["exit_time"])
+    if _occ(sym):
+        er = er or "TradingView webhook (option entry)"
+        xr = xr or "TradingView webhook (option exit)"
+    return er or "—", xr or "—"
+
+
 def _pf(gw, gl):
     return (gw / gl) if gl > 1e-9 else (float("inf") if gw > 0 else 0.0)
 
@@ -175,6 +226,11 @@ table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
 th,td{padding:8px 6px;text-align:right;border-bottom:1px solid #21262d;white-space:nowrap}
 th:first-child,td:first-child{text-align:left}thead th{color:#8b949e;font-weight:600;position:sticky;top:0;background:#0d1117}
 tr.tot td{font-weight:700;border-top:2px solid #30363d;background:#161b22}
+tr.detail td{text-align:left;color:#9da7b1;font-size:11px;white-space:normal;word-break:break-word;
+padding:2px 6px 9px;border-bottom:1px solid #21262d}
+tr.main td{border-bottom:none}
+.lbl{color:#6e7681;text-transform:uppercase;font-size:9px;border:1px solid #30363d;border-radius:4px;
+padding:1px 4px;margin-right:4px;letter-spacing:.03em}.lbl.x{color:#d29922;border-color:#5a4a1a}
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .sub{color:#6e7681;font-size:12px;margin-top:2px}
 .logbox{background:#010409;border:1px solid #30363d;border-radius:10px;padding:10px;
@@ -291,17 +347,26 @@ def monthly(ym):
     return page(f"Monthly {ym}", cards + table, "monthly")
 
 
+def _esc(s):
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
 @app.route(PREFIX + "/journal")
 @need_auth
 def journal():
     trips = sorted(get_trips(), key=lambda t: t["exit_time"], reverse=True)[:150]
+    idx = reason_index()
     rows = ""
     for t in trips:
         sym = t["symbol"]
-        rows += (f"<tr><td>{t['exit_time'].astimezone(ET):%m-%d %H:%M}</td><td>{sym}</td>"
+        er, xr = trip_logic(idx, t)
+        rows += (f"<tr class=main><td>{t['exit_time'].astimezone(ET):%m-%d %H:%M}</td><td>{sym}</td>"
                  f"<td>{t['qty']:g}</td><td>${t['entry_px']:,.2f}</td><td>${t['exit_px']:,.2f}</td>"
                  f"<td>{_pnl(t['pnl'])}</td><td>{_pct(t['ret'])}</td><td>{t['hold_h']:.1f}h</td></tr>")
-    table = (f"<h1>Round-trips <span class=muted style=font-size:13px>· last {len(trips)}</span></h1>"
+        rows += (f"<tr class=detail><td colspan=8>"
+                 f"<span class=lbl>entry</span>{_esc(er)} "
+                 f"<span class='lbl x'>exit</span>{_esc(xr)}</td></tr>")
+    table = (f"<h1>Round-trips <span class=muted style=font-size:13px>· last {len(trips)} · with strategy logic</span></h1>"
              f"<div class=scroll><table><thead><tr><th>Closed</th><th>Sym</th><th>Qty</th><th>Entry</th>"
              f"<th>Exit</th><th>P&L</th><th>Ret</th><th>Held</th></tr></thead><tbody>{rows or '<tr><td colspan=8 class=muted>none</td></tr>'}</tbody></table></div>")
     return page("Journal", table, "journal")

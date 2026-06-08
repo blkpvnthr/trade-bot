@@ -89,7 +89,8 @@ def round_trips(fills):
             pnl = (f["price"] - lot["price"]) * match * mult * (1 if long_side else -1)
             basis = lot["price"] * match * mult
             trips.append({"symbol": sym, "qty": match, "entry_px": lot["price"], "exit_px": f["price"],
-                          "exit_time": f["time"], "pnl": pnl, "ret": (pnl / basis) if basis else 0.0,
+                          "entry_time": lot["time"], "exit_time": f["time"], "pnl": pnl,
+                          "ret": (pnl / basis) if basis else 0.0,
                           "hold_h": (f["time"] - lot["time"]).total_seconds() / 3600.0})
             lot["qty"] -= match if long_side else -match
             remaining += match if not long_side else -match
