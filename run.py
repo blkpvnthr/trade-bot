@@ -270,7 +270,7 @@ ENABLE_BUFFETT_OPTIMIZER        = os.environ.get("ENABLE_BUFFETT_OPTIMIZER", "tr
 OPTIONS_PROFIT_TO_BAL_PCT       = float(os.environ.get("OPTIONS_PROFIT_TO_BAL_PCT", 0.60))
 OPTIONS_PROFIT_TO_ALPHA_PCT     = float(os.environ.get("OPTIONS_PROFIT_TO_ALPHA_PCT", 0.30))
 OPTIONS_PROFIT_TO_CASH_PCT      = float(os.environ.get("OPTIONS_PROFIT_TO_CASH_PCT", 0.10))
-CASH_BUFFER_PCT                 = float(os.environ.get("CASH_BUFFER_PCT", 0.08))
+CASH_BUFFER_PCT                 = float(os.environ.get("CASH_BUFFER_PCT", 0.45))  # always keep this %% of equity in FREE CASH
 CONTEXT_REFRESH_MIN             = float(os.environ.get("CONTEXT_REFRESH_MIN", 25.0))   # was 30.0; tightened to reduce staleness
 ALPHA_BARS_LOOKBACK_MIN         = int(os.environ.get("ALPHA_BARS_LOOKBACK_MIN", 120))
 
@@ -597,6 +597,12 @@ class RiskManager:
         notional = qty * price * (100.0 if asset_class == "option" else 1.0)
         # Buy-side exposure / position controls
         if side == "buy":
+            # Cash reserve: ALWAYS keep CASH_BUFFER_PCT of equity in free cash (e.g. 45%). A buy that
+            # would drop cash below the reserve is rejected, so the account never deploys past (1-buffer).
+            _reserve = CASH_BUFFER_PCT * self.equity
+            if self.cash - notional < _reserve:
+                return False, (f"rejected_by_cash_buffer:cash={self.cash:.0f}-{notional:.0f}<"
+                               f"reserve={_reserve:.0f}")
             if self.max_order_dollars > 0 and notional > self.max_order_dollars:
                 return False, (f"rejected_by_order_size:notional={notional:.0f}>"
                                f"{self.max_order_dollars:.0f}")
@@ -638,7 +644,7 @@ class RiskManager:
         if side != "buy" or price <= 0:
             return None
         mult = 100.0 if asset_class == "option" else 1.0
-        rooms = []
+        rooms = [max(0.0, self.cash - CASH_BUFFER_PCT * self.equity)]   # free-cash reserve room
         if self.max_order_dollars > 0:
             rooms.append(self.max_order_dollars)
         if asset_class == "option":
@@ -2264,8 +2270,9 @@ def run_bal_entries(bal, gateway: AlpacaGateway, waterfall, risk: RiskManager,
     if not symbols:
         return 0
     stock_room = max(0.0, risk.equity * MAX_STOCK_EXPOSURE_PCT - risk.stock_exposure)
-    spendable_bp = max(0.0, risk.buying_power * (1.0 - CASH_BUFFER_PCT))
-    available_capital = min(spendable_bp, stock_room)
+    cash_reserve = CASH_BUFFER_PCT * risk.equity                      # always-free cash
+    spendable = max(0.0, risk.cash - cash_reserve)                   # only deploy cash above the reserve
+    available_capital = min(spendable, stock_room)
     if available_capital < 200:
         return 0
     # Composite DCA framework is the accumulation mechanism when enabled (value decides

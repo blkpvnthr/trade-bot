@@ -127,6 +127,16 @@ class DCAConfig:
     max_single_stock_weight: float = float(os.getenv("MAX_SINGLE_STOCK_WEIGHT", "0.10"))
     min_dca_order_dollars: float = float(os.getenv("BAL_DCA_MIN_ORDER_DOLLARS", "200"))
 
+    # ── Return-based position sizing: order $ = a % of equity scaled by PREDICTED RETURN ──
+    # When enabled, each DCA order is size_pct·equity, where size_pct scales with the name's predicted
+    # return (higher expected return → larger % of equity), clamped to [min, max]. Disabled → legacy
+    # fixed-tranche sizing. Still capped downstream by room-to-target, available capital, and max_order.
+    return_sizing_enabled: bool = os.getenv("BAL_DCA_RETURN_SIZING", "false").lower() in {"1", "true", "yes"}
+    return_size_base_pct: float = float(os.getenv("BAL_DCA_RETURN_BASE_PCT", "0.03"))   # %-equity at the reference return
+    return_size_ref_return: float = float(os.getenv("BAL_DCA_RETURN_REF", "0.08"))      # reference predicted return (8%)
+    return_size_min_pct: float = float(os.getenv("BAL_DCA_RETURN_MIN_PCT", "0.005"))    # 0.5% floor
+    return_size_max_pct: float = float(os.getenv("BAL_DCA_RETURN_MAX_PCT", "0.12"))     # 12% cap per order
+
     # ── Conviction → target allocation tiers ────────────────────────────────────
     # conviction_score (0-100) determines target_position_pct as a fraction of the
     # max_single_stock_weight cap. Below the watchlist floor → no DCA (watchlist only).
@@ -1940,10 +1950,19 @@ class BuffettAccumulationLayer:
 
             # ── 6. Size the tranche — conviction-scaled (HOW MUCH) ──────────────
             target_dollars = target_pct * equity
-            base_tranche = target_dollars * cfg.tranche_pct
-            action_mult = {"small": 0.5, "normal": 1.0, "aggressive": 1.5}.get(final_action, 1.0)
-            conviction_mult = _clamp(0.8 + 0.4 * (conviction / 100.0), 0.8, 1.2)
-            desired = base_tranche * action_mult * conviction_mult
+            if cfg.return_sizing_enabled:
+                # ORDER $ = a % of equity scaled by the name's PREDICTED RETURN — the same signal that
+                # drives the Black-Litterman views: conviction above neutral (60) + valuation discount
+                # (1 − price/intrinsic). Higher predicted return → larger % of equity.
+                pred_ret = max(0.0, (conviction - 60.0) / 100.0 * 0.25 + max(0.0, 1.0 - p2iv) * 0.15)
+                size_pct = _clamp(cfg.return_size_base_pct * (pred_ret / max(cfg.return_size_ref_return, 1e-6)),
+                                  cfg.return_size_min_pct, cfg.return_size_max_pct)
+                desired = size_pct * equity
+            else:
+                base_tranche = target_dollars * cfg.tranche_pct
+                action_mult = {"small": 0.5, "normal": 1.0, "aggressive": 1.5}.get(final_action, 1.0)
+                conviction_mult = _clamp(0.8 + 0.4 * (conviction / 100.0), 0.8, 1.2)
+                desired = base_tranche * action_mult * conviction_mult
             room_to_target = max(0.0, target_dollars - cur_value)
             room_to_max = max(0.0, cfg.max_single_stock_weight * equity - cur_value)
             order_dollars = min(desired, room_to_target, room_to_max, available_capital)
