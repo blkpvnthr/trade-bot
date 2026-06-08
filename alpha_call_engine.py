@@ -89,14 +89,50 @@ class AlphaCallConfig:
     # Risk per trade
     risk_per_trade_pct: float = float(os.getenv("OPTIONS_RISK_PER_TRADE_PCT", "0.015"))
     max_options_exposure_pct: float = float(os.getenv("MAX_OPTIONS_EXPOSURE_PCT", "0.15"))
+    # Kelly sizing (options_quant) — fractional Kelly on the live ALPACA ACCOUNT EQUITY,
+    # capped by risk_per_trade_pct (Kelly can only reduce size below the cap, never exceed
+    # it). full Kelly is shrunk for dispersed option payoffs (Perez-Marco); ¼-Kelly default.
+    kelly_sizing_enabled: bool = os.getenv("OPTIONS_KELLY_SIZING", "true").lower() in {"1", "true"}
+    kelly_full: float = float(os.getenv("OPTIONS_KELLY_FULL", "0.10"))     # full-Kelly fraction f*
+    kelly_mult: float = float(os.getenv("OPTIONS_KELLY_MULT", "0.25"))     # fractional Kelly (¼)
+    # Embedded-leverage contract selection (options_quant / Frazzini-Pedersen): tilt the
+    # composite score toward the moderate-leverage (deep-ITM) band and penalise high-leverage
+    # short-dated OTM contracts, which carry a negative expected premium for the buyer.
+    # DISABLED by default (real-chain verdict): the embedded-leverage/deep-ITM tilt was invalidated
+    # on real liquid chains (it was spread-avoidance, not edge). Reverts bs_score to the ATM-moneyness
+    # preference. Re-enable only for research. See options_quant_engine for the (research-branch) EV path.
+    lev_select_enabled: bool = os.getenv("OPTIONS_LEV_SELECT", "false").lower() in {"1", "true"}
+    lev_band_lo: float = float(os.getenv("OPTIONS_LEV_BAND_LO", "2.0"))
+    lev_band_hi: float = float(os.getenv("OPTIONS_LEV_BAND_HI", "6.0"))
+    lev_select_weight: float = float(os.getenv("OPTIONS_LEV_SELECT_WEIGHT", "0.70"))  # MAX tilt (applied at wide spreads)
+    # SPREAD-AWARE tilt (backtest-grounded): deep-ITM tilt strength scales with the contract's
+    # bid-ask spread. LIQUID names (tight spread) → tilt≈0, ATM convexity wins (momentum backtest:
+    # ATM nets more once the big move is held). WIDE-spread (illiquid discovery) names → full tilt,
+    # ATM's all-extrinsic premium is taxed away → deep-ITM selected. spread_tilt =
+    # clip(spread_pct / lev_spread_ref, 0, 1). Set lev_spread_aware=0 for a flat tilt at lev_select_weight.
+    lev_spread_aware: bool = os.getenv("OPTIONS_LEV_SPREAD_AWARE", "true").lower() in {"1", "true"}
+    # spread at which the tilt is full — set to the hard spread gate (max_spread_pct) so the tilt
+    # spans the FULL admissible band: tight end (≈1%) → minimal tilt (ATM), gate-limit (≈3.5%)
+    # → full tilt (deep-ITM). Contracts above max_spread_pct are hard-rejected upstream.
+    lev_spread_ref: float = float(os.getenv("OPTIONS_LEV_SPREAD_REF", "0.035"))
     # Contract selection
     min_dte: int = int(os.getenv("ALPHA_MIN_DTE", "21"))
     max_dte: int = int(os.getenv("ALPHA_MAX_DTE", "60"))
-    min_delta: float = float(os.getenv("ALPHA_MIN_DELTA", "0.35"))   # lowered 0.45→0.35 (2026-06-04): ATM BS-estimated delta ≈0.37-0.43
-    max_delta: float = float(os.getenv("ALPHA_MAX_DELTA", "0.70"))
+    # Delta band 0.45-0.65 (REAL-CHAIN VERDICT 2026-06-07): on liquid chains a simple nearest-ATM
+    # call was the ONLY net-positive real result (+9.5%); the EV selector's deep-ITM/OTM picks LOST
+    # (its apparent edge was just spread-avoidance, which vanishes at liquid 7% spreads). So: stay
+    # ATM-centric, no OTM lottery (floor 0.45), no deep-ITM (cap 0.65). The widened 0.85 / leverage
+    # tilt are reverted — the EV machinery is a research branch (options_quant_engine), not live.
+    min_delta: float = float(os.getenv("ALPHA_MIN_DELTA", "0.45"))
+    max_delta: float = float(os.getenv("ALPHA_MAX_DELTA", "0.65"))
     min_open_interest: int = int(os.getenv("ALPHA_MIN_OI", "200"))
     min_volume: int = int(os.getenv("ALPHA_MIN_VOLUME", "10"))
-    max_spread_pct: float = float(os.getenv("ALPHA_MAX_SPREAD_PCT", "0.05"))
+    # Spread filter ≤10% (REAL-CHAIN VERDICT): liquid mega-cap option spreads (~7%) were profitable;
+    # small-cap spreads (30-56%) made the strategy a guaranteed loser. 10% cleanly separates the
+    # tradeable (liquid) from the untradeable. Min floor 0 (don't reject ultra-liquid tight quotes —
+    # the earlier 1% floor could have excluded good liquid contracts). estimated-mid path EXEMPT.
+    min_spread_pct: float = float(os.getenv("ALPHA_MIN_SPREAD_PCT", "0.0"))
+    max_spread_pct: float = float(os.getenv("ALPHA_MAX_SPREAD_PCT", "0.10"))
     # Position management
     # Risk/reward structure: 3R target with trailing stop that activates at 1.7R.
     # R = initial risk = entry premium (max loss on long call).
@@ -104,8 +140,18 @@ class AlphaCallConfig:
     # At +3R the remaining position is fully exited.
     # OPTIONS_TP_R_MULTIPLE / OPTIONS_SL_PCT are honored as aliases of the existing
     # ALPHA_* env names so management config can use either; defaults are unchanged.
-    r_target: float = float(os.getenv("OPTIONS_TP_R_MULTIPLE", os.getenv("ALPHA_R_TARGET", "3.0")))  # exit all at 3R
-    r_trail_activate: float = float(os.getenv("ALPHA_R_TRAIL_ACTIVATE", "1.7"))  # activate trailing stop at 1.7R
+    # r_target raised 3.0→4.0 (2026-06-07): backtest_alpha_rtarget.py shows net return rises
+    # monotonically 3R→4R→6R for both ATM and deep-ITM across realistic spreads (e.g. +12.6%→
+    # +17.1%→+19.6% at 3% spread). 4R captures most of the gain with less right-tail dependence
+    # than 6R; set OPTIONS_TP_R_MULTIPLE=6 to maximise the backtested mean. The 1.7R trailing
+    # stop protects gains while a winner runs toward the higher target.
+    r_target: float = float(os.getenv("OPTIONS_TP_R_MULTIPLE", os.getenv("ALPHA_R_TARGET", "4.0")))  # exit all at 4R
+    # r_trail_activate raised 1.7→3.0 (2026-06-07): backtest_alpha_rtarget.py (trailing-stop ladder)
+    # showed the 4R/6R target benefit is FULLY suppressed at 1.7R — the trail exits winners before
+    # the higher target. Activating at +300% (3.0R) lets a winner run toward the 4R target before
+    # the trail (0.8R behind peak) engages. Lifts deep-ITM ladder mean +11.0→+11.7%, PF 1.53→1.57;
+    # gain plateaus past ~3.5R. Tradeoff: slightly deeper give-back (MaxDD −70→−72%).
+    r_trail_activate: float = float(os.getenv("ALPHA_R_TRAIL_ACTIVATE", "3.0"))  # activate trailing stop at 3.0R
     r_trail_offset: float = float(os.getenv("ALPHA_R_TRAIL_OFFSET", "0.8"))      # trail 0.8R behind peak
     stop_loss_pct: float = float(os.getenv("OPTIONS_SL_PCT", os.getenv("ALPHA_STOP_PCT", "0.28")))  # hard stop: -28% of premium
     partial_profit_pct: float = float(os.getenv("ALPHA_PARTIAL_PROFIT_PCT", "0.5"))   # +50% = take partial (sell partial_size)
@@ -115,6 +161,42 @@ class AlphaCallConfig:
     scan_interval_seconds: int = int(os.getenv("ALPHA_SCAN_SECONDS", "60"))
     # ORB window
     orb_minutes: int = int(os.getenv("ALPHA_ORB_MINUTES", "15"))
+    # ORB HARD GATE (2026-06-07): a long call may NOT be entered from the signal alone — the
+    # UNDERLYING must first break above the opening-range high (high of 09:30-09:45 ET). No entry
+    # before 09:45, while price is inside the range, or below it. This is a HARD gate BEFORE
+    # contract selection (the signal only identifies a candidate; ORB confirms execution).
+    # ORB requirement DISABLED by default (real-chain verdict: naive + sweep-reclaim ORB both failed
+    # to improve the ATM-call distribution). Available for research via ALPHA_ORB_GATE=true.
+    orb_gate_enabled: bool = os.getenv("ALPHA_ORB_GATE", "false").lower() in {"1", "true"}
+    orb_require_close: bool = os.getenv("ALPHA_ORB_REQUIRE_CLOSE", "false").lower() in {"1", "true"}  # close>ORB_high, not just wick
+    # ORB mode: "breakout" (simple price>OR_high) | "sweep_reclaim" (liquidity-sweep reversal:
+    # sweep OR_high → pull back into range → bullish engulfing of the pullback → enter at its close).
+    orb_mode: str = os.getenv("ALPHA_ORB_MODE", "sweep_reclaim").strip().lower()
+    orb_candle_minutes: int = int(os.getenv("ALPHA_ORB_CANDLE_MINUTES", "5"))  # pattern candle timeframe
+    orb_require_reclaim: bool = os.getenv("ALPHA_ORB_REQUIRE_RECLAIM", "true").lower() in {"1", "true"}  # engulf close > OR_high
+    # LIQUIDITY-SWEEP TREND+DELTA signal (on the UNDERLYING) — gates option entry / triggers exit.
+    # buySignal = bullish trend-crossover + bullish volume-delta → allow ATM-call scan;
+    # sellSignal = bearish trend-crossover + bearish delta → close long calls for that underlying.
+    liq_sweep_enabled: bool = os.getenv("ALPHA_LIQ_SWEEP_SIGNAL", "true").lower() in {"1", "true"}
+    liq_sweep_len: int = int(os.getenv("ALPHA_LIQ_SWEEP_LEN", "12"))
+    liq_sweep_mult: float = float(os.getenv("ALPHA_LIQ_SWEEP_MULT", "2.0"))
+    # Real-chain verdict (2026-06-07): the buySignal entry gate tested NEUTRAL (no edge) → DISABLED
+    # by default. The sellSignal is kept as an OPTIONAL emergency trend-reversal exit (default on).
+    liq_sweep_buy_gate: bool = os.getenv("ALPHA_LIQ_SWEEP_BUY_GATE", "false").lower() in {"1", "true"}
+    liq_sweep_sell_exit: bool = os.getenv("ALPHA_LIQ_SWEEP_SELL_EXIT", "true").lower() in {"1", "true"}
+    # Analyst-target ENTRY filter (HIGHER-VALUE use): skip the BUY when analyst upside is exhausted —
+    # avg-target upside < 5% (≥3 estimates). "Don't buy calls where Wall St already thinks it's fully
+    # valued." Fail-open if targets missing. EXIT filter (analyst_target_exit) is separate.
+    analyst_entry_filter: bool = os.getenv("ALPHA_ANALYST_ENTRY_FILTER", "true").lower() in {"1", "true"}
+    analyst_entry_min_upside: float = float(os.getenv("ALPHA_ANALYST_MIN_UPSIDE", "0.05"))
+    # IV-REGIME GATE — feature-flagged, DEFAULT OFF (real-chain Study 2: ATM calls with contract
+    # IV in [0.30,0.50] had a POSITIVE median +28% / 57% win vs the unfiltered negative median;
+    # below 0.30 the underlying doesn't move enough, above 0.50 you overpay for vol). Kept OFF
+    # because an IV band is more overfittable than the (structural) ORB gate — needs the
+    # ORB-interaction ablation before production. Reject the contract if its IV is outside the band.
+    iv_gate_enabled: bool = os.getenv("ALPHA_IV_GATE", "false").lower() in {"1", "true"}
+    iv_gate_min: float = float(os.getenv("ALPHA_IV_MIN", "0.30"))
+    iv_gate_max: float = float(os.getenv("ALPHA_IV_MAX", "0.50"))
     # Accumulation detection
     min_rvol_for_accum: float = float(os.getenv("ALPHA_MIN_RVOL_ACCUM", "1.8"))
     # ── Black-Scholes valuation layer (applied AFTER hard liquidity gates) ──────
@@ -169,6 +251,14 @@ class SetupEvaluation:
     institutional_flow: bool
     regime_ok: bool
     reject_reason: str = ""
+    orb_status: str = "ok"          # "ok" when the 09:30-09:45 ET window had bars (else the reason)
+    orb_last_close: float = 0.0     # last completed 1m candle close (for ORB close-confirmation)
+    orb_signal: bool = False        # sweep-reclaim pattern fired (sweep_reclaim mode)
+    orb_pattern_status: str = ""    # detector status for the sweep-reclaim pattern
+    orb_entry_price: float = 0.0    # engulfing-bar close (intended entry; sweep_reclaim mode)
+    liq_sweep_buy: bool = False     # liquidity-sweep buySignal on the underlying (latest bar)
+    liq_sweep_sell: bool = False    # liquidity-sweep sellSignal on the underlying (latest bar)
+    liq_sweep_trend: int = 0        # current liquidity-sweep trend (+1/-1/0)
     notes: list[str] = field(default_factory=list)
     evaluated_at_utc: str = ""
     # ── shared streaming-indicator provenance (timing diagnostics; never directional) ──
@@ -390,6 +480,164 @@ def _compute_orb(bars_1m: pd.DataFrame, orb_minutes: int) -> tuple[float, float,
         return 0.0, 0.0, "error"
 
 
+def detect_orb_sweep_reclaim(bars_1m: pd.DataFrame, orb_minutes: int = 15,
+                             candle_minutes: int = 5, require_reclaim: bool = True
+                             ) -> tuple[bool, float, str]:
+    """3-tuple wrapper (signal, entry_price, status) for the live gate — drops the timestamp.
+    See _orb_sweep_reclaim_full for the pattern definition and the engulf timestamp."""
+    sig, px, status, _ts = _orb_sweep_reclaim_full(bars_1m, orb_minutes, candle_minutes, require_reclaim)
+    return sig, px, status
+
+
+def _orb_sweep_reclaim_full(bars_1m: pd.DataFrame, orb_minutes: int = 15,
+                            candle_minutes: int = 5, require_reclaim: bool = True):
+    """Liquidity-sweep ORB reversal (long): the underlying SWEEPS above the opening-range high,
+    PULLS BACK into the range, then a BULLISH candle ENGULFS the pullback candle → entry at the
+    CLOSE of that engulfing bar. Higher-quality than a naive breakout (filters the stop-hunt).
+
+    Sequence on `candle_minutes`-resampled bars AFTER the 09:30..09:30+orb_minutes opening range:
+      1. SWEEP    — a candle's HIGH > OR_high (took out the high / grabbed liquidity)
+      2. PULLBACK — a later candle CLOSES back below OR_high (failed breakout, back in range)
+      3. ENGULF   — a BULLISH candle (close>open) whose body engulfs the pullback candle's body
+                    (+ reclaim back above OR_high if require_reclaim)
+    Returns (signal, entry_price, status, engulf_timestamp). entry_price = engulfing bar close.
+    status: "ok" | "no_bars" | "no_session_open_bars" | "no_sweep" | "swept_no_pullback" |
+    "pullback_no_engulf" | "error".
+    """
+    try:
+        if bars_1m is None or bars_1m.empty:
+            return False, 0.0, "no_bars", None
+        idx = bars_1m.index
+        if not isinstance(idx, pd.DatetimeIndex):
+            return False, 0.0, "error", None
+        idx_et = idx.tz_convert(ET) if idx.tz is not None else idx.tz_localize("UTC").tz_convert(ET)
+        df = bars_1m.copy(); df.index = idx_et
+        session_date = idx_et[-1].date()
+        sopen = pd.Timestamp(session_date.year, session_date.month, session_date.day, 9, 30, tz=ET)
+        oend = sopen + timedelta(minutes=orb_minutes)
+        ow = df[(df.index >= sopen) & (df.index < oend)]
+        if ow.empty:
+            return False, 0.0, "no_session_open_bars", None
+        or_high = float(ow["high"].max())
+        post = df[df.index >= oend]
+        if post.empty:
+            return False, 0.0, "no_sweep", None
+        # resample post-open bars to the pattern timeframe
+        agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
+        candles = post.resample(f"{candle_minutes}min").agg(agg).dropna()
+        if candles.empty:
+            return False, 0.0, "no_sweep"
+        state = "seek_sweep"; pullback = None
+        for ts, c in candles.iterrows():
+            o, h, l, cl = float(c["open"]), float(c["high"]), float(c["low"]), float(c["close"])
+            if state == "seek_sweep":
+                if h > or_high:
+                    state = "seek_pullback"
+            elif state == "seek_pullback":
+                if cl < or_high:                                   # pulled back into the range
+                    pullback = (o, cl); state = "seek_engulf"
+            elif state == "seek_engulf":
+                p_open, p_close = pullback
+                bullish = cl > o
+                engulfs = o <= max(p_open, p_close) and cl >= max(p_open, p_close) and cl >= p_open
+                reclaim = (cl > or_high) if require_reclaim else True
+                if bullish and engulfs and reclaim:
+                    return True, cl, "ok", ts          # ts = engulf-candle (bar-open) timestamp
+                # if a fresh lower pullback prints, track the most recent down bar
+                if cl < o and cl < p_close:
+                    pullback = (o, cl)
+        return False, 0.0, {"seek_sweep": "no_sweep", "seek_pullback": "swept_no_pullback",
+                            "seek_engulf": "pullback_no_engulf"}[state], None
+    except Exception:
+        return False, 0.0, "error", None
+
+
+def liq_sweep_latest(bars: pd.DataFrame, config: "AlphaCallConfig") -> Optional[dict]:
+    """Latest Liquidity-Sweep Trend+Delta signal on the UNDERLYING, on DAILY bars. Resamples
+    intraday bars to daily first (the signal is a multi-day trend). None if data insufficient."""
+    if not getattr(config, "liq_sweep_enabled", False) or bars is None or getattr(bars, "empty", True):
+        return None
+    try:
+        df = bars
+        idx = df.index
+        if isinstance(idx, pd.DatetimeIndex) and len(idx) >= 2:
+            if abs((idx[-1] - idx[-2]).total_seconds()) < 23 * 3600:     # intraday → resample to daily
+                df = df.resample("1D").agg({"open": "first", "high": "max", "low": "min",
+                                            "close": "last", "volume": "sum"}).dropna()
+        import liquidity_sweep_signal as _lss
+        return _lss.latest_signal(df, config.liq_sweep_len, config.liq_sweep_mult)
+    except Exception:
+        return None
+
+
+_EXIT_CTX_CACHE: dict = {}    # symbol -> (ts, underlying_price, targets, liq_sell)
+
+
+def position_exit_context(symbol: str, config: "AlphaCallConfig", ttl: float = 300.0):
+    """Fail-safe (underlying_price, analyst_targets, liq_sweep_sell) for an OPEN position's exit
+    filters. Cached per symbol (ttl s). Returns (None, None, False) on any failure — the existing
+    exit engine then governs (per spec: missing data → do nothing)."""
+    try:
+        now = time.time()
+    except Exception:
+        import time as _t; now = _t.time()
+    c = _EXIT_CTX_CACHE.get(symbol)
+    if c and (now - c[0]) < ttl:
+        return c[1], c[2], c[3]
+    price = None; targets = None; liq_sell = False
+    try:
+        import analyst_target_exit as _ate
+        targets = _ate.get_analyst_targets(symbol)
+    except Exception:
+        targets = None
+    try:
+        import yfinance as yf
+        h = yf.Ticker(symbol).history(period="8mo", interval="1d")
+        if h is not None and not h.empty:
+            h = h.rename(columns=str.lower)
+            price = float(h["close"].iloc[-1])
+            if getattr(config, "liq_sweep_enabled", False):
+                ls = liq_sweep_latest(h, config)
+                liq_sell = bool(ls and ls["sellSignal"])
+    except Exception:
+        pass
+    _EXIT_CTX_CACHE[symbol] = (now, price, targets, liq_sell)
+    return price, targets, liq_sell
+
+
+def orb_gate(ev: "SetupEvaluation", config: "AlphaCallConfig",
+             now_et: Optional[datetime] = None) -> tuple[bool, str]:
+    """HARD Opening-Range-Breakout gate, evaluated on the UNDERLYING before contract selection.
+    A long call is allowed ONLY when, after 09:30+orb_minutes ET, the underlying has broken
+    above the opening-range high. Returns (allowed, reason):
+        waiting_for_opening_range  — before 09:45 ET (range still forming)
+        opening_range_not_ready    — no bars in the 09:30-09:45 window (orb_status != ok)
+        waiting_for_ORB_breakout   — price (or last close) is at/below the opening-range high
+    No entry below the range, inside the range, or before the range is complete.
+    """
+    if not config.orb_gate_enabled:
+        return True, ""
+    now = now_et or datetime.now(ET)
+    open_t = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    range_end = open_t + timedelta(minutes=config.orb_minutes)   # 09:45 by default
+    if now < range_end:
+        return False, "waiting_for_opening_range"
+    if ev.orb_status != "ok" or ev.orb_high <= 0:
+        return False, "opening_range_not_ready"
+    # SWEEP-RECLAIM mode: require the full sweep→pullback→bullish-engulf pattern on the underlying.
+    if config.orb_mode == "sweep_reclaim":
+        if ev.orb_pattern_status in ("no_bars", "no_session_open_bars", "error", ""):
+            return False, "opening_range_not_ready"
+        if not ev.orb_signal:
+            return False, "waiting_for_ORB_sweep_reclaim"   # no sweep/pullback/engulf yet
+        return True, ""
+    # BREAKOUT mode: underlying last (or last completed close if required) must EXCEED ORB high.
+    px = ev.orb_last_close if (config.orb_require_close and ev.orb_last_close > 0) else ev.price
+    if px <= ev.orb_high:
+        return False, "waiting_for_ORB_breakout"
+    return True, ""
+
+
 def _compute_vwap(bars: pd.DataFrame) -> float:
     try:
         tp = (bars["high"] + bars["low"] + bars["close"]) / 3
@@ -546,6 +794,17 @@ def detect_setup(
     ev.rvol = rvol
     ev.orb_high = orb_high
     ev.orb_low = orb_low
+    ev.orb_status = orb_status
+    try:
+        ev.orb_last_close = float(bars_1m["close"].iloc[-1]) if bars_1m is not None and not bars_1m.empty else 0.0
+    except Exception:
+        ev.orb_last_close = 0.0
+    # Sweep-reclaim ORB pattern (only when configured) — needs intraday OHLC.
+    if config.orb_mode == "sweep_reclaim" and bars_1m is not None and not bars_1m.empty \
+            and "open" in getattr(bars_1m, "columns", []):
+        sig, entry_px, pat_status = detect_orb_sweep_reclaim(
+            bars_1m, config.orb_minutes, config.orb_candle_minutes, config.orb_require_reclaim)
+        ev.orb_signal = sig; ev.orb_pattern_status = pat_status; ev.orb_entry_price = entry_px  # noqa
     ev.above_vwap = above_vwap
     ev.institutional_flow = rvol >= config.min_rvol_for_accum
 
@@ -851,6 +1110,22 @@ def price_call_contract(c: dict, S: float, config: AlphaCallConfig,
     elif gamma_theta_ratio < config.bs_min_gamma_theta:
         bs_reject = f"rejected_by_black_scholes_gamma_theta:ratio={gamma_theta_ratio:.2f}"
 
+    # ── Embedded leverage (options_quant / Frazzini-Pedersen) ────────────────────
+    # Ω = (S/premium)·δ. High embedded leverage (short-dated OTM/ATM) carries a NEGATIVE
+    # expected premium for the buyer; leverage-efficiency peaks in the moderate (deep-ITM)
+    # band. This research-grounded score REPLACES the old ad-hoc ATM-moneyness preference
+    # (which had no basis and fought the leverage finding) inside bs_score, and additionally
+    # tilts the composite. Fully fail-safe.
+    omega = 0.0
+    lev_eff = 1.0
+    if config.lev_select_enabled and mid > 0:
+        try:
+            import options_quant as _oq
+            omega = _oq.embedded_leverage(S, mid, float(c["delta"]))
+            lev_eff = _oq.leverage_efficiency_score(omega, config.lev_band_lo, config.lev_band_hi)
+        except Exception:
+            omega, lev_eff = 0.0, 1.0
+
     # ── black_scholes_score (0-100): weighted valuation + convexity + quality ────
     edge_score = _clip(0.5 - mispricing_pct * 2.0, 0.0, 1.0)             # cheaper-than-theo is better
     delta_score = _clip(1.0 - abs(c["delta"] - 0.575) / 0.25, 0.0, 1.0)  # ideal mid of 0.45-0.70
@@ -860,15 +1135,29 @@ def price_call_contract(c: dict, S: float, config: AlphaCallConfig,
     vol_score = _clip(int(c["volume"]) / 100.0, 0.0, 1.0)
     liquidity_score = 0.6 * oi_score + 0.4 * vol_score
     dte_score = _clip(1.0 - abs(dte - 37.5) / 22.5, 0.0, 1.0)            # peak ~37 DTE
-    moneyness_score = _clip(1.0 - abs(moneyness - 1.0) / 0.10, 0.0, 1.0) # ATM / slightly ITM
+    # SPREAD-AWARE leverage component: spread_tilt ∈ [0,1] grows with the contract's spread.
+    # Liquid (tight spread) → ATM-moneyness preference (convexity wins); wide spread → FP
+    # leverage-efficiency (deep-ITM, since ATM's extrinsic is taxed away). Drives both the
+    # bs_score leverage term AND the multiplicative tilt below, so the two stay coherent.
+    legacy_moneyness_score = _clip(1.0 - abs(moneyness - 1.0) / 0.10, 0.0, 1.0)
+    if config.lev_select_enabled and config.lev_spread_aware:
+        spread_tilt = _clip(float(c["spread_pct"]) / max(config.lev_spread_ref, 1e-6), 0.0, 1.0)
+    else:
+        spread_tilt = 1.0 if config.lev_select_enabled else 0.0
+    leverage_score = (1.0 - spread_tilt) * legacy_moneyness_score + spread_tilt * lev_eff
     iv_score = 1.0 if 0.20 <= iv <= 0.80 else _clip(1.0 - (max(0.0, iv - 0.80) + max(0.0, 0.20 - iv)) / 1.0, 0.0, 1.0)
     bs_score = 100.0 * (
         0.22 * edge_score + 0.16 * delta_score + 0.16 * gt_score +
         0.12 * spread_score + 0.12 * liquidity_score + 0.08 * dte_score +
-        0.08 * moneyness_score + 0.06 * iv_score
+        0.08 * leverage_score + 0.06 * iv_score
     )
     # Expected-R profile refines the final selection (step 5): up to +15 for strong convexity.
     composite = bs_score + _clip(expected_r, 0.0, 5.0) * 3.0
+    # Multiplicative leverage tilt — weight scaled by spread_tilt so it only bites on wide-spread
+    # (illiquid) names. Refines, never overrides, the BS valuation.
+    if config.lev_select_enabled:
+        w = _clip(config.lev_select_weight, 0.0, 1.0) * spread_tilt
+        composite = composite * (1.0 - w + w * lev_eff)
 
     c.update({
         "theoretical_value": round(theo, 4),
@@ -885,6 +1174,9 @@ def price_call_contract(c: dict, S: float, config: AlphaCallConfig,
         "extrinsic_value": round(extrinsic, 4),
         "black_scholes_score": round(bs_score, 2),
         "composite_score": round(composite, 2),
+        "embedded_leverage": round(omega, 2),
+        "leverage_efficiency": round(lev_eff, 3),
+        "spread_tilt": round(spread_tilt, 3),
         "expected_value_at_1R": round(ev1, 4),
         "expected_value_at_2R": round(ev2, 4),
         "expected_value_at_3R": round(ev3, 4),
@@ -1239,8 +1531,16 @@ def evaluate_call_contracts(
                 _hg_n_mid += 1; continue
 
             spread_pct = 0.0 if estimated_mid else ((ask - bid) / mid if mid > 0 else 1.0)
-            if spread_pct > config.max_spread_pct:
+            # Spread band [min, max] — applied only to REAL spreads; estimated-mid contracts
+            # (snapshot failed, spread=0) are exempt and go to the BS valuation layer instead.
+            if not estimated_mid and (spread_pct > config.max_spread_pct
+                                      or spread_pct < config.min_spread_pct):
                 _hg_n_spread += 1; continue
+
+            # IV-regime gate (feature-flagged, default OFF) — only on REAL feed IV (>0).
+            if config.iv_gate_enabled and feed_iv > 0.0 and not (
+                    config.iv_gate_min <= feed_iv <= config.iv_gate_max):
+                _hg_n_spread += 1; continue   # counted with spread rejections (both are quality gates)
 
             hard_survivors.append({
                 "contract_symbol": str(contract.get("symbol") or ""),
@@ -1350,10 +1650,17 @@ def size_position(
     overridden available-budget cap separately (see _eff_risk_pct in AlphaCallEngine.run).
     This function uses config.risk_per_trade_pct as the base position ceiling.
     """
-    max_risk_dollars = equity * config.risk_per_trade_pct
     cost_per_contract = mid * 100  # options multiplier
     if cost_per_contract <= 0:
         return 0, 0.0, 0.0
+    # Fractional Kelly on the account equity, capped by risk_per_trade_pct (Kelly can only
+    # shrink size below the cap). Matches the live evaluate_universe sizing path.
+    risk_cap_dollars = equity * config.risk_per_trade_pct
+    if config.kelly_sizing_enabled:
+        kelly_dollars = equity * config.kelly_full * config.kelly_mult
+        max_risk_dollars = min(kelly_dollars, risk_cap_dollars)
+    else:
+        max_risk_dollars = risk_cap_dollars
     contracts = max(1, math.floor(max_risk_dollars / cost_per_contract))
     premium_cost = contracts * cost_per_contract
     # True max risk = full premium paid (long call, no further liability)
@@ -1383,6 +1690,16 @@ def build_alpha_universe(dynamic_symbols: list[str] | None = None,
         [s.strip().upper() for s in (dynamic_symbols or []) if s and s.strip()]
     ))
     return syms[:size]
+
+
+def _alpha_entry_window_open() -> bool:
+    """Regular-session buy window for NEW alpha entries only."""
+    now = datetime.now(ET)
+    if now.weekday() >= 5:
+        return False
+    entry_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    entry_cutoff = now.replace(hour=15, minute=45, second=0, microsecond=0)
+    return entry_open <= now < entry_cutoff
 
 
 def _regime_risk_on(market_context: dict, config: AlphaCallConfig) -> bool:
@@ -1725,6 +2042,64 @@ class AlphaCallEngine:
                 })
                 del self._active[key]; self._save_state(); continue
 
+            # ── Liquidity-sweep trend reversal + Analyst price-target exits ──────
+            # Run AFTER emergency exits (hard/EOD stops above) but BEFORE profit-trailing.
+            # Fail-safe: missing underlying price / analyst targets → skip (existing engine governs).
+            _u_price, _targets, _liq_sell = position_exit_context(call.symbol, self.config)
+            if self.config.liq_sweep_enabled and self.config.liq_sweep_sell_exit and _liq_sell:
+                _pnl = current_value - call.entry_cost
+                exit_orders.append({
+                    "symbol": call.contract_symbol, "side": "sell", "qty": qty_held,
+                    "source": "alpha_call_liq_sweep_sell", "reason": "liq_sweep_sell_signal",
+                    "underlying": call.symbol, "setup_type": call.setup_type,
+                    "realized_pnl": round(_pnl, 2),
+                    "r_multiple": round(_pnl / call.entry_cost, 3) if call.entry_cost else 0.0,
+                    "probability_band": call.probability_band,
+                    "probability_of_profit": call.probability_of_profit,
+                    "management_style": call.management_style,
+                })
+                _alpha_event("call_liq_sweep_sell", {"symbol": call.symbol, "contract": call.contract_symbol})
+                del self._active[key]; self._save_state(); continue
+            if _u_price and _targets:
+                try:
+                    import analyst_target_exit as _ate
+                    _ae = _ate.analyst_target_exit(_u_price, _targets.get("high"), _targets.get("avg"),
+                                                   _targets.get("low"), _targets.get("n"))
+                except Exception:
+                    _ae = {"exit": False, "tighten_trail": False, "reason": "analyst_error"}
+                if _ae.get("exit"):
+                    _pnl = current_value - call.entry_cost
+                    exit_orders.append({
+                        "symbol": call.contract_symbol, "side": "sell", "qty": qty_held,
+                        "source": "alpha_call_analyst_target", "reason": _ae["reason"],
+                        "underlying": call.symbol, "setup_type": call.setup_type,
+                        "realized_pnl": round(_pnl, 2),
+                        "r_multiple": round(_pnl / call.entry_cost, 3) if call.entry_cost else 0.0,
+                        "probability_band": call.probability_band,
+                        "probability_of_profit": call.probability_of_profit,
+                        "management_style": call.management_style,
+                    })
+                    _alpha_event("call_analyst_target_exit", {
+                        "symbol": call.symbol, "contract": call.contract_symbol,
+                        "reason": _ae["reason"], "price": _u_price,
+                        "upside_to_avg": _ae.get("upside_to_avg")})
+                    del self._active[key]; self._save_state(); continue
+                elif _ae.get("tighten_trail"):
+                    # price ≥ avg analyst target → ENGAGE a tight protective trail NOW (give the
+                    # winner room toward the high target, but lock gains since consensus upside is
+                    # mostly used). tighten_mult 0.5 ⇒ stop sits 0.4R (=0.8R×0.5) behind the peak.
+                    call.trail_tightness_mult = min(getattr(call, "trail_tightness_mult", 1.0) or 1.0, 0.5)
+                    call.trail_active = True
+                    _r = call.entry_cost or 1.0
+                    _astop = call.peak_value - (self.config.r_trail_offset * call.trail_tightness_mult * _r)
+                    if _astop > call.trail_stop_value:
+                        call.trail_stop_value = _astop
+                    self._save_state()
+                    _alpha_event("call_analyst_tighten_trail", {
+                        "symbol": call.symbol, "contract": call.contract_symbol,
+                        "upside_to_avg": _ae.get("upside_to_avg"),
+                        "trail_stop": round(call.trail_stop_value, 2)})
+
             # ── 3R full target ────────────────────────────────────────────────
             if current_value >= call.r_target_value:
                 _pnl = current_value - call.entry_cost
@@ -1954,6 +2329,13 @@ class AlphaCallEngine:
         exposure_blocked = options_exposure >= equity * self.config.max_options_exposure_pct
         positions_full = len(self._active) >= self.config.max_concurrent_positions
         entries_enabled = self.config.enabled and not exposure_blocked and not positions_full
+        entry_gate_reason = "entries_disabled"
+        if not _alpha_entry_window_open():
+            entries_enabled = False
+            entry_gate_reason = "rejected_by_session:outside_entry_window"
+        elif str(market_context.get("trade_permission") or "normal").lower() == "halt_new_buys":
+            entries_enabled = False
+            entry_gate_reason = "rejected_by_market_regime:halt_new_buys"
         # Regime gate (rl_engine_levers) — gated, default OFF, paper-only, active only when the
         # deployment gate rates alpha_entry ≥ paper_mode_only. Suppresses NEW entries when SPY is
         # not confirmed above its 200-DMA. Suppressive only: it can disable entries this cycle but
@@ -1965,6 +2347,7 @@ class AlphaCallEngine:
             if _levers.suppress_entry("alpha_entry", market_state, indicator_snapshot):
                 regime_suppressed = True
                 entries_enabled = False
+                entry_gate_reason = "regime_gate:SPY_not_confirmed_above_200DMA"
                 _alpha_event("regime_gate_suppressed_entries",
                              {"reason": "SPY_not_confirmed_above_200DMA", "lever": "ENABLE_RL_REGIME_GATE"})
         except Exception:
@@ -2076,7 +2459,7 @@ class AlphaCallEngine:
 
             # ── entry decision (engine authority) ───────────────────────────────
             if not entries_enabled:
-                urow["reject_reason"] = "regime_gate:SPY_not_confirmed_above_200DMA" if regime_suppressed else "entries_disabled"
+                urow["reject_reason"] = "regime_gate:SPY_not_confirmed_above_200DMA" if regime_suppressed else entry_gate_reason
                 universe_rows.append(urow); continue
             # Clear a setup-quality reject_reason if the score now meets the
             # effective (regime-adjusted) threshold.  detect_setup() sets the
@@ -2095,6 +2478,47 @@ class AlphaCallEngine:
             if symbol in self._active:
                 urow["reject_reason"] = "already_in_position"
                 universe_rows.append(urow); continue
+
+            # ── ORB HARD GATE — underlying must break above the opening-range high ─────
+            # The signal only identifies a CANDIDATE; execution waits for the breakout on the
+            # underlying. Hard gate BEFORE contract selection (no chain work if not broken out).
+            _orb_ok, _orb_reason = orb_gate(ev, self.config)
+            if not _orb_ok:
+                urow["reject_reason"] = _orb_reason
+                _alpha_event("orb_gate_block", {"symbol": symbol, "reason": _orb_reason,
+                                                "price": ev.price, "orb_high": ev.orb_high})
+                universe_rows.append(urow); continue
+
+            # ── LIQUIDITY-SWEEP TREND+DELTA gate (on the UNDERLYING) ─────────────────────
+            # Require a bullish trend-crossover + bullish volume-delta (buySignal) before scanning
+            # options. sellSignal is handled in the EXIT path (closes open calls). Fail-open if the
+            # signal can't be computed (insufficient history) — never block all trades on missing data.
+            if self.config.liq_sweep_enabled:
+                _ls = liq_sweep_latest(bars, self.config)
+                ev.liq_sweep_buy = bool(_ls and _ls["buySignal"])
+                ev.liq_sweep_sell = bool(_ls and _ls["sellSignal"])
+                ev.liq_sweep_trend = int(_ls["trend"]) if _ls else 0
+                # buy-gate DISABLED by default (tested neutral) — only blocks when explicitly enabled
+                if self.config.liq_sweep_buy_gate and _ls is not None and not _ls["buySignal"]:
+                    urow["reject_reason"] = "rejected_by_liq_sweep_no_buy"
+                    _alpha_event("liq_sweep_no_buy", {"symbol": symbol, "trend": ev.liq_sweep_trend})
+                    universe_rows.append(urow); continue
+
+            # ── ANALYST-DOWNSIDE ENTRY SKIP — don't buy calls into predicted downside ─────
+            # Skip if analysts (≥3) put the AVERAGE target at/below the current price. Fail-open
+            # when targets are missing (per spec). Cheap: cached daily per symbol.
+            if self.config.analyst_entry_filter and ev.price > 0:
+                try:
+                    import analyst_target_exit as _ate
+                    _tg = _ate.get_analyst_targets(symbol)
+                    if _tg and _ate.predicts_downside(ev.price, _tg.get("avg"), _tg.get("low"),
+                                                      _tg.get("n"), self.config.analyst_entry_min_upside):
+                        urow["reject_reason"] = "rejected_by_analyst_downside"
+                        _alpha_event("analyst_downside_skip", {
+                            "symbol": symbol, "price": ev.price, "avg_target": _tg.get("avg")})
+                        universe_rows.append(urow); continue
+                except Exception:
+                    pass   # fail-open
 
             # Authoritative contract selection with the ENGINE's tight band (0.45-0.70).
             engine_eval = evaluate_call_contracts(symbol, ev.price, chain, self.config, rfr, ev.rvol)
@@ -2244,9 +2668,19 @@ class AlphaCallEngine:
                 except Exception:
                     pass
 
-            # Apply mixed-regime risk reduction: _eff_risk_pct is halved on mixed/cautious days.
-            available = min(equity * _eff_risk_pct, waterfall_budget) \
-                if waterfall_budget > 0 else equity * _eff_risk_pct
+            # SIZING — fractional Kelly on the live ALPACA ACCOUNT EQUITY (options_quant),
+            # capped by the regime-adjusted risk budget and the waterfall. `equity` here is
+            # the broker-seeded account equity (run.py: seed_risk_from_broker → risk.equity).
+            # Kelly can only REDUCE size below the risk cap, never exceed it (min()), so all
+            # existing risk controls are preserved. _eff_risk_pct is halved on mixed/cautious days.
+            _risk_cap_dollars = equity * _eff_risk_pct
+            if self.config.kelly_sizing_enabled:
+                _kelly_dollars = equity * self.config.kelly_full * self.config.kelly_mult
+                available = min(_kelly_dollars, _risk_cap_dollars)
+            else:
+                available = _risk_cap_dollars
+            if waterfall_budget > 0:
+                available = min(available, waterfall_budget)
             # Size contracts against the EFFECTIVE budget so the premium correctly
             # reflects the regime cap.  On mixed days the base size_position would
             # return 1 contract at full cost; passing available as the risk ceiling

@@ -51,14 +51,17 @@ import json
 import logging
 import math
 import os
+import re
 import sys
 import time
-from datetime import datetime, timezone
+import atexit
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+_RUN_LOCK_HANDLE = None
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 ET = ZoneInfo("America/New_York")
@@ -90,7 +93,7 @@ SYMBOLS_ENV        = os.environ.get("SYMBOLS",          "")
 DYNAMIC_RISK_LIMITS = os.environ.get("DYNAMIC_RISK_LIMITS", "true").lower() in {"1", "true", "yes"}
 DYNAMIC_DAILY_LOSS_PCT = float(os.environ.get("DYNAMIC_DAILY_LOSS_PCT", "0.005"))       # 0.50%/day
 DYNAMIC_DAILY_LOSS_MIN = float(os.environ.get("DYNAMIC_DAILY_LOSS_MIN", "500"))
-DYNAMIC_MAX_DRAWDOWN_PCT = float(os.environ.get("DYNAMIC_MAX_DRAWDOWN_PCT", "0.10"))    # 10% from anchor
+DYNAMIC_MAX_DRAWDOWN_PCT = float(os.environ.get("DYNAMIC_MAX_DRAWDOWN_PCT", "0.06"))    # 6% from anchor (room for one ±5-6% position)
 DYNAMIC_EQUITY_FLOOR_PCT = float(os.environ.get("DYNAMIC_EQUITY_FLOOR_PCT", "0.90"))    # 90% of anchor
 DYNAMIC_EQUITY_FLOOR_MIN = float(os.environ.get("DYNAMIC_EQUITY_FLOOR_MIN", "1000"))
 DYNAMIC_MAX_ORDER_PCT = float(os.environ.get("DYNAMIC_MAX_ORDER_PCT", "0.03"))          # 3% notional/order
@@ -144,6 +147,103 @@ ENABLE_BAL_COMPOSITE_DCA        = os.environ.get("ENABLE_BAL_COMPOSITE_DCA", "tr
 # SEC EDGAR Form 4 insider-buy DISCOVERY (expands the Buffett review universe only —
 # never generates orders, never bypasses any gate).
 ENABLE_SEC_FORM4_FEED           = os.environ.get("ENABLE_SEC_FORM4_FEED", "true").lower() in {"1", "true"}
+# Insider TRADE COPIER — mirrors large, RECENT open-market insider BUYS (SEC Form 4,
+# optionally confirmed by Alpha Vantage INSIDER_TRANSACTIONS) into paper BUY orders.
+# Unlike the discovery feed above, this DOES place orders — but every one is routed
+# through the RiskManager gate (kill-switch, equity floor, daily-loss, drawdown, PDT,
+# position count, exposure caps, self-assessment throttle, size-to-fit), so it can
+# never bypass a risk control, place a SELL, or trade while the market is shut.
+# Copies a name only when the aggregate open-market insider buy value exceeds
+# INSIDER_COPY_MIN_VALUE and the latest insider transaction is within
+# INSIDER_COPY_MAX_AGE_DAYS days. Fully fail-safe and reversible via ENABLE_INSIDER_COPIER=0.
+# DEFAULT OFF (opt-in): backtest_insider_copier.py shows NO reliable market-excess edge on
+# the available mega-cap universe (mean-vs-SPY ≤ 0 at most horizons; see
+# backtest_outputs/insider_copier_backtest.md). Enable with ENABLE_INSIDER_COPIER=1 to
+# paper-trade it, but it is not validated as a standalone return engine.
+ENABLE_INSIDER_COPIER           = os.environ.get("ENABLE_INSIDER_COPIER", "false").lower() in {"1", "true"}
+INSIDER_COPY_MIN_VALUE          = float(os.environ.get("INSIDER_COPY_MIN_VALUE", 1_000_000))   # strictly greater-than
+INSIDER_COPY_MAX_AGE_DAYS       = int(os.environ.get("INSIDER_COPY_MAX_AGE_DAYS", 2))           # latest buy within N days
+INSIDER_COPY_DOLLARS            = float(os.environ.get("INSIDER_COPY_DOLLARS", 1500))           # notional sized per copied name
+INSIDER_COPY_MAX_NAMES          = int(os.environ.get("INSIDER_COPY_MAX_NAMES", 5))              # cap copies per cycle
+# AV confirmation defaults ON but FAIL-OPEN: a missing key / quota / error never blocks a
+# copy; only a positive Alpha-Vantage net-selling signal vetoes one.
+INSIDER_COPY_REQUIRE_AV_CONFIRM = os.environ.get("INSIDER_COPY_REQUIRE_AV_CONFIRM", "true").lower() in {"1", "true"}
+# COMBO gate (prototype): require the insider-copy underlying to ALSO be in the TradingView
+# quality-growth screen. DEFAULT OFF — backtest_insider_quality_combo.py shows this gate
+# DESTROYS the edge (deep-ITM net +9.3% → +1.1%, significance gone): the insider-buy edge
+# lives in cheap sub-$4 oversold small-caps (+50% net), which the screen's $3.99 floor +
+# quality bias explicitly exclude. The two signals select opposite populations. Kept as an
+# opt-in toggle for live A/B only.
+INSIDER_COPY_REQUIRE_QUALITY_SCREEN = os.environ.get("INSIDER_COPY_REQUIRE_QUALITY_SCREEN", "false").lower() in {"1", "true"}
+# Copier INSTRUMENT — DEFAULT "share" (2026-06-08). Walk-forward validation
+# (backtest_vol_gated_insider.py, n=129 pooled OOS, PF 2.20 @3d, +3.35% mean, MaxDD −5%, net
+# 100bps) proved the insider edge is capturable in SHARES gated by entry-day volatility, while
+# OPTIONS destroy it (spread+theta >> edge; 30-56% spreads on these small-caps). "option" keeps
+# the legacy deep-ITM-call path for A/B only. The VOL+LIQUIDITY gate below applies to BOTH but is
+# the validated rule for shares.
+INSIDER_COPY_INSTRUMENT         = os.environ.get("INSIDER_COPY_INSTRUMENT", "share").strip().lower()
+# ── VOL-GATED INSIDER SHARES (the validated live rule) ──────────────────────────────────────
+# Trade only when the underlying's entry-day realized_vol_20 (std of 20 daily log returns) is in
+# the high-vol regime (≥ the train P80 ≈ 0.0563) AND it's liquid enough that ~100bps slippage is
+# realistic (20d avg $-volume ≥ $1M). Insider conviction pays most in fear/high-vol; calm-tape
+# insider buys were net-flat-to-negative OOS. Both gates fail-CLOSED on missing data (no trade).
+INSIDER_COPY_VOL_GATE           = os.environ.get("INSIDER_COPY_VOL_GATE", "true").lower() in {"1", "true"}
+INSIDER_COPY_VOL_MIN_RV20       = float(os.environ.get("INSIDER_COPY_VOL_MIN_RV20", 0.0563))   # train P80 daily realized vol
+INSIDER_COPY_MIN_ADV            = float(os.environ.get("INSIDER_COPY_MIN_ADV", 1_000_000))     # 20d avg $-volume liquidity floor
+INSIDER_COPY_SHARE_HOLD_DAYS    = int(os.environ.get("INSIDER_COPY_SHARE_HOLD_DAYS", 3))       # validated 3-day hold
+INSIDER_COPY_SHARE_RISK_PCT     = float(os.environ.get("INSIDER_COPY_SHARE_RISK_PCT", 0.01))   # equity-risk budget per name
+INSIDER_COPY_SHARE_STOP_PCT     = float(os.environ.get("INSIDER_COPY_SHARE_STOP_PCT", 0.10))   # implied adverse move for sizing
+INSIDER_COPY_MAX_OPEN           = int(os.environ.get("INSIDER_COPY_MAX_OPEN", 3))              # small-account total-open cap
+# ── CLUSTER-BREADTH amplifier (research-validated 2026-06-08) ────────────────────────────────
+# >=2 DISTINCT insiders buying ("consensus") lifts the edge PF ~1.9→2.57, stable EVERY regime-year
+# (n=301). The live feed already exposes distinct-buyer count via aggregate_by_symbol's insider_count.
+# SHADOW MODE (default ON): compute + JOURNAL breadth on every copy, but DON'T gate — so we collect
+# 30-60d of paper data (accepted vs would-be-rejected) before risking opportunity-flow reduction.
+# Flip ALPHA-style: set INSIDER_COPY_BREADTH_SHADOW=0 to HARD-GATE at MIN_DISTINCT_BUYERS once proven.
+INSIDER_COPY_MIN_DISTINCT_BUYERS = int(os.environ.get("INSIDER_COPY_MIN_DISTINCT_BUYERS", 2))
+INSIDER_COPY_BREADTH_SHADOW      = os.environ.get("INSIDER_COPY_BREADTH_SHADOW", "true").lower() in {"1", "true"}
+# ── ROLLING-STRATEGY PF KILL-SWITCH (edge-decay protection) ─────────────────────────────────
+# The biggest operational risk to the validated edge is DECAY, not entry timing. This halts NEW
+# insider-copy entries (exits always still run) when the strategy's realised profit factor over a
+# rolling window of recent CLOSED trades falls below threshold — but only after enough trades to
+# judge. Strategy-level (not per-trade). Re-enables automatically when PF recovers.
+INSIDER_COPY_PF_KILL_ENABLED    = os.environ.get("INSIDER_COPY_PF_KILL", "true").lower() in {"1", "true"}
+INSIDER_COPY_PF_THRESHOLD       = float(os.environ.get("INSIDER_COPY_PF_THRESHOLD", 1.8))      # halt if rolling PF < this
+INSIDER_COPY_PF_WINDOW          = int(os.environ.get("INSIDER_COPY_PF_WINDOW", 40))            # rolling N closed trades
+INSIDER_COPY_PF_MIN_TRADES      = int(os.environ.get("INSIDER_COPY_PF_MIN_TRADES", 30))        # need ≥ this before judging
+INSIDER_COPY_PF_LOOKBACK_DAYS   = int(os.environ.get("INSIDER_COPY_PF_LOOKBACK_DAYS", 90))     # only count recent trades
+INSIDER_COPY_LEDGER_PATH        = PROJECT_ROOT / "logs" / "insider_copy_trade_ledger.json"
+INSIDER_COPY_OPTION_DTE         = int(os.environ.get("INSIDER_COPY_OPTION_DTE", 30))          # target days-to-expiry
+# Delta floor raised 0.47 → 0.75 (deep ITM) by backtest_insider_options.py: ATM/0.47 calls
+# are net-NEGATIVE once realistic small-cap IV + option spreads are priced in (the time
+# value bleeds to the market maker), while delta≈0.80 deep-ITM calls stay net-POSITIVE
+# (+9% @10d, t=3.3, robust to IV×1.5/50% spread) because they're mostly intrinsic. The
+# selector picks the cheapest call clearing this floor. Set lower to revert toward ATM.
+INSIDER_COPY_OPTION_MIN_DELTA   = float(os.environ.get("INSIDER_COPY_OPTION_MIN_DELTA", 0.75))  # call delta floor (>)
+INSIDER_COPY_OPTION_DOLLARS     = float(os.environ.get("INSIDER_COPY_OPTION_DOLLARS", 1500))   # premium budget per name
+INSIDER_COPY_OPTION_MIN_OI      = int(os.environ.get("INSIDER_COPY_OPTION_MIN_OI", 10))        # liquidity floor
+# Time-exit: the insider-buy edge is short-horizon (5-10d) but a 30DTE call bleeds theta,
+# so copied calls are force-closed after this many BUSINESS days regardless of P&L. The
+# exit runs in the unconditional EXIT pass (never regime-gated). 0 disables it.
+INSIDER_COPY_OPTION_MAX_HOLD_DAYS = int(os.environ.get("INSIDER_COPY_OPTION_MAX_HOLD_DAYS", 10))
+INSIDER_COPY_STATE_PATH         = PROJECT_ROOT / "logs" / "insider_copy_positions.json"
+# Research-grounded sizing (options_quant.py): fractional-Kelly + risk cap instead of a fixed
+# dollar budget. Kelly fraction is shrunk for dispersed option payoffs (Perez-Marco); the full
+# Kelly was measured at 0.125 on the deep-ITM payoff distribution (backtest), scaled by KELLY_MULT.
+INSIDER_COPY_USE_QUANT_SIZING   = os.environ.get("INSIDER_COPY_USE_QUANT_SIZING", "true").lower() in {"1", "true"}
+INSIDER_COPY_KELLY_FULL         = float(os.environ.get("INSIDER_COPY_KELLY_FULL", 0.125))   # empirical full-Kelly f*
+INSIDER_COPY_KELLY_MULT         = float(os.environ.get("INSIDER_COPY_KELLY_MULT", 0.25))    # fractional Kelly (¼)
+INSIDER_COPY_RISK_CAP_PCT       = float(os.environ.get("INSIDER_COPY_RISK_CAP_PCT", 0.02))  # max premium-at-risk / equity
+# TradingView quality-growth screen drives the main Alpha candidate universe
+# (tv-screener.py scan_quality_growth -> tv_screener_tickers.txt). Auto-refreshed when
+# stale, fully fail-safe (a TV failure falls back to the locked-universe files).
+ENABLE_TV_QUALITY_SCREEN        = os.environ.get("ENABLE_TV_QUALITY_SCREEN", "true").lower() in {"1", "true"}
+TV_QUALITY_SCREEN_TTL_SEC       = float(os.environ.get("TV_QUALITY_SCREEN_TTL_SEC", 21600))   # 6h (intraday backstop)
+# Background refresher: a daemon thread re-runs the screen every N seconds so the universe
+# is "constantly" fresh, WITHOUT putting the TradingView network call on the trading
+# cycle's critical path (the cycle just reads the file). Clamped to >= 15s.
+TV_QUALITY_SCREEN_REFRESH_SEC   = float(os.environ.get("TV_QUALITY_SCREEN_REFRESH_SEC", 60))
+TV_SCREEN_TICKERS_PATH          = PROJECT_ROOT / "tv_screener_tickers.txt"
 # Adaptive Capital Allocation (evidence-driven sizing PLAN; advisory, within caps).
 ENABLE_ADAPTIVE_ALLOCATION      = os.environ.get("ENABLE_ADAPTIVE_ALLOCATION", "true").lower() in {"1", "true"}
 # Black-Litterman + Efficient-Frontier Buffett optimizer (target weights; advisory).
@@ -180,9 +280,64 @@ SCREENER_FUNNEL_PATH = DAILY_OUTPUTS / "screener_funnel_report.json"
 def _in_test() -> bool:
     return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in os.path.basename(os.environ.get("_", ""))
 
+
+def _acquire_single_instance_lock() -> None:
+    """Prevent duplicate paper/live run.py loops from running concurrently."""
+    global _RUN_LOCK_HANDLE
+    if MODE not in ("paper", "live"):
+        return
+    if _in_test():
+        return
+    lock_dir = PROJECT_ROOT / "logs"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"run.{MODE}.lock"
+    lock_handle = open(lock_path, "a+", encoding="utf-8")
+    try:
+        import fcntl
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        try:
+            lock_handle.seek(0)
+            owner = lock_handle.read().strip()
+        except Exception:
+            owner = ""
+        logger.critical("Another %s run.py executor is already active%s",
+                        MODE, f" ({owner})" if owner else "")
+        raise SystemExit(1)
+    lock_handle.seek(0)
+    lock_handle.truncate()
+    lock_handle.write(f"pid={os.getpid()} mode={MODE} started_utc={datetime.now(timezone.utc).isoformat()}\n")
+    lock_handle.flush()
+    _RUN_LOCK_HANDLE = lock_handle
+
+    def _release_lock() -> None:
+        global _RUN_LOCK_HANDLE
+        if _RUN_LOCK_HANDLE is None:
+            return
+        try:
+            _RUN_LOCK_HANDLE.close()
+        except Exception:
+            pass
+        _RUN_LOCK_HANDLE = None
+
+    atexit.register(_release_lock)
+
 # Canonical skip reasons (every rejected trade must log one of these)
 SKIP_REASONS = {
     "rejected_by_market_regime",
+    "waiting_for_opening_range",
+    "opening_range_not_ready",
+    "waiting_for_ORB_breakout",
+    "waiting_for_ORB_sweep_reclaim",
+    "rejected_by_liq_sweep_no_buy",
+    "liq_sweep_sell_signal",
+    "rejected_by_analyst_downside",
+    "insider_copy_below_breadth",
+    "near_avg_analyst_target",
+    "near_high_analyst_target",
+    "analyst_upside_exhausted",
+    "below_low_analyst_target",
+    "above_avg_target_tighten_trail",
     "rejected_by_options_liquidity",
     "rejected_by_setup_quality",
     "rejected_by_BAL_score",
@@ -191,6 +346,7 @@ SKIP_REASONS = {
     "rejected_by_cycle",
     "rejected_by_cash_buffer",
     "rejected_by_exposure_limit",
+    "rejected_by_options_buying_power",
     "rejected_by_PDT",
     "rejected_by_kill_switch",
     "rejected_by_equity_floor",
@@ -199,6 +355,13 @@ SKIP_REASONS = {
     "rejected_by_order_size",
     "rejected_by_data_unavailable",
     "throttled_by_self_assessment",
+    "insider_copy_below_min",
+    "insider_copy_stale",
+    "insider_copy_already_held",
+    "insider_copy_size_zero",
+    "insider_copy_av_contradicts",
+    "insider_copy_no_qualifying_call",
+    "insider_copy_not_in_quality_screen",
 }
 
 
@@ -423,6 +586,12 @@ class RiskManager:
                     return False, (f"rejected_by_exposure_limit:options="
                                    f"{self.options_exposure + notional:.0f}>"
                                    f"{self.equity * MAX_OPTIONS_EXPOSURE_PCT:.0f}")
+                # Alpaca options buying-power preflight: a long option must be fully paid
+                # from options_buying_power (Alpaca error 40310000 otherwise). On a small
+                # account this is the binding cap (e.g. $4,270 options-BP on $6,260 equity).
+                if self.options_buying_power > 0 and notional > self.options_buying_power:
+                    return False, (f"rejected_by_options_buying_power:premium={notional:.0f}>"
+                                   f"{self.options_buying_power:.0f}")
             else:
                 # equity buy — PDT, position-count and stock-exposure limits
                 if self.pdt_restricted:
@@ -845,13 +1014,24 @@ class AlpacaGateway:
         if self._opt_data is not None and contracts:
             try:
                 from alpaca.data.requests import OptionChainRequest
+                # Use the FREE 'indicative' options feed (delayed/derived quotes) so the
+                # engine never requires an OPRA subscription. Falls back gracefully if the
+                # enum is absent in older alpaca-py.
+                try:
+                    from alpaca.data.enums import OptionsFeed as _OptFeed
+                    _ofeed = _OptFeed.INDICATIVE
+                except Exception:
+                    _ofeed = "indicative"
                 # Hard 15-second timeout on the snapshot merge — can also hang if
                 # the data client stalls. Timeouts here lose greeks/bid/ask but
                 # the engine gracefully falls back to ATM-strike selection.
                 # Use shutdown(wait=False) — `with` context-manager exit blocks until
                 # the worker finishes, defeating the timeout.
                 _pool_snap = _cf_chain.ThreadPoolExecutor(max_workers=1)
-                _opt_req = OptionChainRequest(underlying_symbol=symbol)
+                try:
+                    _opt_req = OptionChainRequest(underlying_symbol=symbol, feed=_ofeed)
+                except TypeError:
+                    _opt_req = OptionChainRequest(underlying_symbol=symbol)   # older SDK
                 _fut_snap = _pool_snap.submit(self._opt_data.get_option_chain, _opt_req)
                 chain = {}
                 try:
@@ -1106,22 +1286,127 @@ def is_premarket() -> bool:
 # Universe / data helpers
 # ---------------------------------------------------------------------------
 
+_INVALID_UNIVERSE_SYMBOLS = {"", "N/A", "NA", "NAN", "NONE", "NULL", "N\\A"}
+
+
+def _normalize_candidate_symbol(value: Any) -> str:
+    sym = str(value or "").strip().strip('"').strip("'").strip().upper()
+    if not sym or sym in _INVALID_UNIVERSE_SYMBOLS:
+        return ""
+    return sym
+
+
+def _parse_ticker_file(text: str) -> List[str]:
+    """Parse a ticker list in either comma-separated-quoted ("A","B") or newline form."""
+    out: List[str] = []
+    for chunk in (text or "").replace("\n", ",").split(","):
+        sym = _normalize_candidate_symbol(chunk)
+        if sym:
+            out.append(sym)
+    # de-dupe, preserve order
+    seen: set = set()
+    return [s for s in out if not (s in seen or seen.add(s))]
+
+
+def _refresh_tv_quality_screen(force: bool = False) -> None:
+    """Refresh tv_screener_tickers.txt from the quality-growth screen.
+
+    Imports tv-screener.py (hyphenated, so via importlib) and runs scan_quality_growth.
+    Skips when the cached file is still within TTL unless `force` (premarket runs it once
+    at a known good time). Hard 30s timeout + full fail-safety: any failure leaves the
+    existing file untouched so the universe load always has something to fall back on.
+    Never raises.
+    """
+    if not ENABLE_TV_QUALITY_SCREEN or _in_test():
+        return
+    try:
+        if not force and TV_SCREEN_TICKERS_PATH.exists():
+            age = time.time() - TV_SCREEN_TICKERS_PATH.stat().st_mtime
+            if age < TV_QUALITY_SCREEN_TTL_SEC:
+                return  # still fresh
+        import importlib.util
+        import concurrent.futures as _cf
+        spec = importlib.util.spec_from_file_location("tv_screener", PROJECT_ROOT / "tv-screener.py")
+        if spec is None or spec.loader is None:
+            return
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        pool = _cf.ThreadPoolExecutor(max_workers=1)
+        fut = pool.submit(mod.scan_quality_growth, write=True, symbols_only=True)
+        try:
+            tickers = fut.result(timeout=30)
+            logger.info("TV quality screen refreshed: %d names", len(tickers or []))
+        except Exception as e:
+            logger.warning("TV quality screen refresh timed out/failed (using cached file): %s", e)
+        finally:
+            pool.shutdown(wait=False)
+    except Exception as e:
+        logger.warning("TV quality screen refresh skipped (using cached file): %s", e)
+
+
+_TV_REFRESHER_STARTED = False
+
+
+def _start_tv_screen_refresher() -> None:
+    """Start a daemon thread that continuously refreshes the quality-growth screen every
+    TV_QUALITY_SCREEN_REFRESH_SEC seconds, so the universe is always fresh while the
+    network call stays off the trading cycle. Idempotent, fail-safe, never raises.
+    """
+    global _TV_REFRESHER_STARTED
+    if _TV_REFRESHER_STARTED or not ENABLE_TV_QUALITY_SCREEN or _in_test():
+        return
+    import threading
+    interval = max(15.0, TV_QUALITY_SCREEN_REFRESH_SEC)
+
+    def _loop() -> None:
+        while True:
+            try:
+                _refresh_tv_quality_screen(force=True)
+            except Exception:
+                logger.debug("TV screen refresher tick failed", exc_info=True)
+            time.sleep(interval)
+
+    try:
+        threading.Thread(target=_loop, name="tv-screen-refresher", daemon=True).start()
+        _TV_REFRESHER_STARTED = True
+        logger.info("TV quality-screen refresher started (every %.0fs)", interval)
+    except Exception as e:
+        logger.warning("TV screen refresher failed to start: %s", e)
+
+
 def load_candidate_universe() -> List[str]:
     """
-    Load the TradingView institutional-accumulation candidates (the locked
-    trading universe). Order of preference:
+    Load the main Alpha candidate universe. Order of preference:
         1. SYMBOLS env override
-        2. {DATA_TAG}_locked_trading_universe.txt
-        3. locked_trading_universe.txt
+        2. TradingView quality-growth screen  (tv_screener_tickers.txt, auto-refreshed)
+        3. {DATA_TAG}_locked_trading_universe.txt
+        4. locked_trading_universe.txt
     """
     if SYMBOLS_ENV.strip():
         return [s.strip().upper() for s in SYMBOLS_ENV.split(",") if s.strip()]
+
+    # Primary: the user's quality-growth TradingView screen.
+    if ENABLE_TV_QUALITY_SCREEN:
+        _refresh_tv_quality_screen()
+        if TV_SCREEN_TICKERS_PATH.exists():
+            try:
+                syms = _parse_ticker_file(TV_SCREEN_TICKERS_PATH.read_text())
+                if syms:
+                    logger.info("Loaded %d candidates from quality-growth screen (%s)",
+                                len(syms), TV_SCREEN_TICKERS_PATH.name)
+                    return syms
+            except Exception as e:
+                logger.warning("Failed to read %s: %s", TV_SCREEN_TICKERS_PATH, e)
 
     for candidate in (PROJECT_ROOT / f"{DATA_TAG}_locked_trading_universe.txt",
                       PROJECT_ROOT / "locked_trading_universe.txt"):
         if candidate.exists():
             try:
-                syms = [ln.strip().upper() for ln in candidate.read_text().splitlines() if ln.strip()]
+                syms = [
+                    sym for sym in
+                    (_normalize_candidate_symbol(ln) for ln in candidate.read_text().splitlines())
+                    if sym
+                ]
                 if syms:
                     logger.info("Loaded %d candidates from %s", len(syms), candidate.name)
                     return syms
@@ -1437,12 +1722,10 @@ def _build_premarket_universe(dynamic_symbols, insider_data, buffett_candidates,
     """Assemble the premarket watch universe from all candidate sources (de-duped)."""
     syms: List[str] = []
 
-    _INVALID_SYMS = {"N/A", "NA", "NAN", "NONE", "NULL", "N\\A", ""}
-
     def add(items):
         for s in (items or []):
-            su = str(s or "").upper().strip()
-            if su and su not in _INVALID_SYMS and len(su) <= 10:
+            su = _normalize_candidate_symbol(s)
+            if su and len(su) <= 10:
                 syms.append(su)
 
     try:
@@ -1622,10 +1905,14 @@ def _av_premarket_rvol_cycle(feed) -> None:
 
 def run_premarket_phase(gateway, bal, market_context) -> None:
     """
-    Premarket orchestration: build the watch universe (once), start/maintain the live
-    feed, fall back to yfinance/Alpaca when needed, and write the snapshot + health
-    reports. NO trading occurs premarket — this is awareness only. Fully fail-safe.
+    Premarket orchestration: refresh the quality-growth screen, build the watch universe
+    (once), start/maintain the live feed, fall back to yfinance/Alpaca when needed, and
+    write the snapshot + health reports. NO trading occurs premarket — awareness only.
+    Fully fail-safe.
     """
+    # Ensure the continuous TradingView quality-growth refresher is running so the day's
+    # Alpha universe is built from (and stays on) a fresh screen. Idempotent; fail-safe.
+    _start_tv_screen_refresher()
     feed = _premarket_feed()
     if feed is None:
         universe = _build_premarket_universe_safe(gateway, bal, market_context)
@@ -1798,6 +2085,17 @@ def run_alpha_entries(engine, gateway: AlpacaGateway, waterfall, risk: RiskManag
     returns order intents. run.py only routes intents through Risk/Gateway.
     waterfall_budget=0 so reserves never cap tactical sizing (primary engine).
     """
+    if not is_market_open():
+        log_skip("ALPHA_ENGINE", "rejected_by_session:market_closed", phase="entry_gate", engine="alpha")
+        return 0
+    now_et = datetime.now(ET)
+    if now_et >= now_et.replace(hour=15, minute=45, second=0, microsecond=0):
+        log_skip("ALPHA_ENGINE", "rejected_by_session:past_entry_cutoff", phase="entry_gate", engine="alpha")
+        return 0
+    new_buys_allowed, regime_reason = regime_allows_new_buys(market_context)
+    if not new_buys_allowed:
+        log_skip("ALPHA_ENGINE", regime_reason, phase="entry_gate", engine="alpha")
+        return 0
     try:
         signals = engine.evaluate_universe(
             symbols=symbols, bars_by_symbol=bars_by_symbol, market_context=market_context,
@@ -2072,13 +2370,24 @@ def build_engines(gateway: AlpacaGateway):
         waterfall = CapitalWaterfall(WaterfallConfig())
     except Exception as e:
         logger.error("CapitalWaterfall init failed: %s", e)
-    if ENABLE_ALPHA_CALL_ENGINE:
+    # ── DO NOT DEPLOY: alpha-call (long-call) engine is research-FAILED ─────────────
+    # Real-chain audit (2026-06-06): synthetic option chains showed +$2,063, but REAL
+    # Alpha Vantage chains gave -$214 with the 10% max-drawdown kill switch triggered
+    # (negative expectancy: avg loss -$45 vs avg win +$27). Hard-disabled from LIVE
+    # execution regardless of ENABLE_ALPHA_CALL_ENGINE. Still usable for RESEARCH via
+    # backtest_alpha_replay.py. Live deployment = shares-only trend overlay (~/quant_trader_live).
+    # Risk controls / kill switch (RiskManager) are unaffected.
+    ALPHA_DO_NOT_DEPLOY = True
+    if ENABLE_ALPHA_CALL_ENGINE and not ALPHA_DO_NOT_DEPLOY:
         try:
             from alpha_call_engine import AlphaCallEngine, AlphaCallConfig
             alpha = AlphaCallEngine(broker=gateway, config=AlphaCallConfig())
             logger.info("Alpha Call Engine ENABLED")
         except Exception as e:
             logger.error("AlphaCallEngine init failed: %s", e)
+    elif ENABLE_ALPHA_CALL_ENGINE:
+        logger.warning("Alpha Call Engine DISABLED — DO NOT DEPLOY (negative expectancy on "
+                       "real option chains; 2026-06-06 real-chain audit). Research-only.")
     if ENABLE_BUFFETT_ACCUMULATION_LAYER:
         try:
             from buffett_accumulation_layer import BuffettAccumulationLayer, BALConfig, DCAConfig
@@ -2094,6 +2403,562 @@ def build_engines(gateway: AlpacaGateway):
         except Exception as e:
             logger.error("BALPortfolioMonitor init failed: %s", e)
     return alpha, bal, monitor, waterfall
+
+
+def _occ_underlying(occ: str) -> str:
+    """Underlying ticker from an OCC option symbol (leading letters before the YYMMDD)."""
+    s = (occ or "").strip().upper()
+    m = re.match(r"^([A-Z]+)\d{6}[CP]\d+$", s)
+    return m.group(1) if m else s
+
+
+def _insider_copy_state_load() -> Dict[str, Any]:
+    """Persisted map {occ_option_symbol: {entry_date, underlying, qty}} of copier-opened
+    calls, used by the time-exit. Empty on any failure."""
+    try:
+        if INSIDER_COPY_STATE_PATH.exists():
+            data = json.loads(INSIDER_COPY_STATE_PATH.read_text())
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        logger.debug("insider copy state read failed", exc_info=True)
+    return {}
+
+
+def _insider_copy_state_save(state: Dict[str, Any]) -> None:
+    if _in_test():
+        return
+    try:
+        INSIDER_COPY_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        INSIDER_COPY_STATE_PATH.write_text(json.dumps(state, default=str, indent=2))
+    except Exception:
+        logger.debug("insider copy state write failed", exc_info=True)
+
+
+def _insider_copy_record_open(occ_symbol: str, underlying: str, qty: int,
+                              entry_date: "date", instrument: str = "option",
+                              entry_price: float = 0.0) -> None:
+    state = _insider_copy_state_load()
+    state[occ_symbol] = {"entry_date": entry_date.isoformat(), "underlying": underlying,
+                         "qty": int(qty), "instrument": instrument,
+                         "entry_price": float(entry_price)}
+    _insider_copy_state_save(state)
+
+
+def _insider_ledger_append(exit_date: "date", symbol: str, instrument: str,
+                           ret: float, pnl: float) -> None:
+    """Append one CLOSED insider-copy trade to the rolling-PF ledger (fail-safe)."""
+    try:
+        ledger: List[Dict[str, Any]] = []
+        if INSIDER_COPY_LEDGER_PATH.exists():
+            ledger = json.loads(INSIDER_COPY_LEDGER_PATH.read_text()) or []
+        ledger.append({"exit_date": exit_date.isoformat(), "symbol": symbol,
+                       "instrument": instrument, "ret": round(float(ret), 5),
+                       "pnl": round(float(pnl), 2)})
+        ledger = ledger[-500:]                     # keep the tail; plenty for a 40-trade window
+        INSIDER_COPY_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        INSIDER_COPY_LEDGER_PATH.write_text(json.dumps(ledger, indent=2))
+    except Exception as e:
+        logger.debug("insider ledger append failed: %s", e)
+
+
+def _insider_rolling_pf() -> Tuple[Optional[float], int]:
+    """Rolling profit factor over the last INSIDER_COPY_PF_WINDOW closed trades within the last
+    INSIDER_COPY_PF_LOOKBACK_DAYS. Returns (pf, n_in_window). pf=None when n < MIN_TRADES (cannot
+    judge yet) → caller must NOT halt. pf=inf when there are no losing trades."""
+    try:
+        if not INSIDER_COPY_LEDGER_PATH.exists():
+            return None, 0
+        ledger = json.loads(INSIDER_COPY_LEDGER_PATH.read_text()) or []
+        cutoff = datetime.now(ET).date() - timedelta(days=INSIDER_COPY_PF_LOOKBACK_DAYS)
+        recent = []
+        for t in ledger:
+            try:
+                d = datetime.fromisoformat(str(t.get("exit_date"))[:10]).date()
+            except Exception:
+                continue
+            if d >= cutoff:
+                recent.append(float(t.get("ret", 0.0)))
+        window = recent[-INSIDER_COPY_PF_WINDOW:]
+        if len(window) < INSIDER_COPY_PF_MIN_TRADES:
+            return None, len(window)
+        gains = sum(r for r in window if r > 0)
+        losses = sum(-r for r in window if r < 0)
+        pf = (gains / losses) if losses > 0 else float("inf")
+        return pf, len(window)
+    except Exception as e:
+        logger.debug("insider rolling PF failed: %s", e)
+        return None, 0
+
+
+def _business_days_between(d0: "date", d1: "date") -> int:
+    """Weekday count from d0 to d1 (proxy for trading days; ignores holidays)."""
+    if d1 <= d0:
+        return 0
+    days = (d1 - d0).days
+    full_weeks, rem = divmod(days, 7)
+    count = full_weeks * 5
+    wd = d0.weekday()
+    for _ in range(rem):
+        wd = (wd + 1) % 7
+        if wd < 5:
+            count += 1
+    return count
+
+
+def _insider_vol_liquidity_gate(symbol: str) -> Tuple[bool, str, float, float]:
+    """The VALIDATED entry filter for the insider-shares edge. Returns (ok, reason, rv20, adv).
+    ok ONLY when entry-day realized_vol_20 ≥ INSIDER_COPY_VOL_MIN_RV20 (high-vol regime) AND
+    20-day avg $-volume ≥ INSIDER_COPY_MIN_ADV (liquid). FAIL-CLOSED on missing/short data —
+    never trade a name we can't measure (the project's standing 'missing data is not bullish' rule)."""
+    if not INSIDER_COPY_VOL_GATE:
+        return True, "vol_gate_disabled", 0.0, 0.0
+    try:
+        import numpy as _np
+        from datetime import timedelta
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+        try:
+            from alpaca.data.enums import DataFeed
+            _feed = DataFeed.IEX                     # free feed (SIP needs a paid subscription)
+        except Exception:
+            _feed = None
+        dc = StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET)
+        end = datetime.now(timezone.utc) - timedelta(minutes=20)   # avoid the 15-min recent-SIP limit
+        kw = dict(symbol_or_symbols=symbol, timeframe=TimeFrame.Day,
+                  start=end - timedelta(days=70), end=end)
+        if _feed is not None:
+            kw["feed"] = _feed
+        df = dc.get_stock_bars(StockBarsRequest(**kw)).df
+        if df is None or df.empty:
+            return False, "vol_gate_no_bars", 0.0, 0.0
+        if hasattr(df.index, "levels"):
+            df = df.xs(symbol, level=0)
+        closes = df["close"].astype(float).values
+        vols = df["volume"].astype(float).values
+        if len(closes) < 21:
+            return False, f"vol_gate_short_history:{len(closes)}", 0.0, 0.0
+        rets = _np.diff(_np.log(_np.maximum(closes, 1e-9)))
+        rv20 = float(_np.std(rets[-20:]))
+        adv = float(_np.mean([closes[k] * vols[k] for k in range(len(closes) - 20, len(closes))]))
+        if rv20 < INSIDER_COPY_VOL_MIN_RV20:
+            return False, f"insider_copy_vol_too_low:rv20={rv20:.4f}<{INSIDER_COPY_VOL_MIN_RV20:.4f}", rv20, adv
+        if adv < INSIDER_COPY_MIN_ADV:
+            return False, f"insider_copy_illiquid:adv=${adv:,.0f}<${INSIDER_COPY_MIN_ADV:,.0f}", rv20, adv
+        return True, "vol_liquidity_ok", rv20, adv
+    except Exception as e:
+        return False, f"vol_gate_error:{str(e)[:40]}", 0.0, 0.0
+
+
+def run_insider_copy_exits(gateway: AlpacaGateway, risk: RiskManager,
+                           option_positions: Optional[List[Dict[str, Any]]] = None,
+                           equity_positions: Optional[Dict[str, Any]] = None) -> int:
+    """
+    Time-exit for copied calls: force-close any insider-copy call held >=
+    INSIDER_COPY_OPTION_MAX_HOLD_DAYS business days. Runs in the unconditional EXIT pass
+    (never regime-/cutoff-gated, like every other exit). Sells go through the RiskManager
+    gate, which always allows risk-reducing exits except under the manual kill switch.
+    Self-cleans state for positions no longer held. Fully fail-safe.
+
+    Returns the number of time-exit SELLs submitted.
+    """
+    if not ENABLE_INSIDER_COPIER:
+        return 0
+    state = _insider_copy_state_load()
+    if not state:
+        return 0
+    # held qty for BOTH instruments: options (list of dicts) + shares (dict {sym: qty|{...}}).
+    held_qty = {str(p.get("symbol", "")): int(float(p.get("qty", 0) or 0))
+                for p in (option_positions or [])}
+    for s, v in (equity_positions or {}).items():
+        try:
+            q = v.get("qty") if isinstance(v, dict) else v
+            held_qty[str(s).upper()] = int(float(q or 0))
+        except Exception:
+            continue
+    today = datetime.now(ET).date()
+    closed = 0
+    changed = False
+    for key in list(state.keys()):
+        rec = state[key] if isinstance(state[key], dict) else {}
+        instrument = str(rec.get("instrument", "option"))      # legacy records (no tag) = option
+        # per-instrument hold: shares exit at the validated 3 days; options at 10.
+        max_hold = (INSIDER_COPY_SHARE_HOLD_DAYS if instrument == "share"
+                    else INSIDER_COPY_OPTION_MAX_HOLD_DAYS)
+        if max_hold <= 0:
+            continue
+        qty = held_qty.get(str(key).upper(), held_qty.get(key, 0))
+        if qty <= 0:
+            state.pop(key, None); changed = True       # position gone (other exit / expiry)
+            continue
+        try:
+            entry = datetime.fromisoformat(str(rec.get("entry_date"))[:10]).date()
+        except Exception:
+            entry = today
+        age = _business_days_between(entry, today)
+        if age < max_hold:
+            continue
+        resp = gateway.submit_market_order(
+            key, "sell", qty, reason=f"insider_copy_time_exit:{instrument}:age={age}d>={max_hold}")
+        if resp is not None:
+            closed += 1; changed = True
+            # Realized-return ledger for the rolling-PF kill-switch (best-effort; uses entry price
+            # stored at open + current exit reference price). Per-share basis (option vs share both fine).
+            try:
+                _entry_px = float(rec.get("entry_price", 0.0) or 0.0)
+                _exit_px = float(gateway._resolve_reference_price(key) or 0.0)
+                if _entry_px > 0 and _exit_px > 0:
+                    _ret = _exit_px / _entry_px - 1.0
+                    _mult = 100.0 if instrument == "option" else 1.0
+                    _insider_ledger_append(today, key, instrument, _ret, (_exit_px - _entry_px) * qty * _mult)
+            except Exception:
+                pass
+            state.pop(key, None)
+            logger.info("INSIDER COPY TIME-EXIT %s x%d (%s, held %d business days)", key, qty, instrument, age)
+            try:
+                log_executed_order(event="insider_copy_exit", engine="insider_copier",
+                                   symbol=key, underlying=(_occ_underlying(key) if instrument == "option" else key),
+                                   asset_class=("option" if instrument == "option" else "equity"),
+                                   side="sell", qty=qty, hold_business_days=age,
+                                   order_id=str((resp or {}).get("id", "") if isinstance(resp, dict) else ""),
+                                   sim=bool(isinstance(resp, dict) and resp.get("sim")),
+                                   note=f"insider copy {instrument} time-exit")
+            except Exception:
+                pass
+    if changed:
+        _insider_copy_state_save(state)
+    if closed:
+        logger.info("Insider copier time-exit: %d position(s) closed", closed)
+    return closed
+
+
+def _select_insider_call(gateway: AlpacaGateway, symbol: str, target_dte: int,
+                         min_delta: float, min_oi: int) -> Optional[Dict[str, Any]]:
+    """
+    Pick a long naked CALL to copy a bullish insider buy: expiry nearest `target_dte`,
+    delta strictly > `min_delta`, and a tradable ask. Among contracts meeting the delta
+    floor it prefers the one with expiry closest to target, then the LOWEST qualifying
+    delta (cheapest premium / most leverage that still clears the floor). Returns the
+    contract dict (chain shape) or None when nothing qualifies. Never raises.
+    """
+    try:
+        chain = gateway.get_options_chain(symbol) or []
+    except Exception as e:
+        logger.debug("Insider copier chain fetch failed for %s: %s", symbol, e)
+        return None
+    today = datetime.now(ET).date()
+    best = None
+    best_key = None
+    for c in chain:
+        try:
+            if str(c.get("type", "call")).lower() != "call":
+                continue
+            delta = float(c.get("delta") or 0.0)
+            if delta <= min_delta:
+                continue
+            exp = str(c.get("expiration_date") or "")[:10]
+            try:
+                dte = (datetime.fromisoformat(exp).date() - today).days
+            except Exception:
+                continue
+            if dte <= 0:
+                continue
+            ask = float(c.get("ask_price") or 0.0)
+            if ask <= 0:
+                continue
+            if int(c.get("open_interest") or 0) < min_oi and int(c.get("volume") or 0) <= 0:
+                continue
+            # rank: nearest expiry to target, then smallest qualifying delta (cheapest)
+            key = (abs(dte - target_dte), delta)
+            if best_key is None or key < best_key:
+                best_key, best = key, {**c, "dte": dte}
+        except Exception:
+            continue
+    return best
+
+
+def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
+                             sec_candidates: List[Dict[str, Any]],
+                             equity_positions: Dict[str, Any],
+                             market_context: dict,
+                             option_positions: Optional[List[Dict[str, Any]]] = None) -> int:
+    """
+    Insider trade copier — mirror large, RECENT open-market insider BUYS.
+
+    Instrument (INSIDER_COPY_INSTRUMENT):
+        * "option" (default) — buy a long naked CALL (insider buys are bullish): expiry
+          nearest INSIDER_COPY_OPTION_DTE (30), call delta > INSIDER_COPY_OPTION_MIN_DELTA
+          (0.47), sized to INSIDER_COPY_OPTION_DOLLARS of premium, routed as a DAY limit
+          at the ask and gated by the options-exposure cap.
+        * "share" — buy shares (original behaviour), sized to INSIDER_COPY_DOLLARS.
+
+    Sources (both modules supplied by the user):
+        * sec_form4_feed       — SEC EDGAR Form 4 open-market-purchase candidates carry
+                                 the actual aggregate buy value + latest transaction date.
+        * insider_transactions_av — Alpha Vantage INSIDER_TRANSACTIONS, used as an
+                                 optional CONFIRMATION veto (fail-open).
+
+    A name is copied only when ALL hold:
+        * it is a Form 4 open-market-purchase candidate,
+        * aggregate open-market insider buy value > INSIDER_COPY_MIN_VALUE ($1,000,000),
+        * the latest insider transaction is within INSIDER_COPY_MAX_AGE_DAYS days (2),
+        * (if INSIDER_COPY_REQUIRE_AV_CONFIRM) Alpha Vantage does not show net insider
+          selling — fail-open, so missing key / quota / error never blocks,
+        * the underlying is not already held (as shares OR an open call),
+        * for options, a call meeting the DTE/delta/liquidity rule exists,
+        * new buys are allowed this cycle and the 15:45 ET cutoff has not passed.
+
+    Every order goes through gateway.submit_market_order, so the full RiskManager gate
+    (kill-switch, equity floor, daily-loss, drawdown, PDT, position count, exposure caps
+    incl. options-exposure, self-assessment throttle, size-to-fit) applies exactly as for
+    any other entry. The copier can NEVER bypass a risk control, place a SELL, or trade
+    while the market is shut. Fully fail-safe — any error is logged and the rest of the
+    cycle is unaffected.
+
+    Returns the number of insider-copy orders submitted.
+    """
+    if not ENABLE_INSIDER_COPIER:
+        return 0
+    if not is_market_open():
+        return 0
+    # Same hard 15:45 ET entry cutoff used by the Alpha/BAL entry passes.
+    now_et = datetime.now(ET)
+    if now_et >= now_et.replace(hour=15, minute=45, second=0, microsecond=0):
+        logger.info("Insider copier blocked: past 15:45 ET entry cutoff")
+        return 0
+    new_buys_allowed, regime_reason = regime_allows_new_buys(market_context)
+    if not new_buys_allowed:
+        log_skip("INSIDER_COPIER", regime_reason, phase="insider_copier")
+        return 0
+
+    # ── ROLLING-PF KILL-SWITCH — halt NEW entries on live edge decay ────────────────────────
+    # Strategy-level: if the realised PF over the last N closed trades (≥ MIN_TRADES, within
+    # LOOKBACK days) drops below threshold, stop opening new copies. EXITS are unaffected (they
+    # run in their own pass). Auto-recovers when PF climbs back. Needs MIN_TRADES first (no halt
+    # on a cold start). One of the highest-value safeguards: protects against edge decay.
+    if INSIDER_COPY_PF_KILL_ENABLED:
+        _pf, _pf_n = _insider_rolling_pf()
+        if _pf is not None and _pf < INSIDER_COPY_PF_THRESHOLD:
+            logger.warning("INSIDER COPIER HALTED: live_pf_degradation rolling_pf=%.2f<%.2f over %d trades",
+                           _pf, INSIDER_COPY_PF_THRESHOLD, _pf_n)
+            log_skip("INSIDER_COPIER",
+                     f"live_pf_degradation:pf={_pf:.2f}<{INSIDER_COPY_PF_THRESHOLD}:n={_pf_n}",
+                     phase="insider_copier")
+            return 0
+
+    today = now_et.date()
+    # "Already held" spans BOTH equity holdings and any open call on the underlying, so a
+    # name is never copied twice regardless of which instrument the copier trades.
+    held = {str(s).upper() for s in (equity_positions or {})}
+    held |= {_occ_underlying(str(p.get("symbol", ""))) for p in (option_positions or [])}
+
+    # Filter Form 4 candidates to large + recent open-market buys.
+    qualified: List[Dict[str, Any]] = []
+    for cand in sec_candidates or []:
+        try:
+            sym = str(cand.get("symbol") or "").upper().strip()
+            if not sym or is_option_symbol(sym):
+                continue
+            value = float(cand.get("total_open_market_purchase_value") or 0.0)
+            if value <= INSIDER_COPY_MIN_VALUE:
+                log_skip(sym, f"insider_copy_below_min:{value:.0f}<={INSIDER_COPY_MIN_VALUE:.0f}",
+                         phase="insider_copier")
+                continue
+            raw_last = str(cand.get("latest_transaction_date") or "")[:10]
+            try:
+                last_date = datetime.fromisoformat(raw_last).date() if raw_last else None
+            except Exception:
+                last_date = None
+            if last_date is None or (today - last_date).days > INSIDER_COPY_MAX_AGE_DAYS:
+                log_skip(sym, f"insider_copy_stale:last={raw_last or 'none'}",
+                         phase="insider_copier")
+                continue
+            if sym in held:
+                log_skip(sym, "insider_copy_already_held", phase="insider_copier")
+                continue
+            qualified.append({"symbol": sym, "value": value, "last": last_date,
+                              "company": str(cand.get("company") or ""),
+                              "breadth": int(cand.get("insider_count") or 1),     # distinct buyers (consensus)
+                              "repeated": bool(cand.get("repeated_purchases"))})
+        except Exception:
+            continue
+
+    if not qualified:
+        return 0
+
+    # Most recent insider buy first, then largest dollar value.
+    qualified.sort(key=lambda c: (c["last"], c["value"]), reverse=True)
+
+    # COMBO gate (opt-in): intersect with the TradingView quality-growth screen. NOTE the
+    # backtest shows this REMOVES the edge — kept for live A/B only.
+    quality_universe: set = set()
+    if INSIDER_COPY_REQUIRE_QUALITY_SCREEN and TV_SCREEN_TICKERS_PATH.exists():
+        try:
+            quality_universe = set(_parse_ticker_file(TV_SCREEN_TICKERS_PATH.read_text()))
+        except Exception:
+            quality_universe = set()
+
+    placed = 0
+    _open_now = len(_insider_copy_state_load())     # total open insider-copy positions (small-acct cap)
+    for cand in qualified:
+        if placed >= INSIDER_COPY_MAX_NAMES:
+            break
+        if (_open_now + placed) >= INSIDER_COPY_MAX_OPEN:
+            log_skip("INSIDER_COPIER", f"insider_copy_max_open:{_open_now + placed}>={INSIDER_COPY_MAX_OPEN}",
+                     phase="insider_copier")
+            break
+        sym = cand["symbol"]
+
+        if INSIDER_COPY_REQUIRE_QUALITY_SCREEN and sym not in quality_universe:
+            log_skip(sym, "insider_copy_not_in_quality_screen", phase="insider_copier")
+            continue
+
+        # Optional Alpha Vantage confirmation. FAIL-OPEN: only a positive net-selling
+        # signal vetoes a copy; a missing key / quota / parse error never blocks.
+        if INSIDER_COPY_REQUIRE_AV_CONFIRM:
+            try:
+                import insider_transactions_av as av
+                trend = av.get_insider_trend(sym)
+                if not trend.get("fetch_error"):
+                    flags = trend.get("insider_warning_flags") or []
+                    if (float(trend.get("insider_trend_score") or 0.0) < 0.0
+                            or "heavy_insider_selling" in flags):
+                        log_skip(sym, "insider_copy_av_contradicts", phase="insider_copier",
+                                 av_score=trend.get("insider_trend_score"))
+                        continue
+            except Exception as e:
+                logger.debug("Insider copier AV confirm skipped for %s: %s", sym, e)
+
+        # ── VALIDATED VOL + LIQUIDITY GATE (the OOS walk-forward edge) ──────────────────────
+        # Trade only high-vol (entry-day realized_vol_20 ≥ train P80) + liquid (20d $-vol ≥ $1M)
+        # insider names. Fail-CLOSED on missing data. This is THE rule that lifted PF 1.44→2.20.
+        _vg_ok, _vg_reason, _rv20, _adv = _insider_vol_liquidity_gate(sym)
+        if not _vg_ok:
+            log_skip(sym, _vg_reason, phase="insider_copier", rv20=round(_rv20, 4), adv=round(_adv, 0))
+            continue
+
+        # ── CLUSTER-BREADTH amplifier (SHADOW by default) ───────────────────────────────────
+        # >=2 distinct insiders = consensus (validated PF 1.9→2.57). In SHADOW mode we journal
+        # breadth + would-pass but DON'T gate, so paper collects accepted-vs-rejected for 30-60d.
+        # Hard-gate only when INSIDER_COPY_BREADTH_SHADOW=0.
+        _breadth = int(cand.get("breadth", 1) or 1)
+        _breadth_pass = _breadth >= INSIDER_COPY_MIN_DISTINCT_BUYERS
+        if not _breadth_pass:
+            if INSIDER_COPY_BREADTH_SHADOW:
+                logger.info("INSIDER COPY breadth-SHADOW: %s breadth=%d<%d would be REJECTED "
+                            "(taking it anyway in shadow mode)", sym, _breadth, INSIDER_COPY_MIN_DISTINCT_BUYERS)
+            else:
+                log_skip(sym, f"insider_copy_below_breadth:{_breadth}<{INSIDER_COPY_MIN_DISTINCT_BUYERS}",
+                         phase="insider_copier", breadth=_breadth)
+                continue
+
+        # Resolve the instrument to copy with: SHARES (default, validated) or a long naked CALL.
+        if INSIDER_COPY_INSTRUMENT == "option":
+            contract = _select_insider_call(gateway, sym, INSIDER_COPY_OPTION_DTE,
+                                             INSIDER_COPY_OPTION_MIN_DELTA, INSIDER_COPY_OPTION_MIN_OI)
+            if not contract:
+                log_skip(sym, "insider_copy_no_qualifying_call",
+                         phase="insider_copier",
+                         want_dte=INSIDER_COPY_OPTION_DTE, want_delta_gt=INSIDER_COPY_OPTION_MIN_DELTA)
+                continue
+            order_symbol = str(contract["symbol"])
+            ask = float(contract.get("ask_price") or 0.0)
+            per_contract = ask * 100.0
+            # SIZING: research-grounded fractional-Kelly + risk cap (options_quant), else the
+            # legacy fixed-dollar budget. Kelly fraction is the dispersion-shrunk full Kelly
+            # measured on the deep-ITM payoff distribution, scaled by INSIDER_COPY_KELLY_MULT.
+            omega = 0.0
+            if INSIDER_COPY_USE_QUANT_SIZING:
+                try:
+                    import options_quant as _oq
+                    qty = _oq.position_size_contracts(
+                        float(risk.equity), ask, kelly_f=INSIDER_COPY_KELLY_FULL,
+                        kelly_fraction=INSIDER_COPY_KELLY_MULT, risk_cap_pct=INSIDER_COPY_RISK_CAP_PCT)
+                    spot = gateway._resolve_reference_price(sym)
+                    omega = _oq.embedded_leverage(spot, ask, float(contract.get("delta") or 0))
+                except Exception as e:
+                    logger.debug("quant sizing failed for %s (%s) — using fixed budget", sym, e)
+                    qty = int(INSIDER_COPY_OPTION_DOLLARS // per_contract)
+            else:
+                qty = int(INSIDER_COPY_OPTION_DOLLARS // per_contract)
+            if qty <= 0:
+                log_skip(sym, f"insider_copy_size_zero:call_premium={per_contract:.0f}>budget",
+                         phase="insider_copier")
+                continue
+            # Marketable DAY limit at the ask so the long call fills.
+            resp = gateway.submit_market_order(
+                order_symbol, "buy", qty,
+                reason=(f"insider_copy_call:${cand['value']:,.0f}>{INSIDER_COPY_MIN_VALUE:,.0f}"
+                        f":dte={contract['dte']}:delta={float(contract.get('delta') or 0):.2f}"),
+                limit_price=ask, order_type="limit")
+            exec_price, asset = ask, "option"
+        else:
+            order_symbol = sym
+            ref_price = gateway._resolve_reference_price(sym)
+            if ref_price <= 0:
+                log_skip(sym, "rejected_by_data_unavailable:no_reference_price",
+                         phase="insider_copier", side="buy")
+                continue
+            # RISK-BASED sizing: notional = equity × risk_pct / stop_pct (1% risk at a 10% implied
+            # adverse move → ~10% alloc; tiny lots on a small account). RiskManager.gate() still caps.
+            _eq = float(getattr(risk, "equity", 0.0) or 0.0)
+            _alloc = (_eq * INSIDER_COPY_SHARE_RISK_PCT / INSIDER_COPY_SHARE_STOP_PCT) if INSIDER_COPY_SHARE_STOP_PCT > 0 else 0.0
+            _alloc = _alloc or INSIDER_COPY_DOLLARS                      # fallback to legacy budget
+            qty = int(_alloc // ref_price)
+            if qty <= 0:
+                log_skip(sym, f"insider_copy_size_zero:px={ref_price:.2f}:alloc=${_alloc:.0f}",
+                         phase="insider_copier")
+                continue
+            resp = gateway.submit_market_order(
+                sym, "buy", qty,
+                reason=(f"insider_copy_share:${cand['value']:,.0f}>{INSIDER_COPY_MIN_VALUE:,.0f}"
+                        f":rv20={_rv20:.3f}:hold={INSIDER_COPY_SHARE_HOLD_DAYS}d"),
+                reference_price=ref_price)
+            contract, exec_price, asset = None, ref_price, "equity"
+
+        if resp is not None:
+            placed += 1
+            if asset == "option":
+                # Record entry so the time-exit can force-close the call after N days.
+                _insider_copy_record_open(order_symbol, sym, qty, today, entry_price=exec_price)
+                logger.info("INSIDER COPY CALL %s x%d (%s, dte=%s delta=%.2f Ω=%.1f ask=%.2f; "
+                            "insider buy $%.0f, last=%s, %s)",
+                            order_symbol, qty, sym, contract["dte"],
+                            float(contract.get("delta") or 0), omega, exec_price,
+                            cand["value"], cand["last"].isoformat(), cand["company"])
+            else:
+                # Record the share entry so the 3-day time-exit force-closes it.
+                _insider_copy_record_open(order_symbol, sym, qty, today, instrument="share",
+                                          entry_price=exec_price)
+                logger.info("INSIDER COPY BUY %s x%d (share, rv20=%.3f adv=$%.0f; insider buy $%.0f, "
+                            "last=%s, %s)", order_symbol, qty, _rv20, _adv,
+                            cand["value"], cand["last"].isoformat(), cand["company"])
+            # Journal it explicitly as an "insider copy buy" so it is distinguishable in
+            # the execution event stream AND the executor_journal.csv funnel reads.
+            try:
+                log_executed_order(
+                    event="insider_copy_buy", engine="insider_copier",
+                    symbol=order_symbol, underlying=sym, asset_class=asset,
+                    side="buy", qty=qty, limit_price=exec_price, grade="insider_copy",
+                    option_dte=(contract.get("dte") if contract else ""),
+                    option_delta=(float(contract.get("delta") or 0) if contract else ""),
+                    option_omega=(round(omega, 2) if asset == "option" else ""),
+                    order_id=str((resp or {}).get("id", "") if isinstance(resp, dict) else ""),
+                    sim=bool(isinstance(resp, dict) and resp.get("sim")),
+                    insider_buy_value=cand["value"],
+                    insider_last_date=cand["last"].isoformat(),
+                    company=cand["company"],
+                    breadth_distinct_buyers=_breadth,            # for the shadow-mode comparison
+                    breadth_pass=_breadth_pass,
+                    repeated_buyer=bool(cand.get("repeated")),
+                    note=("insider copy call" if asset == "option" else "insider copy buy"))
+            except Exception as _je:
+                logger.debug("Insider copier journal write skipped for %s: %s", sym, _je)
+
+    if placed:
+        logger.info("Insider trade copier: %d copy %s(s) submitted", placed,
+                    "CALL" if INSIDER_COPY_INSTRUMENT == "option" else "BUY")
+    return placed
 
 
 def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
@@ -2113,7 +2978,7 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     new_buys_allowed, regime_reason = regime_allows_new_buys(market_context)
 
     summary = {"alpha_exits": 0, "bal_exits": 0, "alpha_entries": 0, "bal_entries": 0,
-               "new_buys_allowed": new_buys_allowed}
+               "insider_copies": 0, "insider_copy_exits": 0, "new_buys_allowed": new_buys_allowed}
 
     # Shared real-time indicator state (carried over from prior cycles for the exit
     # pass; refreshed below once this cycle's bars are fetched). Diagnostics only here.
@@ -2139,6 +3004,13 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
             summary["bal_exits"] = run_bal_exits(bal, gateway, equity_positions, market_context)
         except Exception as e:
             logger.error("BAL exits failed (Alpha unaffected): %s", e)
+    # Insider-copier time-exit: force-close copied calls past their max hold. Part of the
+    # unconditional exit pass — never regime-/cutoff-gated. Fully fail-safe.
+    if ENABLE_INSIDER_COPIER:
+        try:
+            summary["insider_copy_exits"] = run_insider_copy_exits(gateway, risk, option_positions, equity_positions)
+        except Exception as e:
+            logger.error("Insider copier time-exit failed (rest of cycle unaffected): %s", e)
 
     # 3. SCREENERS — separate, independent universes. Buffett fully isolated. ────────
     dynamic = load_candidate_universe()          # TradingView institutional dynamic discovery
@@ -2152,15 +3024,17 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     # universe; never generates orders, never bypasses any gate. Fully fail-safe —
     # a failure here must not stop the Buffett screener or the Alpha engine.
     insider_data: Dict[str, Dict] = {}
-    if bal is not None and ENABLE_SEC_FORM4_FEED:
+    sec_candidates: List[Dict[str, Any]] = []   # full Form 4 candidate records for the copier
+    if (bal is not None and ENABLE_SEC_FORM4_FEED) or ENABLE_INSIDER_COPIER:
         try:
             import sec_form4_feed
             sec_res = sec_form4_feed.run_sec_form4_discovery()
+            sec_candidates = sec_res.get("candidates", []) or []
             insider_data = sec_form4_feed.insider_data_for_layer()
-            for _cand in sec_res.get("candidates", []):
+            for _cand in sec_candidates:
                 _research("record_insider_discovery_safe", _cand)   # evidence: discoveries
             logger.info("SEC Form 4 discovery: %d candidates, %d errors",
-                        len(sec_res.get("candidates", [])), len(sec_res.get("errors", [])))
+                        len(sec_candidates), len(sec_res.get("errors", [])))
         except Exception as e:
             logger.error("SEC Form 4 discovery failed (Buffett/Alpha unaffected): %s", e)
     buffett_res = run_buffett_screener(market_context, premarket_snapshot) if bal is not None else \
@@ -2242,6 +3116,17 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
                                                      optimizer_objective_weights=optimizer_objective_weights)
         except Exception as e:
             logger.error("BAL entries failed (Alpha unaffected): %s", e)
+
+    # 4b. INSIDER TRADE COPIER — mirror large (> $1M), recent (≤2d) open-market insider
+    # BUYS as paper BUYs. Routed through the RiskManager gate like every other entry;
+    # self-guards on market-open, 15:45 ET cutoff, and regime. Fully fail-safe.
+    if ENABLE_INSIDER_COPIER and not _entries_blocked:
+        try:
+            summary["insider_copies"] = run_insider_trade_copier(
+                gateway, risk, sec_candidates, equity_positions, market_context,
+                option_positions=option_positions)
+        except Exception as e:
+            logger.error("Insider trade copier failed (rest of cycle unaffected): %s", e)
 
     # 5. Optional monitor + outputs
     if monitor is not None:
@@ -2381,6 +3266,9 @@ def run_two_engine_trading():
 
     ensure_outputs_exist()
     alpha, bal, monitor, waterfall = build_engines(gateway)
+    # Continuously refresh the TradingView quality-growth screen in the background so the
+    # candidate universe is always fresh (network call stays off the trading cycle).
+    _start_tv_screen_refresher()
 
     if alpha is None and bal is None:
         logger.critical("No engines enabled — nothing to do. Exiting.")
@@ -2776,7 +3664,7 @@ def log_executed_order(**kwargs) -> None:
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "cycle_id": "",
             "event": _safe_kwargs.get("event", "order_submitted"),
-            "market_open": True,
+            "market_open": is_market_open(),
             "equity_before": "", "equity_after": "",
             "cash_before": "", "cash_after": "",
             "buying_power_before": "", "buying_power_after": "",
@@ -2908,6 +3796,7 @@ def main():
     os.makedirs("models",  exist_ok=True)
     os.makedirs("metrics", exist_ok=True)
     os.makedirs("data",    exist_ok=True)
+    _acquire_single_instance_lock()
 
     logging.basicConfig(
         level=logging.INFO,
