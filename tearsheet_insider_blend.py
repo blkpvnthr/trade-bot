@@ -18,6 +18,7 @@ from plotly.subplots import make_subplots
 import backtest_insider_copier as bic   # reuse load_pit_buy_events / load_bars / trading-day helpers
 
 MIN_VALUE, WINDOW, HOLD, LAG = 1_000_000.0, 2, 10, 2
+SLIP_INS = 0.0015   # 15bps each side on the insider sleeve (small/mid-cap realism)
 START_CASH, TARGET_VOL, MAX_LEV = 10_000.0, 0.12, 2.0
 
 print("Loading PIT insider events + bars …")
@@ -46,11 +47,13 @@ for sym, buys in events.items():
             continue
         exit_ = bic._shift_trading_days(entry, HOLD, tdates) or entry
         n_sig += 1
-        for t in tdates:
-            if entry < t <= exit_:                    # close-to-close returns over the hold window
-                r = rets.get(t)
-                if r is not None and not np.isnan(r):
-                    day_sum[t] += float(r); day_cnt[t] += 1
+        win_days = [t for t in tdates if entry < t <= exit_]
+        for i, t in enumerate(win_days):
+            r = rets.get(t)
+            if r is None or np.isnan(r):
+                continue
+            cost = (SLIP_INS if i == 0 else 0.0) + (SLIP_INS if i == len(win_days) - 1 else 0.0)
+            day_sum[t] += float(r) - cost; day_cnt[t] += 1
 
 ins_ret = pd.Series({d: day_sum[d] / day_cnt[d] for d in day_cnt if day_cnt[d] > 0}).sort_index()
 ins_ret = ins_ret.reindex(cal).fillna(0.0)            # 0 (cash) on no-position days
@@ -89,100 +92,102 @@ def curve(r):
     return START_CASH * (1 + r).cumprod()
 
 
-def m(c, trades_ret=None):
+def met(c):
     rr = c.pct_change().dropna()
-    yrs = (c.index[-1] - c.index[0]).days / 365.25 if hasattr(c.index[-1], "__sub__") else len(c) / 252
-    try:
-        yrs = (pd.Timestamp(c.index[-1]) - pd.Timestamp(c.index[0])).days / 365.25
-    except Exception:
-        yrs = len(c) / 252
-    dd = (c / c.cummax() - 1).min()
-    dn = rr[rr < 0].std()
+    yrs = (pd.Timestamp(c.index[-1]) - pd.Timestamp(c.index[0])).days / 365.25
+    dd = (c / c.cummax() - 1).min(); dn = rr[rr < 0].std()
     cagr = (c.iloc[-1] / c.iloc[0]) ** (1 / max(yrs, 0.1)) - 1
-    d = dict(final=c.iloc[-1], cagr=cagr, vol=rr.std() * np.sqrt(252),
-             sharpe=(rr.mean() / rr.std() * np.sqrt(252) if rr.std() else 0),
-             sortino=(rr.mean() / dn * np.sqrt(252) if dn else 0), dd=dd,
-             calmar=(cagr / abs(dd) if dd else 0))
-    if trades_ret is not None and len(trades_ret):
-        w = sum(1 for t in trades_ret if t > 0)
-        gw = sum(t for t in trades_ret if t > 0); gl = -sum(t for t in trades_ret if t <= 0)
-        d["wr"] = w / len(trades_ret) * 100; d["pf"] = gw / gl if gl else float("inf")
-    return d
+    return dict(final=c.iloc[-1], cagr=cagr, vol=rr.std() * np.sqrt(252),
+                sharpe=(rr.mean() / rr.std() * np.sqrt(252) if rr.std() else 0),
+                sortino=(rr.mean() / dn * np.sqrt(252) if dn else 0),
+                dd=dd, calmar=(cagr / abs(dd) if dd else 0))
 
 
-# Blend: SPY core 55% + Insider 35% + GLD 10%, then vol-target the whole thing.
-W = {"SPY": 0.55, "Insider": 0.35, "GLD": 0.10}
-blend_raw = sum(W[k] * comp[k] for k in W)
-pvol = blend_raw.rolling(20).std().shift(1) * np.sqrt(252)
-lev = (TARGET_VOL / pvol).clip(0, MAX_LEV).fillna(1.0)
-blend_r = lev * blend_raw
+start = comp.index[40]
+spy_curve = curve(comp["SPY"].loc[start:]); spy_m = met(spy_curve)
+ins_curve = curve(comp["Insider"].loc[start:])
+W_GLD = 0.15
+W_INS = [0.10, 0.15, 0.20, 0.25, 0.30, 0.40]
+TVOL = [0.08, 0.10, 0.12, 0.14, 0.16]
 
-start = comp.index[max(40, 1)]
-curves = {
-    "Blend (vol-targeted)": curve(blend_r.loc[start:]),
-    "Insider alpha (standalone)": curve(comp["Insider"].loc[start:]),
-    "SPY buy & hold": curve(comp["SPY"].loc[start:]),
-}
-# per-signal returns for insider win%/PF (already aggregated daily, approximate trade stats from event mean)
-M = {k: m(v) for k, v in curves.items()}
-cor = comp.corr().round(2)
 
-CLR = {"Blend (vol-targeted)": "#3fb950", "Insider alpha (standalone)": "#a371f7", "SPY buy & hold": "#6e7681"}
+def blend_curve(wi, tv):
+    ws = max(0.0, 1 - wi - W_GLD)
+    raw = ws * comp["SPY"] + wi * comp["Insider"] + W_GLD * comp["GLD"]
+    pv = raw.rolling(20).std().shift(1) * np.sqrt(252)
+    lev = (tv / pv).clip(0, MAX_LEV).fillna(1.0)
+    return curve((lev * raw).loc[start:])
+
+
+grid = {(wi, tv): met(blend_curve(wi, tv)) for wi in W_INS for tv in TVOL}
+beats = lambda g: g["cagr"] > spy_m["cagr"] and g["dd"] > spy_m["dd"]   # more return AND shallower DD
+winners = [(wi, tv) for wi in W_INS for tv in TVOL if beats(grid[(wi, tv)])]
+pool = winners or [(wi, tv) for wi in W_INS for tv in TVOL]
+best_wi, best_tv = max(pool, key=lambda k: grid[k]["calmar"])
+bm = grid[(best_wi, best_tv)]
+best_curve = blend_curve(best_wi, best_tv)
+
+# equity chart: best blend vs SPY vs insider
 fig = make_subplots(rows=2, cols=1, row_heights=[0.64, 0.36], vertical_spacing=0.08,
-                    subplot_titles=("Equity ($10k start)", "Drawdown %"))
-for k, c in curves.items():
-    fig.add_trace(go.Scatter(x=c.index, y=c, name=k, line=dict(color=CLR[k],
-                  width=2.6 if k.startswith("Blend") else 1.6)), row=1, col=1)
-    dd = (c / c.cummax() - 1) * 100
-    fig.add_trace(go.Scatter(x=dd.index, y=dd, name=k, showlegend=False,
-                  line=dict(color=CLR[k], width=1.4 if k.startswith("Blend") else 1.0)), row=2, col=1)
+                    subplot_titles=(f"Best blend ({best_wi:.0%} insider, vol-target {best_tv:.0%}) vs SPY", "Drawdown %"))
+for nm, c, col, wd in [("Best blend", best_curve, "#3fb950", 2.6), ("SPY", spy_curve, "#6e7681", 1.5),
+                       ("Insider standalone", ins_curve, "#a371f7", 1.3)]:
+    fig.add_trace(go.Scatter(x=c.index, y=c, name=nm, line=dict(color=col, width=wd)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=c.index, y=(c / c.cummax() - 1) * 100, showlegend=False,
+                  line=dict(color=col, width=wd * 0.5)), row=2, col=1)
 fig.update_yaxes(title_text="$", row=1, col=1)
-fig.update_layout(template="plotly_dark", height=720, margin=dict(t=66, l=50, r=20, b=24),
-                  title="Insider-alpha blend — SPY core + insider edge + GLD, vol-targeted",
-                  legend=dict(orientation="h", y=1.07), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
+fig.update_layout(template="plotly_dark", height=620, margin=dict(t=66, l=50, r=20, b=24),
+                  title="Tuned insider blend", legend=dict(orientation="h", y=1.08),
+                  paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
 chart = fig.to_html(full_html=False, include_plotlyjs="cdn",
-                    config={"responsive": True, "displayModeBar": False},
-                    default_width="100%", default_height="560px")
-hm = go.Figure(go.Heatmap(z=cor.values, x=cor.columns, y=cor.index, zmin=-1, zmax=1, colorscale="RdBu",
-               reversescale=True, text=cor.values, texttemplate="%{text}", showscale=False))
-hm.update_layout(template="plotly_dark", height=260, margin=dict(t=40, l=60, r=10, b=24),
-                 title="Component correlation", paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
+                    config={"responsive": True, "displayModeBar": False}, default_width="100%", default_height="540px")
+
+# sweep heatmap: CAGR, with a marker on cells beating SPY on both
+ztxt = [[(f"{grid[(wi, tv)]['cagr']:.0%} / {grid[(wi, tv)]['dd']:.0%}"
+          + (" \u2713" if beats(grid[(wi, tv)]) else "")) for tv in TVOL] for wi in W_INS]
+zc = [[grid[(wi, tv)]["calmar"] for tv in TVOL] for wi in W_INS]
+hm = go.Figure(go.Heatmap(z=zc, x=[f"{t:.0%}" for t in TVOL], y=[f"{w:.0%}" for w in W_INS],
+               text=ztxt, texttemplate="%{text}", colorscale="Greens", showscale=False))
+hm.update_layout(template="plotly_dark", height=320, margin=dict(t=44, l=70, r=10, b=40),
+                 title="Sweep: CAGR / MaxDD per cell (\u2713 = beats SPY on BOTH); color = Calmar",
+                 xaxis_title="vol target", yaxis_title="insider weight",
+                 paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
 heat = hm.to_html(full_html=False, include_plotlyjs=False, config={"displayModeBar": False},
-                  default_width="100%", default_height="260px")
+                  default_width="100%", default_height="320px")
 
-
-def trow(k, mm, star=False):
-    hi = " style='background:#15301c'" if star else ""
-    mk = " ★" if star else ""
-    return (f"<tr{hi}><td style='font-weight:600'>{k}{mk}</td><td>${mm['final']:,.0f}</td>"
-            f"<td>{mm['cagr']:+.1%}</td><td>{mm['vol']:.0%}</td><td>{mm['dd']:.1%}</td>"
-            f"<td><b>{mm['sharpe']:.2f}</b></td><td>{mm['sortino']:.2f}</td><td><b>{mm['calmar']:.2f}</b></td></tr>")
-
-
-tbl = ("<table><thead><tr><th>Portfolio</th><th>Final</th><th>CAGR</th><th>Vol</th><th>MaxDD</th>"
-       "<th>Sharpe</th><th>Sortino</th><th>Calmar</th></tr></thead><tbody>"
-       + "".join(trow(k, M[k], k.startswith("Blend")) for k in curves) + "</tbody></table>")
-b, sp = M["Blend (vol-targeted)"], M["SPY buy & hold"]
+STAR, CHK = "\u2605", "\u2713"
+rows = ""
+for (wi, tv) in sorted(grid, key=lambda k: -grid[k]["calmar"])[:8]:
+    g = grid[(wi, tv)]
+    star = STAR if (wi, tv) == (best_wi, best_tv) else ""
+    chk = CHK if beats(g) else ""
+    rows += (f"<tr><td style='font-weight:600'>{wi:.0%} insider / {tv:.0%} vol {star}</td>"
+             f"<td>${g['final']:,.0f}</td><td>{g['cagr']:+.1%}</td><td>{g['dd']:.1%}</td>"
+             f"<td>{g['sharpe']:.2f}</td><td><b>{g['calmar']:.2f}</b></td><td>{chk}</td></tr>")
+spy_row = (f"<tr style='background:#21262d'><td style='font-weight:600'>SPY buy &amp; hold</td><td>${spy_m['final']:,.0f}</td>"
+           f"<td>{spy_m['cagr']:+.1%}</td><td>{spy_m['dd']:.1%}</td><td>{spy_m['sharpe']:.2f}</td><td><b>{spy_m['calmar']:.2f}</b></td><td>\u2014</td></tr>")
+tbl = ("<table><thead><tr><th>Mix</th><th>Final</th><th>CAGR</th><th>MaxDD</th><th>Sharpe</th><th>Calmar</th><th>Beats SPY</th></tr></thead>"
+       f"<tbody>{rows}{spy_row}</tbody></table>")
 html = f"""<!doctype html><html><head><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1"><title>Insider blend</title>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>Tuned insider blend</title>
 <style>body{{background:#0d1117;color:#e6edf3;font:14px -apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:14px}}
 h1{{font-size:17px}}table{{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}}
 th,td{{padding:7px 6px;text-align:right;border-bottom:1px solid #21262d;white-space:nowrap}}
 th:first-child,td:first-child{{text-align:left}}thead th{{color:#8b949e}}
 .note{{color:#8b949e;font-size:12px;line-height:1.5;margin-top:10px}}.scroll{{overflow-x:auto}}
 .pick{{background:#161b22;border:1px solid #2ea043;border-radius:10px;padding:10px 12px;margin:8px 0}}</style></head>
-<body><h1>Insider-alpha blend · $10,000 · {list(curves.values())[0].index[0]} → {list(curves.values())[0].index[-1]}</h1>
-<div class=pick>★ Blend: ${b['final']:,.0f}, CAGR {b['cagr']:+.1%}, Vol {b['vol']:.0%}, MaxDD {b['dd']:.1%}, <b>Sharpe {b['sharpe']:.2f}</b>
-&nbsp;·&nbsp; SPY: ${sp['final']:,.0f}, {sp['cagr']:+.1%}, DD {sp['dd']:.1%}, Sharpe {sp['sharpe']:.2f}</div>
+<body><h1>Tuned insider blend (slippage-adjusted) · $10,000 · {best_curve.index[0]} → {best_curve.index[-1]}</h1>
+<div class=pick>\u2605 Best: <b>{best_wi:.0%} insider / {W_GLD:.0%} GLD / {1-best_wi-W_GLD:.0%} SPY, vol-target {best_tv:.0%}</b>
+\u2014 ${bm['final']:,.0f}, CAGR {bm['cagr']:+.1%}, MaxDD {bm['dd']:.1%}, Sharpe {bm['sharpe']:.2f}
+&nbsp;vs SPY {spy_m['cagr']:+.1%} / {spy_m['dd']:.1%} / {spy_m['sharpe']:.2f}
+&nbsp;\u2014 {'beats SPY on return AND drawdown' if beats(bm) else 'closest to the goal'}</div>
 <div class=scroll>{tbl}</div>{chart}{heat}
-<div class=note>Insider sleeve = PIT Form-4 buys >$1M (trailing 2d), 2-day filing lag, enter next open, hold 10d,
-equal-weight across active positions, survivorship-clean ({n_sym} names, {n_sig} signals). Blend = 55% SPY +
-35% insider + 10% GLD, vol-targeted to {TARGET_VOL:.0%} (lev ≤ {MAX_LEV:.0f}x). The insider stream's low SPY
-correlation is what improves the blend. In-sample to the PIT window; not a forward guarantee.</div>
+<div class=note>Insider sleeve slippage-adjusted (15bps/side). Blend = SPY + insider + 15% GLD, vol-targeted (lev \u2264 {MAX_LEV:.0f}x).
+\u2713 = the mix beat SPY on BOTH CAGR and MaxDD. Insider stream still equal-weights all active signals (optimistic vs the
+live $1,500/name copier), so treat magnitudes as an upper bound; the RANKING across mixes is the useful part.</div>
 </body></html>"""
-open("crossover_tearsheet.html", "w").write(html)
-print("\nresults:")
-for k in curves:
-    mm = M[k]
-    print(f"  {k:<28}: ${mm['final']:>8,.0f}  CAGR {mm['cagr']:+6.1%}  Vol {mm['vol']:.0%}  DD {mm['dd']:>6.1%}  Sharpe {mm['sharpe']:.2f}  Calmar {mm['calmar']:.2f}")
-print("\ncorrelations:\n", cor.to_string())
+open("crossover_tearsheet.html","w").write(html)
+print(f"SPY: CAGR {spy_m['cagr']:+.1%}  DD {spy_m['dd']:.1%}  Sharpe {spy_m['sharpe']:.2f}")
+print(f"insider standalone (post-slip): CAGR {met(ins_curve)['cagr']:+.1%}  DD {met(ins_curve)['dd']:.1%}  Sharpe {met(ins_curve)['sharpe']:.2f}")
+print(f"\nwinners (beat SPY on both): {[(f'{wi:.0%}',f'{tv:.0%}') for wi,tv in winners]}")
+print(f"BEST: {best_wi:.0%} insider / {best_tv:.0%} vol -> CAGR {bm['cagr']:+.1%}  DD {bm['dd']:.1%}  Sharpe {bm['sharpe']:.2f}  Calmar {bm['calmar']:.2f}")
