@@ -137,6 +137,17 @@ class DCAConfig:
     return_size_min_pct: float = float(os.getenv("BAL_DCA_RETURN_MIN_PCT", "0.005"))    # 0.5% floor
     return_size_max_pct: float = float(os.getenv("BAL_DCA_RETURN_MAX_PCT", "0.12"))     # 12% cap per order
 
+    # ── Kelly position sizing: order $ = Kelly fraction × AVAILABLE CASH ──────────────────────────
+    # Edge from conviction (win prob p) + valuation discount / predicted return (payoff odds b). Binary
+    # Kelly f* = p − (1−p)/b, shrunk by kelly_fraction (fractional Kelly), capped at kelly_max_frac of
+    # available cash. Takes precedence over return-based sizing; still capped by single-stock weight,
+    # room-to-target and available capital downstream.
+    kelly_sizing_enabled: bool = os.getenv("BAL_DCA_KELLY_SIZING", "false").lower() in {"1", "true", "yes"}
+    kelly_fraction: float = float(os.getenv("BAL_KELLY_FRACTION", "0.5"))        # half-Kelly (conservative)
+    kelly_downside_pct: float = float(os.getenv("BAL_KELLY_DOWNSIDE", "0.20"))   # assumed adverse move (risk/unit)
+    kelly_max_frac: float = float(os.getenv("BAL_KELLY_MAX_FRAC", "0.25"))       # cap: 25% of available cash/order
+    kelly_p_max: float = float(os.getenv("BAL_KELLY_P_MAX", "0.80"))             # cap on inferred win prob
+
     # ── Conviction → target allocation tiers ────────────────────────────────────
     # conviction_score (0-100) determines target_position_pct as a fraction of the
     # max_single_stock_weight cap. Below the watchlist floor → no DCA (watchlist only).
@@ -1058,6 +1069,13 @@ def _clamp(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return lo if x < lo else hi if x > hi else x
 
 
+def _kelly_binary(p: float, b: float) -> float:
+    """Classical binary Kelly fraction: f* = p − (1−p)/b (win prob p, net odds b). Clamped [0,1]."""
+    if b <= 0:
+        return 0.0
+    return max(0.0, min(1.0, (p * (b + 1.0) - 1.0) / b))
+
+
 def _dca_valuation_discount_score(p2iv: float) -> float:
     """0-100 from price/intrinsic-value. Deeper discount → higher score. p2iv<=0 → 0."""
     if p2iv <= 0:
@@ -1950,7 +1968,17 @@ class BuffettAccumulationLayer:
 
             # ── 6. Size the tranche — conviction-scaled (HOW MUCH) ──────────────
             target_dollars = target_pct * equity
-            if cfg.return_sizing_enabled:
+            if cfg.kelly_sizing_enabled:
+                # POSITION WEIGHT = Kelly fraction of AVAILABLE CASH. Win prob p from conviction; payoff
+                # odds b = upside (valuation discount / predicted return) ÷ assumed downside. Fractional
+                # (half-)Kelly, capped at kelly_max_frac of the cash actually available to deploy.
+                pred_ret = max(0.0, (conviction - 60.0) / 100.0 * 0.25 + max(0.0, 1.0 - p2iv) * 0.15)
+                p_win = _clamp(0.5 + (conviction - 50.0) / 100.0 * 0.6, 0.50, cfg.kelly_p_max)
+                upside = max(pred_ret, max(0.0, 1.0 - p2iv) * 0.5)
+                b_odds = (upside / cfg.kelly_downside_pct) if cfg.kelly_downside_pct > 0 else 0.0
+                f_kelly = _clamp(_kelly_binary(p_win, b_odds) * cfg.kelly_fraction, 0.0, cfg.kelly_max_frac)
+                desired = f_kelly * available_capital
+            elif cfg.return_sizing_enabled:
                 # ORDER $ = a % of equity scaled by the name's PREDICTED RETURN — the same signal that
                 # drives the Black-Litterman views: conviction above neutral (60) + valuation discount
                 # (1 − price/intrinsic). Higher predicted return → larger % of equity.
