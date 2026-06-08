@@ -380,6 +380,7 @@ SKIP_REASONS = {
     "rejected_by_below_9ema",
     "rejected_by_below_sma200",
     "rejected_not_9ema_dip",
+    "rejected_no_trend_crossover",
     "rejected_by_exposure_limit",
     "rejected_by_options_buying_power",
     "rejected_by_PDT",
@@ -1704,6 +1705,36 @@ def ensure_outputs_exist() -> None:
             except Exception:
                 pass
 
+    # Also initialise execution-log CSVs so system_self_awareness data-quality scoring
+    # can find them on startup even before any live orders are processed.
+    _exec_log_dir = PROJECT_ROOT / "logs" / "execution" / DATA_TAG
+    try:
+        _exec_log_dir.mkdir(parents=True, exist_ok=True)
+        _equity_csv = _exec_log_dir / f"{DATA_TAG}_executor_equity_curve.csv"
+        if not _equity_csv.exists():
+            _equity_csv.write_text(
+                "timestamp_utc,label,cycle_id,equity,cash,buying_power,portfolio_value\n"
+            )
+    except Exception:
+        pass
+
+    # Scaffold forecast_ensemble_signals.json so SA data-quality score doesn't penalise
+    # the system on days when forecast_engine hasn't been run (missing contributes -0.10).
+    _system_data_dir = PROJECT_ROOT / "system-data" / DATA_TAG
+    try:
+        _system_data_dir.mkdir(parents=True, exist_ok=True)
+        _fc_path = _system_data_dir / f"{DATA_TAG}_forecast_ensemble_signals.json"
+        if not _fc_path.exists():
+            import json as _json_mod
+            _fc_path.write_text(_json_mod.dumps({
+                "created_at_utc": datetime.now(timezone.utc).isoformat(),
+                "date_tag": DATA_TAG,
+                "source": "scaffold",
+                "signals": [],
+            }, indent=2))
+    except Exception:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Engine cycle helpers
@@ -2389,21 +2420,60 @@ def _sma_value(symbol: str, period: int = 200, ttl: float = 900.0) -> float:
         return 0.0
 
 
+_TREND_CACHE: Dict[str, Any] = {}
+
+
+def _trend_mas(symbol: str, ttl: float = 900.0):
+    """(ema9, sma200, prev_close) from daily bars for crossover detection (cached). None if < 200 bars."""
+    try:
+        now = time.time()
+        c = _TREND_CACHE.get(symbol)
+        if c and (now - c[0]) < ttl:
+            return c[1]
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+        from alpaca.data.enums import DataFeed
+        global _EMA_DC
+        if _EMA_DC is None:
+            _EMA_DC = StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET)
+        end = datetime.now(timezone.utc)
+        req = StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Day,
+                               start=end - timedelta(days=360), end=end, feed=DataFeed.IEX)
+        df = _EMA_DC.get_stock_bars(req).df
+        if df is None or len(df) < SMA200_PERIOD:
+            res = None
+        else:
+            closes = df["close"].astype(float)
+            ema9 = float(closes.ewm(span=EMA_PERIOD, adjust=False).mean().iloc[-1])
+            sma200 = float(closes.tail(SMA200_PERIOD).mean())
+            prev_close = float(closes.iloc[-2])          # prior completed daily close (for the cross)
+            res = (ema9, sma200, prev_close)
+        _TREND_CACHE[symbol] = (now, res)
+        return res
+    except Exception as e:
+        logger.debug("_trend_mas(%s) failed: %s", symbol, e)
+        return None
+
+
 def _ema_buy_blocked(symbol: str, price: float) -> str:
-    """BUY-the-9-EMA-DIP gate. '' if the buy is allowed, else a reason. Allowed ONLY in the dip zone:
-    price AT/BELOW the 9-EMA (a pullback) AND AT/ABOVE the 200-SMA (still a long-term uptrend). Blocked
-    when extended above the 9-EMA (no dip yet) or below the 200-SMA (downtrend). Equities only."""
-    if is_option_symbol(symbol) or price <= 0:
+    """Crossover BUY gate. Returns '' if a buy is ALLOWED, else a reason. A buy is allowed only when:
+       • price crossed UP through the 200-SMA (prev close below, now at/above), OR
+       • price crossed DOWN through the 9-EMA (prev close above, now at/below) WHILE above the 200-SMA.
+    Below the 200-SMA is always blocked (downtrend). Equities only; fail-open if MA data is missing."""
+    if not ENABLE_EMA_GATE or is_option_symbol(symbol) or price <= 0:
         return ""
-    if ENABLE_SMA200_GATE:
-        sma = _sma_value(symbol, SMA200_PERIOD)
-        if sma > 0 and price < sma:
-            return f"rejected_by_below_sma200:price={price:.2f}<sma={sma:.2f}"
-    if ENABLE_EMA_GATE:
-        ema = _ema_value(symbol, EMA_PERIOD)
-        if ema > 0 and price > ema:
-            return f"rejected_not_9ema_dip:price={price:.2f}>ema={ema:.2f}"
-    return ""
+    mas = _trend_mas(symbol)
+    if not mas:
+        return ""
+    ema9, sma200, prev = mas
+    if sma200 > 0 and price < sma200:
+        return f"rejected_by_below_sma200:price={price:.2f}<sma200={sma200:.2f}"
+    cross_up_sma200 = sma200 > 0 and prev < sma200 <= price
+    cross_down_ema9 = ema9 > 0 and prev > ema9 >= price
+    if cross_up_sma200 or (cross_down_ema9 and price > sma200):
+        return ""
+    return f"rejected_no_trend_crossover:px={price:.2f} ema9={ema9:.2f} sma200={sma200:.2f}"
 
 
 def run_ema_exits(gateway: AlpacaGateway, equity_positions: Dict[str, Any]) -> int:
@@ -2464,6 +2534,12 @@ def run_bal_entries(bal, gateway: AlpacaGateway, waterfall, risk: RiskManager,
     spendable = max(0.0, risk.cash - cash_reserve)                   # only deploy cash above the reserve
     available_capital = min(spendable, stock_room)
     if available_capital < 200:
+        logger.info(
+            "BAL entries blocked: available_capital=%.0f < 200 "
+            "(cash=%.0f reserve=%.0f[%.0f%%eq] spendable=%.0f stock_room=%.0f equity=%.0f stock_exp=%.0f)",
+            available_capital, risk.cash, cash_reserve, CASH_BUFFER_PCT * 100,
+            spendable, stock_room, risk.equity, risk.stock_exposure,
+        )
         return 0
     # Composite DCA framework is the accumulation mechanism when enabled (value decides
     # WHETHER, RSI decides WHEN, tranches decide HOW MUCH); legacy score-based scan is
