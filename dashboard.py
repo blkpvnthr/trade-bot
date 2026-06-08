@@ -602,7 +602,7 @@ def logs_page():
     <div class=nav style=margin-bottom:8px>
       <a href="#" id=src-run class="navlink on" onclick="SRC='run';mark();refresh();return false">run.py</a>
       <a href="#" id=src-webhook class=navlink onclick="SRC='webhook';mark();refresh();return false">webhook</a>
-      <a href="#" id=pausebtn class=navlink onclick="PAUSE=!PAUSE;this.textContent=PAUSE?'▶ resume':'⏸ pause';return false">⏸ pause</a>
+      <a href="#" id=pausebtn class=navlink onclick="togglePause(this);return false">⏸ pause</a>
     </div>
     <pre id=log class=logbox>loading…</pre>
     <script>
@@ -616,6 +616,16 @@ def logs_page():
          var atBottom = el.scrollTop+el.clientHeight >= el.scrollHeight-60;
          el.textContent=t; if(atBottom) el.scrollTop=el.scrollHeight; }})
        .catch(function(){{}}); }}
+    function togglePause(b){{
+      if(PAUSE){{PAUSE=false;b.textContent='⏸ pause';return;}}
+      var pw=prompt('Password to pause the live logs:');if(!pw)return;
+      var fd=new FormData();fd.append('password',pw);
+      fetch('{PREFIX}/verify',{{method:'POST',body:fd,credentials:'same-origin'}})
+       .then(function(r){{return r.json();}}).then(function(j){{
+        if(j.ok){{PAUSE=true;b.textContent='▶ resume';}}
+        else{{b.textContent='⏸ wrong pw';setTimeout(function(){{b.textContent='⏸ pause';}},1800);}}
+       }}).catch(function(){{}});
+    }}
     refresh(); setInterval(refresh, 2500);
     </script>"""
     return page("Logs", body, "logs")
@@ -668,6 +678,13 @@ def trade():
         except Exception:
             pass
         return jsonify({"ok": False, "error": msg[:220]}), 400
+
+
+@app.route(PREFIX + "/verify", methods=["POST"])
+@need_auth
+def verify():
+    ok = bool(DASH_PASSWORD) and (request.form.get("password") or "") == DASH_PASSWORD
+    return jsonify({"ok": ok})
 
 
 @app.route(PREFIX + "/health")
