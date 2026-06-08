@@ -14,6 +14,7 @@ portfolio-history (daily equity / account P&L). Mobile-first HTML, no external a
 Env (.env): APCA_API_KEY_ID, APCA_API_SECRET_KEY, DASH_TOKEN (required to view), DASH_PREFIX (/dash).
 """
 import os
+import json
 import re
 import subprocess
 import time
@@ -401,7 +402,7 @@ function doTrade(side){var q=document.getElementById('m-qty').value;
  PENDING=null;r.textContent='submitting…';
  var fd=new FormData();fd.append('symbol',M_SYM);fd.append('side',side);fd.append('qty',q);fd.append('password',pw);
  fetch('__PREFIX__/trade',{method:'POST',body:fd,credentials:'same-origin'}).then(function(x){return x.json();}).then(function(j){
-  r.innerHTML=j.ok?'<span class=pos>\\u2713 '+side.toUpperCase()+' '+j.qty+' '+j.symbol+' \\u2014 '+j.status+'</span>':'<span class=neg>\\u2717 '+(j.error||'failed')+'</span>';
+  r.innerHTML=j.ok?'<span class=pos>\\u2713 '+side.toUpperCase()+' '+j.qty+' '+j.symbol+' \\u2014 '+j.status+(j.cancelled?' (freed '+j.cancelled+')':'')+'</span>':'<span class=neg>\\u2717 '+(j.error||'failed')+'</span>';
   if(j.ok){document.getElementById('m-pw').value='';setTimeout(function(){location.reload();},1500);}}).catch(function(){r.innerHTML='<span class=neg>\\u2717 network error</span>';});}
 </script>
 """.replace("__PREFIX__", PREFIX)
@@ -637,18 +638,36 @@ def trade():
     except Exception:
         return jsonify({"ok": False, "error": "invalid qty"}), 400
     try:
-        from alpaca.trading.requests import MarketOrderRequest
-        from alpaca.trading.enums import OrderSide, TimeInForce
+        from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
+        from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+        tc = _client()
+        # Free the symbol first: cancel ALL its open orders so the manual order isn't blocked by a
+        # wash trade (an opposing resting order) or insufficient qty (shares tied to a resting sell).
+        cancelled = 0
+        try:
+            for o in tc.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])):
+                tc.cancel_order_by_id(o.id)
+                cancelled += 1
+            if cancelled:
+                time.sleep(0.6)
+        except Exception:
+            pass
         q = qty if qty != int(qty) else int(qty)          # fractional for equities, whole for options
         req = MarketOrderRequest(symbol=symbol, qty=q,
                                  side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
                                  time_in_force=TimeInForce.DAY)
-        o = _client().submit_order(req)
+        o = tc.submit_order(req)
         _CACHE.pop("pos", None); _CACHE.pop("acct", None)   # refresh on next page load
         return jsonify({"ok": True, "id": str(o.id), "symbol": symbol, "side": side,
-                        "qty": qty_s, "status": str(o.status).split(".")[-1]})
+                        "qty": qty_s, "status": str(o.status).split(".")[-1], "cancelled": cancelled})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)[:200]}), 400
+        msg = str(e)
+        try:
+            d = json.loads(str(e))
+            msg = d.get("message") or d.get("reject_reason") or msg
+        except Exception:
+            pass
+        return jsonify({"ok": False, "error": msg[:220]}), 400
 
 
 @app.route(PREFIX + "/health")
