@@ -144,68 +144,57 @@ agg_off_m, agg_on_m = met(agg_off_curve), met(agg_on_curve)
 print(f"AGG 60% insider cash-only, regime OFF: CAGR {agg_off_m['cagr']:+.1%}  DD {agg_off_m['dd']:.1%}  Sharpe {agg_off_m['sharpe']:.2f}")
 print(f"AGG 60% insider cash-only, regime ON : CAGR {agg_on_m['cagr']:+.1%}  DD {agg_on_m['dd']:.1%}  Sharpe {agg_on_m['sharpe']:.2f}")
 
-# equity chart: best blend vs SPY vs insider
-fig = make_subplots(rows=2, cols=1, row_heights=[0.64, 0.36], vertical_spacing=0.08,
-                    subplot_titles=(f"Best blend ({best_wi:.0%} insider, vol-target {best_tv:.0%}) vs SPY", "Drawdown %"))
-for nm, c, col, wd in [("Aggressive 60% insider (regime OFF)", agg_off_curve, "#f85149", 2.0),
-                       ("Aggressive 60% insider (regime ON)", agg_on_curve, "#3fb950", 2.4),
-                       ("SPY", spy_curve, "#6e7681", 1.5), ("Insider standalone", ins_curve, "#a371f7", 1.1)]:
+# ── Strategy page: ONLY the current deployed strategy ──
+cur_curve, cur_m = agg_on_curve, agg_on_m     # aggressive insider, regime-ON = the live config
+
+fig = make_subplots(rows=2, cols=1, row_heights=[0.66, 0.34], vertical_spacing=0.08,
+                    subplot_titles=("Equity ($10k start)", "Drawdown %"))
+for nm, c, col, wd in [("Current strategy", cur_curve, "#3fb950", 2.8), ("SPY (benchmark)", spy_curve, "#6e7681", 1.5)]:
     fig.add_trace(go.Scatter(x=c.index, y=c, name=nm, line=dict(color=col, width=wd)), row=1, col=1)
     fig.add_trace(go.Scatter(x=c.index, y=(c / c.cummax() - 1) * 100, showlegend=False,
                   line=dict(color=col, width=wd * 0.5)), row=2, col=1)
 fig.update_yaxes(title_text="$", row=1, col=1)
-fig.update_layout(template="plotly_dark", height=620, margin=dict(t=66, l=50, r=20, b=24),
-                  title="Tuned insider blend", legend=dict(orientation="h", y=1.08),
-                  paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
+fig.update_layout(template="plotly_dark", height=600, margin=dict(t=56, l=50, r=20, b=24),
+                  title="Current strategy - aggressive insider copier (cash-only, regime-on)",
+                  legend=dict(orientation="h", y=1.08), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
 chart = fig.to_html(full_html=False, include_plotlyjs="cdn",
                     config={"responsive": True, "displayModeBar": False}, default_width="100%", default_height="540px")
 
-# sweep heatmap: CAGR, with a marker on cells beating SPY on both
-ztxt = [[(f"{grid[(wi, tv)]['cagr']:.0%} / {grid[(wi, tv)]['dd']:.0%}"
-          + (" \u2713" if beats(grid[(wi, tv)]) else "")) for tv in TVOL] for wi in W_INS]
-zc = [[grid[(wi, tv)]["calmar"] for tv in TVOL] for wi in W_INS]
-hm = go.Figure(go.Heatmap(z=zc, x=[f"{t:.0%}" for t in TVOL], y=[f"{w:.0%}" for w in W_INS],
-               text=ztxt, texttemplate="%{text}", colorscale="Greens", showscale=False))
-hm.update_layout(template="plotly_dark", height=320, margin=dict(t=44, l=70, r=10, b=40),
-                 title="Sweep: CAGR / MaxDD per cell (\u2713 = beats SPY on BOTH); color = Calmar",
-                 xaxis_title="vol target", yaxis_title="insider weight",
-                 paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
-heat = hm.to_html(full_html=False, include_plotlyjs=False, config={"displayModeBar": False},
-                  default_width="100%", default_height="320px")
 
-STAR, CHK = "\u2605", "\u2713"
-rows = ""
-for (wi, tv) in sorted(grid, key=lambda k: -grid[k]["calmar"])[:8]:
-    g = grid[(wi, tv)]
-    star = STAR if (wi, tv) == (best_wi, best_tv) else ""
-    chk = CHK if beats(g) else ""
-    rows += (f"<tr><td style='font-weight:600'>{wi:.0%} insider / {tv:.0%} vol {star}</td>"
-             f"<td>${g['final']:,.0f}</td><td>{g['cagr']:+.1%}</td><td>{g['dd']:.1%}</td>"
-             f"<td>{g['sharpe']:.2f}</td><td><b>{g['calmar']:.2f}</b></td><td>{chk}</td></tr>")
-spy_row = (f"<tr style='background:#21262d'><td style='font-weight:600'>SPY buy &amp; hold</td><td>${spy_m['final']:,.0f}</td>"
-           f"<td>{spy_m['cagr']:+.1%}</td><td>{spy_m['dd']:.1%}</td><td>{spy_m['sharpe']:.2f}</td><td><b>{spy_m['calmar']:.2f}</b></td><td>\u2014</td></tr>")
-tbl = ("<table><thead><tr><th>Mix</th><th>Final</th><th>CAGR</th><th>MaxDD</th><th>Sharpe</th><th>Calmar</th><th>Beats SPY</th></tr></thead>"
-       f"<tbody>{rows}{spy_row}</tbody></table>")
-html = f"""<!doctype html><html><head><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1"><title>Tuned insider blend</title>
-<style>body{{background:#0d1117;color:#e6edf3;font:14px -apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:14px}}
-h1{{font-size:17px}}table{{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}}
-th,td{{padding:7px 6px;text-align:right;border-bottom:1px solid #21262d;white-space:nowrap}}
-th:first-child,td:first-child{{text-align:left}}thead th{{color:#8b949e}}
-.note{{color:#8b949e;font-size:12px;line-height:1.5;margin-top:10px}}.scroll{{overflow-x:auto}}
-.pick{{background:#161b22;border:1px solid #2ea043;border-radius:10px;padding:10px 12px;margin:8px 0}}</style></head>
-<body><h1>Tuned insider blend (slippage-adjusted) · $10,000 · {best_curve.index[0]} → {best_curve.index[-1]}</h1>
-<div class=pick>\u2605 Best: <b>{best_wi:.0%} insider / {W_GLD:.0%} GLD / {1-best_wi-W_GLD:.0%} SPY, vol-target {best_tv:.0%}</b>
-\u2014 ${bm['final']:,.0f}, CAGR {bm['cagr']:+.1%}, MaxDD {bm['dd']:.1%}, Sharpe {bm['sharpe']:.2f}
-&nbsp;vs SPY {spy_m['cagr']:+.1%} / {spy_m['dd']:.1%} / {spy_m['sharpe']:.2f}
-&nbsp;\u2014 {'beats SPY on return AND drawdown' if beats(bm) else 'closest to the goal'}</div>
-<div class=scroll>{tbl}</div>{chart}{heat}
-<div class=note>Insider sleeve slippage-adjusted (15bps/side). Blend = SPY + insider + 15% GLD, vol-targeted (lev \u2264 {MAX_LEV:.0f}x).
-\u2713 = the mix beat SPY on BOTH CAGR and MaxDD. Insider stream still equal-weights all active signals (optimistic vs the
-live $1,500/name copier), so treat magnitudes as an upper bound; the RANKING across mixes is the useful part.</div>
-</body></html>"""
-open("crossover_tearsheet.html","w").write(html)
-print(f"SPY: CAGR {spy_m['cagr']:+.1%}  DD {spy_m['dd']:.1%}  Sharpe {spy_m['sharpe']:.2f}")
-print(f"insider standalone (post-slip): CAGR {met(ins_curve)['cagr']:+.1%}  DD {met(ins_curve)['dd']:.1%}  Sharpe {met(ins_curve)['sharpe']:.2f}")
-print(f"\nwinners (beat SPY on both): {[(f'{wi:.0%}',f'{tv:.0%}') for wi,tv in winners]}")
-print(f"BEST: {best_wi:.0%} insider / {best_tv:.0%} vol -> CAGR {bm['cagr']:+.1%}  DD {bm['dd']:.1%}  Sharpe {bm['sharpe']:.2f}  Calmar {bm['calmar']:.2f}")
+def card(k, v, sub, cls=""):
+    return f"<div class=card><div class=k>{k}</div><div class='v {cls}'>{v}</div><div class=sub>{sub}</div></div>"
+
+
+cards = ("<div class=cards>"
+         + card("CAGR", f"{cur_m['cagr']:+.1%}", f"SPY {spy_m['cagr']:+.1%}", "pos" if cur_m['cagr'] >= 0 else "neg")
+         + card("Max drawdown", f"{cur_m['dd']:.1%}", f"SPY {spy_m['dd']:.1%}", "neg")
+         + card("Sharpe", f"{cur_m['sharpe']:.2f}", f"SPY {spy_m['sharpe']:.2f}")
+         + card("Sortino", f"{cur_m['sortino']:.2f}", f"SPY {spy_m['sortino']:.2f}")
+         + card("Calmar", f"{cur_m['calmar']:.2f}", f"SPY {spy_m['calmar']:.2f}")
+         + card("Volatility", f"{cur_m['vol']:.0%}", f"SPY {spy_m['vol']:.0%}")
+         + "</div>")
+
+CSS = ("body{background:#0d1117;color:#e6edf3;font:14px -apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:14px}"
+       "h1{font-size:17px;margin:2px 0 4px}.sub2{color:#8b949e;font-size:12px;margin-bottom:10px}"
+       ".cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:10px 0}"
+       ".card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px}"
+       ".card .k{color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.04em}"
+       ".card .v{font-size:21px;font-weight:700;margin-top:3px}.card .sub{color:#6e7681;font-size:11px;margin-top:2px}"
+       ".pos{color:#3fb950}.neg{color:#f85149}"
+       ".cfg{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px 12px;margin-top:10px;font-size:12px;color:#9da7b1;line-height:1.6}"
+       ".cfg b{color:#e6edf3}.note{color:#8b949e;font-size:11px;line-height:1.5;margin-top:8px}")
+
+html = ("<!doctype html><html><head><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'><title>Current strategy</title>"
+        f"<style>{CSS}</style></head><body><h1>Current strategy</h1>"
+        f"<div class=sub2>Aggressive insider copier &middot; cash-only &middot; regime-on &middot; {cur_curve.index[0]} &rarr; {cur_curve.index[-1]}</div>"
+        f"{cards}{chart}"
+        "<div class=cfg>LIVE CONFIG: insider copier (primary engine) <b>12 names &times; $5,000</b>, <b>~90% deployed</b> "
+        "(10% cash buffer), regime protection <b>ON</b>, per-position stop 15%, equity floor &minus;45% &rarr; ruin kill &minus;50%, "
+        "<b>cash-only (no margin &mdash; can't hit $0)</b>. Signals = SEC Form-4 open-market buys &gt;$1M, &le;2 days old, &ge;2 distinct insiders.</div>"
+        "<div class=note>Backtest proxy: 60% insider / 40% SPY, regime-gated, cash-only, 15bps/side slippage, in-sample. "
+        "The live copier holds discrete names so it captures LESS than the idealized magnitudes &mdash; judge it on "
+        "'beats SPY with shallower drawdowns', not the literal CAGR.</div></body></html>")
+open("crossover_tearsheet.html", "w").write(html)
+print(f"Current strategy: CAGR {cur_m['cagr']:+.1%}  DD {cur_m['dd']:.1%}  Sharpe {cur_m['sharpe']:.2f}  Calmar {cur_m['calmar']:.2f}")
+print(f"SPY benchmark   : CAGR {spy_m['cagr']:+.1%}  DD {spy_m['dd']:.1%}  Sharpe {spy_m['sharpe']:.2f}")
