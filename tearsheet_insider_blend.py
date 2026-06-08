@@ -147,16 +147,16 @@ print(f"AGG 60% insider cash-only, regime ON : CAGR {agg_on_m['cagr']:+.1%}  DD 
 # ── Strategy page: ONLY the current deployed strategy ──
 cur_curve, cur_m = agg_on_curve, agg_on_m     # aggressive insider, regime-ON = the live config
 
-fig = make_subplots(rows=2, cols=1, row_heights=[0.66, 0.34], vertical_spacing=0.08,
-                    subplot_titles=("Equity ($10k start)", "Drawdown %"))
-for nm, c, col, wd in [("Current strategy", cur_curve, "#3fb950", 2.8), ("SPY (benchmark)", spy_curve, "#6e7681", 1.5)]:
+fig = make_subplots(rows=2, cols=1, row_heights=[0.7, 0.3], vertical_spacing=0.14)
+for nm, c, col, wd in [("Current strategy", cur_curve, "#3fb950", 2.6), ("SPY (benchmark)", spy_curve, "#6e7681", 1.5)]:
     fig.add_trace(go.Scatter(x=c.index, y=c, name=nm, line=dict(color=col, width=wd)), row=1, col=1)
     fig.add_trace(go.Scatter(x=c.index, y=(c / c.cummax() - 1) * 100, showlegend=False,
-                  line=dict(color=col, width=wd * 0.5)), row=2, col=1)
-fig.update_yaxes(title_text="$", row=1, col=1)
-fig.update_layout(template="plotly_dark", height=600, margin=dict(t=56, l=50, r=20, b=24),
-                  title="Current strategy - aggressive insider copier (cash-only, regime-on)",
-                  legend=dict(orientation="h", y=1.08), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
+                  line=dict(color=col, width=wd * 0.6)), row=2, col=1)
+fig.update_yaxes(title_text="Equity $", row=1, col=1, title_font_size=11)
+fig.update_yaxes(title_text="Drawdown %", row=2, col=1, title_font_size=11)
+fig.update_layout(template="plotly_dark", height=560, margin=dict(t=34, l=56, r=14, b=32),
+                  legend=dict(orientation="h", y=1.08, x=0, font=dict(size=11)),
+                  paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
 chart = fig.to_html(full_html=False, include_plotlyjs="cdn",
                     config={"responsive": True, "displayModeBar": False}, default_width="100%", default_height="540px")
 
