@@ -24,6 +24,7 @@ import subprocess
 from datetime import datetime, timezone, timedelta
 from email.message import EmailMessage
 from pathlib import Path
+from collections import defaultdict, deque
 
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / "order_emailer_state.json"
@@ -42,6 +43,75 @@ def _load_env():
 
 def _occ(sym: str) -> bool:
     return len(sym) >= 15 and sym[-9] in ("C", "P") and sym[-8:].isdigit()
+
+
+def fetch_fills(client, days=120):
+    """All filled orders over `days`, oldest-first (FIFO input)."""
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import QueryOrderStatus
+    fills, until = [], None
+    after = datetime.now(timezone.utc) - timedelta(days=days)
+    for _ in range(40):
+        batch = client.get_orders(GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=500,
+                                                   direction="desc", until=until, after=after))
+        if not batch:
+            break
+        for o in batch:
+            if o.filled_at and o.filled_qty and float(o.filled_qty) > 0 and o.filled_avg_price:
+                fills.append({"symbol": str(o.symbol), "side": str(o.side).split(".")[-1].lower(),
+                              "qty": float(o.filled_qty), "price": float(o.filled_avg_price),
+                              "time": o.filled_at})
+        until = batch[-1].submitted_at
+        if len(batch) < 500:
+            break
+    fills.sort(key=lambda f: f["time"])
+    return fills
+
+
+def round_trips(fills):
+    """FIFO-match opens vs closes per symbol; each trip carries entry_px, exit_px, pnl, ret, hold_h."""
+    books = defaultdict(deque)
+    trips = []
+    for f in fills:
+        sym = f["symbol"]
+        signed = f["qty"] if f["side"] == "buy" else -f["qty"]
+        book = books[sym]
+        pos = sum(l["qty"] for l in book)
+        if pos == 0 or (pos > 0) == (signed > 0):
+            book.append({"qty": signed, "price": f["price"], "time": f["time"]})
+            continue
+        remaining = signed
+        mult = 100.0 if _occ(sym) else 1.0
+        while remaining != 0 and book and (book[0]["qty"] > 0) != (remaining > 0):
+            lot = book[0]
+            match = min(abs(lot["qty"]), abs(remaining))
+            long_side = lot["qty"] > 0
+            pnl = (f["price"] - lot["price"]) * match * mult * (1 if long_side else -1)
+            basis = lot["price"] * match * mult
+            trips.append({"symbol": sym, "qty": match, "entry_px": lot["price"], "exit_px": f["price"],
+                          "exit_time": f["time"], "pnl": pnl, "ret": (pnl / basis) if basis else 0.0,
+                          "hold_h": (f["time"] - lot["time"]).total_seconds() / 3600.0})
+            lot["qty"] -= match if long_side else -match
+            remaining += match if not long_side else -match
+            if abs(lot["qty"]) < 1e-9:
+                book.popleft()
+        if remaining != 0:
+            book.append({"qty": remaining, "price": f["price"], "time": f["time"]})
+    return trips
+
+
+def roundtrip_for_sell(trips, symbol, fill_time):
+    """Aggregate the round-trip(s) this sell closed (matched by symbol + exit time). None if it opened
+    a short / no match."""
+    m = [t for t in trips if t["symbol"] == symbol and abs((t["exit_time"] - fill_time).total_seconds()) < 6]
+    if not m:
+        return None
+    qty = sum(t["qty"] for t in m)
+    pnl = sum(t["pnl"] for t in m)
+    entry = (sum(t["entry_px"] * t["qty"] for t in m) / qty) if qty else 0.0
+    basis = entry * qty * (100.0 if _occ(symbol) else 1.0)
+    return {"entry_px": entry, "pnl": pnl, "ret": (pnl / basis) if basis else 0.0,
+            "hold_h": max((t["hold_h"] for t in m), default=0.0)}
 
 
 def reasoning_for(symbol: str, side: str) -> str:
@@ -94,11 +164,11 @@ def send_email(subject: str, body: str):
         s.send_message(msg)
 
 
-def compose(o, reason: str) -> str:
+def compose(o, reason: str, rt: dict = None) -> str:
     und = o.symbol if not _occ(o.symbol) else o.symbol[:-15].rstrip()
     cls = "OPTION" if _occ(o.symbol) else "equity"
     qtyline = f"qty {o.qty}" if o.qty else f"notional ${o.notional}"
-    return (
+    body = (
         f"ORDER CONFIRMED (filled) — QuantumQuant live\n"
         f"{'='*48}\n"
         f"Symbol      : {o.symbol}  ({cls}{(' on '+und) if cls=='OPTION' else ''})\n"
@@ -112,9 +182,20 @@ def compose(o, reason: str) -> str:
         f"Submitted   : {o.submitted_at}\n"
         f"Filled at   : {o.filled_at}\n"
         f"Order id    : {o.id}\n"
-        f"{'-'*48}\n"
-        f"REASONING   : {reason}\n"
     )
+    if str(o.side).split(".")[-1].lower() == "sell":
+        if rt:
+            sign = "PROFIT" if rt["pnl"] >= 0 else "LOSS"
+            body += (
+                f"{'-'*48}\n"
+                f"Entry price : ${rt['entry_px']:.4f}\n"
+                f"Exit price  : ${o.filled_avg_price}\n"
+                f"ROUND-TRIP  : {sign} ${rt['pnl']:+.2f} ({rt['ret']*100:+.2f}%)  held {rt['hold_h']:.1f}h\n"
+            )
+        else:
+            body += f"{'-'*48}\nRound-trip  : (no matching open lot — opening short / unmatched)\n"
+    body += f"{'-'*48}\nREASONING   : {reason}\n"
+    return body
 
 
 def main():
@@ -122,19 +203,29 @@ def main():
     from alpaca.trading.client import TradingClient
     from alpaca.trading.requests import GetOrdersRequest
     from alpaca.trading.enums import QueryOrderStatus
+    # Skip cleanly until SMTP is configured (so the timer can be pre-staged without erroring/backlogging).
+    if not os.environ.get("ORDER_EMAILER_DRYRUN") and not (os.environ.get("SMTP_HOST") and os.environ.get("SMTP_PASS")):
+        print("SMTP not configured — skipping (add SMTP_PASS to .env to enable).")
+        return
+    scope = os.environ.get("ORDER_EMAIL_SCOPE", "all").lower()   # all | equities (exclude OCC options)
     tc = TradingClient(os.environ["APCA_API_KEY_ID"], os.environ["APCA_API_SECRET_KEY"], paper=False)
     seen = set(json.loads(STATE.read_text())) if STATE.exists() else set()
     since = datetime.now(timezone.utc) - timedelta(minutes=30)
     orders = tc.get_orders(GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=100,
                                             after=since, direction="desc"))
     new_fills = [o for o in orders if str(o.status).split(".")[-1].lower() == "filled"
-                 and str(o.id) not in seen and o.filled_at]
+                 and str(o.id) not in seen and o.filled_at
+                 and (scope != "equities" or not _occ(o.symbol))]
+    trips = round_trips(fetch_fills(tc, 120)) if any(str(o.side).split(".")[-1].lower() == "sell" for o in new_fills) else []
     sent = 0
     for o in sorted(new_fills, key=lambda x: x.filled_at):
         try:
-            reason = reasoning_for(o.symbol, str(o.side).split(".")[-1].lower())
-            subj = (f"[QQ] {str(o.side).split('.')[-1].upper()} {o.symbol} filled @ ${o.filled_avg_price}")
-            send_email(subj, compose(o, reason))
+            side = str(o.side).split(".")[-1].lower()
+            reason = reasoning_for(o.symbol, side)
+            rt = roundtrip_for_sell(trips, o.symbol, o.filled_at) if side == "sell" else None
+            pnl_tag = f" (P&L ${rt['pnl']:+.0f})" if rt else ""
+            subj = f"[QQ] {side.upper()} {o.symbol} filled @ ${o.filled_avg_price}{pnl_tag}"
+            send_email(subj, compose(o, reason, rt))
             sent += 1
         except Exception as e:
             print(f"email failed for {o.id}: {e}")
