@@ -112,6 +112,10 @@ ENABLE_SMA200_GATE = os.environ.get("ENABLE_SMA200_GATE", "true").lower() in {"1
 SMA200_PERIOD = int(os.environ.get("SMA200_PERIOD", "200"))
 # Per-position stop loss: exit a held share when it falls this % below its average entry (0 = off).
 POSITION_STOP_PCT = float(os.environ.get("POSITION_STOP_PCT", "0.0"))
+# Broader-market regime switch: gate buys + liquidate on a market-wide reversal/chop. RISK-ON = a
+# majority of SPY/QQQ/IWM above their 200-SMA AND 50-SMA rising. Avoids burning out in chop/reversals.
+ENABLE_MARKET_REGIME = os.environ.get("ENABLE_MARKET_REGIME", "true").lower() in {"1", "true", "yes"}
+REGIME_INDICES = [x.strip().upper() for x in os.environ.get("REGIME_INDICES", "SPY,QQQ,IWM").split(",") if x.strip()]
 DYNAMIC_POSITION_EQUITY_UNIT = float(os.environ.get("DYNAMIC_POSITION_EQUITY_UNIT", "50000"))
 DYNAMIC_MIN_POSITIONS = int(os.environ.get("DYNAMIC_MIN_POSITIONS", "5"))
 DYNAMIC_MAX_POSITIONS = int(os.environ.get("DYNAMIC_MAX_POSITIONS", "50"))
@@ -383,6 +387,7 @@ SKIP_REASONS = {
     "rejected_by_below_sma200",
     "rejected_not_9ema_dip",
     "rejected_no_trend_crossover",
+    "rejected_market_regime_chop_or_reversal",
     "rejected_by_exposure_limit",
     "rejected_by_options_buying_power",
     "rejected_by_PDT",
@@ -2458,12 +2463,91 @@ def _trend_mas(symbol: str, ttl: float = 900.0):
         return None
 
 
+_REGIME_CACHE: Dict[str, Any] = {}
+
+
+def _index_uptrend(symbol: str):
+    """(uptrend, below_200) for a market index — uptrend = price>200-SMA AND 50-SMA rising;
+    below_200 = price<200-SMA. None on failure."""
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+        from alpaca.data.enums import DataFeed
+        global _EMA_DC
+        if _EMA_DC is None:
+            _EMA_DC = StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET)
+        end = datetime.now(timezone.utc)
+        req = StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Day,
+                               start=end - timedelta(days=360), end=end, feed=DataFeed.IEX)
+        df = _EMA_DC.get_stock_bars(req).df
+        if df is None or len(df) < 200:
+            return None
+        c = df["close"].astype(float)
+        price, sma200, sma50 = float(c.iloc[-1]), float(c.tail(200).mean()), float(c.tail(50).mean())
+        sma50_prev = float(c.iloc[-70:-20].mean()) if len(c) >= 70 else sma50   # 50-SMA ~20 sessions ago
+        return (price > sma200 and sma50 > sma50_prev), (price < sma200)
+    except Exception as e:
+        logger.debug("_index_uptrend(%s) failed: %s", symbol, e)
+        return None
+
+
+def _market_regime(ttl: float = 900.0) -> dict:
+    """Breadth regime over REGIME_INDICES (SPY/QQQ/IWM): risk_on when a MAJORITY are trending up,
+    risk_off when a majority are below their 200-SMA. Cached. Fail-open to risk_on if no data."""
+    now = time.time()
+    c = _REGIME_CACHE.get("r")
+    if c and (now - c[0]) < ttl:
+        return c[1]
+    up = dn = n = 0
+    for idx in REGIME_INDICES:
+        r = _index_uptrend(idx)
+        if r is None:
+            continue
+        n += 1; up += int(r[0]); dn += int(r[1])
+    thr = 2 if n >= 2 else 1
+    res = {"risk_on": (n == 0 or up >= thr), "risk_off": (n > 0 and dn >= thr), "up": up, "dn": dn, "n": n}
+    _REGIME_CACHE["r"] = (now, res)
+    return res
+
+
+def run_regime_exit(gateway: AlpacaGateway, equity_positions: Dict[str, Any]) -> int:
+    """Liquidate all equity positions when the broader market turns RISK-OFF (a majority of SPY/QQQ/IWM
+    below their 200-SMA) — exits a market-wide reversal/bear rather than riding it down. Fail-safe."""
+    if not ENABLE_MARKET_REGIME:
+        return 0
+    reg = _market_regime()
+    if not reg["risk_off"]:
+        return 0
+    n = 0
+    for sym, pos in list((equity_positions or {}).items()):
+        try:
+            qty = int(abs(float(getattr(pos, "qty", 0) or 0)))
+            if qty <= 0 or is_option_symbol(sym):
+                continue
+            gateway.submit_market_order(sym, "sell", qty,
+                                        reason=f"regime_exit:market_risk_off_{reg['dn']}/{reg['n']}_below_200sma")
+            logger.info("REGIME EXIT %s x%d (market risk-off: %d/%d indices below 200-SMA)",
+                        sym, qty, reg["dn"], reg["n"])
+            n += 1
+        except Exception as e:
+            logger.error("regime exit failed for %s (rest unaffected): %s", sym, e)
+    return n
+
+
 def _ema_buy_blocked(symbol: str, price: float) -> str:
-    """Crossover BUY gate. Returns '' if a buy is ALLOWED, else a reason. A buy is allowed only when:
-       • price crossed UP through the 200-SMA (prev close below, now at/above), OR
-       • price crossed DOWN through the 9-EMA (prev close above, now at/below) WHILE above the 200-SMA.
-    Below the 200-SMA is always blocked (downtrend). Equities only; fail-open if MA data is missing."""
-    if not ENABLE_EMA_GATE or is_option_symbol(symbol) or price <= 0:
+    """Crossover BUY gate. Returns '' if a buy is ALLOWED, else a reason. First the broader-market
+    regime must be RISK-ON (majority of SPY/QQQ/IWM trending up — not chop/reversal); then per name:
+       • price crossed UP through the 200-SMA, OR
+       • price crossed DOWN through the 9-EMA WHILE above the 200-SMA.
+    Below the 200-SMA is always blocked. Equities only; fail-open if MA data is missing."""
+    if is_option_symbol(symbol) or price <= 0:
+        return ""
+    if ENABLE_MARKET_REGIME:
+        reg = _market_regime()
+        if not reg["risk_on"]:
+            return f"rejected_market_regime_chop_or_reversal:uptrend={reg['up']}/{reg['n']}_indices"
+    if not ENABLE_EMA_GATE:
         return ""
     mas = _trend_mas(symbol)
     if not mas:
@@ -3411,12 +3495,18 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
             summary["bal_exits"] = run_bal_exits(bal, gateway, equity_positions, market_context)
         except Exception as e:
             logger.error("BAL exits failed (Alpha unaffected): %s", e)
-    # 9-EMA trend exit — sell held shares that fell below their 9-EMA (unconditional exit pass).
+    # Regime exit — liquidate on a market-wide risk-off (majority of SPY/QQQ/IWM below their 200-SMA).
+    if ENABLE_MARKET_REGIME:
+        try:
+            summary["regime_exits"] = run_regime_exit(gateway, equity_positions)
+        except Exception as e:
+            logger.error("regime exit failed (rest of cycle unaffected): %s", e)
+    # Per-name trend exit — 200-SMA break OR per-position stop (unconditional exit pass).
     if ENABLE_EMA_EXIT:
         try:
             summary["ema_exits"] = run_ema_exits(gateway, equity_positions)
         except Exception as e:
-            logger.error("9EMA exit failed (rest of cycle unaffected): %s", e)
+            logger.error("trend/stop exit failed (rest of cycle unaffected): %s", e)
     # Insider-copier time-exit: force-close copied calls past their max hold. Part of the
     # unconditional exit pass — never regime-/cutoff-gated. Fully fail-safe.
     if ENABLE_INSIDER_COPIER:

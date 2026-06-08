@@ -684,6 +684,15 @@ def trade():
 @app.route(PREFIX + "/backtest")
 @need_auth
 def backtest():
+    iframe = (f'<iframe src="{PREFIX}/backtest/raw" loading="eager" '
+              f'style="width:100%;height:82vh;border:1px solid #21262d;border-radius:10px;'
+              f'background:#0d1117"></iframe>')
+    return page("Strategy", iframe, "backtest")
+
+
+@app.route(PREFIX + "/backtest/raw")
+@need_auth
+def backtest_raw():
     f = ROOT / "crossover_tearsheet.html"
     if not f.exists():
         return Response("No tearsheet generated yet.", mimetype="text/plain")

@@ -80,6 +80,23 @@ prev = closes.shift(1)
 entries = (((prev < sma) & (closes >= sma)) | ((prev > ema) & (closes <= ema) & (closes > sma))).fillna(False)
 exits = (closes < sma).fillna(False)
 
+# ── broader-market regime: breadth of SPY + QQQ + IWM. RISK_ON = majority trending up ──
+def _idx_regime(idx):
+    a = idx.reindex(closes.index).ffill()
+    s200, s50 = a.rolling(SMA_P).mean(), a.rolling(50).mean()
+    return ((a > s200) & (s50 > s50.shift(20))).fillna(False), (a < s200).fillna(False)
+
+qqq, iwm = fetch("QQQ"), fetch("IWM")
+_idxs = [x for x in (spy, qqq, iwm) if x is not None]
+if _idxs:
+    breadth_up = sum(_idx_regime(x)[0].astype(int) for x in _idxs)   # # of {SPY,QQQ,IWM} in uptrend
+    breadth_dn = sum(_idx_regime(x)[1].astype(int) for x in _idxs)   # # below their 200-SMA
+    thr = 2 if len(_idxs) >= 2 else 1
+    RISK_ON = (breadth_up >= thr)     # majority of the 3 indices trending up (not chop/reversal)
+    RISK_OFF = (breadth_dn >= thr)    # majority below their 200-SMA
+else:
+    RISK_ON = pd.Series(True, index=closes.index); RISK_OFF = pd.Series(False, index=closes.index)
+
 # ── genuine vectorbt portfolio (base, no kill switch) — validation + native stats ──
 print("Running vectorbt Portfolio.from_signals …")
 pf = vbt.Portfolio.from_signals(closes, entries, exits, init_cash=START_CASH, cash_sharing=True,
@@ -95,13 +112,20 @@ except Exception as e:
 
 
 # ── sequential sim (identical engine) for no-kill + −1.5% kill, for comparison + buy/sell markers ──
-def simulate(kill=None, stop=None):
+def simulate(kill=None, stop=None, regime_buy=False, regime_exit=False):
     cash, pos, peak = START_CASH, {}, START_CASH
     curve, orders, trades, cost = [], [], [], {}
     for d in closes.index:
         row, emr, smr, pvr = closes.loc[d], ema.loc[d], sma.loc[d], prev.loc[d]
-        eq = cash + sum(pos.get(s, 0) * row[s] for s in pos if not np.isnan(row[s]))
-        for s in list(pos):                                   # exits: 200-SMA break OR per-position stop
+        ron, roff = bool(RISK_ON.get(d, False)), bool(RISK_OFF.get(d, False))
+        if regime_exit and roff:                              # regime exit: liquidate in risk-off
+            for s in list(pos):
+                p = row[s]
+                if pos[s] > 0 and not np.isnan(p):
+                    proceeds = pos[s] * p * (1 - SLIP)
+                    trades.append(proceeds - cost.get(s, proceeds))
+                    cash += proceeds; orders.append((d, "sell")); pos[s] = 0.0; cost[s] = 0.0
+        for s in list(pos):                                   # per-name exits: 200-SMA OR stop
             p, sm = row[s], smr[s]
             if np.isnan(p) or np.isnan(sm) or pos[s] <= 0:
                 continue
@@ -115,8 +139,8 @@ def simulate(kill=None, stop=None):
         eq = cash + sum(pos.get(s, 0) * row[s] for s in pos if not np.isnan(row[s]))
         peak = max(peak, eq)
         halted = kill is not None and eq < peak * (1 - kill)
-        if not halted:
-            for s in closes.columns:                          # buys
+        if not (halted or (regime_buy and not ron)):          # buys: gated by DD halt + regime
+            for s in closes.columns:
                 p, em, sm, pv = row[s], emr[s], smr[s], pvr[s]
                 if any(np.isnan(x) for x in (p, em, sm, pv)):
                     continue
@@ -153,31 +177,36 @@ def metrics(curve, trades):
                 sortino=sortino, dd=dd, n=len(trades), wr=wr, pf=pf_, calmar=calmar)
 
 
-# ── sweep the per-position stop (DD halt disabled) ──
-STOPS = [("no stop", None), ("5%", 0.05), ("8%", 0.08), ("10%", 0.10),
-         ("12%", 0.12), ("15%", 0.15), ("20%", 0.20), ("25%", 0.25)]
+# ── compare broader-market regime variants (all with 15% stop, DD halt off) ──
+VARIANTS = [
+    ("base (no regime)", dict(stop=0.15)),
+    ("+ regime buy filter", dict(stop=0.15, regime_buy=True)),
+    ("+ regime exit", dict(stop=0.15, regime_exit=True)),
+    ("full regime switch", dict(stop=0.15, regime_buy=True, regime_exit=True)),
+]
 res = {}
-for label, st in STOPS:
-    c, o, t = simulate(kill=None, stop=st)
+for label, kw in VARIANTS:
+    c, o, t = simulate(**kw)
     res[label] = (c, metrics(c, t))
 ms = metrics(spy_curve, []) if spy_curve is not None else None
-best = max(STOPS, key=lambda ls: res[ls[0]][1]["calmar"])[0]   # best risk-adjusted return (Calmar)
+best = max(VARIANTS, key=lambda v: res[v[0]][1]["calmar"])[0]
 
-PALETTE = ["#8b949e", "#f85149", "#db6d28", "#d29922", "#3fb950", "#2ea043", "#58a6ff", "#a371f7"]
+PALETTE = ["#8b949e", "#d29922", "#58a6ff", "#3fb950"]
 fig = make_subplots(rows=2, cols=1, row_heights=[0.62, 0.38], vertical_spacing=0.1,
-                    subplot_titles=("Equity by per-position stop ($10k start)",
-                                    "Risk / return frontier — CAGR vs Max Drawdown (pick the knee)"))
-for i, (label, st) in enumerate(STOPS):
+                    subplot_titles=("Equity by regime variant ($10k start)",
+                                    "Risk / return — CAGR vs Max Drawdown"))
+for i, (label, kw) in enumerate(VARIANTS):
     c = res[label][0]
-    fig.add_trace(go.Scatter(x=c.index, y=c, name=f"stop {label}" + (" \u2605" if label == best else ""),
-                             line=dict(color=PALETTE[i], width=3 if label == best else 1.4)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=c.index, y=c, name=label + (" \u2605" if label == best else ""),
+                             line=dict(color=PALETTE[i], width=3 if label == best else 1.6)), row=1, col=1)
 if spy_curve is not None:
     fig.add_trace(go.Scatter(x=spy_curve.index, y=spy_curve, name="SPY",
                              line=dict(color="#6e7681", width=1.4, dash="dot")), row=1, col=1)
-for i, (label, st) in enumerate(STOPS):
+for i, (label, kw) in enumerate(VARIANTS):
     m = res[label][1]
     fig.add_trace(go.Scatter(x=[abs(m["dd"]) * 100], y=[m["cagr"] * 100], mode="markers+text",
-                             text=[label], textposition="top center", showlegend=False,
+                             text=[label.replace("+ ", "").replace(" (no regime)", "")],
+                             textposition="top center", showlegend=False,
                              marker=dict(color=PALETTE[i], size=15)), row=2, col=1)
 if ms:
     fig.add_trace(go.Scatter(x=[abs(ms["dd"]) * 100], y=[ms["cagr"] * 100], mode="markers+text",
@@ -187,9 +216,11 @@ fig.update_yaxes(title_text="$", row=1, col=1)
 fig.update_xaxes(title_text="Max Drawdown %", row=2, col=1)
 fig.update_yaxes(title_text="CAGR %", row=2, col=1)
 fig.update_layout(template="plotly_dark", height=830, margin=dict(t=70, l=50, r=20, b=30),
-                  title="Crossover Strategy — per-position stop sweep (DD halt off)",
+                  title="Crossover Strategy — broader-market regime switching",
                   legend=dict(orientation="h", y=1.05), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
-chart = fig.to_html(full_html=False, include_plotlyjs="cdn")
+chart = fig.to_html(full_html=False, include_plotlyjs="cdn",
+                    config={"responsive": True, "displayModeBar": False},
+                    default_width="100%", default_height="620px")
 
 
 def trow(label, m, star=False):
@@ -201,33 +232,33 @@ def trow(label, m, star=False):
             f"<td>{m['sortino']:.2f}</td><td>{m['n']}</td><td>{m['wr']:.0f}%</td><td>{pf_}</td></tr>")
 
 
-tbl = ("<table><thead><tr><th>Per-position stop</th><th>Final</th><th>CAGR</th><th>MaxDD</th><th>Calmar</th>"
+tbl = ("<table><thead><tr><th>Regime variant</th><th>Final</th><th>CAGR</th><th>MaxDD</th><th>Calmar</th>"
        "<th>Sharpe</th><th>Sortino</th><th>Trades</th><th>Win%</th><th>PF</th></tr></thead><tbody>"
-       + "".join(trow(label, res[label][1], label == best) for label, st in STOPS)
+       + "".join(trow(label, res[label][1], label == best) for label, kw in VARIANTS)
        + (trow("SPY b&h", ms) if ms else "") + "</tbody></table>")
 
 bm = res[best][1]
 html = f"""<!doctype html><html><head><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1"><title>Strategy \u2014 stop sweep</title>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>Strategy \u2014 regime</title>
 <style>body{{background:#0d1117;color:#e6edf3;font:14px -apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:14px}}
 h1{{font-size:18px}}table{{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}}
 th,td{{padding:7px 6px;text-align:right;border-bottom:1px solid #21262d;white-space:nowrap}}
 th:first-child,td:first-child{{text-align:left}}thead th{{color:#8b949e}}
 .note{{color:#8b949e;font-size:12px;line-height:1.5;margin-top:10px}}.scroll{{overflow-x:auto}}
 .pick{{background:#161b22;border:1px solid #2ea043;border-radius:10px;padding:10px 12px;margin:8px 0}}</style></head>
-<body><h1>Crossover Strategy \u2014 per-position stop sweep \u00b7 $10,000 \u00b7 {res['no stop'][0].index[0]:%Y-%m-%d} \u2192 {res['no stop'][0].index[-1]:%Y-%m-%d}</h1>
-<div class=pick>\u2605 Best risk-adjusted (Calmar = CAGR/|MaxDD|): <b>{best} stop</b> \u2014
+<body><h1>Crossover Strategy \u2014 broader-market regime switching \u00b7 $10,000 \u00b7 {res[best][0].index[0]:%Y-%m-%d} \u2192 {res[best][0].index[-1]:%Y-%m-%d}</h1>
+<div class=pick>\u2605 Best risk-adjusted (Calmar): <b>{best}</b> \u2014
 ${bm['final']:,.0f}, CAGR {bm['cagr']:+.1%}, MaxDD {bm['dd']:.1%}, Calmar {bm['calmar']:.2f}</div>
 <div class=scroll>{tbl}</div>{chart}
-<div class=note>Crossover strategy, clean universe (no leveraged ETFs/indices), DD buy-halt DISABLED. A
-position exits on the 200-SMA break OR when it falls the stop % below its average entry (whichever first).
-Sizing 20% of available cash, 45% buffer, 10%/name, 5bps/side. Selection/survivorship bias + mostly-bull
-2020\u20132026 regime \u2014 backtest, not a forward guarantee.</div>
+<div class=note>Regime from SPY+QQQ+IWM breadth: RISK-ON = majority of the 3 above 200-SMA & 50-SMA rising (uptrend, not chop/reversal).
+Buy filter = only enter when risk-on. Regime exit = liquidate everything when SPY falls below its 200-SMA.
+All variants use the 15% per-position stop; DD buy-halt off. Clean universe (no leveraged ETFs/indices),
+20% of available cash, 45% buffer, 10%/name, 5bps/side. Selection/survivorship bias + mostly-bull regime.</div>
 </body></html>"""
 open("crossover_tearsheet.html", "w").write(html)
-print("per-position stop sweep:")
-for label, st in STOPS:
+print("regime comparison:")
+for label, kw in VARIANTS:
     m = res[label][1]
-    print(f"  stop {label:>7}: ${m['final']:>8,.0f}  CAGR {m['cagr']:+6.1%}  DD {m['dd']:>6.1%}  Calmar {m['calmar']:.2f}  Sharpe {m['sharpe']:.2f}  ({m['n']} tr)")
-if ms: print(f"  SPY          : ${ms['final']:>8,.0f}  CAGR {ms['cagr']:+6.1%}  DD {ms['dd']:>6.1%}")
-print(f"\nBEST by Calmar: {best} stop")
+    print(f"  {label:<22}: ${m['final']:>8,.0f}  CAGR {m['cagr']:+6.1%}  DD {m['dd']:>6.1%}  Calmar {m['calmar']:.2f}  Win {m['wr']:.0f}%  ({m['n']} tr)")
+if ms: print(f"  {'SPY':<22}: ${ms['final']:>8,.0f}  CAGR {ms['cagr']:+6.1%}  DD {ms['dd']:>6.1%}")
+print(f"\nBEST by Calmar: {best}")
