@@ -165,6 +165,25 @@ INSIDER_COPY_MIN_VALUE          = float(os.environ.get("INSIDER_COPY_MIN_VALUE",
 INSIDER_COPY_MAX_AGE_DAYS       = int(os.environ.get("INSIDER_COPY_MAX_AGE_DAYS", 2))           # latest buy within N days
 INSIDER_COPY_DOLLARS            = float(os.environ.get("INSIDER_COPY_DOLLARS", 1500))           # notional sized per copied name
 INSIDER_COPY_MAX_NAMES          = int(os.environ.get("INSIDER_COPY_MAX_NAMES", 5))              # cap copies per cycle
+
+# ── Option safety-exit (alpha-independent backstop) ───────────────────────────
+# The normal option-exit path (run_alpha_exits) only runs when the Alpha engine is
+# live. With ENABLE_ALPHA_CALL_ENGINE=false (alpha=None) any previously-opened option
+# becomes orphaned — nothing applies a stop/target. This backstop manages stops on open
+# options when alpha is OFF, in the unconditional exit pass. Tunable; defaults are loose
+# (it is a safety net, not an alpha exit).
+ENABLE_OPTION_SAFETY_EXIT = os.environ.get("ENABLE_OPTION_SAFETY_EXIT", "true").lower() in {"1", "true", "yes"}
+OPTION_SAFETY_STOP_PCT    = float(os.environ.get("OPTION_SAFETY_STOP_PCT", "0.50"))   # close at <= -50% premium
+OPTION_SAFETY_TP_PCT      = float(os.environ.get("OPTION_SAFETY_TP_PCT", "1.00"))     # close at >= +100% premium
+OPTION_SAFETY_MIN_DTE     = int(os.environ.get("OPTION_SAFETY_MIN_DTE", "2"))         # close when DTE <= 2 (gamma/assignment)
+
+# ── Main-loop watchdog ────────────────────────────────────────────────────────
+# A daemon thread watches a heartbeat updated at the top of every loop iteration. If the
+# loop makes no progress for WATCHDOG_STALL_SEC (e.g. a broker socket hangs with no
+# timeout), it dumps the stack and raises on the main thread (via SIGALRM) so the cycle
+# aborts and the loop continues — bounding a hang to seconds instead of an hour. Only
+# interrupts the main thread; streaming-feed daemon threads are untouched.
+WATCHDOG_STALL_SEC = float(os.environ.get("WATCHDOG_STALL_SEC", "180"))
 # AV confirmation defaults ON but FAIL-OPEN: a missing key / quota / error never blocks a
 # copy; only a positive Alpha-Vantage net-selling signal vetoes one.
 INSIDER_COPY_REQUIRE_AV_CONFIRM = os.environ.get("INSIDER_COPY_REQUIRE_AV_CONFIRM", "true").lower() in {"1", "true"}
@@ -1869,6 +1888,11 @@ ENABLE_AV_PREMARKET_RVOL = os.environ.get("ENABLE_AV_PREMARKET_RVOL", "true").lo
 AV_PREMARKET_RVOL_MAX_SYMBOLS = int(os.environ.get("AV_PREMARKET_RVOL_MAX_SYMBOLS", "15"))
 AV_PREMARKET_RVOL_INTERVAL_SEC = int(os.environ.get("AV_PREMARKET_RVOL_INTERVAL_SEC", "600"))
 _last_av_rvol_ts = 0.0
+# Symbols that repeatedly fail AV entitlement checks are auto-skipped after
+# AV_RVOL_SKIP_AFTER_FAILS consecutive failures. Prevents log spam for OTC / non-AV tickers.
+AV_RVOL_SKIP_AFTER_FAILS: int = 2
+_av_rvol_fail_counts: dict = {}   # sym -> consecutive failure count
+_av_rvol_skip_set: set = set()    # permanently skipped for this session
 
 
 def _av_premarket_rvol_cycle(feed) -> None:
@@ -1882,20 +1906,34 @@ def _av_premarket_rvol_cycle(feed) -> None:
     _last_av_rvol_ts = time.time()
     try:
         import data_sources.alpha_vantage_premarket as avpm
-        syms = list(feed.symbols)[:AV_PREMARKET_RVOL_MAX_SYMBOLS]
+        # Filter out symbols that have already been marked as AV-unavailable this session
+        candidate_syms = [s for s in list(feed.symbols) if s not in _av_rvol_skip_set]
+        syms = candidate_syms[:AV_PREMARKET_RVOL_MAX_SYMBOLS]
+        if not syms:
+            return
         results = avpm.compute_many(syms, max_symbols=AV_PREMARKET_RVOL_MAX_SYMBOLS)
         feed.set_premarket_rvols(results)
         avail = 0
         for s, r in results.items():
             if r.get("rvol_available"):
                 avail += 1
+                _av_rvol_fail_counts.pop(s, None)   # reset on success
                 logger.info("[av-rvol] %s sessions=%d current=%.0f avg=%.0f rvol=%.2f as_of=%s mode=%s provider=%s",
                             s, int(r.get("sessions_used") or 0), float(r.get("current_premarket_volume") or 0),
                             float(r.get("avg_premarket_volume") or 0), float(r.get("premarket_rvol") or 0),
                             r.get("as_of_et"), r.get("rvol_mode"), r.get("rvol_provider"))
             else:
+                reason = r.get("rvol_reason", "")
+                # Auto-skip symbols that are not entitled / not supported by AV
+                if "entitlement" in str(reason).lower() or "no_data" in str(reason).lower():
+                    _av_rvol_fail_counts[s] = _av_rvol_fail_counts.get(s, 0) + 1
+                    if _av_rvol_fail_counts[s] >= AV_RVOL_SKIP_AFTER_FAILS:
+                        _av_rvol_skip_set.add(s)
+                        logger.info("[av-rvol] %s auto-skipped (AV entitlement/no-data after %d failures)",
+                                    s, _av_rvol_fail_counts[s])
+                        continue
                 logger.info("[av-rvol] %s UNAVAILABLE reason=%s historical_sessions=%s provider=%s",
-                            s, r.get("rvol_reason"), r.get("historical_sessions"), r.get("rvol_provider"))
+                            s, reason, r.get("historical_sessions"), r.get("rvol_provider"))
         logger.info("[av-rvol] premarket RVOL available for %d/%d symbols (provider=alpha_vantage)",
                     avail, len(results))
         feed.write_rvol_report(out_dir=_premarket_dir())
@@ -2412,6 +2450,20 @@ def _occ_underlying(occ: str) -> str:
     return m.group(1) if m else s
 
 
+def _occ_dte(occ: str) -> Optional[int]:
+    """Calendar days to expiry from an OCC option symbol (YYMMDD block). None if unparseable."""
+    s = (occ or "").strip().upper()
+    m = re.match(r"^[A-Z]+(\d{2})(\d{2})(\d{2})[CP]\d+$", s)
+    if not m:
+        return None
+    try:
+        yy, mm, dd = (int(g) for g in m.groups())
+        exp = datetime(2000 + yy, mm, dd).date()
+        return (exp - datetime.now(ET).date()).days
+    except Exception:
+        return None
+
+
 def _insider_copy_state_load() -> Dict[str, Any]:
     """Persisted map {occ_option_symbol: {entry_date, underlying, qty}} of copier-opened
     calls, used by the time-exit. Empty on any failure."""
@@ -2629,6 +2681,65 @@ def run_insider_copy_exits(gateway: AlpacaGateway, risk: RiskManager,
         _insider_copy_state_save(state)
     if closed:
         logger.info("Insider copier time-exit: %d position(s) closed", closed)
+    return closed
+
+
+def run_option_safety_exits(gateway: AlpacaGateway, risk: "RiskManager",
+                            option_positions: Optional[List[Dict[str, Any]]],
+                            alpha: Any,
+                            insider_state_keys: Optional[set] = None) -> int:
+    """
+    Alpha-independent stop/target/expiry exit for open OPTION positions.
+
+    Runs in the unconditional exit pass as a BACKSTOP only when the Alpha engine is
+    disabled (alpha is None) — when alpha is live it owns option exits via
+    run_alpha_exits, so this does nothing to avoid double-management. Insider-copied
+    options are also skipped (run_insider_copy_exits owns those). Sells go through the
+    same RiskManager-gated path as every other exit. Fully fail-safe; never raises.
+
+    Closes a position when premium P&L <= -OPTION_SAFETY_STOP_PCT, >= +OPTION_SAFETY_TP_PCT,
+    or days-to-expiry <= OPTION_SAFETY_MIN_DTE. Returns the number of SELLs submitted.
+    """
+    if not ENABLE_OPTION_SAFETY_EXIT or alpha is not None:
+        return 0
+    closed = 0
+    for p in (option_positions or []):
+        try:
+            sym = str(p.get("symbol", ""))
+            qty = int(float(p.get("qty", 0) or 0))
+            if qty <= 0 or not sym:
+                continue
+            if insider_state_keys and sym in insider_state_keys:
+                continue  # owned by insider-copier time-exit
+            plpc = float(p.get("unrealized_plpc", 0) or 0)   # fraction, e.g. -0.32 = -32%
+            dte = _occ_dte(sym)
+            reason = None
+            if plpc <= -abs(OPTION_SAFETY_STOP_PCT):
+                reason = f"option_safety_stop:plpc={plpc:.2%}<=-{OPTION_SAFETY_STOP_PCT:.0%}"
+            elif plpc >= abs(OPTION_SAFETY_TP_PCT):
+                reason = f"option_safety_tp:plpc={plpc:.2%}>=+{OPTION_SAFETY_TP_PCT:.0%}"
+            elif dte is not None and dte <= OPTION_SAFETY_MIN_DTE:
+                reason = f"option_safety_dte:dte={dte}<={OPTION_SAFETY_MIN_DTE}"
+            if not reason:
+                continue
+            resp = gateway.submit_market_order(sym, "sell", qty, reason=reason)
+            if resp is not None:
+                closed += 1
+                logger.info("OPTION SAFETY EXIT %s x%d (%s)", sym, qty, reason)
+                try:
+                    log_executed_order(
+                        event="option_safety_exit", engine="option_safety",
+                        symbol=sym, underlying=_occ_underlying(sym), asset_class="option",
+                        side="sell", qty=qty,
+                        order_id=str((resp or {}).get("id", "") if isinstance(resp, dict) else ""),
+                        sim=bool(isinstance(resp, dict) and resp.get("sim")), note=reason)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error("Option safety-exit failed for %s (rest unaffected): %s",
+                         p.get("symbol") if isinstance(p, dict) else p, e)
+    if closed:
+        logger.info("Option safety-exit: %d option position(s) closed", closed)
     return closed
 
 
@@ -2978,7 +3089,8 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     new_buys_allowed, regime_reason = regime_allows_new_buys(market_context)
 
     summary = {"alpha_exits": 0, "bal_exits": 0, "alpha_entries": 0, "bal_entries": 0,
-               "insider_copies": 0, "insider_copy_exits": 0, "new_buys_allowed": new_buys_allowed}
+               "insider_copies": 0, "insider_copy_exits": 0, "option_safety_exits": 0,
+               "new_buys_allowed": new_buys_allowed}
 
     # Shared real-time indicator state (carried over from prior cycles for the exit
     # pass; refreshed below once this cycle's bars are fetched). Diagnostics only here.
@@ -3011,6 +3123,15 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
             summary["insider_copy_exits"] = run_insider_copy_exits(gateway, risk, option_positions, equity_positions)
         except Exception as e:
             logger.error("Insider copier time-exit failed (rest of cycle unaffected): %s", e)
+    # Alpha-independent option safety-exit: only fires when the Alpha engine is OFF, so
+    # orphaned options (no exit owner) still get a stop/target/expiry close. Skips
+    # insider-copied options (owned above). Part of the unconditional exit pass.
+    try:
+        _insider_keys = set(_insider_copy_state_load().keys()) if ENABLE_INSIDER_COPIER else None
+        summary["option_safety_exits"] = run_option_safety_exits(
+            gateway, risk, option_positions, alpha, insider_state_keys=_insider_keys)
+    except Exception as e:
+        logger.error("Option safety-exit failed (rest of cycle unaffected): %s", e)
 
     # 3. SCREENERS — separate, independent universes. Buffett fully isolated. ────────
     dynamic = load_candidate_universe()          # TradingView institutional dynamic discovery
@@ -3252,6 +3373,63 @@ def log_account_stats(gateway: AlpacaGateway, risk: RiskManager,
     return account
 
 
+# ── Main-loop watchdog ────────────────────────────────────────────────────────
+# Heartbeat updated at the top of every loop iteration; a daemon thread interrupts the
+# main thread (SIGALRM) if it stalls past WATCHDOG_STALL_SEC, so a hung broker socket
+# can no longer freeze the loop indefinitely. See WATCHDOG_STALL_SEC.
+_LOOP_HEARTBEAT = [0.0]   # mutable holder; index 0 = monotonic-ish time of last progress
+
+
+class _CycleStalled(Exception):
+    """Raised on the main thread by the watchdog when a cycle exceeds WATCHDOG_STALL_SEC."""
+
+
+def _watchdog_sigalrm(_signum, _frame):
+    raise _CycleStalled()
+
+
+def _start_loop_watchdog(main_tid: int) -> bool:
+    """Install the SIGALRM handler and start the watchdog thread. Returns False (no-op) if
+    signals/threads are unavailable on this platform. Never raises."""
+    import signal as _signal
+    import threading as _threading
+    import faulthandler as _faulthandler
+    try:
+        _signal.signal(_signal.SIGALRM, _watchdog_sigalrm)   # main-thread only; loop runs here
+    except (ValueError, AttributeError, OSError) as e:
+        logger.warning("Loop watchdog unavailable (%s) — running without stall protection", e)
+        return False
+
+    def _monitor() -> None:
+        tick = min(30.0, max(5.0, WATCHDOG_STALL_SEC / 4.0))
+        while True:
+            time.sleep(tick)
+            try:
+                last = _LOOP_HEARTBEAT[0]
+                if last <= 0:
+                    continue
+                stalled = time.time() - last
+                if stalled > WATCHDOG_STALL_SEC:
+                    logger.critical(
+                        "WATCHDOG: main loop stalled %.0fs (>%.0fs) — dumping stack, "
+                        "interrupting cycle", stalled, WATCHDOG_STALL_SEC)
+                    try:
+                        _faulthandler.dump_traceback()
+                    except Exception:
+                        pass
+                    _LOOP_HEARTBEAT[0] = time.time()   # debounce so we don't re-fire each tick
+                    try:
+                        _signal.pthread_kill(main_tid, _signal.SIGALRM)
+                    except Exception as e:
+                        logger.error("WATCHDOG: failed to interrupt main thread: %s", e)
+            except Exception:
+                logger.debug("watchdog tick error", exc_info=True)
+
+    _threading.Thread(target=_monitor, name="loop-watchdog", daemon=True).start()
+    logger.info("Loop watchdog started (stall threshold %.0fs)", WATCHDOG_STALL_SEC)
+    return True
+
+
 def run_two_engine_trading():
     risk    = RiskManager(equity=STARTING_EQUITY)
     gateway = AlpacaGateway(risk)
@@ -3281,9 +3459,13 @@ def run_two_engine_trading():
     _premarket_planner_spawned = False  # spawn once per session
 
     logger.info("Entering two-engine loop (Ctrl-C to stop) …")
+    import threading as _threading
+    _LOOP_HEARTBEAT[0] = time.time()
+    _start_loop_watchdog(_threading.get_ident())   # interrupt the loop if a cycle hangs
     while True:
         try:
             cycle_count += 1
+            _LOOP_HEARTBEAT[0] = time.time()        # watchdog progress beat
 
             if risk.is_killed:
                 logger.critical("Kill switch active — exiting loop")
@@ -3378,6 +3560,12 @@ def run_two_engine_trading():
         except KeyboardInterrupt:
             logger.info("Interrupted by user — finalising outputs")
             break
+        except _CycleStalled:
+            # Watchdog aborted a hung cycle (e.g. a broker socket with no timeout). Reset
+            # the heartbeat and continue with a fresh cycle instead of staying frozen.
+            logger.critical("Two-engine cycle aborted by watchdog (stall) — continuing next cycle")
+            _LOOP_HEARTBEAT[0] = time.time()
+            time.sleep(max(5.0, BAR_INTERVAL_SEC))
         except Exception:
             # Run forever: transient broker/data/engine errors are logged, then the loop
             # continues after a normal sleep instead of killing the process.
