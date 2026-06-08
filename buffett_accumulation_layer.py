@@ -1928,10 +1928,19 @@ class BuffettAccumulationLayer:
             room_to_max = max(0.0, cfg.max_single_stock_weight * equity - cur_value)
             order_dollars = min(desired, room_to_target, room_to_max, available_capital)
 
+            # A position whose NATURAL tranche (tranche_pct of a modest target weight) lands below the
+            # minimum order would otherwise be rejected FOREVER — and was mislabeled "cash_buffer" even
+            # with abundant capital. If there is genuine ROOM and CAPITAL for a full minimum order, round
+            # the tranche UP to the floor so the name still accumulates. Only reject when concentration
+            # (room) or cash (capital) truly cannot cover a minimum order — and label it accurately.
             if order_dollars < cfg.min_dca_order_dollars:
-                limiter = "rejected_dca_concentration" if min(room_to_target, room_to_max) <= order_dollars \
-                    else "rejected_dca_cash_buffer"
-                _reject(f"order_too_small:${order_dollars:.0f}", limiter); continue
+                _room = min(room_to_target, room_to_max)
+                if _room >= cfg.min_dca_order_dollars and available_capital >= cfg.min_dca_order_dollars:
+                    order_dollars = cfg.min_dca_order_dollars      # natural tranche < floor → buy the minimum
+                else:
+                    limiter = "rejected_dca_concentration" if _room < available_capital else "rejected_dca_cash_buffer"
+                    _reject(f"order_too_small:${order_dollars:.0f} room={_room:.0f} cap={available_capital:.0f}",
+                            limiter); continue
 
             qty = max(1, int(order_dollars / price))
             order_dollars = round(qty * price, 2)
