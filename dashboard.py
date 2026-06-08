@@ -22,7 +22,7 @@ from datetime import datetime, timezone, timedelta
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask, request, Response, redirect
+from flask import Flask, request, Response, redirect, jsonify
 
 ROOT = Path(__file__).resolve().parent
 PREFIX = os.environ.get("DASH_PREFIX", "/dash").rstrip("/")
@@ -306,7 +306,49 @@ padding:1px 4px;margin-right:4px;letter-spacing:.03em}.lbl.x{color:#d29922;borde
 .logbox{background:#010409;border:1px solid #30363d;border-radius:10px;padding:10px;
 height:72vh;overflow:auto;font:12px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;
 white-space:pre-wrap;word-break:break-word;color:#c9d1d9}
+tr.tap{cursor:pointer}tr.tap:active td{background:#1c2330}
+.modalbg{display:none;position:fixed;inset:0;background:rgba(1,4,9,.7);z-index:50;
+align-items:flex-end;justify-content:center}
+.modal{background:#161b22;border:1px solid #30363d;border-radius:16px 16px 0 0;padding:18px;
+width:100%;max-width:760px;animation:up .15s ease-out}
+@keyframes up{from{transform:translateY(40px)}to{transform:none}}
+.mhead{display:flex;justify-content:space-between;align-items:center;font-size:18px;font-weight:700;margin-bottom:14px}
+.mclose{color:#8b949e;font-size:22px}.mrow{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.mrow span{color:#8b949e;width:42px}
+.minput{flex:1;background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:13px;color:#e6edf3;font-size:18px}
+.mbtns{display:flex;gap:10px;margin-top:8px}
+.btn{flex:1;padding:15px;border:none;border-radius:12px;font-size:16px;font-weight:700;color:#fff}
+.btn.buy{background:#238636}.btn.sell{background:#da3633}
+.mresult{min-height:22px;font-size:14px;margin:6px 0}.hint{color:#6e7681;font-size:11px}
 """
+
+MODAL = """
+<div id=modal class=modalbg onclick="if(event.target==this)closeModal()">
+ <div class=modal>
+  <div class=mhead><span id=m-sym>—</span><a href=# class=mclose onclick="closeModal();return false">✕</a></div>
+  <div class=mrow><span>Qty</span><input id=m-qty type=number step=any min=0 inputmode=decimal class=minput></div>
+  <div id=m-result class=mresult></div>
+  <div class=mbtns><button class="btn buy" onclick="doTrade('buy')">BUY</button>
+  <button class="btn sell" onclick="doTrade('sell')">SELL</button></div>
+  <div class=hint>Market order, DAY. Tap a side twice to confirm.</div>
+ </div>
+</div>
+<script>
+var M_SYM='',PENDING=null;
+function openTrade(s,q){M_SYM=s;document.getElementById('m-sym').textContent=s;
+ document.getElementById('m-qty').value=q;document.getElementById('m-result').textContent='';
+ PENDING=null;document.getElementById('modal').style.display='flex';}
+function closeModal(){document.getElementById('modal').style.display='none';PENDING=null;}
+function doTrade(side){var q=document.getElementById('m-qty').value;var r=document.getElementById('m-result');
+ if(!(parseFloat(q)>0)){r.innerHTML='<span class=neg>enter a qty</span>';return;}
+ if(PENDING!==side){PENDING=side;r.innerHTML='<b>Tap '+side.toUpperCase()+' again to confirm '+side+' '+q+' '+M_SYM+'</b>';setTimeout(function(){PENDING=null;},4000);return;}
+ PENDING=null;r.textContent='submitting…';
+ var fd=new FormData();fd.append('symbol',M_SYM);fd.append('side',side);fd.append('qty',q);
+ fetch('__PREFIX__/trade',{method:'POST',body:fd,credentials:'same-origin'}).then(function(x){return x.json();}).then(function(j){
+  r.innerHTML=j.ok?'<span class=pos>\\u2713 '+side.toUpperCase()+' '+j.qty+' '+j.symbol+' \\u2014 '+j.status+'</span>':'<span class=neg>\\u2717 '+(j.error||'failed')+'</span>';
+  if(j.ok)setTimeout(function(){location.reload();},1500);}).catch(function(){r.innerHTML='<span class=neg>\\u2717 network error</span>';});}
+</script>
+""".replace("__PREFIX__", PREFIX)
 
 
 def page(title, body, active=""):
@@ -320,7 +362,7 @@ def page(title, body, active=""):
 <title>{title} · QuantumQuant</title><style>{CSS}</style></head>
 <body><div class=wrap><div class=nav>{nav}</div>{body}
 <div class=sub>QuantumQuant · live · updated {datetime.now(ET):%Y-%m-%d %H:%M ET}</div>
-</div></body></html>""", mimetype="text/html")
+</div>{MODAL}</body></html>""", mimetype="text/html")
 
 
 # ── routes ────────────────────────────────────────────────────────────────────
@@ -378,12 +420,13 @@ def positions_html(positions):
         side = str(getattr(p, "side", "")).split(".")[-1].lower()
         tag = ' <span class="muted">opt</span>' if _occ(p.symbol) else (
             ' <span class="neg">short</span>' if side == "short" else "")
-        rows += (f"<tr><td>{_fmt_sym(p.symbol)}{tag}</td><td>{float(p.qty):g}</td>"
+        rows += (f"<tr class=tap onclick=\"openTrade('{p.symbol}',{abs(float(p.qty)):g})\">"
+                 f"<td>{_fmt_sym(p.symbol)}{tag}</td><td>{float(p.qty):g}</td>"
                  f"<td>${float(p.avg_entry_price):,.2f}</td><td>${float(p.current_price or 0):,.2f}</td>"
                  f"<td>{_money(mv)}</td><td>{_pnl(upl)} {_pct(uplpc)}</td></tr>")
     tot = (f"<tr class=tot><td>TOTAL</td><td>{len(positions)}</td><td></td><td></td>"
            f"<td>{_money(tot_mv)}</td><td>{_pnl(tot_upl)}</td></tr>")
-    return (f"<h2>Open positions <span class=muted style=font-size:13px>· {len(positions)}</span></h2>"
+    return (f"<h2>Open positions <span class=muted style=font-size:13px>· {len(positions)} · tap a row to trade</span></h2>"
             f"<div class=scroll><table><thead><tr><th>Symbol</th><th>Qty</th><th>Avg</th><th>Last</th>"
             f"<th>Value</th><th>Unreal P&L</th></tr></thead><tbody>{tot}{rows}</tbody></table></div>")
 
@@ -519,6 +562,34 @@ def logs_page():
     refresh(); setInterval(refresh, 2500);
     </script>"""
     return page("Logs", body, "logs")
+
+
+@app.route(PREFIX + "/trade", methods=["POST"])
+@need_auth
+def trade():
+    symbol = (request.form.get("symbol") or "").strip().upper()
+    side = (request.form.get("side") or "").strip().lower()
+    qty_s = (request.form.get("qty") or "").strip()
+    if side not in ("buy", "sell") or not symbol:
+        return jsonify({"ok": False, "error": "bad request"}), 400
+    try:
+        qty = float(qty_s)
+        assert qty > 0
+    except Exception:
+        return jsonify({"ok": False, "error": "invalid qty"}), 400
+    try:
+        from alpaca.trading.requests import MarketOrderRequest
+        from alpaca.trading.enums import OrderSide, TimeInForce
+        q = qty if qty != int(qty) else int(qty)          # fractional for equities, whole for options
+        req = MarketOrderRequest(symbol=symbol, qty=q,
+                                 side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
+                                 time_in_force=TimeInForce.DAY)
+        o = _client().submit_order(req)
+        _CACHE.pop("pos", None); _CACHE.pop("acct", None)   # refresh on next page load
+        return jsonify({"ok": True, "id": str(o.id), "symbol": symbol, "side": side,
+                        "qty": qty_s, "status": str(o.status).split(".")[-1]})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:200]}), 400
 
 
 @app.route(PREFIX + "/health")
