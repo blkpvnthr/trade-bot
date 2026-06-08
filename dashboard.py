@@ -373,26 +373,30 @@ MODAL = """
  <div class=modal>
   <div class=mhead><span id=m-sym>—</span><a href=# class=mclose onclick="closeModal();return false">✕</a></div>
   <div class=mrow><span>Qty</span><input id=m-qty type=number step=any min=0 inputmode=decimal class=minput></div>
+  <div class=mrow><span>Pass</span><input id=m-pw type=password autocomplete=current-password class=minput placeholder="Password to confirm order"></div>
   <div id=m-result class=mresult></div>
   <div class=mbtns><button class="btn buy" onclick="doTrade('buy')">BUY</button>
   <button class="btn sell" onclick="doTrade('sell')">SELL</button></div>
-  <div class=hint>Market order, DAY. Tap a side twice to confirm.</div>
+  <div class=hint>Market order, DAY. Password required. Tap a side twice to confirm.</div>
  </div>
 </div>
 <script>
 var M_SYM='',PENDING=null;
 function openTrade(s,q){M_SYM=s;document.getElementById('m-sym').textContent=s;
- document.getElementById('m-qty').value=q;document.getElementById('m-result').textContent='';
+ document.getElementById('m-qty').value=q;document.getElementById('m-pw').value='';
+ document.getElementById('m-result').textContent='';
  PENDING=null;document.getElementById('modal').style.display='flex';}
 function closeModal(){document.getElementById('modal').style.display='none';PENDING=null;}
-function doTrade(side){var q=document.getElementById('m-qty').value;var r=document.getElementById('m-result');
+function doTrade(side){var q=document.getElementById('m-qty').value;
+ var pw=document.getElementById('m-pw').value;var r=document.getElementById('m-result');
  if(!(parseFloat(q)>0)){r.innerHTML='<span class=neg>enter a qty</span>';return;}
+ if(!pw){r.innerHTML='<span class=neg>enter your password</span>';return;}
  if(PENDING!==side){PENDING=side;r.innerHTML='<b>Tap '+side.toUpperCase()+' again to confirm '+side+' '+q+' '+M_SYM+'</b>';setTimeout(function(){PENDING=null;},4000);return;}
  PENDING=null;r.textContent='submitting…';
- var fd=new FormData();fd.append('symbol',M_SYM);fd.append('side',side);fd.append('qty',q);
+ var fd=new FormData();fd.append('symbol',M_SYM);fd.append('side',side);fd.append('qty',q);fd.append('password',pw);
  fetch('__PREFIX__/trade',{method:'POST',body:fd,credentials:'same-origin'}).then(function(x){return x.json();}).then(function(j){
   r.innerHTML=j.ok?'<span class=pos>\\u2713 '+side.toUpperCase()+' '+j.qty+' '+j.symbol+' \\u2014 '+j.status+'</span>':'<span class=neg>\\u2717 '+(j.error||'failed')+'</span>';
-  if(j.ok)setTimeout(function(){location.reload();},1500);}).catch(function(){r.innerHTML='<span class=neg>\\u2717 network error</span>';});}
+  if(j.ok){document.getElementById('m-pw').value='';setTimeout(function(){location.reload();},1500);}}).catch(function(){r.innerHTML='<span class=neg>\\u2717 network error</span>';});}
 </script>
 """.replace("__PREFIX__", PREFIX)
 
@@ -618,6 +622,9 @@ def trade():
     qty_s = (request.form.get("qty") or "").strip()
     if side not in ("buy", "sell") or not symbol:
         return jsonify({"ok": False, "error": "bad request"}), 400
+    # Re-authenticate: every live order requires the password, even within a logged-in session.
+    if not DASH_PASSWORD or (request.form.get("password") or "") != DASH_PASSWORD:
+        return jsonify({"ok": False, "error": "wrong password"}), 403
     try:
         qty = float(qty_s)
         assert qty > 0
