@@ -151,18 +151,16 @@ def send_email(subject: str, body: str):
     # Preferred: Resend HTTPS API (port 443 — not blocked by DigitalOcean's SMTP filter).
     api_key = os.environ.get("RESEND_API_KEY")
     if api_key:
-        import urllib.request
-        import urllib.error
+        import requests
         frm = os.environ.get("RESEND_FROM", "QuantumQuant <onboarding@resend.dev>")
-        payload = json.dumps({"from": frm, "to": [to], "subject": subject, "text": body}).encode()
-        req = urllib.request.Request("https://api.resend.com/emails", data=payload, method="POST",
-                                     headers={"Authorization": f"Bearer {api_key}",
-                                              "Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                r.read()
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(f"Resend API {e.code}: {e.read().decode()[:240]}")
+        r = requests.post("https://api.resend.com/emails",
+                          json={"from": frm, "to": [to], "subject": subject, "text": body},
+                          headers={"Authorization": f"Bearer {api_key}",
+                                   "Content-Type": "application/json",
+                                   "User-Agent": "Mozilla/5.0 (compatible; QuantumQuant-OrderEmailer/1.0)"},
+                          timeout=30)
+        if r.status_code >= 300:
+            raise RuntimeError(f"Resend API {r.status_code}: {r.text[:240]}")
         return
     # Fallback: SMTP (works locally; blocked on the DO droplet).
     host = os.environ.get("SMTP_HOST")
