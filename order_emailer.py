@@ -180,37 +180,38 @@ def send_email(subject: str, body: str):
 
 
 def compose(o, reason: str, rt: dict = None) -> str:
-    und = o.symbol if not _occ(o.symbol) else o.symbol[:-15].rstrip()
-    cls = "OPTION" if _occ(o.symbol) else "equity"
-    qtyline = f"qty {o.qty}" if o.qty else f"notional ${o.notional}"
-    body = (
-        f"ORDER CONFIRMED (filled) — QuantumQuant live\n"
-        f"{'='*48}\n"
-        f"Symbol      : {o.symbol}  ({cls}{(' on '+und) if cls=='OPTION' else ''})\n"
-        f"Side        : {str(o.side).split('.')[-1].upper()}\n"
-        f"Quantity    : {qtyline}\n"
-        f"Fill price  : ${o.filled_avg_price}\n"
-        f"Filled qty  : {o.filled_qty}\n"
-        f"Notional    : ${(float(o.filled_avg_price or 0) * float(o.filled_qty or 0)):.2f}\n"
-        f"Type        : {str(o.order_type).split('.')[-1]}\n"
-        f"Status      : {str(o.status).split('.')[-1]}\n"
-        f"Submitted   : {o.submitted_at}\n"
-        f"Filled at   : {o.filled_at}\n"
-        f"Order id    : {o.id}\n"
-    )
-    if str(o.side).split(".")[-1].lower() == "sell":
-        if rt:
-            sign = "PROFIT" if rt["pnl"] >= 0 else "LOSS"
-            body += (
-                f"{'-'*48}\n"
-                f"Entry price : ${rt['entry_px']:.4f}\n"
-                f"Exit price  : ${o.filled_avg_price}\n"
-                f"ROUND-TRIP  : {sign} ${rt['pnl']:+.2f} ({rt['ret']*100:+.2f}%)  held {rt['hold_h']:.1f}h\n"
-            )
-        else:
-            body += f"{'-'*48}\nRound-trip  : (no matching open lot — opening short / unmatched)\n"
-    body += f"{'-'*48}\nREASONING   : {reason}\n"
-    return body
+    occ = _occ(o.symbol)
+    side = str(o.side).split(".")[-1].upper()
+    fill_px = float(o.filled_avg_price or 0)
+    fqty = float(o.filled_qty or 0)
+    info = {
+        "event": "order_confirmed",
+        "symbol": o.symbol,
+        "asset_class": "option" if occ else "equity",
+        "underlying": (o.symbol[:-15].rstrip() if occ else o.symbol),
+        "side": side,
+        "quantity": (str(o.qty) if o.qty else None),
+        "notional_requested": (str(o.notional) if o.notional else None),
+        "fill_price": round(fill_px, 4),
+        "filled_qty": fqty,
+        "notional_value": round(fill_px * fqty * (100.0 if occ else 1.0), 2),
+        "order_type": str(o.order_type).split(".")[-1],
+        "status": str(o.status).split(".")[-1],
+        "submitted_at": str(o.submitted_at),
+        "filled_at": str(o.filled_at),
+        "order_id": str(o.id),
+        "reasoning": reason,
+    }
+    if side == "SELL":
+        info["roundtrip"] = ({
+            "result": "PROFIT" if rt["pnl"] >= 0 else "LOSS",
+            "entry_price": round(rt["entry_px"], 4),
+            "exit_price": round(fill_px, 4),
+            "realized_pnl": round(rt["pnl"], 2),
+            "return_pct": round(rt["ret"] * 100, 2),
+            "hold_hours": round(rt["hold_h"], 1),
+        } if rt else None)
+    return json.dumps(info, indent=2)
 
 
 def main():
