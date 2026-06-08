@@ -105,6 +105,11 @@ ENABLE_FRACTIONAL_ORDERS = os.environ.get("ENABLE_FRACTIONAL_ORDERS", "false").l
 ENABLE_EMA_GATE = os.environ.get("ENABLE_EMA_GATE", "true").lower() in {"1", "true", "yes"}
 ENABLE_EMA_EXIT = os.environ.get("ENABLE_EMA_EXIT", "true").lower() in {"1", "true", "yes"}
 EMA_PERIOD = int(os.environ.get("EMA_PERIOD", "9"))
+EMA_TAKE_PROFIT_PCT = float(os.environ.get("EMA_TAKE_PROFIT_PCT", "0.33"))   # below 9-EMA → trim this fraction
+EMA_TRIM_WINNERS_ONLY = os.environ.get("EMA_TRIM_WINNERS_ONLY", "true").lower() in {"1", "true", "yes"}
+# 200-SMA long-term trend gate: only BUY / re-enter when price is above the daily 200-SMA.
+ENABLE_SMA200_GATE = os.environ.get("ENABLE_SMA200_GATE", "true").lower() in {"1", "true", "yes"}
+SMA200_PERIOD = int(os.environ.get("SMA200_PERIOD", "200"))
 DYNAMIC_POSITION_EQUITY_UNIT = float(os.environ.get("DYNAMIC_POSITION_EQUITY_UNIT", "50000"))
 DYNAMIC_MIN_POSITIONS = int(os.environ.get("DYNAMIC_MIN_POSITIONS", "5"))
 DYNAMIC_MAX_POSITIONS = int(os.environ.get("DYNAMIC_MAX_POSITIONS", "50"))
@@ -373,6 +378,7 @@ SKIP_REASONS = {
     "rejected_by_cycle",
     "rejected_by_cash_buffer",
     "rejected_by_below_9ema",
+    "rejected_by_below_sma200",
     "rejected_by_exposure_limit",
     "rejected_by_options_buying_power",
     "rejected_by_PDT",
@@ -1237,10 +1243,9 @@ class AlpacaGateway:
 
         # 9-EMA execution gate: only BUY above the daily 9-EMA (trend confirmation / cross-up).
         if side == "buy":
-            _ema_blk = _ema_buy_blocked(symbol, ref_price)
-            if _ema_blk:
-                log_skip(symbol, f"rejected_by_below_9ema:price={ref_price:.2f}<ema={_ema_blk:.2f}",
-                         side=side, qty=qty, source=reason or "broker")
+            _trend_blk = _ema_buy_blocked(symbol, ref_price)
+            if _trend_blk:
+                log_skip(symbol, _trend_blk, side=side, qty=qty, source=reason or "broker")
                 return None
 
         # Self-assessment BUY throttle (downside protection): scale BUY size by the
@@ -1318,10 +1323,9 @@ class AlpacaGateway:
         if ref_price <= 0:
             log_skip(symbol, "rejected_by_data_unavailable:no_reference_price", side="buy", source=reason)
             return None
-        _ema_blk = _ema_buy_blocked(symbol, ref_price)
-        if _ema_blk:
-            log_skip(symbol, f"rejected_by_below_9ema:price={ref_price:.2f}<ema={_ema_blk:.2f}",
-                     side="buy", source=reason or "broker")
+        _trend_blk = _ema_buy_blocked(symbol, ref_price)
+        if _trend_blk:
+            log_skip(symbol, _trend_blk, side="buy", source=reason or "broker")
             return None
         sa = _self_assessment_buy_multiplier()
         if sa < 1.0:
@@ -2353,18 +2357,61 @@ def _ema_value(symbol: str, period: int = 9, ttl: float = 900.0) -> float:
         return 0.0
 
 
-def _ema_buy_blocked(symbol: str, price: float) -> float:
-    """9-EMA execution gate: returns the EMA if a BUY should be BLOCKED (price below the daily
-    9-EMA), else 0.0. Equities only, when ENABLE_EMA_GATE."""
-    if not ENABLE_EMA_GATE or is_option_symbol(symbol) or price <= 0:
+_SMA_CACHE: Dict[Any, Any] = {}
+
+
+def _sma_value(symbol: str, period: int = 200, ttl: float = 900.0) -> float:
+    """Daily simple `period`-MA for `symbol` (cached `ttl` seconds). 0.0 on any failure."""
+    try:
+        key = (symbol, period); now = time.time()
+        c = _SMA_CACHE.get(key)
+        if c and (now - c[0]) < ttl:
+            return c[1]
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+        from alpaca.data.enums import DataFeed
+        global _EMA_DC
+        if _EMA_DC is None:
+            _EMA_DC = StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET)
+        end = datetime.now(timezone.utc)
+        req = StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Day,
+                               start=end - timedelta(days=int(period * 1.6) + 30), end=end, feed=DataFeed.IEX)
+        df = _EMA_DC.get_stock_bars(req).df
+        if df is None or len(df) < period:
+            return 0.0
+        sma = float(df["close"].astype(float).tail(period).mean())
+        _SMA_CACHE[key] = (now, sma)
+        return sma
+    except Exception as e:
+        logger.debug("_sma_value(%s) failed: %s", symbol, e)
         return 0.0
-    ema = _ema_value(symbol, EMA_PERIOD)
-    return ema if (ema > 0 and price < ema) else 0.0
+
+
+def _ema_buy_blocked(symbol: str, price: float) -> str:
+    """Trend BUY/re-entry gate. Returns '' if the buy is allowed, else a 'rejected_by_below_...'
+    reason — price below the daily 9-EMA (short-term) OR below the 200-SMA (long-term). Equities only."""
+    if is_option_symbol(symbol) or price <= 0:
+        return ""
+    if ENABLE_EMA_GATE:
+        ema = _ema_value(symbol, EMA_PERIOD)
+        if ema > 0 and price < ema:
+            return f"rejected_by_below_9ema:price={price:.2f}<ema={ema:.2f}"
+    if ENABLE_SMA200_GATE:
+        sma = _sma_value(symbol, SMA200_PERIOD)
+        if sma > 0 and price < sma:
+            return f"rejected_by_below_sma200:price={price:.2f}<sma={sma:.2f}"
+    return ""
+
+
+_EMA_TRIM_STATE: Dict[str, bool] = {}
 
 
 def run_ema_exits(gateway: AlpacaGateway, equity_positions: Dict[str, Any]) -> int:
-    """9-EMA trend exit: sell any held SHARE whose price fell below its daily 9-EMA (trend break /
-    cross-down). Unconditional exit pass. Fully fail-safe. Returns # of sells."""
+    """9-EMA take-some-profit: when a held SHARE dips below its daily 9-EMA, TRIM a fraction
+    (EMA_TAKE_PROFIT_PCT) rather than exit — locking partial gains while keeping the position. Winners
+    only (skip losers) when EMA_TRIM_WINNERS_ONLY. Trims ONCE per cross-down (re-arms when price climbs
+    back above the 9-EMA), so it never grinds the position to zero. Fail-safe. Returns # of trims."""
     if not ENABLE_EMA_EXIT:
         return 0
     n = 0
@@ -2377,12 +2424,25 @@ def run_ema_exits(gateway: AlpacaGateway, equity_positions: Dict[str, Any]) -> i
             if ema <= 0:
                 continue
             price = gateway._resolve_reference_price(sym)
-            if 0 < price < ema:
-                gateway.submit_market_order(sym, "sell", qty, reason=f"ema9_exit:price={price:.2f}<ema={ema:.2f}")
-                logger.info("9EMA EXIT %s x%d (price %.2f < 9EMA %.2f)", sym, qty, price, ema)
-                n += 1
+            if price <= 0:
+                continue
+            if price >= ema:                          # back above the 9-EMA → re-arm for the next dip
+                _EMA_TRIM_STATE.pop(sym, None)
+                continue
+            if _EMA_TRIM_STATE.get(sym):              # already trimmed this cross-down
+                continue
+            avg = float(getattr(pos, "avg_entry_price", 0) or 0)
+            if EMA_TRIM_WINNERS_ONLY and avg > 0 and price <= avg:
+                continue                              # at a loss — don't realize it on the 9-EMA dip
+            trim = min(qty, max(1, int(qty * EMA_TAKE_PROFIT_PCT)))
+            gateway.submit_market_order(sym, "sell", trim,
+                reason=f"ema9_take_profit:{trim}/{qty}@{price:.2f}<ema{ema:.2f}")
+            logger.info("9EMA TAKE-PROFIT %s trim %d/%d (price %.2f < 9EMA %.2f, avg %.2f)",
+                        sym, trim, qty, price, ema, avg)
+            _EMA_TRIM_STATE[sym] = True
+            n += 1
         except Exception as e:
-            logger.error("9EMA exit failed for %s (rest unaffected): %s", sym, e)
+            logger.error("9EMA take-profit failed for %s (rest unaffected): %s", sym, e)
     return n
 
 
