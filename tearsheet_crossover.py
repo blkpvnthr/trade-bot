@@ -199,64 +199,107 @@ def metrics(curve, trades):
                 calmar=(cagr / abs(dd) if dd else 0))
 
 
-spy_curve = (START_CASH * spy / spy.iloc[0])
-VARIANTS = [("Baseline (crossover+regime+stop)", "baseline"), ("Enhanced (all changes)", "enhanced")]
-res = {label: (lambda r: (r[0], metrics(r[0], r[2])))(simulate(m)) for label, m in VARIANTS}
-ms = metrics(spy_curve.reindex(idx).ffill(), [])
-best = "Enhanced (all changes)"
+# ── blended, vol-targeted portfolio ──────────────────────────────────────────────
+TARGET_VOL, MAX_LEV = 0.14, 2.0
+strat_curve, _, _ = simulate("enhanced")                       # crisis-diversifier sleeve (positive skew)
+tlt, gld = fetch("TLT"), fetch("GLD")
+comp = pd.DataFrame({
+    "SPY": spy.pct_change(),
+    "TLT": (tlt["close"].reindex(idx).ffill().pct_change() if tlt is not None else pd.Series(0.0, index=idx)),
+    "GLD": (gld["close"].reindex(idx).ffill().pct_change() if gld is not None else pd.Series(0.0, index=idx)),
+    "Strategy": strat_curve.reindex(idx).ffill().pct_change(),
+}).fillna(0.0)
+vol60 = comp.rolling(60).std().shift(1)
+invvol = (1.0 / vol60.replace(0, np.nan))
+w = invvol.div(invvol.sum(axis=1), axis=0).fillna(0.0)          # risk-parity weights (inverse vol)
+blend_r = (w * comp).sum(axis=1)
+pvol = blend_r.rolling(20).std().shift(1) * np.sqrt(252)
+lev = (TARGET_VOL / pvol).clip(0, MAX_LEV).fillna(1.0)          # vol target, leverage-capped
+blend_r = (lev * blend_r)
 
-PALETTE = {"Baseline (crossover+regime+stop)": "#8b949e", "Enhanced (all changes)": "#3fb950"}
-fig = make_subplots(rows=2, cols=1, row_heights=[0.62, 0.38], vertical_spacing=0.08,
+start = comp.index[max(60, 252)]                               # after the vol warmup
+def curve_from(r): return START_CASH * (1 + r.loc[start:]).cumprod()
+curves = {
+    "Blend (vol-targeted)": curve_from(blend_r),
+    "SPY buy & hold": curve_from(comp["SPY"]),
+    "60 / 40 (SPY/TLT)": curve_from(0.6 * comp["SPY"] + 0.4 * comp["TLT"]),
+    "Strategy alone": curve_from(comp["Strategy"]),
+}
+
+
+def m2(c):
+    r = c.pct_change().dropna()
+    yrs = (c.index[-1] - c.index[0]).days / 365.25
+    dd = (c / c.cummax() - 1).min()
+    dn = r[r < 0].std()
+    cagr = (c.iloc[-1] / c.iloc[0]) ** (1 / yrs) - 1
+    return dict(final=c.iloc[-1], cagr=cagr, vol=r.std() * np.sqrt(252),
+                sharpe=(r.mean() / r.std() * np.sqrt(252) if r.std() else 0),
+                sortino=(r.mean() / dn * np.sqrt(252) if dn else 0), dd=dd,
+                calmar=(cagr / abs(dd) if dd else 0))
+
+
+M = {k: m2(v) for k, v in curves.items()}
+CLR = {"Blend (vol-targeted)": "#3fb950", "SPY buy & hold": "#6e7681",
+       "60 / 40 (SPY/TLT)": "#d29922", "Strategy alone": "#a371f7"}
+fig = make_subplots(rows=2, cols=1, row_heights=[0.64, 0.36], vertical_spacing=0.08,
                     subplot_titles=("Equity ($10k start)", "Drawdown %"))
-for label, _ in VARIANTS:
-    c = res[label][0]
-    fig.add_trace(go.Scatter(x=c.index, y=c, name=label,
-                             line=dict(color=PALETTE[label], width=2.4)), row=1, col=1)
+for k, c in curves.items():
+    fig.add_trace(go.Scatter(x=c.index, y=c, name=k, line=dict(color=CLR[k],
+                  width=2.6 if k.startswith("Blend") else 1.6)), row=1, col=1)
     dd = (c / c.cummax() - 1) * 100
-    fig.add_trace(go.Scatter(x=dd.index, y=dd, name=label, showlegend=False,
-                             line=dict(color=PALETTE[label], width=1.2)), row=2, col=1)
-fig.add_trace(go.Scatter(x=spy_curve.index, y=spy_curve, name="SPY",
-                         line=dict(color="#6e7681", width=1.3, dash="dot")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=dd.index, y=dd, name=k, showlegend=False,
+                  line=dict(color=CLR[k], width=1.6 if k.startswith("Blend") else 1.0)), row=2, col=1)
 fig.update_yaxes(title_text="$", row=1, col=1)
-fig.update_layout(template="plotly_dark", height=760, margin=dict(t=70, l=50, r=20, b=30),
-                  title="Enhanced Crossover Strategy — quality universe, RS/vol/regime filters, ATR trail + partials",
-                  legend=dict(orientation="h", y=1.06), paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
+fig.update_layout(template="plotly_dark", height=720, margin=dict(t=66, l=50, r=20, b=24),
+                  title="Vol-targeted blend vs SPY / 60-40 / strategy", legend=dict(orientation="h", y=1.07),
+                  paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
 chart = fig.to_html(full_html=False, include_plotlyjs="cdn",
                     config={"responsive": True, "displayModeBar": False},
-                    default_width="100%", default_height="620px")
+                    default_width="100%", default_height="560px")
+
+cor = comp.loc[start:].corr().round(2)
+hm = go.Figure(go.Heatmap(z=cor.values, x=cor.columns, y=cor.index, zmin=-1, zmax=1,
+               colorscale="RdBu", reversescale=True, text=cor.values, texttemplate="%{text}",
+               showscale=False))
+hm.update_layout(template="plotly_dark", height=300, margin=dict(t=40, l=60, r=10, b=30),
+                 title="Component daily-return correlation (low = diversification)",
+                 paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
+heat = hm.to_html(full_html=False, include_plotlyjs=False, config={"displayModeBar": False},
+                  default_width="100%", default_height="300px")
 
 
-def trow(label, m, star=False):
-    pf_ = "∞" if m["pf"] == float("inf") else f"{m['pf']:.2f}"
+def trow(k, m, star=False):
     hi = " style='background:#15301c'" if star else ""
-    return (f"<tr{hi}><td style='font-weight:600'>{label}{' ★' if star else ''}</td><td>${m['final']:,.0f}</td>"
-            f"<td>{m['cagr']:+.1%}</td><td>{m['dd']:.1%}</td><td><b>{m['calmar']:.2f}</b></td>"
-            f"<td><b>{m['wr']:.0f}%</b></td><td>{m['sharpe']:.2f}</td><td>{m['sortino']:.2f}</td>"
-            f"<td>{m['n']}</td><td>{pf_}</td></tr>")
+    mark = " \u2605" if star else ""
+    return (f"<tr{hi}><td style='font-weight:600'>{k}{mark}</td><td>${m['final']:,.0f}</td>"
+            f"<td>{m['cagr']:+.1%}</td><td>{m['vol']:.0%}</td><td>{m['dd']:.1%}</td>"
+            f"<td><b>{m['sharpe']:.2f}</b></td><td>{m['sortino']:.2f}</td><td><b>{m['calmar']:.2f}</b></td></tr>")
 
 
-tbl = ("<table><thead><tr><th>Variant</th><th>Final</th><th>CAGR</th><th>MaxDD</th><th>Calmar</th>"
-       "<th>Win%</th><th>Sharpe</th><th>Sortino</th><th>Trades</th><th>PF</th></tr></thead><tbody>"
-       + "".join(trow(l, res[l][1], l == best) for l, _ in VARIANTS) + trow("SPY b&h", ms) + "</tbody></table>")
-e = res[best][1]
+tbl = ("<table><thead><tr><th>Portfolio</th><th>Final</th><th>CAGR</th><th>Vol</th><th>MaxDD</th>"
+       "<th>Sharpe</th><th>Sortino</th><th>Calmar</th></tr></thead><tbody>"
+       + "".join(trow(k, M[k], k.startswith("Blend")) for k in curves) + "</tbody></table>")
+b = M["Blend (vol-targeted)"]; sp = M["SPY buy & hold"]
 html = f"""<!doctype html><html><head><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1"><title>Enhanced strategy</title>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>Vol-targeted blend</title>
 <style>body{{background:#0d1117;color:#e6edf3;font:14px -apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:14px}}
 h1{{font-size:17px}}table{{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}}
 th,td{{padding:7px 6px;text-align:right;border-bottom:1px solid #21262d;white-space:nowrap}}
 th:first-child,td:first-child{{text-align:left}}thead th{{color:#8b949e}}
 .note{{color:#8b949e;font-size:12px;line-height:1.5;margin-top:10px}}.scroll{{overflow-x:auto}}
 .pick{{background:#161b22;border:1px solid #2ea043;border-radius:10px;padding:10px 12px;margin:8px 0}}</style></head>
-<body><h1>Enhanced Crossover Strategy · $10,000 · {res[best][0].index[0]:%Y-%m-%d} → {res[best][0].index[-1]:%Y-%m-%d}</h1>
-<div class=pick>★ Enhanced: ${e['final']:,.0f}, CAGR {e['cagr']:+.1%}, MaxDD {e['dd']:.1%}, <b>Win {e['wr']:.0f}%</b>, Calmar {e['calmar']:.2f}</div>
-<div class=scroll>{tbl}</div>{chart}
-<div class=note>ENTRY: quality large-cap universe; regime risk-on (SPY/QQQ/IWM breadth); SPY-vol filter
-(skip top-quartile 20d realized vol); relative strength (63d return &gt; SPY); volume &gt; 20d avg; 30%/sector cap.
-EXIT: ATR(14) 3x trailing stop OR 200-SMA OR 15% stop OR regime liquidation; partial 1/3 at +20%.
-20% of available cash, 45% buffer, 10%/name, 5bps/side. Backtest, not a forward guarantee.</div>
+<body><h1>Vol-targeted blend \u00b7 $10,000 \u00b7 {list(curves.values())[0].index[0]:%Y-%m-%d} \u2192 {list(curves.values())[0].index[-1]:%Y-%m-%d}</h1>
+<div class=pick>\u2605 Blend: ${b['final']:,.0f}, CAGR {b['cagr']:+.1%}, MaxDD {b['dd']:.1%}, <b>Sharpe {b['sharpe']:.2f}</b>
+(SPY: ${sp['final']:,.0f}, {sp['cagr']:+.1%}, DD {sp['dd']:.1%}, Sharpe {sp['sharpe']:.2f})</div>
+<div class=scroll>{tbl}</div>{chart}{heat}
+<div class=note>Risk-parity weights (inverse 60d vol) across SPY + TLT + GLD + the regime crossover strategy,
+then vol-targeted to {TARGET_VOL:.0%} annualized (leverage capped {MAX_LEV:.0f}x). Daily rebalance, in-sample.
+The free lunch is the LOW correlations below \u2014 the pieces don't draw down together. Backtest, not a forward guarantee.</div>
 </body></html>"""
 open("crossover_tearsheet.html", "w").write(html)
-for l, _ in VARIANTS:
-    m = res[l][1]
-    print(f"  {l:<34}: ${m['final']:>8,.0f}  CAGR {m['cagr']:+6.1%}  DD {m['dd']:>6.1%}  Win {m['wr']:>3.0f}%  Calmar {m['calmar']:.2f}  ({m['n']} tr)")
-print(f"  {'SPY':<34}: ${ms['final']:>8,.0f}  CAGR {ms['cagr']:+6.1%}  DD {ms['dd']:>6.1%}")
+print("blended vol-targeted portfolio:")
+for k in curves:
+    m = M[k]
+    print(f"  {k:<22}: ${m['final']:>8,.0f}  CAGR {m['cagr']:+6.1%}  Vol {m['vol']:.0%}  DD {m['dd']:>6.1%}  Sharpe {m['sharpe']:.2f}  Calmar {m['calmar']:.2f}")
+print("\ncorrelations:\n", cor.to_string())
