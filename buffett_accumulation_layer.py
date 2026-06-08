@@ -1981,6 +1981,7 @@ class BuffettAccumulationLayer:
                     _reject(f"order_too_small:${order_dollars:.0f} room={_room:.0f} cap={available_capital:.0f}",
                             limiter); continue
 
+            _target_notional = order_dollars          # exact return-based $ (for fractional orders)
             qty = max(1, int(order_dollars / price))
             order_dollars = round(qty * price, 2)
             if order_dollars > available_capital and qty > 1:
@@ -2012,7 +2013,7 @@ class BuffettAccumulationLayer:
 
             orders.append({
                 "symbol": symbol, "side": "buy", "qty": qty,
-                "order_dollars": order_dollars, "price": price,
+                "order_dollars": order_dollars, "target_notional": _target_notional, "price": price,
                 "source": "buffett_dca", "action": final_action,
                 "bal_score": round(card.bal_score, 1),
                 "composite_dca_score": composite, "conviction_score": conviction,

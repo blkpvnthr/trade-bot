@@ -97,6 +97,9 @@ DYNAMIC_MAX_DRAWDOWN_PCT = float(os.environ.get("DYNAMIC_MAX_DRAWDOWN_PCT", "0.0
 DYNAMIC_EQUITY_FLOOR_PCT = float(os.environ.get("DYNAMIC_EQUITY_FLOOR_PCT", "0.90"))    # 90% of anchor
 DYNAMIC_EQUITY_FLOOR_MIN = float(os.environ.get("DYNAMIC_EQUITY_FLOOR_MIN", "1000"))
 DYNAMIC_MAX_ORDER_PCT = float(os.environ.get("DYNAMIC_MAX_ORDER_PCT", "0.03"))          # 3% notional/order
+# Fractional/notional BUY orders: let the BAL deploy an exact DOLLAR amount (fractional shares) so
+# high-priced names (ASML, MU) fit at sane weights on a small account instead of being whole-share-floored.
+ENABLE_FRACTIONAL_ORDERS = os.environ.get("ENABLE_FRACTIONAL_ORDERS", "false").lower() in {"1", "true", "yes"}
 DYNAMIC_POSITION_EQUITY_UNIT = float(os.environ.get("DYNAMIC_POSITION_EQUITY_UNIT", "50000"))
 DYNAMIC_MIN_POSITIONS = int(os.environ.get("DYNAMIC_MIN_POSITIONS", "5"))
 DYNAMIC_MAX_POSITIONS = int(os.environ.get("DYNAMIC_MAX_POSITIONS", "50"))
@@ -654,6 +657,17 @@ class RiskManager:
         room = min(rooms) if rooms else 0.0
         return int(room // (price * mult))
 
+    def max_affordable_notional(self, price: float) -> Optional[float]:
+        """Dollar room remaining under the trimmable caps (per-order $, stock exposure, free cash)
+        for a fractional BUY — NOT floored to whole shares. None if price is non-positive."""
+        if price <= 0:
+            return None
+        rooms = [max(0.0, self.cash - CASH_BUFFER_PCT * self.equity)]
+        if self.max_order_dollars > 0:
+            rooms.append(self.max_order_dollars)
+        rooms.append(max(0.0, self.equity * MAX_STOCK_EXPOSURE_PCT - self.stock_exposure))
+        return min(rooms)
+
     def check_order(self, symbol: str, side: str, qty: int,
                     price: float, dry_run: bool = False) -> bool:
         """Backward-compatible boolean gate (used by the legacy scalping path)."""
@@ -1182,7 +1196,8 @@ class AlpacaGateway:
 
     def submit_market_order(self, symbol: str, side: str, qty: int,
                             reason: str = "", limit_price: float = 0.0,
-                            order_type: str = "market", reference_price: float = 0.0) -> Optional[Dict]:
+                            order_type: str = "market", reference_price: float = 0.0,
+                            notional: float = 0.0) -> Optional[Dict]:
         """
         Risk-gated order submission for equities AND options (OCC symbols).
         Options are always routed as DAY limit orders (market options orders are
@@ -1199,6 +1214,10 @@ class AlpacaGateway:
             return None
         opt = is_option_symbol(symbol)
         asset_class = "option" if opt else "equity"
+        # ── Fractional / notional BUY: deploy an exact dollar amount (fractional shares) ──────
+        if (ENABLE_FRACTIONAL_ORDERS and notional and notional > 0 and not opt
+                and side == "buy" and order_type == "market" and not limit_price):
+            return self._submit_notional_buy(symbol, float(notional), reason)
 
         # Notional reference price: explicit limit → caller-supplied reference → live
         # market lookup. Must be > 0 for BUYs (exits never depend on notional).
@@ -1277,6 +1296,46 @@ class AlpacaGateway:
             req = MarketOrderRequest(symbol=symbol, qty=qty, side=os_side,
                                      time_in_force=TimeInForce.DAY)
         return self._client.submit_order(req)
+
+    def _submit_notional_buy(self, symbol: str, notional: float, reason: str = "") -> Optional[Dict]:
+        """Fractional BUY of an exact dollar `notional` (fractionable equities only). Same throttle,
+        size-to-fit and RiskManager gating as a qty order, but no whole-share rounding."""
+        ref_price = self._resolve_reference_price(symbol)
+        if ref_price <= 0:
+            log_skip(symbol, "rejected_by_data_unavailable:no_reference_price", side="buy", source=reason)
+            return None
+        sa = _self_assessment_buy_multiplier()
+        if sa < 1.0:
+            notional *= sa
+        if notional < 1.0:
+            return None
+        if SIZE_TO_FIT_EXPOSURE:
+            room = self.risk.max_affordable_notional(ref_price)
+            if room is not None and 0 < room < notional:
+                logger.info("[size-to-fit] %s notional $%.0f->$%.0f to fit caps", symbol, notional, room)
+                notional = room
+        eff_qty = notional / ref_price
+        allowed, gate_reason = self.risk.gate(symbol, "buy", eff_qty, ref_price, asset_class="equity")
+        if not allowed:
+            log_skip(symbol, gate_reason, side="buy", qty=round(eff_qty, 4), source=reason or "broker")
+            return None
+        if not self._available:
+            logger.info("[SIM] BUY %s notional=$%.2f (~%.4f sh)", symbol, notional, eff_qty)
+            self.risk.record_fill(symbol, "buy", eff_qty, ref_price, asset_class="equity")
+            return {"sim": True, "symbol": symbol, "side": "buy", "notional": round(notional, 2)}
+        try:
+            from alpaca.trading.requests import MarketOrderRequest
+            from alpaca.trading.enums import OrderSide, TimeInForce
+            req = MarketOrderRequest(symbol=symbol, notional=round(notional, 2),
+                                     side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
+            resp = self._client.submit_order(req)
+            logger.info("ORDER buy %s notional=$%.2f (~%.4f sh @ %.2f)  reason=%s  asset=equity",
+                        symbol, notional, eff_qty, ref_price, reason)
+            self.risk.record_fill(symbol, "buy", eff_qty, ref_price, asset_class="equity")
+            return resp
+        except Exception as e:
+            logger.error("Alpaca notional order error (buy %s $%.2f): %s", symbol, notional, e)
+            return None
 
     # Legacy alias (scalping path called submit_order(symbol, side, qty, type, limit))
     def submit_order(self, symbol: str, side: str, qty: int,
@@ -2305,9 +2364,15 @@ def run_bal_entries(bal, gateway: AlpacaGateway, waterfall, risk: RiskManager,
     for o in orders:
         # Pass the BAL-evaluated price as the notional reference so RiskManager gates on
         # real exposure (never qty × 0.0). It does NOT make this a limit order.
-        resp = gateway.submit_market_order(o["symbol"], "buy", int(o["qty"]),
-                                           reason=o.get("reason", "buffett_accumulation"),
-                                           reference_price=float(o.get("price", 0.0) or 0.0))
+        if ENABLE_FRACTIONAL_ORDERS and float(o.get("target_notional", 0.0) or 0.0) > 0:
+            resp = gateway.submit_market_order(o["symbol"], "buy", 0,
+                                               reason=o.get("reason", "buffett_accumulation"),
+                                               reference_price=float(o.get("price", 0.0) or 0.0),
+                                               notional=float(o["target_notional"]))
+        else:
+            resp = gateway.submit_market_order(o["symbol"], "buy", int(o["qty"]),
+                                               reason=o.get("reason", "buffett_accumulation"),
+                                               reference_price=float(o.get("price", 0.0) or 0.0))
         if resp is not None:
             placed += 1
             _research("record_bal_order_safe", o, market_context)   # evidence: tranche/conviction
