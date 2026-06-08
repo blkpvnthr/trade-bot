@@ -413,7 +413,8 @@ def page(title, body, active=""):
         on = " on" if key == active else ""
         return f'<a class="navlink{on}" href="{PREFIX}{href}">{label}</a>'
     nav = (navlink("/", "Overview", "home") + navlink("/monthly", "Monthly", "monthly")
-           + navlink("/journal", "Journal", "journal") + navlink("/logs", "Logs", "logs"))
+           + navlink("/journal", "Journal", "journal") + navlink("/logs", "Logs", "logs")
+           + navlink("/backtest", "Backtest", "backtest"))
     return Response(f"""<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>{title} · QuantumQuant</title><style>{CSS}</style></head>
@@ -678,6 +679,15 @@ def trade():
         except Exception:
             pass
         return jsonify({"ok": False, "error": msg[:220]}), 400
+
+
+@app.route(PREFIX + "/backtest")
+@need_auth
+def backtest():
+    f = ROOT / "crossover_tearsheet.html"
+    if not f.exists():
+        return Response("No tearsheet generated yet.", mimetype="text/plain")
+    return Response(f.read_text(), mimetype="text/html")
 
 
 @app.route(PREFIX + "/verify", methods=["POST"])
