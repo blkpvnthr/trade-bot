@@ -100,6 +100,11 @@ DYNAMIC_MAX_ORDER_PCT = float(os.environ.get("DYNAMIC_MAX_ORDER_PCT", "0.03"))  
 # Fractional/notional BUY orders: let the BAL deploy an exact DOLLAR amount (fractional shares) so
 # high-priced names (ASML, MU) fit at sane weights on a small account instead of being whole-share-floored.
 ENABLE_FRACTIONAL_ORDERS = os.environ.get("ENABLE_FRACTIONAL_ORDERS", "false").lower() in {"1", "true", "yes"}
+# 9-EMA trend overlay: BUY only when price > daily 9-EMA (execution gate / cross-up confirmation);
+# SELL any held share that falls below its 9-EMA (trend break / cross-down). Daily bars, cached.
+ENABLE_EMA_GATE = os.environ.get("ENABLE_EMA_GATE", "true").lower() in {"1", "true", "yes"}
+ENABLE_EMA_EXIT = os.environ.get("ENABLE_EMA_EXIT", "true").lower() in {"1", "true", "yes"}
+EMA_PERIOD = int(os.environ.get("EMA_PERIOD", "9"))
 DYNAMIC_POSITION_EQUITY_UNIT = float(os.environ.get("DYNAMIC_POSITION_EQUITY_UNIT", "50000"))
 DYNAMIC_MIN_POSITIONS = int(os.environ.get("DYNAMIC_MIN_POSITIONS", "5"))
 DYNAMIC_MAX_POSITIONS = int(os.environ.get("DYNAMIC_MAX_POSITIONS", "50"))
@@ -367,6 +372,7 @@ SKIP_REASONS = {
     "rejected_by_macro",
     "rejected_by_cycle",
     "rejected_by_cash_buffer",
+    "rejected_by_below_9ema",
     "rejected_by_exposure_limit",
     "rejected_by_options_buying_power",
     "rejected_by_PDT",
@@ -1229,6 +1235,14 @@ class AlpacaGateway:
                      side=side, qty=qty, source=reason or "broker")
             return None
 
+        # 9-EMA execution gate: only BUY above the daily 9-EMA (trend confirmation / cross-up).
+        if side == "buy":
+            _ema_blk = _ema_buy_blocked(symbol, ref_price)
+            if _ema_blk:
+                log_skip(symbol, f"rejected_by_below_9ema:price={ref_price:.2f}<ema={_ema_blk:.2f}",
+                         side=side, qty=qty, source=reason or "broker")
+                return None
+
         # Self-assessment BUY throttle (downside protection): scale BUY size by the
         # data/model/regime/execution-risk multiplier from system_self_awareness. Buys only —
         # exits are never throttled. multiplier ∈ [0,1]; 0 → skip the buy entirely.
@@ -1303,6 +1317,11 @@ class AlpacaGateway:
         ref_price = self._resolve_reference_price(symbol)
         if ref_price <= 0:
             log_skip(symbol, "rejected_by_data_unavailable:no_reference_price", side="buy", source=reason)
+            return None
+        _ema_blk = _ema_buy_blocked(symbol, ref_price)
+        if _ema_blk:
+            log_skip(symbol, f"rejected_by_below_9ema:price={ref_price:.2f}<ema={_ema_blk:.2f}",
+                     side="buy", source=reason or "broker")
             return None
         sa = _self_assessment_buy_multiplier()
         if sa < 1.0:
@@ -2300,6 +2319,73 @@ def run_alpha_screener(engine, gateway: AlpacaGateway, market_context: dict,
 
 
 # ── BAL: EXIT pass (runs every cycle) ─────────────────────────────────────────────
+_EMA_DC = None
+_EMA_CACHE: Dict[Any, Any] = {}
+
+
+def _ema_value(symbol: str, period: int = 9, ttl: float = 900.0) -> float:
+    """Daily `period`-EMA for `symbol` (cached `ttl` seconds — daily EMA barely moves intraday).
+    0.0 on any failure."""
+    try:
+        key = (symbol, period); now = time.time()
+        c = _EMA_CACHE.get(key)
+        if c and (now - c[0]) < ttl:
+            return c[1]
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+        from alpaca.data.enums import DataFeed
+        global _EMA_DC
+        if _EMA_DC is None:
+            _EMA_DC = StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET)
+        end = datetime.now(timezone.utc)
+        req = StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Day,
+                               start=end - timedelta(days=120), end=end, feed=DataFeed.IEX)
+        df = _EMA_DC.get_stock_bars(req).df
+        if df is None or len(df) < period + 1:
+            return 0.0
+        closes = df["close"].astype(float)
+        ema = float(closes.ewm(span=period, adjust=False).mean().iloc[-1])
+        _EMA_CACHE[key] = (now, ema)
+        return ema
+    except Exception as e:
+        logger.debug("_ema_value(%s) failed: %s", symbol, e)
+        return 0.0
+
+
+def _ema_buy_blocked(symbol: str, price: float) -> float:
+    """9-EMA execution gate: returns the EMA if a BUY should be BLOCKED (price below the daily
+    9-EMA), else 0.0. Equities only, when ENABLE_EMA_GATE."""
+    if not ENABLE_EMA_GATE or is_option_symbol(symbol) or price <= 0:
+        return 0.0
+    ema = _ema_value(symbol, EMA_PERIOD)
+    return ema if (ema > 0 and price < ema) else 0.0
+
+
+def run_ema_exits(gateway: AlpacaGateway, equity_positions: Dict[str, Any]) -> int:
+    """9-EMA trend exit: sell any held SHARE whose price fell below its daily 9-EMA (trend break /
+    cross-down). Unconditional exit pass. Fully fail-safe. Returns # of sells."""
+    if not ENABLE_EMA_EXIT:
+        return 0
+    n = 0
+    for sym, pos in list((equity_positions or {}).items()):
+        try:
+            qty = int(abs(float(getattr(pos, "qty", 0) or 0)))
+            if qty <= 0 or is_option_symbol(sym):
+                continue
+            ema = _ema_value(sym, EMA_PERIOD)
+            if ema <= 0:
+                continue
+            price = gateway._resolve_reference_price(sym)
+            if 0 < price < ema:
+                gateway.submit_market_order(sym, "sell", qty, reason=f"ema9_exit:price={price:.2f}<ema={ema:.2f}")
+                logger.info("9EMA EXIT %s x%d (price %.2f < 9EMA %.2f)", sym, qty, price, ema)
+                n += 1
+        except Exception as e:
+            logger.error("9EMA exit failed for %s (rest unaffected): %s", sym, e)
+    return n
+
+
 def run_bal_exits(bal, gateway: AlpacaGateway, equity_positions: Dict[str, Any],
                   market_context: dict) -> int:
     n = 0
@@ -3169,7 +3255,7 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     new_buys_allowed, regime_reason = regime_allows_new_buys(market_context)
 
     summary = {"alpha_exits": 0, "bal_exits": 0, "alpha_entries": 0, "bal_entries": 0,
-               "insider_copies": 0, "insider_copy_exits": 0, "option_safety_exits": 0,
+               "insider_copies": 0, "insider_copy_exits": 0, "option_safety_exits": 0, "ema_exits": 0,
                "new_buys_allowed": new_buys_allowed}
 
     # Shared real-time indicator state (carried over from prior cycles for the exit
@@ -3196,6 +3282,12 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
             summary["bal_exits"] = run_bal_exits(bal, gateway, equity_positions, market_context)
         except Exception as e:
             logger.error("BAL exits failed (Alpha unaffected): %s", e)
+    # 9-EMA trend exit — sell held shares that fell below their 9-EMA (unconditional exit pass).
+    if ENABLE_EMA_EXIT:
+        try:
+            summary["ema_exits"] = run_ema_exits(gateway, equity_positions)
+        except Exception as e:
+            logger.error("9EMA exit failed (rest of cycle unaffected): %s", e)
     # Insider-copier time-exit: force-close copied calls past their max hold. Part of the
     # unconditional exit pass — never regime-/cutoff-gated. Fully fail-safe.
     if ENABLE_INSIDER_COPIER:
