@@ -74,8 +74,14 @@ def get_trips(ttl=60):
     now = time.time()
     if _CACHE.get("trips") is not None and now - _CACHE.get("trips_t", 0) < ttl:
         return _CACHE["trips"]
-    trips = round_trips(fetch_fills(_client(), days=420))
-    _CACHE["trips"], _CACHE["trips_t"] = trips, now
+    try:
+        trips = round_trips(fetch_fills(_client(), days=420))
+        _CACHE["trips"], _CACHE["trips_t"] = trips, now     # only cache on SUCCESS
+    except Exception as e:
+        # Alpaca unavailable (throttle/auth) must NOT 500 the page — degrade to last-known.
+        import logging as _lg
+        _lg.getLogger("dashboard").warning("get_trips failed, keeping last-known: %s", str(e)[:120])
+        trips = _CACHE.get("trips") or []
     return trips
 
 
