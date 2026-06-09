@@ -301,8 +301,7 @@ ALPACA_KEY    = (os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KE
 ALPACA_SECRET = (os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("APCA_API_SECRET_KEY")
                  or os.environ.get("ALPACA_API_SECRET_KEY") or "")
 ALPACA_URL    = os.environ.get("ALPACA_BASE_URL", os.environ.get("APCA_API_BASE_URL",
-                "https://paper-api.alpaca.markets" if ALPACA_PAPER_ONLY
-                else "https://api.alpaca.markets"))
+                "https://api.alpaca.markets"))
 
 # Option-chain DTE window for contract retrieval (matches the Alpha Engine's gate).
 ALPHA_MIN_DTE = int(os.environ.get("ALPHA_MIN_DTE", 21))
@@ -2427,6 +2426,111 @@ def _sma_value(symbol: str, period: int = 200, ttl: float = 900.0) -> float:
         return 0.0
 
 
+# ── Insider SMA-200 watchlist ─────────────────────────────────────────────────────
+# Insider buys in a deep downtrend (price < the true 200-SMA) are QUEUED here instead of
+# bought immediately, then bought when price crosses back ABOVE the 200-SMA — trend
+# confirmation of the insider thesis. Uses the true 200-period SMA regardless of the
+# (now shorter) SMA200_PERIOD entry-gate setting.
+INSIDER_SMA_WATCH_PATH = PROJECT_ROOT / "data" / "insider_sma200_watch.json"
+
+
+def _load_sma_watch() -> list:
+    try:
+        return json.loads(INSIDER_SMA_WATCH_PATH.read_text(encoding="utf-8")).get("watch", [])
+    except Exception:
+        return []
+
+
+def _save_sma_watch(watch: list) -> None:
+    try:
+        INSIDER_SMA_WATCH_PATH.parent.mkdir(parents=True, exist_ok=True)
+        INSIDER_SMA_WATCH_PATH.write_text(json.dumps({"watch": watch}, indent=2, default=str), encoding="utf-8")
+    except Exception as e:
+        logger.debug("sma watch save failed: %s", e)
+
+
+def _add_to_sma_watch(symbol: str, price: float, sma200: float,
+                      insider_value: float = 0.0, reason: str = "") -> bool:
+    sym = str(symbol).upper().strip()
+    if not sym:
+        return False
+    watch = _load_sma_watch()
+    if any(str(w.get("symbol", "")).upper() == sym for w in watch):
+        return False
+    watch.append({"symbol": sym, "added_utc": datetime.now(timezone.utc).isoformat(),
+                  "added_price": round(float(price), 2), "sma200_at_add": round(float(sma200), 2),
+                  "insider_value": float(insider_value or 0.0),
+                  "reason": reason or "insider buy below 200SMA — buy on cross above 200SMA"})
+    _save_sma_watch(watch)
+    logger.info("SMA200-WATCH: queued %s (price=%.2f < sma200=%.2f) — will buy on cross above 200SMA",
+                sym, price, sma200)
+    return True
+
+
+def _price_and_sma200(symbol: str):
+    """(latest_daily_close, true 200-day SMA) for the cross check. (0.0, 0.0) on failure."""
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+        from alpaca.data.enums import DataFeed
+        global _EMA_DC
+        if _EMA_DC is None:
+            _EMA_DC = StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET)
+        end = datetime.now(timezone.utc)
+        req = StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Day,
+                               start=end - timedelta(days=360), end=end, feed=DataFeed.IEX)
+        df = _EMA_DC.get_stock_bars(req).df
+        if df is None or len(df) < 200:
+            return 0.0, 0.0
+        closes = df["close"].astype(float)
+        return float(closes.iloc[-1]), float(closes.tail(200).mean())
+    except Exception as e:
+        logger.debug("_price_and_sma200(%s) failed: %s", symbol, e)
+        return 0.0, 0.0
+
+
+def run_sma_watch_buys(gateway: "AlpacaGateway", risk: "RiskManager",
+                       equity_positions: Optional[Dict[str, Any]] = None) -> int:
+    """Buy queued insider names the moment price crosses back above the true 200-SMA."""
+    if os.environ.get("ENABLE_INSIDER_COPIER", "1").lower() not in {"1", "true", "yes"}:
+        return 0
+    watch = _load_sma_watch()
+    if not watch:
+        return 0
+    held = {str(s).upper() for s in (equity_positions or {})}
+    placed, remaining = 0, []
+    for w in watch:
+        sym = str(w.get("symbol", "")).upper().strip()
+        if not sym:
+            continue
+        if sym in held:
+            logger.info("SMA200-WATCH: %s already held — clearing from watch", sym)
+            continue
+        price, sma200 = _price_and_sma200(sym)
+        if price <= 0 or sma200 <= 0:
+            remaining.append(w); continue
+        if price < sma200:            # still below — keep watching
+            remaining.append(w); continue
+        # crossed back above the 200-SMA → trend confirms the insider thesis → buy
+        qty = max(1, int(INSIDER_COPY_DOLLARS / price))
+        try:
+            resp = gateway.submit_market_order(
+                sym, "buy", qty, reference_price=price,
+                reason=f"sma200_watch_cross:px={price:.2f}>=sma200={sma200:.2f}:insider")
+            if resp:
+                placed += 1
+                logger.info("SMA200-WATCH FILL: bought %s x%d on cross above 200SMA "
+                            "(px=%.2f >= sma200=%.2f)", sym, qty, price, sma200)
+            else:
+                remaining.append(w)   # risk-gate blocked — keep watching
+        except Exception as e:
+            logger.warning("SMA200-WATCH buy %s failed: %s", sym, e); remaining.append(w)
+    if len(remaining) != len(watch):
+        _save_sma_watch(remaining)
+    return placed
+
+
 _TREND_CACHE: Dict[str, Any] = {}
 
 
@@ -3679,6 +3783,7 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
             summary["insider_copies"] = run_insider_trade_copier(
                 gateway, risk, sec_candidates, equity_positions, market_context,
                 option_positions=option_positions)
+            summary["sma_watch_buys"] = run_sma_watch_buys(gateway, risk, equity_positions)
         except Exception as e:
             logger.error("Insider trade copier failed (rest of cycle unaffected): %s", e)
 
