@@ -1,61 +1,101 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>QuantumQuant · Chart</title>
 <style>
   html,body{height:100%;margin:0;background:#0d1117;color:#e6edf3;font:14px -apple-system,Segoe UI,Roboto,sans-serif}
   .bar{height:36px;display:flex;align-items:center;gap:16px;padding:0 14px;background:#161b22;border-bottom:1px solid #30363d}
   .bar a{color:#58a6ff;text-decoration:none;font-size:13px}.bar b{font-size:13px}
   #tv{position:absolute;inset:36px 0 0 0}
-  #setup{position:absolute;inset:36px 0 0 0;display:none;align-items:center;justify-content:center;padding:24px;text-align:center}
-  #setup .card{max-width:580px;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:22px;line-height:1.7;text-align:left}
+  #setup{position:absolute;inset:36px 0 0 0;display:none;align-items:center;justify-content:center;padding:24px}
+  #setup .card{max-width:600px;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:22px;line-height:1.7}
   code{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:1px 6px;font-size:12px}
   .ok{color:#3fb950}.muted{color:#8b949e;font-size:12px}
 </style></head>
 <body>
-<div class="bar"><a href="/dash/">← Dashboard</a><b>TradingView · QQEQUITY — strategy equity + insider marks</b></div>
+<div class="bar"><a href="/dash/">← Dashboard</a><b>TradingView · QQEQUITY — strategy equity + insider marks + SMA(50)</b></div>
 <div id="tv"></div>
 <div id="setup"><div class="card">
-  <h3 style="margin-top:0">📈 One-time setup: install the Charting Library</h3>
-  <p>The chart renderer is TradingView's <b>gated</b> (but free) Advanced Charts library — only you can fetch it:</p>
+  <h3 style="margin-top:0">📈 Chart library didn't load</h3>
+  <p>The TradingView Charting Library couldn't load from the CDN (it may be domain-locked). To self-host it (free):</p>
   <ol>
-    <li>Apply at <a class="ok" href="https://www.tradingview.com/charting-library/" target="_blank" rel="noopener">tradingview.com/charting-library</a> (instant for non-commercial use).</li>
-    <li>Download the bundle, then copy <code>charting_library/</code> and <code>datafeeds/</code> into <code>/root/trade-bot/static/</code> on the server.</li>
-    <li>Reload this page.</li>
+    <li>Apply at <a class="ok" href="https://www.tradingview.com/charting-library/" target="_blank" rel="noopener">tradingview.com/charting-library</a>.</li>
+    <li>Copy <code>charting_library/</code> into <code>/root/trade-bot/static/</code> on the server.</li>
+    <li>Reload — the data backend (<code>/dash/udf</code>) is <span class="ok">already live</span> with your real equity + marks.</li>
   </ol>
-  <p class="muted">The data backend (<code>/dash/udf</code>) is <span class="ok">already live</span> and serving real bars + insider marks — only these front-end files are missing.</p>
 </div></div>
 
-<script src="/dash/static/charting_library/charting_library.standalone.js" onerror="window.__noLib=1"></script>
-<script src="/dash/static/datafeeds/udf/dist/bundle.js" onerror="window.__noFeeds=1"></script>
+<!-- Try the self-hosted library first, then TradingView's hosted CDN -->
 <script>
-function start() {
-  if (!(window.TradingView && window.TradingView.widget && window.Datafeeds)) {
+(function () {
+  var tried = 0, srcs = [
+    "/dash/static/charting_library/charting_library.standalone.js",
+    "https://trading-terminal.tradingview-widget.com/charting_library/charting_library.standalone.js"
+  ];
+  (function load() {
+    if (tried >= srcs.length) { return boot(); }
+    var s = document.createElement("script");
+    s.src = srcs[tried];
+    s.onload = function () { window.__libPath = srcs[tried].replace("charting_library.standalone.js", ""); boot(); };
+    s.onerror = function () { tried++; load(); };
+    document.head.appendChild(s);
+  })();
+})();
+
+// Inline UDF → Datafeed adapter (calls our /dash/udf backend; no datafeeds bundle needed)
+var UDF = "/dash/udf";
+function j(u) { return fetch(u, { credentials: "same-origin" }).then(function (r) { return r.json(); }); }
+var Datafeed = {
+  onReady: function (cb) { j(UDF + "/config").then(function (c) { setTimeout(function () { cb(c); }, 0); }); },
+  searchSymbols: function (q, ex, t, cb) { j(UDF + "/search?query=" + encodeURIComponent(q || "")).then(cb); },
+  resolveSymbol: function (name, ok, err) {
+    j(UDF + "/symbols?symbol=" + encodeURIComponent(name)).then(function (s) {
+      if (s && s.name) { setTimeout(function () { ok(s); }, 0); } else { err("unknown_symbol"); }
+    });
+  },
+  getBars: function (sym, res, pp, ok, err) {
+    j(UDF + "/history?symbol=" + encodeURIComponent(sym.ticker) + "&from=" + pp.from + "&to=" + pp.to + "&resolution=" + res)
+      .then(function (d) {
+        if (d.s !== "ok") { ok([], { noData: true }); return; }
+        var bars = d.t.map(function (t, i) { return { time: t * 1000, open: d.o[i], high: d.h[i], low: d.l[i], close: d.c[i], volume: d.v ? d.v[i] : 0 }; });
+        ok(bars, { noData: bars.length === 0 });
+      }).catch(function (e) { err(String(e)); });
+  },
+  getMarks: function (sym, from, to, cb, res) {
+    j(UDF + "/marks?symbol=" + encodeURIComponent(sym.ticker) + "&from=" + from + "&to=" + to + "&resolution=" + res)
+      .then(function (d) {
+        var m = (d.id || []).map(function (id, i) {
+          return { id: id, time: d.time[i], color: d.color[i], text: [d.text[i]], label: d.label[i], labelFontColor: "#fff", minSize: 14 };
+        });
+        cb(m);
+      });
+  },
+  subscribeBars: function () {}, unsubscribeBars: function () {}
+};
+
+function boot() {
+  if (!(window.TradingView && window.TradingView.widget)) {
     document.getElementById('tv').style.display = 'none';
     document.getElementById('setup').style.display = 'flex';
     return;
   }
   new TradingView.widget({
     container: "tv",
-    library_path: "/dash/static/charting_library/",
-    datafeed: new Datafeeds.UDFCompatibleDatafeed("/dash/udf", 30000),
+    library_path: window.__libPath || "/dash/static/charting_library/",
+    datafeed: Datafeed,
     symbol: "QQEQUITY", interval: "1D", autosize: true, theme: "dark",
     timezone: "America/New_York", locale: "en",
-    disabled_features: ["use_localstorage_for_settings"],
+    disabled_features: ["use_localstorage_for_settings", "order_panel", "trading_account_manager"],
     enabled_features: ["study_templates"],
     overrides: { "paneProperties.background": "#0d1117", "paneProperties.backgroundType": "solid" },
-    // Custom SMA(50) indicator (your trend criteria) plotted on the strategy equity.
     custom_indicators_getter: function (PineJS) {
       return Promise.resolve([{
         name: "QQ SMA",
         metainfo: {
           _metainfoVersion: 53, id: "QQSMA@tv-basicstudies-1",
           description: "QQ SMA", shortDescription: "QQ SMA",
-          is_price_study: true, linkedToSeries: true, format: { type: "inherit" },
+          is_price_study: true, linkedToSeries: true, isCustomIndicator: true, format: { type: "inherit" },
           plots: [{ id: "plot_0", type: "line" }],
-          defaults: {
-            styles: { plot_0: { linestyle: 0, linewidth: 2, plottype: 0, trackPrice: false, transparency: 0, visible: true, color: "#f0b90b" } },
-            inputs: { length: 50 }
-          },
+          defaults: { styles: { plot_0: { linestyle: 0, linewidth: 2, plottype: 0, trackPrice: false, transparency: 0, visible: true, color: "#f0b90b" } }, inputs: { length: 50 } },
           styles: { plot_0: { title: "SMA", histogramBase: 0 } },
           inputs: [{ id: "length", name: "Length", defval: 50, type: "integer", min: 1, max: 2000 }]
         },
@@ -70,6 +110,5 @@ function start() {
     }
   });
 }
-window.addEventListener("DOMContentLoaded", start);
 </script>
 </body></html>
