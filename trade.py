@@ -1164,7 +1164,7 @@ def build_options_booster_env(config: ScannerConfig, candidate_symbols: list[str
         "OPTIONS_FLOW_MAX_CONTRACTS_PER_UNDERLYING": str(config.options_flow_max_contracts_per_underlying),
         "OPTIONS_MIN_VOLUME_OI_RATIO": str(config.options_flow_min_volume_oi_ratio),
         "OPTIONS_MIN_PREMIUM_FLOW_DOLLARS": str(config.options_flow_min_premium_dollars),
-        "APCA_PAPER": "1",
+        "APCA_PAPER": "0" if str(os.getenv("ALPACA_PAPER_ONLY", "true")).lower() in {"false", "0", "no"} else "1",
     }
     if candidate_symbols:
         env["OPTIONS_CANDIDATE_SYMBOLS"] = ",".join(candidate_symbols)
