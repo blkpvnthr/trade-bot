@@ -97,6 +97,14 @@ DYNAMIC_MAX_DRAWDOWN_PCT = float(os.environ.get("DYNAMIC_MAX_DRAWDOWN_PCT", "0.0
 DYNAMIC_EQUITY_FLOOR_PCT = float(os.environ.get("DYNAMIC_EQUITY_FLOOR_PCT", "0.90"))    # 90% of anchor
 DYNAMIC_EQUITY_FLOOR_MIN = float(os.environ.get("DYNAMIC_EQUITY_FLOOR_MIN", "1000"))
 DYNAMIC_MAX_ORDER_PCT = float(os.environ.get("DYNAMIC_MAX_ORDER_PCT", "0.03"))          # 3% notional/order
+# FINRA pattern-day-trader equity floor. Default $25k (the long-standing rule). Configurable
+# so it can track a relaxed threshold — but the BROKER independently enforces PDT regardless,
+# so lowering this only changes the engine's own self-restraint, not what Alpaca will allow.
+PDT_EQUITY_FLOOR = float(os.environ.get("PDT_EQUITY_FLOOR", "25000"))
+# Symbols this engine must NOT trade (no exits, no adds) — e.g. positions owned by a separate
+# bot on the same live account. They still count toward exposure/risk math but are dropped from
+# the managed option/equity position sets and from the tradable universe. Comma-separated.
+PROTECTED_SYMBOLS = {s.strip().upper() for s in os.environ.get("PROTECTED_SYMBOLS", "").split(",") if s.strip()}
 # Fractional/notional BUY orders: let the BAL deploy an exact DOLLAR amount (fractional shares) so
 # high-priced names (ASML, MU) fit at sane weights on a small account instead of being whole-share-floored.
 ENABLE_FRACTIONAL_ORDERS = os.environ.get("ENABLE_FRACTIONAL_ORDERS", "false").lower() in {"1", "true", "yes"}
@@ -109,7 +117,7 @@ EMA_TAKE_PROFIT_PCT = float(os.environ.get("EMA_TAKE_PROFIT_PCT", "0.33"))   # b
 EMA_TRIM_WINNERS_ONLY = os.environ.get("EMA_TRIM_WINNERS_ONLY", "true").lower() in {"1", "true", "yes"}
 # 200-SMA long-term trend gate: only BUY / re-enter when price is above the daily 200-SMA.
 ENABLE_SMA200_GATE = os.environ.get("ENABLE_SMA200_GATE", "true").lower() in {"1", "true", "yes"}
-SMA200_PERIOD = int(os.environ.get("SMA200_PERIOD", "200"))
+SMA200_PERIOD = int(os.environ.get("SMA200_PERIOD", "50"))
 # Per-position stop loss: exit a held share when it falls this % below its average entry (0 = off).
 POSITION_STOP_PCT = float(os.environ.get("POSITION_STOP_PCT", "0.0"))
 # Broader-market regime switch: gate buys + liquidate on a market-wide reversal/chop. RISK-ON = a
@@ -383,7 +391,7 @@ SKIP_REASONS = {
     "rejected_by_cycle",
     "rejected_by_cash_buffer",
     "rejected_by_below_9ema",
-    "rejected_by_below_sma200",
+    "rejected_by_below_sma50",
     "rejected_not_9ema_dip",
     "rejected_no_trend_crossover",
     "rejected_market_regime_chop_or_reversal",
@@ -748,12 +756,12 @@ class RiskManager:
         self.account_status          = str(account.get("status", self.account_status) or "")
         self.trading_blocked         = bool(account.get("trading_blocked", False))
         self.account_blocked         = bool(account.get("account_blocked", False))
-        # PDT: flagged AND under the $25k pattern-day-trader floor AND near the daytrade cap
+        # PDT: flagged AND under the pattern-day-trader equity floor AND near the daytrade cap
         flagged   = bool(account.get("pattern_day_trader", False))
         dt_count  = int(account.get("daytrade_count", 0) or 0)
         self.pattern_day_trader = flagged
         self.daytrade_count     = dt_count
-        self.pdt_restricted = flagged and self.equity < 25_000 and dt_count >= 3
+        self.pdt_restricted = flagged and self.equity < PDT_EQUITY_FLOOR and dt_count >= 3
         self.refresh_dynamic_limits()
 
     def sync_exposure(self, options_exposure: float, stock_exposure: float):
@@ -975,17 +983,24 @@ class AlpacaGateway:
         equity_positions: Dict[str, Any] = {}
         opt_exp = stk_exp = 0.0
         for p in positions:
+            sym = str(getattr(p, "symbol", ""))
             mv = abs(float(getattr(p, "market_value", 0) or 0))
+            # Protected symbols (e.g. owned by another bot on this live account): count toward
+            # exposure so risk math is correct, but never expose them to the engines that manage
+            # exits/adds — drop from both managed position sets.
+            protected = _occ_underlying(sym).upper() in PROTECTED_SYMBOLS or sym.upper() in PROTECTED_SYMBOLS
             if self._is_option_position(p):
-                option_positions.append({
-                    "symbol": str(getattr(p, "symbol", "")),
-                    "qty": int(float(getattr(p, "qty", 0) or 0)),
-                    "unrealized_plpc": float(getattr(p, "unrealized_plpc", 0) or 0),
-                    "market_value": mv,
-                })
+                if not protected:
+                    option_positions.append({
+                        "symbol": sym,
+                        "qty": int(float(getattr(p, "qty", 0) or 0)),
+                        "unrealized_plpc": float(getattr(p, "unrealized_plpc", 0) or 0),
+                        "market_value": mv,
+                    })
                 opt_exp += mv
             else:
-                equity_positions[str(getattr(p, "symbol", ""))] = p
+                if not protected:
+                    equity_positions[sym] = p
                 stk_exp += mv
         return option_positions, equity_positions, opt_exp, stk_exp
 
@@ -1231,6 +1246,13 @@ class AlpacaGateway:
         """
         qty = int(qty)
         if qty <= 0:
+            return None
+        # Protected symbols (owned by another bot on this live account) are never traded by this
+        # engine — hard backstop independent of position/universe filtering.
+        if PROTECTED_SYMBOLS and (_occ_underlying(symbol).upper() in PROTECTED_SYMBOLS
+                                  or symbol.upper() in PROTECTED_SYMBOLS):
+            logger.info("ORDER BLOCKED: %s %s x%d is a PROTECTED symbol (reason=%s) — not traded",
+                        side, symbol, qty, reason)
             return None
         opt = is_option_symbol(symbol)
         asset_class = "option" if opt else "equity"
@@ -2658,7 +2680,7 @@ def _ema_buy_blocked(symbol: str, price: float) -> str:
         return ""
     ema9, sma200, prev = mas
     if sma200 > 0 and price < sma200:
-        return f"rejected_by_below_sma200:price={price:.2f}<sma200={sma200:.2f}"
+        return f"rejected_by_below_sma50:price={price:.2f}<sma50={sma200:.2f}"
     cross_up_sma200 = sma200 > 0 and prev < sma200 <= price
     cross_down_ema9 = ema9 > 0 and prev > ema9 >= price
     if cross_up_sma200 or (cross_down_ema9 and price > sma200):
