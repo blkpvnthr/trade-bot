@@ -29,6 +29,12 @@ ROOT = Path(__file__).resolve().parent
 BARS_DIR = ROOT / "data" / "cache" / "alpaca_bars"
 EXEC_DIR = ROOT / "logs" / "execution"
 
+RUN_LOG = ROOT / "logs" / "run.log"
+import re as _re
+_EQ_RE = _re.compile(r"^(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}.*Account cycle=\d+: equity=\$([\d.]+)")
+_ORD_RE = _re.compile(r"^(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}.*ORDER (buy|sell) ([A-Z0-9.]+)")
+_LCACHE = {"eq": None, "eq_t": 0.0, "mk": None, "mk_t": 0.0}
+
 udf_bp = Blueprint("udf", __name__)
 EQUITY_SYMBOL = "QQEQUITY"
 _RES = ["1", "5", "15", "30", "60", "1D", "1W", "1M"]
@@ -137,27 +143,30 @@ def _cached_bars(sym: str):
 
 
 def _equity_bars():
-    """Daily strategy equity from logs/execution/*/*_executor_equity_curve.csv. Fail-safe."""
+    """Daily strategy-equity OHLC parsed from run.log Account-cycle lines (the reliable source). Fail-safe."""
+    import datetime
+    now = time.time()
+    if _LCACHE["eq"] is not None and now - _LCACHE["eq_t"] < 60:
+        return _LCACHE["eq"]
+    days = {}   # day_unix -> [open, high, low, close]
     try:
-        import pandas as pd
-        series = {}   # day_unix -> last equity of the day
-        for f in sorted(glob.glob(str(EXEC_DIR / "*" / "*_executor_equity_curve.csv"))):
-            try:
-                with open(f) as fh:
-                    for row in _csv.DictReader(fh):
-                        eq = next((float(row[k]) for k in
-                                   ("equity", "account_equity", "total_equity", "value")
-                                   if row.get(k)), None)
-                        ts = row.get("timestamp") or row.get("time") or row.get("ts")
-                        if eq is None or not ts:
-                            continue
-                        series[int(pd.Timestamp(ts).normalize().timestamp())] = eq
-            except Exception:
-                continue
-        return [(d, series[d], series[d], series[d], series[d], 0) for d in sorted(series)]
+        with open(RUN_LOG, errors="replace") as fh:
+            for line in fh:
+                m = _EQ_RE.match(line)
+                if not m:
+                    continue
+                d = int(datetime.datetime.strptime(m.group(1), "%Y-%m-%d")
+                        .replace(tzinfo=datetime.timezone.utc).timestamp())
+                eq = float(m.group(2))
+                if d not in days:
+                    days[d] = [eq, eq, eq, eq]
+                else:
+                    days[d][1] = max(days[d][1], eq); days[d][2] = min(days[d][2], eq); days[d][3] = eq
     except Exception as e:
         logger.debug("equity_bars: %s", e)
-        return []
+    bars = [(d, v[0], v[1], v[2], v[3], 0) for d, v in sorted(days.items())]
+    _LCACHE["eq"], _LCACHE["eq_t"] = bars, now
+    return bars
 
 
 @udf_bp.route("/marks")
@@ -177,25 +186,26 @@ def marks():
 
 
 def _trade_marks():
-    """Buy/sell events from the executor journal. Fail-safe → []."""
+    """Buy/sell marks parsed from run.log ORDER lines (the reliable source). Fail-safe → []."""
+    import datetime
+    now = time.time()
+    if _LCACHE["mk"] is not None and now - _LCACHE["mk_t"] < 60:
+        return _LCACHE["mk"]
     out = []
     try:
-        import pandas as pd
-        for f in sorted(glob.glob(str(EXEC_DIR / "*" / "*_executor_journal.csv")))[-30:]:
-            try:
-                with open(f) as fh:
-                    for i, row in enumerate(_csv.DictReader(fh)):
-                        side = (row.get("side") or "").lower()
-                        ts = row.get("timestamp") or row.get("time")
-                        if side not in ("buy", "sell") or not ts:
-                            continue
-                        out.append({"id": f"{Path(f).stem}_{i}",
-                                    "time": int(pd.Timestamp(ts).normalize().timestamp()),
-                                    "color": "#26a69a" if side == "buy" else "#ef5350",
-                                    "text": f"{side.upper()} {row.get('symbol', '')}",
-                                    "label": side[0].upper()})
-            except Exception:
-                continue
+        with open(RUN_LOG, errors="replace") as fh:
+            for i, line in enumerate(fh):
+                m = _ORD_RE.match(line)
+                if not m:
+                    continue
+                d = int(datetime.datetime.strptime(m.group(1), "%Y-%m-%d")
+                        .replace(tzinfo=datetime.timezone.utc).timestamp())
+                side, sym = m.group(2), m.group(3)
+                out.append({"id": f"ord_{i}", "time": d,
+                            "color": "#26a69a" if side == "buy" else "#ef5350",
+                            "text": f"{side.upper()} {sym}", "label": side[0].upper()})
     except Exception as e:
         logger.debug("trade_marks: %s", e)
-    return out[-500:]
+    out = out[-500:]
+    _LCACHE["mk"], _LCACHE["mk_t"] = out, now
+    return out
