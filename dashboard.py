@@ -430,13 +430,43 @@ def page(title, body, active=""):
         return f'<a class="navlink{on}" href="{PREFIX}{href}">{label}</a>'
     nav = (navlink("/", "Overview", "home") + navlink("/monthly", "Monthly", "monthly")
            + navlink("/journal", "Journal", "journal") + navlink("/logs", "Logs", "logs")
-           + navlink("/backtest", "Strategy", "backtest"))
+           + navlink("/backtest", "Strategy", "backtest") + navlink("/chart", "Chart", "chart"))
     return Response(f"""<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>{title} · QuantumQuant</title><style>{CSS}</style></head>
 <body><div class=wrap><div class=nav>{nav}</div>{body}
 <div class=sub>QuantumQuant · live · updated {datetime.now(ET):%Y-%m-%d %H:%M ET} · <a href="{PREFIX}/logout">sign out</a></div>
 </div>{MODAL}</body></html>""", mimetype="text/html")
+
+
+# ── TradingView Advanced Charts: UDF datafeed + chart page (additive, fail-safe) ──
+try:
+    from udf_datafeed import udf_bp
+
+    @udf_bp.before_request
+    def _udf_auth():
+        if not _authed():
+            return jsonify({"s": "error", "errmsg": "unauthorized"}), 401
+
+    app.register_blueprint(udf_bp, url_prefix=PREFIX + "/udf")
+except Exception as _e:
+    import logging as _lg
+    _lg.getLogger("dashboard").warning("UDF datafeed blueprint not registered: %s", _e)
+
+
+@app.route(PREFIX + "/chart")
+@need_auth
+def chart_page():
+    try:
+        return Response((ROOT / "tv_chart.html").read_text(encoding="utf-8"), mimetype="text/html")
+    except Exception as e:
+        return Response(f"chart page error: {e}", mimetype="text/plain")
+
+
+@app.route(PREFIX + "/static/<path:p>")
+def dash_static(p):
+    from flask import send_from_directory
+    return send_from_directory(str(ROOT / "static"), p)
 
 
 # ── routes ────────────────────────────────────────────────────────────────────

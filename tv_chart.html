@@ -1,0 +1,75 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QuantumQuant · Chart</title>
+<style>
+  html,body{height:100%;margin:0;background:#0d1117;color:#e6edf3;font:14px -apple-system,Segoe UI,Roboto,sans-serif}
+  .bar{height:36px;display:flex;align-items:center;gap:16px;padding:0 14px;background:#161b22;border-bottom:1px solid #30363d}
+  .bar a{color:#58a6ff;text-decoration:none;font-size:13px}.bar b{font-size:13px}
+  #tv{position:absolute;inset:36px 0 0 0}
+  #setup{position:absolute;inset:36px 0 0 0;display:none;align-items:center;justify-content:center;padding:24px;text-align:center}
+  #setup .card{max-width:580px;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:22px;line-height:1.7;text-align:left}
+  code{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:1px 6px;font-size:12px}
+  .ok{color:#3fb950}.muted{color:#8b949e;font-size:12px}
+</style></head>
+<body>
+<div class="bar"><a href="/dash/">← Dashboard</a><b>TradingView · QQEQUITY — strategy equity + insider marks</b></div>
+<div id="tv"></div>
+<div id="setup"><div class="card">
+  <h3 style="margin-top:0">📈 One-time setup: install the Charting Library</h3>
+  <p>The chart renderer is TradingView's <b>gated</b> (but free) Advanced Charts library — only you can fetch it:</p>
+  <ol>
+    <li>Apply at <a class="ok" href="https://www.tradingview.com/charting-library/" target="_blank" rel="noopener">tradingview.com/charting-library</a> (instant for non-commercial use).</li>
+    <li>Download the bundle, then copy <code>charting_library/</code> and <code>datafeeds/</code> into <code>/root/trade-bot/static/</code> on the server.</li>
+    <li>Reload this page.</li>
+  </ol>
+  <p class="muted">The data backend (<code>/dash/udf</code>) is <span class="ok">already live</span> and serving real bars + insider marks — only these front-end files are missing.</p>
+</div></div>
+
+<script src="/dash/static/charting_library/charting_library.standalone.js" onerror="window.__noLib=1"></script>
+<script src="/dash/static/datafeeds/udf/dist/bundle.js" onerror="window.__noFeeds=1"></script>
+<script>
+function start() {
+  if (!(window.TradingView && window.TradingView.widget && window.Datafeeds)) {
+    document.getElementById('tv').style.display = 'none';
+    document.getElementById('setup').style.display = 'flex';
+    return;
+  }
+  new TradingView.widget({
+    container: "tv",
+    library_path: "/dash/static/charting_library/",
+    datafeed: new Datafeeds.UDFCompatibleDatafeed("/dash/udf", 30000),
+    symbol: "QQEQUITY", interval: "1D", autosize: true, theme: "dark",
+    timezone: "America/New_York", locale: "en",
+    disabled_features: ["use_localstorage_for_settings"],
+    enabled_features: ["study_templates"],
+    overrides: { "paneProperties.background": "#0d1117", "paneProperties.backgroundType": "solid" },
+    // Custom SMA(50) indicator (your trend criteria) plotted on the strategy equity.
+    custom_indicators_getter: function (PineJS) {
+      return Promise.resolve([{
+        name: "QQ SMA",
+        metainfo: {
+          _metainfoVersion: 53, id: "QQSMA@tv-basicstudies-1",
+          description: "QQ SMA", shortDescription: "QQ SMA",
+          is_price_study: true, linkedToSeries: true, format: { type: "inherit" },
+          plots: [{ id: "plot_0", type: "line" }],
+          defaults: {
+            styles: { plot_0: { linestyle: 0, linewidth: 2, plottype: 0, trackPrice: false, transparency: 0, visible: true, color: "#f0b90b" } },
+            inputs: { length: 50 }
+          },
+          styles: { plot_0: { title: "SMA", histogramBase: 0 } },
+          inputs: [{ id: "length", name: "Length", defval: 50, type: "integer", min: 1, max: 2000 }]
+        },
+        constructor: function () {
+          this.main = function (ctx, inp) {
+            this._context = ctx; this._input = inp;
+            var s = this._context.new_var(PineJS.Std.close(this._context));
+            return [PineJS.Std.sma(s, this._input(0), this._context)];
+          };
+        }
+      }]);
+    }
+  });
+}
+window.addEventListener("DOMContentLoaded", start);
+</script>
+</body></html>
