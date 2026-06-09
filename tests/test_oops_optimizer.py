@@ -8,6 +8,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -123,11 +124,49 @@ class OOPSEngineIntegrationTests(unittest.TestCase):
         class _WF:
             def consume_alpha(self, amt): return amt
 
-        placed = run.run_alpha_entries(eng, gw, _WF(), risk, symbols=["AAPL"],
-                                       bars_by_symbol={}, chains_by_symbol={}, market_context={})
+        with patch.object(run, "is_market_open", return_value=True):
+            placed = run.run_alpha_entries(eng, gw, _WF(), risk, symbols=["AAPL"],
+                                           bars_by_symbol={}, chains_by_symbol={}, market_context={})
         self.assertEqual(placed, 1)
         # Recorded fill on the RiskManager proves it passed risk.gate() via the gateway.
         self.assertIn("AAPL260116C00150000", risk.open_positions)
+
+    def test_alpha_entries_blocked_when_market_closed(self):
+        import run
+        risk = run.RiskManager(equity=100_000.0)
+        gw = run.AlpacaGateway(risk)
+        gw._available = False; gw._mode = "sim"
+        eng = ace.AlphaCallEngine(broker=gw, config=ace.AlphaCallConfig())
+        eng.evaluate_universe = lambda **kw: self.fail("evaluate_universe should not run when market is closed")
+
+        class _WF:
+            def consume_alpha(self, amt): return amt
+
+        with patch.object(run, "is_market_open", return_value=False):
+            placed = run.run_alpha_entries(eng, gw, _WF(), risk, symbols=["AAPL"],
+                                           bars_by_symbol={}, chains_by_symbol={}, market_context={})
+        self.assertEqual(placed, 0)
+        self.assertEqual(risk.open_positions, {})
+
+    def test_alpha_entries_blocked_by_halt_new_buys(self):
+        import run
+        risk = run.RiskManager(equity=100_000.0)
+        gw = run.AlpacaGateway(risk)
+        gw._available = False; gw._mode = "sim"
+        eng = ace.AlphaCallEngine(broker=gw, config=ace.AlphaCallConfig())
+        eng.evaluate_universe = lambda **kw: self.fail("evaluate_universe should not run during halt_new_buys")
+
+        class _WF:
+            def consume_alpha(self, amt): return amt
+
+        with patch.object(run, "is_market_open", return_value=True):
+            placed = run.run_alpha_entries(
+                eng, gw, _WF(), risk,
+                symbols=["AAPL"], bars_by_symbol={}, chains_by_symbol={},
+                market_context={"trade_permission": "halt_new_buys"},
+            )
+        self.assertEqual(placed, 0)
+        self.assertEqual(risk.open_positions, {})
 
     # 9 ─────────────────────────────────────────────────────────────────────────
     def test_oops_exit_cannot_override_hard_stop(self):

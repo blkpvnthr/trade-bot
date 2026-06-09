@@ -86,15 +86,18 @@ NON_DISCOVERY_CODES = {
 class SECForm4Config:
     enabled: bool = os.getenv("ENABLE_SEC_FORM4_FEED", "true").lower() in {"1", "true"}
     user_agent: str = os.getenv("SEC_USER_AGENT", "QuantumQuant/1.0 contact@example.com")
-    lookback_days: int = int(os.getenv("SEC_FORM4_LOOKBACK_DAYS", "30"))
+    lookback_days: int = int(os.getenv("SEC_FORM4_LOOKBACK_DAYS", "5"))  # reduced 30→5 to limit network requests per cycle
     min_transaction_value: float = float(os.getenv("SEC_FORM4_MIN_TRANSACTION_VALUE", "1000000"))  # lowered 100M→1M (2026-06-03); $100M was filtering out all candidates
     cache_dir: str = os.getenv("SEC_FORM4_CACHE_DIR", "data/sec_cache")
     rate_limit_seconds: float = float(os.getenv("SEC_FORM4_RATE_LIMIT_SECONDS", "0.2"))
     # Bounds so a single run can never hammer SEC or hang the cycle.
-    max_filings: int = int(os.getenv("SEC_FORM4_MAX_FILINGS", "4000"))
-    max_index_days: int = int(os.getenv("SEC_FORM4_MAX_INDEX_DAYS", "31"))
+    max_filings: int = int(os.getenv("SEC_FORM4_MAX_FILINGS", "200"))  # reduced 4000→200; 4000×0.2s=800s blocking
+    max_index_days: int = int(os.getenv("SEC_FORM4_MAX_INDEX_DAYS", "5"))   # reduced 31→5
     request_timeout: int = int(os.getenv("SEC_FORM4_REQUEST_TIMEOUT", "15"))
     index_cache_ttl_seconds: int = int(os.getenv("SEC_FORM4_INDEX_CACHE_TTL", "21600"))  # 6h
+    # How long (seconds) before the output file is considered stale and a new network run is needed.
+    # Set to 4 hours: insider data doesn't need refreshing every cycle (it's a discovery input, not a live signal).
+    output_cache_ttl_seconds: int = int(os.getenv("SEC_FORM4_OUTPUT_CACHE_TTL", "14400"))  # 4h
 
 
 # ── XML parsing (pure, network-free) ─────────────────────────────────────────────
@@ -632,6 +635,11 @@ def run_sec_form4_discovery(config: SECForm4Config | None = None) -> dict:
     Fail-safe discovery driver for run.py. Never raises. On any failure it logs the
     error, writes a diagnostic output (with the error recorded), and returns an empty
     candidate set so the Buffett screener / Alpha engine continue unaffected.
+
+    Session-level caching: if insider_buy_candidates.json is younger than
+    output_cache_ttl_seconds (default 4h), the cached result is returned immediately
+    without making any network requests. This prevents the SEC discovery from blocking
+    the main trading loop on every cycle.
     """
     cfg = config or SECForm4Config()
     if not cfg.enabled:
@@ -641,6 +649,27 @@ def run_sec_form4_discovery(config: SECForm4Config | None = None) -> dict:
                   "source": SOURCE_TAG}
         _write_outputs(result)
         return result
+
+    # --- Session-level output cache guard ---
+    # SEC Form 4 data is a discovery input (not a live signal), so refreshing once per
+    # session window is sufficient. Skip the expensive network crawl if fresh output exists.
+    try:
+        if INSIDER_BUY_CANDIDATES_PATH.exists() and SEC_FORM4_INSIDER_BUYS_PATH.exists():
+            age_secs = time.time() - INSIDER_BUY_CANDIDATES_PATH.stat().st_mtime
+            if age_secs < cfg.output_cache_ttl_seconds:
+                cached = json.loads(SEC_FORM4_INSIDER_BUYS_PATH.read_text(encoding="utf-8"))
+                cand_count = len(cached.get("candidates", []))
+                logger.info(
+                    "SEC Form 4 discovery: using cached output (age=%.0fm, %d candidates) — "
+                    "next refresh in %.0fm",
+                    age_secs / 60,
+                    cand_count,
+                    (cfg.output_cache_ttl_seconds - age_secs) / 60,
+                )
+                return cached
+    except Exception:
+        pass  # Cache read failure → fall through to fresh network run
+
     try:
         result = SECForm4Feed(cfg).discover()
     except Exception as exc:

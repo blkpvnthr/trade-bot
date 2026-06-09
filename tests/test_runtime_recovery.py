@@ -33,6 +33,25 @@ class RuntimeOutputRecoveryTests(unittest.TestCase):
             self.assertGreaterEqual(len(result["csv_initialized"]), 1)
 
 
+class CandidateUniverseSanitizationTests(unittest.TestCase):
+    def test_parse_ticker_file_drops_placeholder_symbols(self):
+        syms = run._parse_ticker_file('"AAPL","N/A","msft"," none ","SPY","NA",""')
+
+        self.assertEqual(syms, ["AAPL", "MSFT", "SPY"])
+
+    def test_load_candidate_universe_filters_invalid_locked_universe_rows(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dated = root / f"{run.DATA_TAG}_locked_trading_universe.txt"
+            dated.write_text("AAPL\nN/A\nmsft\nNone\nSPY\n", encoding="utf-8")
+
+            with patch.object(run, "PROJECT_ROOT", root), \
+                 patch.object(run, "ENABLE_TV_QUALITY_SCREEN", False):
+                syms = run.load_candidate_universe()
+
+        self.assertEqual(syms, ["AAPL", "MSFT", "SPY"])
+
+
 class PlannerOrderRecoveryTests(unittest.TestCase):
     def _make_executor(self):
         executor = run.ProductionOrderExecutor.__new__(run.ProductionOrderExecutor)

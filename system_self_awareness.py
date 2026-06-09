@@ -93,7 +93,7 @@ if not _MARKET_CONTEXT_PATH.exists():
 MARKET_CONTEXT_PATH = _MARKET_CONTEXT_PATH
 PREMARKET_PLAN_PATH = OUT_DIR / f"{DATA_TAG}_premarket_trade_plan.json"
 STRUCTURE_MAP_PATH = OUT_DIR / f"{DATA_TAG}_intraday_structure_map.json"
-FEATURE_STREAM_DIR = OUT_DIR / f"{DATA_TAG}_Feature_stream"
+FEATURE_STREAM_DIR = OUT_DIR / f"{DATA_TAG}_feature_stream"  # lowercase matches trade.py
 FEATURE_STREAM_CSV_PATH = FEATURE_STREAM_DIR / f"{DATA_TAG}_intraday_feature_stream.csv"
 FEATURE_STREAM_STATE_PATH = FEATURE_STREAM_DIR / f"{DATA_TAG}_symbol_state.json"
 FORECAST_ENSEMBLE_PATH = OUT_DIR / f"{DATA_TAG}_forecast_ensemble_signals.json"

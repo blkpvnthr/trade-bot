@@ -94,28 +94,78 @@ def _sec_insider_candidates() -> dict:
         return {}
 
 
+_AV_SESSION_CACHE: dict = {}       # symbol → result; lives for the process lifetime
+_AV_SESSION_CACHE_TTL_S: float = 14400.0  # 4h — refresh at most once per 4h per symbol
+_AV_SESSION_CACHE_TS: dict = {}    # symbol → fetch timestamp
+_AV_BG_FETCHING: set = set()       # symbols currently being fetched in the background
+_AV_LOCK = None                    # threading.Lock, initialised lazily
+
+_AV_NEUTRAL: dict = {
+    "insider_trend_score": 0.0,
+    "insider_confidence_modifier": 0.0,
+    "insider_net_value": 0.0,
+    "insider_buy_value": 0.0,
+    "insider_sell_value": 0.0,
+    "insider_buy_count": 0,
+    "insider_sell_count": 0,
+    "insider_buy_sell_ratio": 1.0,
+    "insider_warning_flags": [],
+    "insider_summary_text": "unavailable",
+    "insider_from_date": "",
+}
+
+
 def _av_insider_trend(symbol: str) -> dict:
     """
     Alpha Vantage per-symbol insider trend (fail-safe, neutral on any error).
     The returned dict always has all required fields; never raises.
+
+    FIX 2026-06-09: Non-blocking background-fetch design.
+    * If the session cache is warm, return immediately (no network call).
+    * If the cache is cold, return neutral results NOW and kick off a
+      background thread to populate the cache for the next cycle.
+    This prevents the Buffett screener from blocking the main trading cycle
+    for 27 × 15s = 405s on the first cycle of each session.
     """
-    try:
-        from insider_transactions_av import get_insider_trend
-        return get_insider_trend(symbol)
-    except Exception:
-        return {
-            "insider_trend_score": 0.0,
-            "insider_confidence_modifier": 0.0,
-            "insider_net_value": 0.0,
-            "insider_buy_value": 0.0,
-            "insider_sell_value": 0.0,
-            "insider_buy_count": 0,
-            "insider_sell_count": 0,
-            "insider_buy_sell_ratio": 1.0,
-            "insider_warning_flags": [],
-            "insider_summary_text": "unavailable",
-            "insider_from_date": "",
-        }
+    import time as _time
+    import threading as _threading
+    global _AV_LOCK
+
+    if _AV_LOCK is None:
+        _AV_LOCK = _threading.Lock()
+
+    sym_key = str(symbol).upper()
+    now = _time.time()
+
+    # Hot path: return cached result if fresh enough.
+    with _AV_LOCK:
+        cached_ts = _AV_SESSION_CACHE_TS.get(sym_key, 0.0)
+        if sym_key in _AV_SESSION_CACHE and (now - cached_ts) < _AV_SESSION_CACHE_TTL_S:
+            return _AV_SESSION_CACHE[sym_key]
+        already_fetching = sym_key in _AV_BG_FETCHING
+
+    # Cold path: launch background fetch and return neutral immediately.
+    if not already_fetching:
+        with _AV_LOCK:
+            _AV_BG_FETCHING.add(sym_key)
+
+        def _bg_fetch(s: str) -> None:
+            try:
+                from insider_transactions_av import get_insider_trend
+                res = get_insider_trend(s)
+            except Exception:
+                res = dict(_AV_NEUTRAL)
+            with _AV_LOCK:
+                _AV_SESSION_CACHE[s] = res
+                _AV_SESSION_CACHE_TS[s] = _time.time()
+                _AV_BG_FETCHING.discard(s)
+
+        _threading.Thread(target=_bg_fetch, args=(sym_key,),
+                          name=f"av-insider-{sym_key}", daemon=True).start()
+
+    # Return neutral (or stale cache) while fetch is in progress.
+    with _AV_LOCK:
+        return dict(_AV_SESSION_CACHE.get(sym_key, _AV_NEUTRAL))
 
 
 def build_buffett_universe(extra_symbols: list[str] | None = None,

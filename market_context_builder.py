@@ -933,6 +933,12 @@ Required schema:
   "risk_level": "low | medium | high",
   "summary": "brief summary",
   "decision_reasons": ["reason 1", "reason 2"],
+  "rate_direction": "cutting | pausing | holding | hiking | tightening",
+  "inflation_trend": "falling | cooling | stable | rising | hot",
+  "recession_risk": "low | medium | elevated | high",
+  "fomc_stance": "dovish | neutral | hawkish",
+  "tariff_risk": "low | medium | elevated | high",
+  "cycle_phase": "early_recovery | expansion | mid_cycle | late_expansion | late_cycle | recession",
   "event_evidence": {{
     "fed_events_today": [],
     "jobs_report_today": [],
@@ -989,6 +995,14 @@ Market interpretation rules:
 - If SPY/QQQ are weak, VXX is rising, and futures are negative, use halt_new_buys.
 - If sector rotation is risk_on_growth, SPY/QQQ are constructive, and no major macro event is confirmed, normal is allowed.
 - If risk is unclear, trade_permission should be cautious.
+
+Macro field rules (REQUIRED — must never be null):
+- rate_direction: infer from recent Fed statements and TLT/rate moves. Default "pausing" when unclear.
+- inflation_trend: infer from recent CPI/PCE data or news context. Default "stable" when unclear.
+- recession_risk: infer from labor market, GDP trend, yield curve. Default "low" when unclear.
+- fomc_stance: infer from recent Fed language and rate action. Default "neutral" when unclear.
+- tariff_risk: infer from trade policy news. Default "low" when unclear.
+- cycle_phase: infer from growth/employment/market trend. Use "mid_cycle" when unclear.
 
 Raw context:
 {json.dumps(safe_json(raw_context), separators=(",", ":"))}
@@ -1106,6 +1120,13 @@ def fallback_classification(raw_context: dict[str, Any], reason: str) -> dict[st
             "scheduled_market_events_today": [],
             "earnings_today": [],
         },
+        # Macro defaults for BAL scoring when LLM is unavailable
+        "rate_direction": "pausing",
+        "inflation_trend": "stable",
+        "recession_risk": "low",
+        "fomc_stance": "neutral",
+        "tariff_risk": "low",
+        "cycle_phase": "mid_cycle",
     }
 
 
@@ -1176,6 +1197,13 @@ def _build_market_context_impl() -> dict[str, Any]:
         "sector_context_summary": classification.get("sector_context_summary", {}),
         "key_etf_context_summary": classification.get("key_etf_context_summary", {}),
         "news_context_summary": classification.get("news_context_summary", {}),
+        # Macro fields for BAL composite scoring (rate/inflation/cycle context)
+        "rate_direction": classification.get("rate_direction") or "pausing",
+        "inflation_trend": classification.get("inflation_trend") or "stable",
+        "recession_risk": classification.get("recession_risk") or "low",
+        "fomc_stance": classification.get("fomc_stance") or "neutral",
+        "tariff_risk": classification.get("tariff_risk") or "low",
+        "cycle_phase": classification.get("cycle_phase") or "mid_cycle",
         "classifier_model": OPENAI_MODEL,
     }
 

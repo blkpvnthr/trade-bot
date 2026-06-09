@@ -161,6 +161,10 @@ def build_funnel(data_tag: str = None) -> Dict[str, Any]:
         try:
             with open(jpath, newline="") as f:
                 for row in csv.DictReader(f):
+                    # Exclude SIM-only orders (pre-market simulation) from live funnel counts
+                    msg = str(row.get("message") or row.get("broker_message") or "").lower()
+                    if "sim" in msg:
+                        continue
                     submitted += 1
                     st = str(row.get("status") or row.get("order_status") or "").lower()
                     if "fill" in st:

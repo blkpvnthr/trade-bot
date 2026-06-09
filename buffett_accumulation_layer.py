@@ -29,6 +29,7 @@ Outputs:
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, timedelta, date
@@ -38,6 +39,8 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -79,6 +82,11 @@ class BALConfig:
     # Trend break: exit if price drops this far below cost basis
     exit_drawdown_pct: float = float(os.getenv("BAL_EXIT_DRAWDOWN", "0.35"))
     scan_interval_minutes: int = int(os.getenv("BAL_SCAN_INTERVAL_MINUTES", "30"))
+
+
+BAL_YF_INFO_TIMEOUT_SEC = float(os.getenv("BAL_YF_INFO_TIMEOUT_SEC", "8"))
+BAL_YF_HISTORY_TIMEOUT_SEC = float(os.getenv("BAL_YF_HISTORY_TIMEOUT_SEC", "8"))
+BAL_STALE_FUNDAMENTAL_CACHE_HOURS = float(os.getenv("BAL_STALE_FUNDAMENTAL_CACHE_HOURS", "72"))
 
 
 @dataclass
@@ -317,10 +325,24 @@ def _bal_event(event: str, payload: dict) -> None:
 def _fetch_fundamentals(symbol: str) -> FundamentalData:
     fd = FundamentalData(symbol=symbol, fetched_at_utc=datetime.now(timezone.utc).isoformat())
     try:
+        import concurrent.futures as _cf
         import yfinance as yf
         from symbol_utils import normalize_for_yfinance
+
+        def _with_timeout(fn, timeout_sec: float, label: str):
+            if timeout_sec <= 0:
+                return fn()
+            pool = _cf.ThreadPoolExecutor(max_workers=1)
+            fut = pool.submit(fn)
+            try:
+                return fut.result(timeout=timeout_sec)
+            except _cf.TimeoutError as exc:
+                raise TimeoutError(f"{label}_timeout>{timeout_sec:.0f}s") from exc
+            finally:
+                pool.shutdown(wait=False)
+
         ticker = yf.Ticker(normalize_for_yfinance(symbol))   # BRK.B → BRK-B for Yahoo
-        info = ticker.info or {}
+        info = _with_timeout(lambda: ticker.info or {}, BAL_YF_INFO_TIMEOUT_SEC, f"{symbol}:info")
 
         def _f(key: str, default: float = 0.0) -> float:
             try:
@@ -359,15 +381,19 @@ def _fetch_fundamentals(symbol: str) -> FundamentalData:
             fd.fcf_yield = fd.free_cash_flow / fd.market_cap
 
         try:
-            hist = ticker.history(period="1y", interval="1d")
+            hist = _with_timeout(
+                lambda: ticker.history(period="1y", interval="1d"),
+                BAL_YF_HISTORY_TIMEOUT_SEC,
+                f"{symbol}:history",
+            )
             if not hist.empty:
                 closes = hist["Close"]
                 fd.sma_50 = float(closes.tail(50).mean()) if len(closes) >= 50 else 0.0
                 fd.sma_200 = float(closes.tail(200).mean()) if len(closes) >= 200 else \
                     (float(closes.mean()) if len(closes) >= 100 else 0.0)
                 _compute_daily_technicals(fd, hist)
-        except Exception:
-            pass
+        except Exception as exc:
+            fd.fetch_error = str(exc)[:200]
 
     except Exception as exc:
         fd.fetch_error = str(exc)[:200]
@@ -378,20 +404,42 @@ def _cache_path(symbol: str) -> Path:
     return SYSTEM_DATA / f"bal_fd_{symbol}.json"
 
 
+def _read_cached_fundamentals(path: Path) -> tuple[Optional[FundamentalData], Optional[float]]:
+    try:
+        raw = json.loads(path.read_text())
+        fetched = datetime.fromisoformat(raw.get("fetched_at_utc", "2000-01-01T00:00:00+00:00"))
+        age_h = (datetime.now(timezone.utc) - fetched).total_seconds() / 3600
+        fd = FundamentalData(**{
+            k: raw[k] for k in FundamentalData.__dataclass_fields__ if k in raw
+        })
+        return fd, age_h
+    except Exception:
+        return None, None
+
+
 def get_fundamentals(symbol: str, config: BALConfig) -> FundamentalData:
     path = _cache_path(symbol)
+    cached_fd = None
+    cached_age_h = None
     if path.exists():
-        try:
-            raw = json.loads(path.read_text())
-            fetched = datetime.fromisoformat(raw.get("fetched_at_utc", "2000-01-01T00:00:00+00:00"))
-            age_h = (datetime.now(timezone.utc) - fetched).total_seconds() / 3600
-            if age_h < config.fundamental_cache_hours:
-                return FundamentalData(**{
-                    k: raw[k] for k in FundamentalData.__dataclass_fields__ if k in raw
-                })
-        except Exception:
-            pass
+        cached_fd, cached_age_h = _read_cached_fundamentals(path)
+        if cached_fd is not None and cached_age_h is not None and cached_age_h < config.fundamental_cache_hours:
+            return cached_fd
     fd = _fetch_fundamentals(symbol)
+    if (
+        cached_fd is not None and
+        cached_age_h is not None and
+        cached_age_h < BAL_STALE_FUNDAMENTAL_CACHE_HOURS and
+        (fd.fetch_error or float(fd.current_price or 0.0) <= 0.0)
+    ):
+        cached_fd.fetch_error = f"stale_cache_fallback:{str(fd.fetch_error or 'live_fetch_incomplete')[:160]}"
+        logger.warning(
+            "BAL fundamentals fallback: symbol=%s cache_age_h=%.1f reason=%s",
+            symbol,
+            cached_age_h,
+            fd.fetch_error or "live_fetch_incomplete",
+        )
+        return cached_fd
     try:
         path.write_text(json.dumps(fd.__dict__, default=str), encoding="utf-8")
     except Exception:

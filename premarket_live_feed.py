@@ -169,13 +169,16 @@ class PremarketLiveFeed:
     and reads are guarded by an internal lock.
     """
 
+    # Symbols that should never be subscribed to (invalid / data-unavailable tickers)
+    _INVALID_SYMBOLS: set = {"", "N/A", "NA", "NAN", "NONE", "NULL", "N\\A"}
+
     def __init__(self, symbols: List[str], output_dir: Any = None,
                  max_stale_seconds: float = 30.0):
         seen: set = set()
         self.symbols: List[str] = []
         for s in (symbols or []):
             su = str(s or "").upper().strip()
-            if su and su not in seen:
+            if su and su not in seen and su not in self._INVALID_SYMBOLS:
                 seen.add(su)
                 self.symbols.append(su)
         self.output_dir = Path(output_dir) if output_dir else (PROJECT_ROOT / "daily_system_outputs")

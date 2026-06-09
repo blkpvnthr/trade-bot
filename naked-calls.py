@@ -101,12 +101,18 @@ def load_watchlist(path: str) -> List[str]:
 
     return clean
 
-WATCHLIST = [
+_FALLBACK_WATCHLIST = [
    "QQQ", "TQQQ", "SQQQ", "SPY", "DIA", "IWM", "XLK", "SOXX", "SMH",
  "NVDA", "AVGO", "AAPL", "MSFT", "AMZN", "META", "GOOGL",
    "PLTR", "MU", "LMT", "CZR", "C", "XSP", "CVX"
 ]
-# WATCHLIST = load_watchlist(WATCHLIST_FILE)
+# Drive the long-call scanner off the TradingView quality-growth screen
+# (tv-screener.py -> tv_screener_tickers.txt). Falls back to the static list if the
+# screen hasn't been run / the file is missing or empty.
+try:
+    WATCHLIST = load_watchlist(WATCHLIST_FILE) or _FALLBACK_WATCHLIST
+except FileNotFoundError:
+    WATCHLIST = _FALLBACK_WATCHLIST
 
 # Remove this:
 ACCOUNTS = {
