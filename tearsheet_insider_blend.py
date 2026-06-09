@@ -25,7 +25,8 @@ cal = sorted({d.date() if hasattr(d, "date") else d for d in spy_bars.index})
 ds_f, dc_f = defaultdict(float), defaultdict(int)
 ds_n, dc_n = defaultdict(float), defaultdict(int)
 n_f = n_n = 0
-buys_f, sells_f = [], []   # filtered (live) entry/exit dates for chart markers
+buys_f, sells_f = [], []   # with-trend-gate (old) entry/exit dates
+buys_n, sells_n = [], []   # no-trend-gate (CURRENT) entry/exit dates for chart markers
 for sym, buys in events.items():
     bars = bic.load_bars(sym)
     if bars is None or bars.empty:
@@ -57,6 +58,7 @@ for sym, buys in events.items():
         exit_ = bic._shift_trading_days(entry, HOLD, tdates) or entry
         win = [t for t in tdates if entry < t <= exit_]
         n_n += 1
+        buys_n.append(entry); sells_n.append(exit_)
         if pass_trend:
             n_f += 1
             buys_f.append(entry); sells_f.append(exit_)
@@ -116,31 +118,30 @@ def met(c):
 
 
 mF, mN, mS = met(cur), met(notrend), met(spy_curve)
-diff = notrend - cur                    # $ given up by the trend gate
-print(f"LIVE (filtered): CAGR {mF['cagr']:+.1%} DD {mF['dd']:.1%} Sharpe {mF['sharpe']:.2f}")
-print(f"NO trend gate  : CAGR {mN['cagr']:+.1%} DD {mN['dd']:.1%} Sharpe {mN['sharpe']:.2f}")
-print(f"Trend gate costs: {mN['cagr']-mF['cagr']:+.1%} CAGR, ${diff.iloc[-1]:,.0f} on $10k")
+diff = notrend - cur                    # $ recaptured by removing the trend gate
+print(f"CURRENT (no trend gate): CAGR {mN['cagr']:+.1%} DD {mN['dd']:.1%} Sharpe {mN['sharpe']:.2f}")
+print(f"OLD (with gate)        : CAGR {mF['cagr']:+.1%} DD {mF['dd']:.1%} Sharpe {mF['sharpe']:.2f}")
+print(f"Recaptured by removal  : {mN['cagr']-mF['cagr']:+.1%} CAGR, ${diff.iloc[-1]:,.0f} on $10k")
 
-# ── chart: live (with gate) vs without, the gap shaded = return given up ──
+# ── chart: CURRENT (no trend gate) primary; old gated version dotted; gap = recaptured ──
 fig = make_subplots(rows=2, cols=1, row_heights=[0.72, 0.28], vertical_spacing=0.13)
-fig.add_trace(go.Scatter(x=cur.index, y=cur, name="LIVE — with SMA50 trend gate",
-                         line=dict(color="#f85149", width=2.6)), 1, 1)
-fig.add_trace(go.Scatter(x=notrend.index, y=notrend, name="WITHOUT trend gate (validated)",
-                         line=dict(color="#3fb950", width=2.4), fill="tonexty",
-                         fillcolor="rgba(63,185,80,0.16)"), 1, 1)
+fig.add_trace(go.Scatter(x=notrend.index, y=notrend, name="Current strategy — trend gate REMOVED",
+                         line=dict(color="#3fb950", width=2.8)), 1, 1)
+fig.add_trace(go.Scatter(x=cur.index, y=cur, name="Before — with SMA50 gate (removed)",
+                         line=dict(color="#8b949e", width=1.5, dash="dot")), 1, 1)
 fig.add_trace(go.Scatter(x=spy_curve.index, y=spy_curve, name="SPY",
-                         line=dict(color="#6e7681", width=1.4)), 1, 1)
-_bx = [d for d in buys_f if d in cur.index]
-_sx = [d for d in sells_f if d in cur.index]
-fig.add_trace(go.Scatter(x=_bx, y=[cur.loc[d] for d in _bx], mode="markers", name=f"Buys ({len(_bx)})",
-                         marker=dict(symbol="triangle-up", color="#2ea043", size=5, opacity=0.45)), 1, 1)
-fig.add_trace(go.Scatter(x=_sx, y=[cur.loc[d] for d in _sx], mode="markers", name=f"Sells ({len(_sx)})",
-                         marker=dict(symbol="triangle-down", color="#da3633", size=5, opacity=0.45)), 1, 1)
-fig.add_trace(go.Scatter(x=diff.index, y=diff, name="Return given up by the trend gate ($)",
-                         line=dict(color="#d29922", width=1.8), fill="tozeroy",
-                         fillcolor="rgba(210,153,34,0.16)"), 2, 1)
+                         line=dict(color="#484f58", width=1.2)), 1, 1)
+_bx = [d for d in buys_n if d in notrend.index]
+_sx = [d for d in sells_n if d in notrend.index]
+fig.add_trace(go.Scatter(x=_bx, y=[notrend.loc[d] for d in _bx], mode="markers", name=f"Buys ({len(_bx)})",
+                         marker=dict(symbol="triangle-up", color="#2ea043", size=5, opacity=0.4)), 1, 1)
+fig.add_trace(go.Scatter(x=_sx, y=[notrend.loc[d] for d in _sx], mode="markers", name=f"Sells ({len(_sx)})",
+                         marker=dict(symbol="triangle-down", color="#da3633", size=5, opacity=0.35)), 1, 1)
+fig.add_trace(go.Scatter(x=diff.index, y=diff, name="Recaptured by removing the gate ($)",
+                         line=dict(color="#3fb950", width=1.8), fill="tozeroy",
+                         fillcolor="rgba(63,185,80,0.16)"), 2, 1)
 fig.update_yaxes(title_text="Equity $", row=1, col=1, title_font_size=11)
-fig.update_yaxes(title_text="Δ return $", row=2, col=1, title_font_size=11)
+fig.update_yaxes(title_text="Recaptured $", row=2, col=1, title_font_size=11)
 fig.update_layout(template="plotly_dark", height=620, margin=dict(t=34, l=60, r=14, b=30),
                   legend=dict(orientation="h", y=1.09, x=0, font=dict(size=10)),
                   paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
@@ -154,37 +155,39 @@ def card(k, v, sub, cls=""):
 
 
 cards = ("<div class=cards>"
-         + card("CAGR (as traded)", f"{mF['cagr']:+.1%}", f"vs no-gate {mN['cagr']:+.1%} · SPY {mS['cagr']:+.1%}",
-                "pos" if mF['cagr'] >= 0 else "neg")
-         + card("Max drawdown", f"{mF['dd']:.1%}", f"no-gate {mN['dd']:.1%} · SPY {mS['dd']:.1%}", "neg")
-         + card("Sharpe", f"{mF['sharpe']:.2f}", f"no-gate {mN['sharpe']:.2f} · SPY {mS['sharpe']:.2f}")
-         + card("Trend-gate cost / yr", f"{mN['cagr']-mF['cagr']:+.1%}", "CAGR given up by the gate", "neg")
-         + card("Cumulative cost", f"${diff.iloc[-1]:,.0f}", "on a $10k base", "neg")
-         + card("Signals taken", f"{n_f:,}", f"of {n_n:,} (gate drops {1-n_f/max(n_n,1):.0%})")
+         + card("CAGR (current)", f"{mN['cagr']:+.1%}", f"old w/gate {mF['cagr']:+.1%} &middot; SPY {mS['cagr']:+.1%}",
+                "pos" if mN['cagr'] >= 0 else "neg")
+         + card("Max drawdown", f"{mN['dd']:.1%}", f"old {mF['dd']:.1%} &middot; SPY {mS['dd']:.1%}", "neg")
+         + card("Sharpe", f"{mN['sharpe']:.2f}", f"old {mF['sharpe']:.2f} &middot; SPY {mS['sharpe']:.2f}")
+         + card("Recaptured / yr", f"{mN['cagr']-mF['cagr']:+.1%}", "CAGR regained by removing the gate", "pos")
+         + card("Cumulative gain", f"${diff.iloc[-1]:,.0f}", "vs the gated version, on $10k", "pos")
+         + card("Signals taken", f"{n_n:,}", f"was {n_f:,} with the gate (+{n_n-n_f:,})")
          + "</div>")
 
+CSS = ("body{background:#0d1117;color:#e6edf3;font:14px -apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:14px}"
+       "h1{font-size:17px;margin:2px 0 4px}.sub2{color:#8b949e;font-size:12px;margin-bottom:8px}"
+       ".cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:10px 0}"
+       ".card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px}"
+       ".card .k{color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.04em}"
+       ".card .v{font-size:20px;font-weight:700;margin-top:3px}.card .sub{color:#6e7681;font-size:11px;margin-top:2px}"
+       ".pos{color:#3fb950}.neg{color:#f85149}"
+       ".cfg{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px 12px;margin-top:10px;font-size:12px;color:#9da7b1;line-height:1.6}"
+       ".cfg b{color:#e6edf3}.note{color:#8b949e;font-size:11px;line-height:1.5;margin-top:8px}")
+
 html = ("<!doctype html><html><head><meta charset=utf-8>"
-        "<meta name=viewport content='width=device-width,initial-scale=1'><title>Strategy (as traded)</title>"
-        "<style>body{background:#0d1117;color:#e6edf3;font:14px -apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:14px}"
-        "h1{font-size:17px;margin:2px 0 4px}.sub2{color:#8b949e;font-size:12px;margin-bottom:8px}"
-        ".cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:10px 0}"
-        ".card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px}"
-        ".card .k{color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.04em}"
-        ".card .v{font-size:20px;font-weight:700;margin-top:3px}.card .sub{color:#6e7681;font-size:11px;margin-top:2px}"
-        ".pos{color:#3fb950}.neg{color:#f85149}"
-        ".cfg{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px 12px;margin-top:10px;font-size:12px;color:#9da7b1;line-height:1.6}"
-        ".cfg b{color:#e6edf3}.note{color:#8b949e;font-size:11px;line-height:1.5;margin-top:8px}</style></head>"
-        "<body><h1>Current strategy — as actually traded</h1>"
-        f"<div class=sub2>Insider copier + SMA50 trend gate + vol/liquidity, 60/40 SPY, regime-on, cash-only &middot; {cur.index[0]} &rarr; {cur.index[-1]}</div>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'><title>Current strategy</title>"
+        f"<style>{CSS}</style></head>"
+        "<body><h1>Current strategy — insider copier, trend gate removed</h1>"
+        f"<div class=sub2>Insider copier (NO trend gate) + vol/liquidity, 60/40 SPY, regime-on, cash-only &middot; {notrend.index[0]} &rarr; {notrend.index[-1]}</div>"
         f"{cards}{chart}"
         "<div class=cfg>LIVE CONFIG: insider copier <b>12 names &times; $5,000</b>, ~90% deployed, "
-        "<b>SMA50 trend gate</b> (buy only when price &gt; 50-SMA), vol &ge; 0.0563, liquidity &ge; $1M ADV, "
-        "freshness <b>&le;1 day from filing</b>, regime-on, cash-only, equity floor &minus;45% &rarr; ruin &minus;50%. "
-        "<i>Note: vol gate is temporarily 0.025 today (reverts to 0.0563 tomorrow); RYAN queued in the SMA200 watchlist.</i></div>"
-        "<div class=note>The RED line is what you're trading (with the SMA50 trend gate). The GREEN line is the same "
-        "strategy WITHOUT the trend gate. The shaded gap + the lower panel are the <b>return the trend gate gives up</b> "
-        "&mdash; the gate blocks insiders' dip-buys, which the backtest shows are the highest-alpha signals. "
-        "60/40 SPY blend, regime-gated, 15bps/side slippage, in-sample to the PIT window; the live discrete copier captures less than these magnitudes.</div>"
+        "<b>trend gate REMOVED</b> (now buys insiders' dip-buys &mdash; the highest-alpha signals), vol &ge; 0.0563, "
+        "liquidity &ge; $1M ADV, freshness <b>&le;1 day from filing</b>, regime-on, cash-only, equity floor &minus;45% &rarr; ruin &minus;50%. "
+        "<i>Activates at the scheduled 13:00 UTC restart (with the vol-gate revert to 0.0563).</i></div>"
+        "<div class=note>GREEN = the current strategy (trend gate removed). The dotted line is the OLD gated version; "
+        "the shaded gap + lower panel are the return <b>recaptured</b> by removing the gate &mdash; the backtest showed the "
+        "gate blocked insiders' dip-buys (the highest-alpha signals), costing return AND deepening drawdown. "
+        "60/40 SPY blend, regime-gated, 15bps/side slippage, in-sample; the live discrete copier captures less than these idealized magnitudes.</div>"
         "</body></html>")
 open("crossover_tearsheet.html", "w", encoding="utf-8").write(html)
-print("wrote crossover_tearsheet.html (as-traded, with trend-gate-cost overlay)")
+print("wrote crossover_tearsheet.html (current = no trend gate)")
