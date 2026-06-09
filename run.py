@@ -3254,13 +3254,18 @@ def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
                 log_skip(sym, f"insider_copy_below_min:{value:.0f}<={INSIDER_COPY_MIN_VALUE:.0f}",
                          phase="insider_copier")
                 continue
-            raw_last = str(cand.get("latest_transaction_date") or "")[:10]
+            # Freshness from the FILING date (when the Form 4 hit EDGAR), not the transaction date:
+            # insiders have up to 2 business days to file, so transaction-date freshness can never
+            # satisfy a tight window. Filing-date = "act on newly-filed signals" (matches backtest entry).
+            raw_filed = str(cand.get("latest_filing_date") or "")[:10]
+            raw_txn = str(cand.get("latest_transaction_date") or "")[:10]
+            raw_last = raw_filed or raw_txn
             try:
                 last_date = datetime.fromisoformat(raw_last).date() if raw_last else None
             except Exception:
                 last_date = None
             if last_date is None or (today - last_date).days > INSIDER_COPY_MAX_AGE_DAYS:
-                log_skip(sym, f"insider_copy_stale:last={raw_last or 'none'}",
+                log_skip(sym, f"insider_copy_stale:filed={raw_filed or 'none'}_txn={raw_txn or 'none'}",
                          phase="insider_copier")
                 continue
             if sym in held:
@@ -3535,18 +3540,40 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     # SEC Form 4 insider-buy discovery: DISCOVERY ONLY. Expands the Buffett review
     # universe; never generates orders, never bypasses any gate. Fully fail-safe —
     # a failure here must not stop the Buffett screener or the Alpha engine.
+    #
+    # FIX 2026-06-09: SEC discovery runs in a background thread so it never blocks
+    # the main trading cycle. The main thread reads the LAST completed result (or
+    # uses the on-disk cache written by sec_form4_feed's own 4h output-cache guard).
+    # On the first cycle the result defaults to empty; subsequent cycles pick up
+    # whatever the background thread last wrote to disk.
     insider_data: Dict[str, Dict] = {}
     sec_candidates: List[Dict[str, Any]] = []   # full Form 4 candidate records for the copier
     if (bal is not None and ENABLE_SEC_FORM4_FEED) or ENABLE_INSIDER_COPIER:
         try:
-            import sec_form4_feed
-            sec_res = sec_form4_feed.run_sec_form4_discovery()
-            sec_candidates = sec_res.get("candidates", []) or []
-            insider_data = sec_form4_feed.insider_data_for_layer()
-            for _cand in sec_candidates:
-                _research("record_insider_discovery_safe", _cand)   # evidence: discoveries
-            logger.info("SEC Form 4 discovery: %d candidates, %d errors",
-                        len(sec_candidates), len(sec_res.get("errors", [])))
+            import sec_form4_feed as _sec_mod
+            import threading as _sec_threading
+
+            # If a background discovery thread is already running, skip and use cached data.
+            _sec_thread_attr = "_sec_form4_bg_thread"
+            _bg: Optional[Any] = getattr(run_two_engine_cycle, _sec_thread_attr, None)
+            if _bg is None or not _bg.is_alive():
+                def _run_sec_bg():
+                    try:
+                        _sec_mod.run_sec_form4_discovery()
+                    except Exception as _e:
+                        logger.warning("SEC Form 4 bg discovery error (non-fatal): %s", _e)
+                _bg_t = _sec_threading.Thread(target=_run_sec_bg, name="sec-form4-discovery", daemon=True)
+                _bg_t.start()
+                setattr(run_two_engine_cycle, _sec_thread_attr, _bg_t)
+                logger.info("SEC Form 4 discovery: launched in background thread")
+
+            # Always read whatever is already on disk (written by previous bg run or cache).
+            insider_data = _sec_mod.insider_data_for_layer() or {}
+            sec_candidates_map = _sec_mod.load_insider_candidates() or {}
+            sec_candidates = [{"symbol": s, **v} for s, v in sec_candidates_map.items()]
+            if sec_candidates:
+                logger.info("SEC Form 4: %d cached insider candidates loaded for this cycle",
+                            len(sec_candidates))
         except Exception as e:
             logger.error("SEC Form 4 discovery failed (Buffett/Alpha unaffected): %s", e)
     buffett_res = run_buffett_screener(market_context, premarket_snapshot) if bal is not None else \
