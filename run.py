@@ -3249,7 +3249,10 @@ def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
             sym = str(cand.get("symbol") or "").upper().strip()
             if not sym or is_option_symbol(sym):
                 continue
-            value = float(cand.get("total_open_market_purchase_value") or 0.0)
+            # cached candidates (load_insider_candidates) name the value field `insider_buy_amount`;
+            # raw discovery records use `total_open_market_purchase_value`. Accept either.
+            value = float(cand.get("total_open_market_purchase_value")
+                          or cand.get("insider_buy_amount") or 0.0)
             if value <= INSIDER_COPY_MIN_VALUE:
                 log_skip(sym, f"insider_copy_below_min:{value:.0f}<={INSIDER_COPY_MIN_VALUE:.0f}",
                          phase="insider_copier")
@@ -3258,7 +3261,7 @@ def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
             # insiders have up to 2 business days to file, so transaction-date freshness can never
             # satisfy a tight window. Filing-date = "act on newly-filed signals" (matches backtest entry).
             raw_filed = str(cand.get("latest_filing_date") or "")[:10]
-            raw_txn = str(cand.get("latest_transaction_date") or "")[:10]
+            raw_txn = str(cand.get("latest_transaction_date") or cand.get("latest_insider_buy_date") or "")[:10]
             raw_last = raw_filed or raw_txn
             try:
                 last_date = datetime.fromisoformat(raw_last).date() if raw_last else None
