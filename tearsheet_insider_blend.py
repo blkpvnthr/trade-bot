@@ -1,34 +1,31 @@
 #!/usr/bin/env python3
-"""
-tearsheet_insider_blend.py — turn the validated insider-copier edge into a DAILY equity curve and
-blend it with an SPY core + a small crisis-diversifier (GLD), vol-targeted to a fixed risk budget.
-
-Insider sleeve: PIT Form-4 buy events (survivorship-clean) → copier rules (trailing-2d buy > $1M,
-2-day filing lag, enter next open, hold 10 trading days, a held name can't re-signal) → an equal-weight
-daily return stream across all active positions. SPY/GLD from cached + live bars. Vol-target the blend.
-"""
-import os
+"""tearsheet_insider_blend.py — the FILTERED strategy ACTUALLY being traded:
+insider copier + SMA50 trend gate + vol(rv20>=0.0563) + liquidity(ADV>=$1M), blended 60/40 with an
+SPY core, regime-gated (cash when a majority of SPY/QQQ/IWM are below their 200-SMA), cash-only.
+Overlays the RETURN GIVEN UP by the SMA50 trend gate vs the same strategy without it. Cached PIT bars only."""
 from collections import defaultdict
 from datetime import timedelta
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-
-import backtest_insider_copier as bic   # reuse load_pit_buy_events / load_bars / trading-day helpers
+import backtest_insider_copier as bic
 
 MIN_VALUE, WINDOW, HOLD, LAG = 1_000_000.0, 2, 10, 2
-SLIP_INS = 0.0015   # 15bps each side on the insider sleeve (small/mid-cap realism)
-START_CASH, TARGET_VOL, MAX_LEV = 10_000.0, 0.12, 2.0
+SLIP_INS = 0.0015
+VOL_MIN_RV20, MIN_ADV = 0.0563, 1_000_000.0   # live vol + liquidity gates (permanent; 0.025 vol is a 1-day temp)
+W_INS, START_CASH = 0.60, 10_000.0
 
 print("Loading PIT insider events + bars …")
 events = bic.load_pit_buy_events()
 spy_bars = bic.load_bars("SPY")
-cal = sorted({d.date() if hasattr(d, "date") else d for d in spy_bars.index})   # master trading calendar
+cal = sorted({d.date() if hasattr(d, "date") else d for d in spy_bars.index})
 
-# ── build the insider daily return stream (equal-weight across active positions) ──
-day_sum, day_cnt = defaultdict(float), defaultdict(int)
-n_sig = n_sym = 0
+# ── build TWO insider streams: filtered (trend+vol+liq, LIVE) and no-trend (vol+liq only) ──
+ds_f, dc_f = defaultdict(float), defaultdict(int)
+ds_n, dc_n = defaultdict(float), defaultdict(int)
+n_f = n_n = 0
+buys_f, sells_f = [], []   # filtered (live) entry/exit dates for chart markers
 for sym, buys in events.items():
     bars = bic.load_bars(sym)
     if bars is None or bars.empty:
@@ -37,128 +34,119 @@ for sym, buys in events.items():
     sigs = bic.generate_signals(buys, MIN_VALUE, WINDOW, HOLD, tdates, LAG)
     if not sigs:
         continue
-    n_sym += 1
-    close = bars["close"]
-    close.index = [d.date() if hasattr(d, "date") else d for d in close.index]
+    cols = ["close", "volume"] if "volume" in bars.columns else ["close"]
+    df = bars[cols].astype(float)
+    df.index = [d.date() if hasattr(d, "date") else d for d in bars.index]
+    df = df[~df.index.duplicated()].sort_index()
+    close = df["close"]
+    volser = df["volume"] if "volume" in df.columns else pd.Series(1e15, index=close.index)
     rets = close.pct_change()
     for d in sigs:
         entry = bic._next_trading_on_or_after(d + timedelta(days=LAG), tdates)
-        if entry is None:
+        if entry is None or entry not in close.index:
             continue
+        hist = close.loc[:entry]
+        if len(hist) < 50:
+            continue
+        price = float(close.loc[entry]); sma50 = float(hist.tail(50).mean())
+        r20 = rets.loc[:entry].tail(20); rv20 = float(r20.std()) if r20.notna().sum() >= 20 else 0.0
+        adv = float((close * volser).loc[:entry].tail(20).mean())
+        if rv20 < VOL_MIN_RV20 or adv < MIN_ADV:        # vol + liquidity gates (BOTH versions)
+            continue
+        pass_trend = price > sma50                      # SMA50 trend gate (LIVE only)
         exit_ = bic._shift_trading_days(entry, HOLD, tdates) or entry
-        n_sig += 1
-        win_days = [t for t in tdates if entry < t <= exit_]
-        for i, t in enumerate(win_days):
+        win = [t for t in tdates if entry < t <= exit_]
+        n_n += 1
+        if pass_trend:
+            n_f += 1
+            buys_f.append(entry); sells_f.append(exit_)
+        for i, t in enumerate(win):
             r = rets.get(t)
             if r is None or np.isnan(r):
                 continue
-            cost = (SLIP_INS if i == 0 else 0.0) + (SLIP_INS if i == len(win_days) - 1 else 0.0)
-            day_sum[t] += float(r) - cost; day_cnt[t] += 1
-
-ins_ret = pd.Series({d: day_sum[d] / day_cnt[d] for d in day_cnt if day_cnt[d] > 0}).sort_index()
-ins_ret = ins_ret.reindex(cal).fillna(0.0)            # 0 (cash) on no-position days
-print(f"  {n_sym} symbols, {n_sig} copy signals; insider stream {ins_ret.index[0]} → {ins_ret.index[-1]}")
-
-# ── benchmark + diversifier daily returns ──
-spy_close = spy_bars["close"].copy(); spy_close.index = cal
-spy_ret = spy_close.pct_change().reindex(cal).fillna(0.0)
-gld_bars = bic.load_bars("GLD")
-if gld_bars is None or gld_bars.empty:
-    from alpaca.data.historical import StockHistoricalDataClient
-    from alpaca.data.requests import StockBarsRequest
-    from alpaca.data.timeframe import TimeFrame
-    from alpaca.data.enums import DataFeed
-    from datetime import datetime, timezone
-    for l in open(".env"):
-        s = l.strip()
-        if "=" in s and not s.startswith("#"):
-            k, v = s.split("=", 1); os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-    _dc = StockHistoricalDataClient(os.environ["APCA_API_KEY_ID"], os.environ["APCA_API_SECRET_KEY"])
-    df = _dc.get_stock_bars(StockBarsRequest(symbol_or_symbols="GLD", timeframe=TimeFrame.Day,
-            start=datetime(2019, 1, 1, tzinfo=timezone.utc), end=datetime.now(timezone.utc),
-            feed=DataFeed.IEX)).df.reset_index()
-    g = pd.Series(df["close"].astype(float).values, index=pd.to_datetime(df["timestamp"]).dt.date)
-    gld_ret = g.pct_change().reindex(cal).fillna(0.0)
-else:
-    gc = gld_bars["close"].copy(); gc.index = [d.date() if hasattr(d, "date") else d for d in gld_bars.index]
-    gld_ret = gc.pct_change().reindex(cal).fillna(0.0)
-
-# trim to the insider-active window (where the edge actually trades)
-mask = ins_ret.index >= ins_ret[ins_ret != 0].index[0]
-comp = pd.DataFrame({"SPY": spy_ret, "Insider": ins_ret, "GLD": gld_ret}).loc[mask].fillna(0.0)
+            cost = (SLIP_INS if i == 0 else 0.0) + (SLIP_INS if i == len(win) - 1 else 0.0)
+            ds_n[t] += float(r) - cost; dc_n[t] += 1
+            if pass_trend:
+                ds_f[t] += float(r) - cost; dc_f[t] += 1
 
 
-def curve(r):
-    return START_CASH * (1 + r).cumprod()
+def stream(ds, dc):
+    s = pd.Series({d: ds[d] / dc[d] for d in dc if dc[d] > 0}).sort_index()
+    return s.reindex(cal).fillna(0.0)
+
+
+ins_f, ins_n = stream(ds_f, dc_f), stream(ds_n, dc_n)
+print(f"  filtered (trend+vol+liq): {n_f} signals | no-trend (vol+liq): {n_n} signals")
+
+spc = spy_bars["close"].astype(float); spc.index = cal
+spy_ret = spc.pct_change().reindex(cal).fillna(0.0)
+
+
+def reg_below(sym):
+    b = bic.load_bars(sym)
+    if b is None or b.empty:
+        return pd.Series(False, index=cal)
+    c = b["close"].astype(float); c.index = [d.date() if hasattr(d, "date") else d for d in b.index]
+    c = c[~c.index.duplicated()].reindex(cal).ffill()
+    return c < c.rolling(200).mean()
+
+
+RISK_OFF = (sum(reg_below(x).astype(int) for x in ("SPY", "QQQ", "IWM")) >= 2).reindex(cal).fillna(False)
+act = ins_n[ins_n != 0]
+start = act.index[0] if len(act) else cal[40]
+idx = [d for d in cal if d >= start]
+
+
+def blend(ins):
+    raw = (W_INS * ins + (1 - W_INS) * spy_ret) * (~RISK_OFF).astype(float)   # 60/40 cash-only, regime to cash
+    return START_CASH * (1 + raw.loc[idx]).cumprod()
+
+
+cur, notrend = blend(ins_f), blend(ins_n)
+spy_curve = START_CASH * (1 + spy_ret.loc[idx]).cumprod()
 
 
 def met(c):
     rr = c.pct_change().dropna()
     yrs = (pd.Timestamp(c.index[-1]) - pd.Timestamp(c.index[0])).days / 365.25
-    dd = (c / c.cummax() - 1).min(); dn = rr[rr < 0].std()
+    dd = (c / c.cummax() - 1).min()
     cagr = (c.iloc[-1] / c.iloc[0]) ** (1 / max(yrs, 0.1)) - 1
-    return dict(final=c.iloc[-1], cagr=cagr, vol=rr.std() * np.sqrt(252),
-                sharpe=(rr.mean() / rr.std() * np.sqrt(252) if rr.std() else 0),
-                sortino=(rr.mean() / dn * np.sqrt(252) if dn else 0),
-                dd=dd, calmar=(cagr / abs(dd) if dd else 0))
+    return dict(final=c.iloc[-1], cagr=cagr, dd=dd,
+                sharpe=(rr.mean() / rr.std() * np.sqrt(252) if rr.std() else 0))
 
 
-start = comp.index[40]
-spy_curve = curve(comp["SPY"].loc[start:]); spy_m = met(spy_curve)
-ins_curve = curve(comp["Insider"].loc[start:])
-W_GLD = 0.15
-W_INS = [0.10, 0.15, 0.20, 0.25, 0.30, 0.40]
-TVOL = [0.08, 0.10, 0.12, 0.14, 0.16]
+mF, mN, mS = met(cur), met(notrend), met(spy_curve)
+diff = notrend - cur                    # $ given up by the trend gate
+print(f"LIVE (filtered): CAGR {mF['cagr']:+.1%} DD {mF['dd']:.1%} Sharpe {mF['sharpe']:.2f}")
+print(f"NO trend gate  : CAGR {mN['cagr']:+.1%} DD {mN['dd']:.1%} Sharpe {mN['sharpe']:.2f}")
+print(f"Trend gate costs: {mN['cagr']-mF['cagr']:+.1%} CAGR, ${diff.iloc[-1]:,.0f} on $10k")
 
-
-def blend_curve(wi, tv):
-    ws = max(0.0, 1 - wi - W_GLD)
-    raw = ws * comp["SPY"] + wi * comp["Insider"] + W_GLD * comp["GLD"]
-    pv = raw.rolling(20).std().shift(1) * np.sqrt(252)
-    lev = (tv / pv).clip(0, MAX_LEV).fillna(1.0)
-    return curve((lev * raw).loc[start:])
-
-
-grid = {(wi, tv): met(blend_curve(wi, tv)) for wi in W_INS for tv in TVOL}
-beats = lambda g: g["cagr"] > spy_m["cagr"] and g["dd"] > spy_m["dd"]   # more return AND shallower DD
-winners = [(wi, tv) for wi in W_INS for tv in TVOL if beats(grid[(wi, tv)])]
-pool = winners or [(wi, tv) for wi in W_INS for tv in TVOL]
-best_wi, best_tv = max(pool, key=lambda k: grid[k]["calmar"])
-bm = grid[(best_wi, best_tv)]
-best_curve = blend_curve(best_wi, best_tv)
-
-# ── aggressive cash-only (no leverage): 60% insider / 40% SPY, regime ON vs OFF ──
-def _reg_below200(sym):
-    b = bic.load_bars(sym)
-    if b is None or b.empty:
-        return pd.Series(False, index=comp.index)
-    c = b["close"].copy(); c.index = [d.date() if hasattr(d, "date") else d for d in b.index]
-    c = c.reindex(comp.index).ffill()
-    return (c < c.rolling(200).mean())
-RISK_OFF = (sum(_reg_below200(x).astype(int) for x in ("SPY", "QQQ", "IWM")) >= 2).reindex(comp.index).fillna(False)
-W_AGG = 0.60
-agg_raw = W_AGG * comp["Insider"] + (1 - W_AGG) * comp["SPY"]      # weights sum to 1.0 -> cash-only, no margin
-agg_off_curve = curve(agg_raw.loc[start:])
-agg_on_curve = curve((agg_raw * (~RISK_OFF).astype(float)).loc[start:])   # flat (cash) on market risk-off
-agg_off_m, agg_on_m = met(agg_off_curve), met(agg_on_curve)
-print(f"AGG 60% insider cash-only, regime OFF: CAGR {agg_off_m['cagr']:+.1%}  DD {agg_off_m['dd']:.1%}  Sharpe {agg_off_m['sharpe']:.2f}")
-print(f"AGG 60% insider cash-only, regime ON : CAGR {agg_on_m['cagr']:+.1%}  DD {agg_on_m['dd']:.1%}  Sharpe {agg_on_m['sharpe']:.2f}")
-
-# ── Strategy page: ONLY the current deployed strategy ──
-cur_curve, cur_m = agg_on_curve, agg_on_m     # aggressive insider, regime-ON = the live config
-
-fig = make_subplots(rows=2, cols=1, row_heights=[0.7, 0.3], vertical_spacing=0.14)
-for nm, c, col, wd in [("Current strategy", cur_curve, "#3fb950", 2.6), ("SPY (benchmark)", spy_curve, "#6e7681", 1.5)]:
-    fig.add_trace(go.Scatter(x=c.index, y=c, name=nm, line=dict(color=col, width=wd)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=c.index, y=(c / c.cummax() - 1) * 100, showlegend=False,
-                  line=dict(color=col, width=wd * 0.6)), row=2, col=1)
+# ── chart: live (with gate) vs without, the gap shaded = return given up ──
+fig = make_subplots(rows=2, cols=1, row_heights=[0.72, 0.28], vertical_spacing=0.13)
+fig.add_trace(go.Scatter(x=cur.index, y=cur, name="LIVE — with SMA50 trend gate",
+                         line=dict(color="#f85149", width=2.6)), 1, 1)
+fig.add_trace(go.Scatter(x=notrend.index, y=notrend, name="WITHOUT trend gate (validated)",
+                         line=dict(color="#3fb950", width=2.4), fill="tonexty",
+                         fillcolor="rgba(63,185,80,0.16)"), 1, 1)
+fig.add_trace(go.Scatter(x=spy_curve.index, y=spy_curve, name="SPY",
+                         line=dict(color="#6e7681", width=1.4)), 1, 1)
+_bx = [d for d in buys_f if d in cur.index]
+_sx = [d for d in sells_f if d in cur.index]
+fig.add_trace(go.Scatter(x=_bx, y=[cur.loc[d] for d in _bx], mode="markers", name=f"Buys ({len(_bx)})",
+                         marker=dict(symbol="triangle-up", color="#2ea043", size=5, opacity=0.45)), 1, 1)
+fig.add_trace(go.Scatter(x=_sx, y=[cur.loc[d] for d in _sx], mode="markers", name=f"Sells ({len(_sx)})",
+                         marker=dict(symbol="triangle-down", color="#da3633", size=5, opacity=0.45)), 1, 1)
+fig.add_trace(go.Scatter(x=diff.index, y=diff, name="Return given up by the trend gate ($)",
+                         line=dict(color="#d29922", width=1.8), fill="tozeroy",
+                         fillcolor="rgba(210,153,34,0.16)"), 2, 1)
 fig.update_yaxes(title_text="Equity $", row=1, col=1, title_font_size=11)
-fig.update_yaxes(title_text="Drawdown %", row=2, col=1, title_font_size=11)
-fig.update_layout(template="plotly_dark", height=560, margin=dict(t=34, l=56, r=14, b=32),
-                  legend=dict(orientation="h", y=1.08, x=0, font=dict(size=11)),
+fig.update_yaxes(title_text="Δ return $", row=2, col=1, title_font_size=11)
+fig.update_layout(template="plotly_dark", height=620, margin=dict(t=34, l=60, r=14, b=30),
+                  legend=dict(orientation="h", y=1.09, x=0, font=dict(size=10)),
                   paper_bgcolor="#0d1117", plot_bgcolor="#0d1117")
 chart = fig.to_html(full_html=False, include_plotlyjs="cdn",
-                    config={"responsive": True, "displayModeBar": False}, default_width="100%", default_height="540px")
+                    config={"responsive": True, "displayModeBar": False},
+                    default_width="100%", default_height="560px")
 
 
 def card(k, v, sub, cls=""):
@@ -166,35 +154,37 @@ def card(k, v, sub, cls=""):
 
 
 cards = ("<div class=cards>"
-         + card("CAGR", f"{cur_m['cagr']:+.1%}", f"SPY {spy_m['cagr']:+.1%}", "pos" if cur_m['cagr'] >= 0 else "neg")
-         + card("Max drawdown", f"{cur_m['dd']:.1%}", f"SPY {spy_m['dd']:.1%}", "neg")
-         + card("Sharpe", f"{cur_m['sharpe']:.2f}", f"SPY {spy_m['sharpe']:.2f}")
-         + card("Sortino", f"{cur_m['sortino']:.2f}", f"SPY {spy_m['sortino']:.2f}")
-         + card("Calmar", f"{cur_m['calmar']:.2f}", f"SPY {spy_m['calmar']:.2f}")
-         + card("Volatility", f"{cur_m['vol']:.0%}", f"SPY {spy_m['vol']:.0%}")
+         + card("CAGR (as traded)", f"{mF['cagr']:+.1%}", f"vs no-gate {mN['cagr']:+.1%} · SPY {mS['cagr']:+.1%}",
+                "pos" if mF['cagr'] >= 0 else "neg")
+         + card("Max drawdown", f"{mF['dd']:.1%}", f"no-gate {mN['dd']:.1%} · SPY {mS['dd']:.1%}", "neg")
+         + card("Sharpe", f"{mF['sharpe']:.2f}", f"no-gate {mN['sharpe']:.2f} · SPY {mS['sharpe']:.2f}")
+         + card("Trend-gate cost / yr", f"{mN['cagr']-mF['cagr']:+.1%}", "CAGR given up by the gate", "neg")
+         + card("Cumulative cost", f"${diff.iloc[-1]:,.0f}", "on a $10k base", "neg")
+         + card("Signals taken", f"{n_f:,}", f"of {n_n:,} (gate drops {1-n_f/max(n_n,1):.0%})")
          + "</div>")
 
-CSS = ("body{background:#0d1117;color:#e6edf3;font:14px -apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:14px}"
-       "h1{font-size:17px;margin:2px 0 4px}.sub2{color:#8b949e;font-size:12px;margin-bottom:10px}"
-       ".cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:10px 0}"
-       ".card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px}"
-       ".card .k{color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.04em}"
-       ".card .v{font-size:21px;font-weight:700;margin-top:3px}.card .sub{color:#6e7681;font-size:11px;margin-top:2px}"
-       ".pos{color:#3fb950}.neg{color:#f85149}"
-       ".cfg{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px 12px;margin-top:10px;font-size:12px;color:#9da7b1;line-height:1.6}"
-       ".cfg b{color:#e6edf3}.note{color:#8b949e;font-size:11px;line-height:1.5;margin-top:8px}")
-
 html = ("<!doctype html><html><head><meta charset=utf-8>"
-        "<meta name=viewport content='width=device-width,initial-scale=1'><title>Current strategy</title>"
-        f"<style>{CSS}</style></head><body><h1>Current strategy</h1>"
-        f"<div class=sub2>Aggressive insider copier &middot; cash-only &middot; regime-on &middot; {cur_curve.index[0]} &rarr; {cur_curve.index[-1]}</div>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'><title>Strategy (as traded)</title>"
+        "<style>body{background:#0d1117;color:#e6edf3;font:14px -apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:14px}"
+        "h1{font-size:17px;margin:2px 0 4px}.sub2{color:#8b949e;font-size:12px;margin-bottom:8px}"
+        ".cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:10px 0}"
+        ".card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px}"
+        ".card .k{color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.04em}"
+        ".card .v{font-size:20px;font-weight:700;margin-top:3px}.card .sub{color:#6e7681;font-size:11px;margin-top:2px}"
+        ".pos{color:#3fb950}.neg{color:#f85149}"
+        ".cfg{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px 12px;margin-top:10px;font-size:12px;color:#9da7b1;line-height:1.6}"
+        ".cfg b{color:#e6edf3}.note{color:#8b949e;font-size:11px;line-height:1.5;margin-top:8px}</style></head>"
+        "<body><h1>Current strategy — as actually traded</h1>"
+        f"<div class=sub2>Insider copier + SMA50 trend gate + vol/liquidity, 60/40 SPY, regime-on, cash-only &middot; {cur.index[0]} &rarr; {cur.index[-1]}</div>"
         f"{cards}{chart}"
-        "<div class=cfg>LIVE CONFIG: insider copier (primary engine) <b>12 names &times; $5,000</b>, <b>~90% deployed</b> "
-        "(10% cash buffer), regime protection <b>ON</b>, per-position stop 15%, equity floor &minus;45% &rarr; ruin kill &minus;50%, "
-        "<b>cash-only (no margin &mdash; can't hit $0)</b>. Signals = SEC Form-4 open-market buys &gt;$1M, &le;2 days old, &ge;2 distinct insiders.</div>"
-        "<div class=note>Backtest proxy: 60% insider / 40% SPY, regime-gated, cash-only, 15bps/side slippage, in-sample. "
-        "The live copier holds discrete names so it captures LESS than the idealized magnitudes &mdash; judge it on "
-        "'beats SPY with shallower drawdowns', not the literal CAGR.</div></body></html>")
-open("crossover_tearsheet.html", "w").write(html)
-print(f"Current strategy: CAGR {cur_m['cagr']:+.1%}  DD {cur_m['dd']:.1%}  Sharpe {cur_m['sharpe']:.2f}  Calmar {cur_m['calmar']:.2f}")
-print(f"SPY benchmark   : CAGR {spy_m['cagr']:+.1%}  DD {spy_m['dd']:.1%}  Sharpe {spy_m['sharpe']:.2f}")
+        "<div class=cfg>LIVE CONFIG: insider copier <b>12 names &times; $5,000</b>, ~90% deployed, "
+        "<b>SMA50 trend gate</b> (buy only when price &gt; 50-SMA), vol &ge; 0.0563, liquidity &ge; $1M ADV, "
+        "freshness <b>&le;1 day from filing</b>, regime-on, cash-only, equity floor &minus;45% &rarr; ruin &minus;50%. "
+        "<i>Note: vol gate is temporarily 0.025 today (reverts to 0.0563 tomorrow); RYAN queued in the SMA200 watchlist.</i></div>"
+        "<div class=note>The RED line is what you're trading (with the SMA50 trend gate). The GREEN line is the same "
+        "strategy WITHOUT the trend gate. The shaded gap + the lower panel are the <b>return the trend gate gives up</b> "
+        "&mdash; the gate blocks insiders' dip-buys, which the backtest shows are the highest-alpha signals. "
+        "60/40 SPY blend, regime-gated, 15bps/side slippage, in-sample to the PIT window; the live discrete copier captures less than these magnitudes.</div>"
+        "</body></html>")
+open("crossover_tearsheet.html", "w", encoding="utf-8").write(html)
+print("wrote crossover_tearsheet.html (as-traded, with trend-gate-cost overlay)")
