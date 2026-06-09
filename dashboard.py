@@ -128,9 +128,12 @@ def get_positions(ttl=30):
         return _CACHE["pos"]
     try:
         pos = _client().get_all_positions()
-    except Exception:
-        pos = []
-    _CACHE["pos"], _CACHE["pos_t"] = pos, now
+        _CACHE["pos"], _CACHE["pos_t"] = pos, now     # only cache on SUCCESS
+    except Exception as e:
+        # transient Alpaca error (e.g. rate limit) must NOT blank the page — keep last-known.
+        import logging as _lg
+        _lg.getLogger("dashboard").warning("get_positions failed, keeping last-known: %s", str(e)[:120])
+        pos = _CACHE.get("pos") or []
     return pos
 
 
