@@ -30,3 +30,4 @@ pyarrow  # live-experience replay parquet store (append_live_experience)
 pyportfolioopt  # Black-Litterman + efficient-frontier Buffett optimizer (optional; falls back to conviction allocation)
 streaming-indicators  # real-time incremental indicator state (StreamingIndicatorEngine; falls back to static pandas calc when absent)
 yliveticker  # live premarket quote stream (PremarketLiveFeed; falls back to yfinance/Alpaca premarket logic when absent)
+authlib>=1.3

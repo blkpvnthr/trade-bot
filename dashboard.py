@@ -53,6 +53,12 @@ app = Flask(__name__)
 DASH_TOKEN = os.environ.get("DASH_TOKEN", "")
 DASH_PASSWORD = os.environ.get("DASH_PASSWORD", "")
 app.secret_key = os.environ.get("DASH_SECRET") or ("qq-" + (DASH_PASSWORD or DASH_TOKEN or "dev"))
+app.config["PREFERRED_URL_SCHEME"] = "https"   # OAuth redirect URIs must be https behind nginx
+try:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+except Exception:
+    pass
 app.config.update(SESSION_COOKIE_NAME="qqdash", SESSION_COOKIE_PATH=(PREFIX or "/"),
                   SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SECURE=True,
                   SESSION_COOKIE_SAMESITE="Lax", PERMANENT_SESSION_LIFETIME=timedelta(days=60))
@@ -314,18 +320,37 @@ def need_auth(f):
     return w
 
 
+import dash_auth
+
+
 def login_page(err=""):
     msg = f'<div class="neg" style="margin-bottom:10px">{err}</div>' if err else ""
+    prov = dash_auth.providers()
+    btns = ""
+    if prov["google"]:
+        btns += (f'<a class="btn" href="{PREFIX}/auth/google" style="display:block;background:#fff;'
+                 'color:#202124;width:100%;margin-bottom:8px">Continue with Google</a>')
+    if prov["github"]:
+        btns += (f'<a class="btn" href="{PREFIX}/auth/github" style="display:block;background:#24292f;'
+                 'color:#fff;width:100%;margin-bottom:8px">Continue with GitHub</a>')
+    sep = '<div class="sub muted" style="margin:10px 0">or sign in with email</div>' if btns else ""
     return Response(f"""<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><title>Sign in · QuantumQuant</title>
 <style>{CSS}</style></head><body><div class=wrap>
-<div class="card" style="max-width:330px;margin:14vh auto;text-align:center">
-<h1 style="margin-bottom:16px">QuantumQuant</h1>{msg}
+<div class="card" style="max-width:330px;margin:11vh auto;text-align:center">
+<h1 style="margin-bottom:16px">QuantumQuant</h1>{msg}{btns}{sep}
 <form method=post action="{PREFIX}/login">
-<input class=minput type=password name=password placeholder=Password autofocus autocomplete=current-password
+<input class=minput type=email name=email placeholder="Email (optional)" autocomplete=username
+style="width:100%;margin-bottom:8px">
+<input class=minput type=password name=password placeholder=Password autocomplete=current-password
 style="width:100%;margin-bottom:12px">
 <button class="btn" style="background:#1f6feb;width:100%">Sign in</button></form>
 </div></div></body></html>""", mimetype="text/html")
+
+
+_ERR_MSG = {"oauth": "Sign-in failed — please try again.",
+            "not_allowed": "That account is not authorized for this dashboard.",
+            "oauth_unavailable": "That provider is not configured yet."}
 
 
 @app.route(PREFIX + "/login", methods=["GET", "POST"])
@@ -333,18 +358,25 @@ def login():
     if _authed():
         return redirect(PREFIX + "/")
     if request.method == "POST":
-        if DASH_PASSWORD and (request.form.get("password") or "") == DASH_PASSWORD:
+        email = (request.form.get("email") or "").strip()
+        pw = request.form.get("password") or ""
+        if email and dash_auth.email_login(email, pw):                  # email/password (allow-listed)
+            return redirect(PREFIX + "/")
+        if not email and DASH_PASSWORD and pw == DASH_PASSWORD:          # legacy single-password
             session.permanent = True
             session["auth"] = True
             return redirect(PREFIX + "/")
-        return login_page("Incorrect password")
-    return login_page("Sign in required" if not DASH_PASSWORD else "")
+        return login_page("Incorrect email or password")
+    return login_page(_ERR_MSG.get(request.args.get("err", ""), ""))
 
 
 @app.route(PREFIX + "/logout")
 def logout():
     session.clear()
     return redirect(PREFIX + "/login")
+
+
+dash_auth.register_auth_routes(app, PREFIX)   # Google + GitHub OAuth callbacks (fail-safe)
 
 
 # ── shared HTML chrome ────────────────────────────────────────────────────────
