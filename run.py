@@ -2621,6 +2621,18 @@ def run_bal_entries(bal, gateway: AlpacaGateway, waterfall, risk: RiskManager,
                     optimizer_objective_weights: Optional[dict] = None) -> int:
     if not symbols:
         return 0
+    # FIX 2026-06-09: Block BAL entries when broker auth has not succeeded.
+    # risk.account_status is set to "" at init and only updated on a successful
+    # account sync.  If it is still empty the system is running on the $100k
+    # STARTING_EQUITY fallback, meaning every order would also fail auth at Alpaca.
+    # Blocking here prevents phantom-account order noise in logs/journals.
+    if not risk.account_status:
+        logger.warning(
+            "BAL entries blocked: broker account_status='%s' (auth not confirmed) — "
+            "equity=%.0f may be STARTING_EQUITY fallback; will retry next cycle",
+            risk.account_status, risk.equity,
+        )
+        return 0
     stock_room = max(0.0, risk.equity * MAX_STOCK_EXPOSURE_PCT - risk.stock_exposure)
     cash_reserve = CASH_BUFFER_PCT * risk.equity                      # always-free cash
     spendable = max(0.0, risk.cash - cash_reserve)                   # only deploy cash above the reserve
@@ -3768,6 +3780,7 @@ def log_account_stats(gateway: AlpacaGateway, risk: RiskManager,
         logger.warning("Account: unavailable (%s)", exc)
         account = {}
 
+    raw_positions = []
     try:
         raw_positions = gateway.get_positions_raw()
         _, _, opt_exp, stk_exp = gateway.split_positions(raw_positions)
@@ -3791,6 +3804,46 @@ def log_account_stats(gateway: AlpacaGateway, risk: RiskManager,
         risk.stock_exposure, risk.options_exposure, cash_pct,
         risk.pattern_day_trader, risk.daytrade_count, risk.account_status or "n/a", source,
     )
+
+    # ── dashboard snapshot: account + positions, read by dashboard.py (no broker creds on its side).
+    # Only persisted when the broker read actually succeeded (account non-empty) so an auth outage
+    # keeps the last-good snapshot instead of blanking the dashboard.
+    if account:
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            _snap_pos = []
+            for _p in (raw_positions or []):
+                try:
+                    _snap_pos.append({
+                        "symbol": str(getattr(_p, "symbol", "")),
+                        "qty": float(getattr(_p, "qty", 0) or 0),
+                        "market_value": float(getattr(_p, "market_value", 0) or 0),
+                        "avg_entry_price": float(getattr(_p, "avg_entry_price", 0) or 0),
+                        "current_price": float(getattr(_p, "current_price", 0) or 0),
+                        "unrealized_pl": float(getattr(_p, "unrealized_pl", 0) or 0),
+                        "unrealized_plpc": float(getattr(_p, "unrealized_plpc", 0) or 0),
+                        "side": str(getattr(_p, "side", "long")).split(".")[-1].lower(),
+                    })
+                except Exception:
+                    continue
+            _snap = {
+                "updated_at_utc": _dt.now(_tz.utc).isoformat(),
+                "source": source, "live": source == "alpaca",
+                "account": {
+                    "equity": equity, "last_equity": float(risk.last_equity or equity),
+                    "cash": cash, "buying_power": buying_power, "day_pnl": day_pnl,
+                    "day_pnl_pct": (day_pnl / float(risk.last_equity) if risk.last_equity else 0.0),
+                    "cash_pct": cash_pct, "stock_exposure": float(risk.stock_exposure),
+                    "options_exposure": float(risk.options_exposure),
+                    "status": risk.account_status or "n/a", "pdt": bool(risk.pattern_day_trader),
+                },
+                "positions": _snap_pos,
+            }
+            _sp = PROJECT_ROOT / "system-data" / "dashboard_snapshot.json"
+            _sp.parent.mkdir(parents=True, exist_ok=True)
+            _sp.write_text(json.dumps(_snap, default=str, indent=2), encoding="utf-8")
+        except Exception as _se:
+            logger.debug("dashboard snapshot write skipped: %s", _se)
     return account
 
 

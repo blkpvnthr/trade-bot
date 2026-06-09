@@ -109,32 +109,39 @@ def ph_by_date(ph):
     return out
 
 
+# Account + positions are read from the bot's own snapshot (system-data/dashboard_snapshot.json),
+# written each cycle by run.py:log_account_stats. The dashboard needs NO broker credentials and is
+# immune to Alpaca auth/rate-limit issues — it shows whatever the bot last successfully read.
+SNAP_PATH = ROOT / "system-data" / "dashboard_snapshot.json"
+
+
+def _read_snapshot():
+    try:
+        import json as _json
+        return _json.loads(SNAP_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def snapshot_age_sec():
+    try:
+        return max(0, int(time.time() - SNAP_PATH.stat().st_mtime))
+    except Exception:
+        return None
+
+
 def get_account_snapshot(ttl=30):
-    now = time.time()
-    if _CACHE.get("acct") is not None and now - _CACHE.get("acct_t", 0) < ttl:
-        return _CACHE["acct"]
-    a = _client().get_account()
-    eq = float(a.equity)
-    le = float(a.last_equity or eq)
-    snap = {"equity": eq, "last_equity": le, "cash": float(a.cash),
-            "day_pnl": eq - le, "day_pnl_pct": ((eq - le) / le if le else 0.0)}
-    _CACHE["acct"], _CACHE["acct_t"] = snap, now
-    return snap
+    a = _read_snapshot().get("account", {})
+    eq = float(a.get("equity", 0) or 0)
+    le = float(a.get("last_equity", eq) or eq)
+    return {"equity": eq, "last_equity": le, "cash": float(a.get("cash", 0) or 0),
+            "day_pnl": float(a.get("day_pnl", eq - le) or 0),
+            "day_pnl_pct": float(a.get("day_pnl_pct", ((eq - le) / le if le else 0.0)) or 0.0)}
 
 
 def get_positions(ttl=30):
-    now = time.time()
-    if _CACHE.get("pos") is not None and now - _CACHE.get("pos_t", 0) < ttl:
-        return _CACHE["pos"]
-    try:
-        pos = _client().get_all_positions()
-        _CACHE["pos"], _CACHE["pos_t"] = pos, now     # only cache on SUCCESS
-    except Exception as e:
-        # transient Alpaca error (e.g. rate limit) must NOT blank the page — keep last-known.
-        import logging as _lg
-        _lg.getLogger("dashboard").warning("get_positions failed, keeping last-known: %s", str(e)[:120])
-        pos = _CACHE.get("pos") or []
-    return pos
+    from types import SimpleNamespace
+    return [SimpleNamespace(**p) for p in _read_snapshot().get("positions", [])]
 
 
 def _fmt_sym(sym):
@@ -468,8 +475,17 @@ def home():
 
 
 def positions_html(positions):
+    age = snapshot_age_sec()
+    if age is None:
+        fresh = ('<div class="sub" style="color:#f85149;margin:-4px 0 8px">'
+                 '⚠ no data yet — bot has not written a snapshot (is it running + authorized?)</div>')
+    elif age > 180:
+        fresh = (f'<div class="sub" style="color:#d29922;margin:-4px 0 8px">'
+                 f'⚠ data {age // 60}m {age % 60}s old — bot may be offline or unauthorized</div>')
+    else:
+        fresh = f'<div class="sub muted" style="margin:-4px 0 8px">updated {age}s ago</div>'
     if not positions:
-        return ('<h2>Open positions</h2><div class="card"><span class="muted">Flat — no open positions.</span></div>')
+        return (f'<h2>Open positions</h2>{fresh}<div class="card"><span class="muted">Flat — no open positions.</span></div>')
     rows = ""
     tot_mv = tot_upl = 0.0
     for p in sorted(positions, key=lambda x: -abs(float(getattr(x, "market_value", 0) or 0))):
@@ -487,7 +503,7 @@ def positions_html(positions):
                  f"<td>{_money(mv)}</td><td>{_pnl(upl)} {_pct(uplpc)}</td></tr>")
     tot = (f"<tr class=tot><td>TOTAL</td><td>{len(positions)}</td><td></td><td></td>"
            f"<td>{_money(tot_mv)}</td><td>{_pnl(tot_upl)}</td></tr>")
-    return (f"<h2>Open positions <span class=muted style=font-size:13px>· {len(positions)} · tap a row to trade</span></h2>"
+    return (f"<h2>Open positions <span class=muted style=font-size:13px>· {len(positions)} · tap a row to trade</span></h2>{fresh}"
             f"<div class=scroll><table><thead><tr><th>Symbol</th><th>Qty</th><th>Avg</th><th>Last</th>"
             f"<th>Value</th><th>Unreal P&L</th></tr></thead><tbody>{tot}{rows}</tbody></table></div>")
 
