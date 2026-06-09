@@ -156,6 +156,15 @@ MIN_VOLUME = 25
 MIN_OPEN_INTEREST = 50
 
 MAX_SPREAD_PCT = 0.20
+
+# OPRA-aware contract filter (req #3): real-time-OPRA spec (delta>=0.47, spread<=10%, vol>OI,
+# DTE 21-60, premium $0.05-2.50, reject zero-bid). Tightens the scanner when enabled.
+try:
+    import os as _os
+    from tradingview_market_context import opra_contract_ok as _opra_ok
+    _OPRA_FILTER = _os.environ.get("TRADINGVIEW_OPTIONS_FEED_ENABLED", "true").lower() in {"1", "true", "yes"}
+except Exception:
+    _opra_ok, _OPRA_FILTER = None, False
 MAX_IV = 2.50
 
 REQUEST_SLEEP_SECONDS = 0.85
@@ -503,6 +512,12 @@ def scan_symbol(symbol: str) -> List[Dict[str, Any]]:
 
         if delta < MIN_DELTA or delta > MAX_DELTA:
             continue
+
+        if _OPRA_FILTER and _opra_ok is not None:               # req #3: OPRA-aware tightening
+            _ok, _why = _opra_ok({"volume": volume, "open_interest": open_interest, "bid": bid,
+                                  "ask": ask, "delta": delta, "dte": dte})
+            if not _ok:
+                continue
 
         if iv > MAX_IV:
             continue

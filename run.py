@@ -2268,6 +2268,24 @@ def run_alpha_exits(engine, gateway: AlpacaGateway, waterfall,
 
 
 # ── Alpha: ENTRY pass (engine owns all screening / contract / BS decisions) ───────
+# ── Futures/index regime context (enhancement layer; fully fail-safe) ──────────────
+try:
+    import tradingview_market_context as _tvmc
+except Exception:
+    _tvmc = None
+
+
+def _regime_ctx(market_context):
+    """Fail-safe futures/index regime context (cached in the module). None if unavailable."""
+    if _tvmc is None:
+        return None
+    try:
+        return _tvmc.get_market_context(av_context=market_context)
+    except Exception as e:
+        logger.debug("regime context failed: %s", e)
+        return None
+
+
 def run_alpha_entries(engine, gateway: AlpacaGateway, waterfall, risk: RiskManager,
                       symbols: List[str], bars_by_symbol: Dict[str, Any],
                       chains_by_symbol: Dict[str, list], market_context: dict,
@@ -2291,6 +2309,18 @@ def run_alpha_entries(engine, gateway: AlpacaGateway, waterfall, risk: RiskManag
     if not new_buys_allowed:
         log_skip("ALPHA_ENGINE", regime_reason, phase="entry_gate", engine="alpha")
         return 0
+    # ── Futures/index regime throttle + VIX/VX gate (req #2/#4/#5) ──────────────────
+    _mctx = _regime_ctx(market_context)
+    _throttle = 1.0
+    if _mctx is not None:
+        logger.info(_mctx.log_line())                                    # req #5: one MARKET_CONTEXT line/cycle
+        if _tvmc and _tvmc.REGIME_THROTTLE_ENABLED:
+            if _mctx.throttle <= 0.0 or _mctx.block_new_long_calls:       # req #2 PANIC=0% / req #4 VIX gate
+                log_skip("ALPHA_ENGINE",
+                         f"rejected_by_regime:{_mctx.regime}:{_mctx.blocked_reason or 'throttle_0'}",
+                         phase="entry_gate", engine="alpha")
+                return 0
+            _throttle = _mctx.throttle                                    # scale options allocation
     try:
         signals = engine.evaluate_universe(
             symbols=symbols, bars_by_symbol=bars_by_symbol, market_context=market_context,
@@ -2314,7 +2344,8 @@ def run_alpha_entries(engine, gateway: AlpacaGateway, waterfall, risk: RiskManag
                 _research("record_alpha_signal_safe", getattr(sig, "__dict__", {}), market_context, False)
             continue
         limit_px = sig.ask or sig.mid
-        resp = gateway.submit_market_order(sig.contract_symbol, "buy", sig.contracts,
+        _qty = max(1, int(round(sig.contracts * _throttle)))   # req #2: regime throttle on options allocation
+        resp = gateway.submit_market_order(sig.contract_symbol, "buy", _qty,
                                            reason=f"alpha_call:{sig.setup_type}:{sig.grade}",
                                            limit_price=limit_px, order_type="limit")
         if resp is not None:
@@ -2332,7 +2363,7 @@ def run_alpha_entries(engine, gateway: AlpacaGateway, waterfall, risk: RiskManag
                     symbol=sig.contract_symbol,
                     underlying=sig.symbol,
                     side="buy",
-                    qty=sig.contracts,
+                    qty=_qty,
                     limit_price=limit_px,
                     setup_type=getattr(sig, "setup_type", ""),
                     grade=getattr(sig, "grade", ""),

@@ -515,7 +515,7 @@ def positions_html(positions):
     if age is None:
         fresh = ('<div class="sub" style="color:#f85149;margin:-4px 0 8px">'
                  '⚠ no data yet — bot has not written a snapshot (is it running + authorized?)</div>')
-    elif age > 180:
+    elif age > 420:
         fresh = (f'<div class="sub" style="color:#d29922;margin:-4px 0 8px">'
                  f'⚠ data {age // 60}m {age % 60}s old — bot may be offline or unauthorized</div>')
     else:
