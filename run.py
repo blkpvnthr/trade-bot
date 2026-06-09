@@ -192,6 +192,11 @@ INSIDER_COPY_MIN_VALUE          = float(os.environ.get("INSIDER_COPY_MIN_VALUE",
 INSIDER_COPY_MAX_AGE_DAYS       = int(os.environ.get("INSIDER_COPY_MAX_AGE_DAYS", 2))           # latest buy within N days
 INSIDER_COPY_DOLLARS            = float(os.environ.get("INSIDER_COPY_DOLLARS", 1500))           # notional sized per copied name
 INSIDER_COPY_MAX_NAMES          = int(os.environ.get("INSIDER_COPY_MAX_NAMES", 5))              # cap copies per cycle
+# Let insider-copy BUYS bypass the 9-EMA/SMA trend-crossover execution gate. The insider edge is
+# event-driven (a large recent Form-4 open-market buy), so requiring an SMA cross-up can park a
+# valid signal indefinitely. Scoped to insider buys ONLY — every other engine still honors the
+# gate. Hard risk caps (daily-loss, drawdown, cash-buffer, PDT, kill-switch) are UNAFFECTED.
+INSIDER_COPY_BYPASS_TREND_GATE  = os.environ.get("INSIDER_COPY_BYPASS_TREND_GATE", "false").lower() in {"1", "true", "yes"}
 
 # ── Option safety-exit (alpha-independent backstop) ───────────────────────────
 # The normal option-exit path (run_alpha_exits) only runs when the Alpha engine is
@@ -1232,7 +1237,7 @@ class AlpacaGateway:
     def submit_market_order(self, symbol: str, side: str, qty: int,
                             reason: str = "", limit_price: float = 0.0,
                             order_type: str = "market", reference_price: float = 0.0,
-                            notional: float = 0.0) -> Optional[Dict]:
+                            notional: float = 0.0, bypass_trend_gate: bool = False) -> Optional[Dict]:
         """
         Risk-gated order submission for equities AND options (OCC symbols).
         Options are always routed as DAY limit orders (market options orders are
@@ -1272,11 +1277,15 @@ class AlpacaGateway:
             return None
 
         # 9-EMA execution gate: only BUY above the daily 9-EMA (trend confirmation / cross-up).
-        if side == "buy":
+        # bypass_trend_gate lets event-driven insider copies skip this timing filter (see
+        # INSIDER_COPY_BYPASS_TREND_GATE) — risk caps below still apply.
+        if side == "buy" and not bypass_trend_gate:
             _trend_blk = _ema_buy_blocked(symbol, ref_price)
             if _trend_blk:
                 log_skip(symbol, _trend_blk, side=side, qty=qty, source=reason or "broker")
                 return None
+        elif side == "buy" and bypass_trend_gate:
+            logger.info("[trend-gate BYPASS] %s buy x%d (reason=%s)", symbol, qty, reason)
 
         # Self-assessment BUY throttle (downside protection): scale BUY size by the
         # data/model/regime/execution-risk multiplier from system_self_awareness. Buys only —
@@ -3549,7 +3558,8 @@ def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
                 sym, "buy", qty,
                 reason=(f"insider_copy_share:${cand['value']:,.0f}>{INSIDER_COPY_MIN_VALUE:,.0f}"
                         f":rv20={_rv20:.3f}:hold={INSIDER_COPY_SHARE_HOLD_DAYS}d"),
-                reference_price=ref_price)
+                reference_price=ref_price,
+                bypass_trend_gate=INSIDER_COPY_BYPASS_TREND_GATE)
             contract, exec_price, asset = None, ref_price, "equity"
 
         if resp is not None:
