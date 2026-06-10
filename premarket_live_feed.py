@@ -64,7 +64,19 @@ except Exception:
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 SOURCE_LIVE = "yliveticker"
+SOURCE_ALPACA = "alpaca"
 SOURCE_FALLBACK = "yfinance"
+# Sources that represent genuine LIVE data (vs the yfinance fallback). Liveness checks must test
+# MEMBERSHIP here, never equality with a single constant — both yliveticker and alpaca are live.
+LIVE_SOURCES = {SOURCE_LIVE, SOURCE_ALPACA}
+
+# Realtime feed source: "yliveticker" (Yahoo, default) | "alpaca" (Alpaca REST batch snapshots).
+# The Alpaca path POLLS get_stock_snapshot for ALL symbols in one request every ALPACA_POLL_SECONDS
+# — no 30-symbol streaming cap, every symbol covered each poll (no rotation gaps), and snapshots
+# carry prev-close + day bar so change% / RVOL populate. Any Alpaca failure falls back to
+# yliveticker, so switching the source can't break the live feed.
+FEED_SOURCE = os.getenv("PREMARKET_FEED_SOURCE", "yliveticker").strip().lower()
+ALPACA_POLL_SECONDS = float(os.getenv("ALPACA_POLL_SECONDS", "2"))
 
 # Per-symbol quote fields exposed in every snapshot entry.
 QUOTE_FIELDS: List[str] = [
@@ -236,6 +248,21 @@ class PremarketLiveFeed:
             self.feed_status = "no_symbols"
             logger.debug("PremarketLiveFeed: no symbols to subscribe")
             return
+        # Alpaca realtime backend (opt-in) — falls through to yliveticker on any failure.
+        # Read at RUNTIME (not import) so it sees env loaded after this module is imported.
+        if os.getenv("PREMARKET_FEED_SOURCE", FEED_SOURCE).strip().lower() == "alpaca":
+            try:
+                self._stop_event.clear()
+                self._thread = threading.Thread(target=self._run_alpaca_poll,
+                                                name="premarket-alpaca-feed", daemon=True)
+                self._thread.start()
+                self.feed_status = "running"
+                _poll_s = os.getenv("ALPACA_POLL_SECONDS", str(ALPACA_POLL_SECONDS))
+                logger.info("PremarketLiveFeed source=alpaca mode=REST batch snapshots poll_seconds=%s (%d symbols)",
+                            _poll_s, len(self.symbols))
+                return
+            except Exception as e:
+                logger.warning("Alpaca feed start failed (%s) — falling back to yliveticker", e)
         if not YLIVETICKER_AVAILABLE:
             self._mark_fallback("yliveticker_unavailable")
             return
@@ -391,6 +418,98 @@ class PremarketLiveFeed:
             self.error = str(e)[:300]
             self.error_count += 1
             logger.debug("PremarketLiveFeed.on_message failed: %s", e)
+
+    # ── Alpaca REST snapshot backend (opt-in: PREMARKET_FEED_SOURCE=alpaca) ─────────────────────
+    def _apply_alpaca_snapshots(self, snaps: Any) -> None:
+        """Map a batch of Alpaca snapshots → shared quote state for every symbol. Never raises.
+        Snapshot carries latest_trade (price), latest_quote (bid/ask), daily_bar (hi/lo/vol) and
+        previous_daily_bar (prev close → change%)."""
+        now = _now_iso(); ts = _now_ts()
+        for sym, snap in (snaps or {}).items():
+            if snap is None:
+                continue
+            sym = str(sym).upper()
+            try:
+                lt = getattr(snap, "latest_trade", None); lq = getattr(snap, "latest_quote", None)
+                db = getattr(snap, "daily_bar", None); pdb = getattr(snap, "previous_daily_bar", None)
+                with self._lock:
+                    st = self.state.get(sym) or self._new_state(sym)
+                    px = _f(getattr(lt, "price", None)) if lt else None
+                    bid = _f(getattr(lq, "bid_price", None)) if lq else None
+                    ask = _f(getattr(lq, "ask_price", None)) if lq else None
+                    prev = _f(getattr(pdb, "close", None)) if pdb else None
+                    if px is not None and px > 0:
+                        st["price"] = px
+                    if bid is not None and bid > 0:
+                        st["bid"] = bid
+                    if ask is not None and ask > 0:
+                        st["ask"] = ask
+                    if st["bid"] is not None and st["ask"] is not None:
+                        st["bid_ask_spread"] = round(st["ask"] - st["bid"], 6)
+                        if st.get("price") is None:
+                            st["price"] = round((st["bid"] + st["ask"]) / 2.0, 6)
+                    if prev is not None and prev > 0:
+                        st["previous_close"] = prev
+                    if db is not None:
+                        dh = _f(getattr(db, "high", None)); dl = _f(getattr(db, "low", None))
+                        dv = _i(getattr(db, "volume", None))
+                        if dh is not None:
+                            st["premarket_high"] = dh if st["premarket_high"] is None else max(st["premarket_high"], dh)
+                        if dl is not None:
+                            st["premarket_low"] = dl if st["premarket_low"] is None else min(st["premarket_low"], dl)
+                        if dv is not None:
+                            st["premarket_volume"] = dv
+                    if st.get("price") is not None and st.get("previous_close"):
+                        st["premarket_change"] = round(st["price"] - st["previous_close"], 6)
+                        st["premarket_change_pct"] = round(st["premarket_change"] / st["previous_close"] * 100.0, 6)
+                    st["updated_at"] = now; st["_updated_ts"] = ts
+                    st["source"] = SOURCE_ALPACA; st["stale"] = False; st["error"] = None
+                    self.state[sym] = st; self.symbols_updated.add(sym)
+                    self.last_message_at = now; self.fallback_active = False
+            except Exception as e:
+                logger.debug("alpaca snapshot apply %s failed: %s", sym, e)
+
+    def _run_alpaca_poll(self) -> None:
+        """Daemon-thread entry: poll Alpaca REST snapshots for ALL symbols in one request every
+        ALPACA_POLL_SECONDS (no streaming cap, no rotation — every symbol covered each poll).
+        Falls back to yliveticker on repeated failure or missing SDK/creds. Never raises."""
+        try:
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockSnapshotRequest
+            from alpaca.data.enums import DataFeed
+        except Exception as e:
+            logger.warning("alpaca data SDK unavailable (%s) — falling back to yliveticker", e)
+            if YLIVETICKER_AVAILABLE:
+                self._run_stream()
+            return
+        key = os.getenv("APCA_API_KEY_ID", ""); secret = os.getenv("APCA_API_SECRET_KEY", "")
+        if not key or not secret:
+            logger.warning("APCA creds missing for Alpaca feed — falling back to yliveticker")
+            if YLIVETICKER_AVAILABLE:
+                self._run_stream()
+            return
+        client = StockHistoricalDataClient(key, secret)
+        feed = DataFeed.SIP if os.getenv("ALPACA_DATA_FEED", "iex").lower() == "sip" else DataFeed.IEX
+        poll = float(os.getenv("ALPACA_POLL_SECONDS", str(ALPACA_POLL_SECONDS)) or 2)
+        fails = 0
+        while not self._stop_event.is_set() and not self.shutdown_requested:
+            syms = list(dict.fromkeys(self.symbols))
+            if syms:
+                try:
+                    snaps = client.get_stock_snapshot(
+                        StockSnapshotRequest(symbol_or_symbols=syms, feed=feed))
+                    self._apply_alpaca_snapshots(snaps)
+                    fails = 0
+                    if self.feed_status not in ("running",):
+                        self.feed_status = "running"
+                except Exception as e:
+                    fails += 1
+                    self.error = str(e)[:300]; self.error_count += 1
+                    logger.debug("alpaca snapshot poll failed (%d): %s", fails, e)
+                    if fails >= 5 and YLIVETICKER_AVAILABLE:
+                        logger.warning("alpaca poll failing repeatedly — falling back to yliveticker")
+                        self._run_stream(); return
+            self._stop_event.wait(poll)
 
     def apply_fallback_quotes(self, quotes_by_symbol: Dict[str, Dict[str, Any]],
                               source: str = SOURCE_FALLBACK) -> None:
@@ -619,12 +738,15 @@ class PremarketLiveFeed:
         source = SOURCE_LIVE
         if quotes:
             srcs = {q.get("source") for q in quotes.values()}
-            source = SOURCE_LIVE if SOURCE_LIVE in srcs else (next(iter(srcs)) if srcs else SOURCE_LIVE)
+            live_present = srcs & LIVE_SOURCES          # prefer any LIVE source (alpaca|yliveticker)
+            source = (next(iter(live_present)) if live_present
+                      else (next(iter(srcs)) if srcs else SOURCE_LIVE))
         elif self.fallback_used:
             source = self.fallback_source or SOURCE_FALLBACK
         return {
             "generated_at": _now_iso(),
             "source": source,
+            "is_live": source in LIVE_SOURCES,          # explicit liveness flag for consumers
             "symbols": list(self.symbols),
             "quotes": quotes,
             "stale_symbols": stale_symbols,
