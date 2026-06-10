@@ -96,7 +96,12 @@ def register_auth_routes(app, prefix):
         if _oauth is None or provider not in ("google", "github") or not hasattr(_oauth, provider):
             return redirect(prefix + "/login?err=oauth_unavailable")
         client = getattr(_oauth, provider)
-        return client.authorize_redirect(url_for("oauth_callback", provider=provider, _external=True))
+        # Deterministic redirect URI (must EXACTLY match the one registered with the provider).
+        # DASH_BASE_URL avoids depending on nginx forwarding Host/X-Forwarded-Proto correctly.
+        base = os.environ.get("DASH_BASE_URL", "").rstrip("/")
+        redirect_uri = (base + prefix + "/auth/" + provider + "/callback") if base \
+            else url_for("oauth_callback", provider=provider, _external=True)
+        return client.authorize_redirect(redirect_uri)
 
     @app.route(prefix + "/auth/<provider>/callback")
     def oauth_callback(provider):
