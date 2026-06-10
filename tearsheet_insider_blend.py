@@ -188,7 +188,7 @@ html = ("<!doctype html><html><head><meta charset=utf-8>"
         "the shaded gap + lower panel are the return <b>recaptured</b> by removing the gate &mdash; the backtest showed the "
         "gate blocked insiders' dip-buys (the highest-alpha signals), costing return AND deepening drawdown. "
         "60/40 SPY blend, regime-gated, 15bps/side slippage, in-sample; the live discrete copier captures less than these idealized magnitudes. "
-        "<b>Live:</b> the gate is removed only for the insider copier; the BAL/Buffett-DCA sleeve still runs the <b>EMA9-cross-down / above-SMA200 dip gate</b> alongside it (accumulates quality names on the same dip signal).</div>"
+        "<b>Live:</b> the gate is removed only for the insider copier; the BAL/Buffett-DCA sleeve still runs the <b>trend gate</b> alongside it &mdash; entering on an <b>EMA9 cross-down above the 200-SMA</b> (dip) <b>or</b> a <b>fresh cross-up through the 200-SMA</b>.</div>"
         "</body></html>")
 open("crossover_tearsheet.html", "w", encoding="utf-8").write(html)
 print("wrote crossover_tearsheet.html (current = no trend gate)")
