@@ -166,22 +166,43 @@ class SafetyInvariantTests(unittest.TestCase):
             if line.strip().startswith(("import ", "from ")):
                 self.assertNotIn("alpaca.trading", line)
 
-    def test_no_sip_or_delayed_sip_used(self):
-        # No module SELECTS a SIP data path. `DataFeed.SIP/DELAYED_SIP` is the only way to
-        # request SIP via alpaca-py, so its absence proves SIP is never used. (The feed
-        # manager legitimately *names* "v2/sip" in FORBIDDEN_FEEDS to refuse it.)
+    def test_sip_is_entitlement_gated(self):
+        # SIP is now an entitlement-gated opt-in (Algo Trader Plus): OFF by default, ON only
+        # when ALPACA_DATA_FEED=sip / ALPACA_SIP_ENABLED. Two hard invariants remain:
+        #   (1) delayed-SIP is NEVER selected, in any mode;
+        #   (2) with the flag OFF, the pre-entitlement IEX-only posture is preserved exactly.
         for f in ("alpaca_feed_manager.py", "premarket_live_feed.py", "run.py",
                   "streaming_indicator_engine.py", "market_state_engine.py"):
-            src = (ROOT / f).read_text()
-            self.assertNotIn("DataFeed.SIP", src, f"{f} selects SIP feed")
-            self.assertNotIn("DataFeed.DELAYED_SIP", src, f"{f} selects delayed-SIP feed")
-        # Modules that don't deal in feed names at all must not mention any SIP URL path.
-        for f in ("premarket_live_feed.py", "streaming_indicator_engine.py", "market_state_engine.py"):
-            self.assertNotIn("v2/sip", (ROOT / f).read_text().lower())
-        # Positive safety markers: the feed manager declares SIP unused.
-        diag = afm.AlpacaFeedManager().diagnostic("rth")
-        self.assertFalse(diag["sip_used"])
-        self.assertFalse(diag["delayed_sip_used"])
+            self.assertNotIn("DataFeed.DELAYED_SIP", (ROOT / f).read_text(),
+                             f"{f} selects delayed-SIP feed")
+
+        import importlib
+        import os as _os
+        import alpaca_feed_manager as _afm
+        saved = dict(_os.environ)
+        try:
+            # OFF (default): SIP refused, IEX-only.
+            _os.environ["ALPACA_DATA_FEED"] = "iex"
+            _os.environ.pop("ALPACA_SIP_ENABLED", None)
+            off = importlib.reload(_afm)
+            self.assertFalse(off.SIP_ENABLED)
+            self.assertIn("sip", off.FORBIDDEN_FEEDS)
+            self.assertNotIn("sip", off.SUPPORTED_FEEDS)
+            self.assertEqual(off.RTH_PRIORITY[0], "iex")
+            self.assertFalse(off.AlpacaFeedManager().diagnostic("rth")["delayed_sip_used"])
+
+            # ON (ALPACA_DATA_FEED=sip): SIP allowed + preferred; delayed_sip still forbidden.
+            _os.environ["ALPACA_DATA_FEED"] = "sip"
+            on = importlib.reload(_afm)
+            self.assertTrue(on.SIP_ENABLED)
+            self.assertNotIn("sip", on.FORBIDDEN_FEEDS)
+            self.assertIn("delayed_sip", on.FORBIDDEN_FEEDS)
+            self.assertIn("sip", on.SUPPORTED_FEEDS)
+            self.assertEqual(on.RTH_PRIORITY[0], "sip")
+        finally:
+            _os.environ.clear()
+            _os.environ.update(saved)
+            importlib.reload(_afm)   # restore module to the ambient environment
 
     def test_rl_not_promoted(self):
         import os

@@ -10,8 +10,10 @@ the current subscription and gracefully downgrades, in priority order:
     Regular trading hours :  iex (v2/iex)
     Optional / advisory   :  boats (if available)
 
-HARD RULE: SIP and delayed-SIP are NOT supported and never probed (`v2/sip`,
-`v2/delayed_sip` are excluded by construction). This module is READ-ONLY market data —
+FEED POLICY: delayed-SIP is never used. Real-time SIP is OFF by default and is enabled only
+when entitled, via ALPACA_DATA_FEED=sip (or ALPACA_SIP_ENABLED=true) — e.g. an Alpaca Algo
+Trader Plus subscription. With the flag off, behavior is IEX/overnight-only exactly as before
+(`v2/sip` / `v2/delayed_sip` excluded by construction). This module is READ-ONLY market data —
 it never imports AlpacaGateway / alpaca.trading, never submits an order, and never
 changes execution authority. All probes are bounded + guarded; on missing creds or any
 error it downgrades safely (everything "unavailable") and never raises into the loop.
@@ -35,11 +37,23 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent
 DAILY_OUTPUTS = PROJECT_ROOT / "daily_system_outputs"
 
-# Feeds we are allowed to use. SIP / delayed_sip are intentionally absent.
-SUPPORTED_FEEDS = ["overnight", "iex", "boats"]
-FORBIDDEN_FEEDS = ["sip", "delayed_sip", "v2/sip", "v2/delayed_sip"]
-PREMARKET_PRIORITY = ["overnight", "iex"]
-RTH_PRIORITY = ["iex"]
+# Real-time SIP is opt-in and entitlement-gated (Algo Trader Plus). delayed_sip stays off.
+SIP_ENABLED = (
+    os.getenv("ALPACA_DATA_FEED", "iex").strip().lower() == "sip"
+    or os.getenv("ALPACA_SIP_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+)
+if SIP_ENABLED:
+    # SIP entitled: prefer the real-time consolidated feed, keep IEX as the downgrade.
+    SUPPORTED_FEEDS = ["overnight", "sip", "iex", "boats"]
+    FORBIDDEN_FEEDS = ["delayed_sip", "v2/delayed_sip"]
+    PREMARKET_PRIORITY = ["overnight", "sip", "iex"]
+    RTH_PRIORITY = ["sip", "iex"]
+else:
+    # Default / unentitled: SIP and delayed_sip are intentionally absent.
+    SUPPORTED_FEEDS = ["overnight", "iex", "boats"]
+    FORBIDDEN_FEEDS = ["sip", "delayed_sip", "v2/sip", "v2/delayed_sip"]
+    PREMARKET_PRIORITY = ["overnight", "iex"]
+    RTH_PRIORITY = ["iex"]
 PROBE_TIMEOUT_SEC = float(os.getenv("ALPACA_PROBE_TIMEOUT_SEC", "20"))
 
 
@@ -144,8 +158,9 @@ class AlpacaFeedManager:
             client = StockHistoricalDataClient(key, sec)
             tf = TimeFrame.Day if timeframe == "day" else TimeFrame(int(timeframe.replace("min", "") or 5),
                                                                     TimeFrameUnit.Minute)
-            # Only IEX is used for historical bars; overnight metrics derive from extended-hours IEX bars.
-            dfeed = DataFeed.IEX
+            # SIP when entitled + requested; otherwise IEX. Overnight metrics derive from
+            # extended-hours bars on whichever real-time feed is active.
+            dfeed = DataFeed.SIP if (feed == "sip" and SIP_ENABLED) else DataFeed.IEX
             req = StockBarsRequest(symbol_or_symbols=list(symbols), timeframe=tf,
                                    start=start, end=end, feed=dfeed)
             df = client.get_stock_bars(req).df
@@ -187,7 +202,8 @@ class AlpacaFeedManager:
                 start = end - timedelta(days=5)
             else:
                 start = end - timedelta(days=5)
-            bars = self.fetch_bars([probe_symbol], start, end, timeframe="day", feed="iex")
+            probe_feed = "sip" if (feed == "sip" and SIP_ENABLED) else "iex"
+            bars = self.fetch_bars([probe_symbol], start, end, timeframe="day", feed=probe_feed)
             latency = round((time.time() - t0) * 1000.0, 1)
             ok = bool(bars)
             entry.update({"feed_available": ok, "feed_latency_ms": latency,
@@ -214,7 +230,8 @@ class AlpacaFeedManager:
         """Compute overnight metrics per symbol from extended-hours IEX bars (best-effort)."""
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=2)
-        bars = self.fetch_bars(symbols, start, end, timeframe="5min", feed="iex")
+        bars = self.fetch_bars(symbols, start, end, timeframe="5min",
+                               feed=("sip" if SIP_ENABLED else "iex"))
         out: Dict[str, Dict[str, Any]] = {}
         for sym, df in bars.items():
             try:
@@ -246,7 +263,7 @@ class AlpacaFeedManager:
             "feed_failover_count": self.failover_count,
             "feed_reconnect_count": self.reconnect_count,
             "feed_last_message": self.last_message_at,
-            "sip_used": False, "delayed_sip_used": False,
+            "sip_used": active == "sip", "delayed_sip_used": False,
             "supported_feeds": SUPPORTED_FEEDS,
         }
 
@@ -276,7 +293,7 @@ if __name__ == "__main__":
     m = get_manager()
     diag = m.diagnostic("rth")
     m.write_diagnostic()
-    print("Alpaca feed detection (read-only, no SIP):")
+    print(f"Alpaca feed detection (read-only, sip_enabled={SIP_ENABLED}):")
     for feed, e in diag["feeds"].items():
         print(f"  {feed}: available={e['feed_available']} auth={e['feed_auth_success']} "
               f"latency_ms={e['feed_latency_ms']} reason={e['feed_downgrade_reason']}")
