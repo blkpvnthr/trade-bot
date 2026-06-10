@@ -14,7 +14,7 @@ import backtest_insider_copier as bic
 MIN_VALUE, WINDOW, HOLD, LAG = 1_000_000.0, 2, 10, 2
 SLIP_INS = 0.0015
 VOL_MIN_RV20, MIN_ADV = 0.0563, 1_000_000.0   # live vol + liquidity gates (permanent; 0.025 vol is a 1-day temp)
-W_INS, START_CASH = 0.60, 10_000.0
+W_INS, START_CASH = 0.60, 5_000.0
 
 print("Loading PIT insider events + bars …")
 events = bic.load_pit_buy_events()
@@ -121,7 +121,7 @@ mF, mN, mS = met(cur), met(notrend), met(spy_curve)
 diff = notrend - cur                    # $ recaptured by removing the trend gate
 print(f"CURRENT (no trend gate): CAGR {mN['cagr']:+.1%} DD {mN['dd']:.1%} Sharpe {mN['sharpe']:.2f}")
 print(f"OLD (with gate)        : CAGR {mF['cagr']:+.1%} DD {mF['dd']:.1%} Sharpe {mF['sharpe']:.2f}")
-print(f"Recaptured by removal  : {mN['cagr']-mF['cagr']:+.1%} CAGR, ${diff.iloc[-1]:,.0f} on $10k")
+print(f"Recaptured by removal  : {mN['cagr']-mF['cagr']:+.1%} CAGR, ${diff.iloc[-1]:,.0f} on $5k")
 
 # ── chart: CURRENT (no trend gate) primary; old gated version dotted; gap = recaptured ──
 fig = make_subplots(rows=2, cols=1, row_heights=[0.72, 0.28], vertical_spacing=0.13)
@@ -160,7 +160,7 @@ cards = ("<div class=cards>"
          + card("Max drawdown", f"{mN['dd']:.1%}", f"old {mF['dd']:.1%} &middot; SPY {mS['dd']:.1%}", "neg")
          + card("Sharpe", f"{mN['sharpe']:.2f}", f"old {mF['sharpe']:.2f} &middot; SPY {mS['sharpe']:.2f}")
          + card("Recaptured / yr", f"{mN['cagr']-mF['cagr']:+.1%}", "CAGR regained by removing the gate", "pos")
-         + card("Cumulative gain", f"${diff.iloc[-1]:,.0f}", "vs the gated version, on $10k", "pos")
+         + card("Cumulative gain", f"${diff.iloc[-1]:,.0f}", "vs the gated version, on $5k", "pos")
          + card("Signals taken", f"{n_n:,}", f"was {n_f:,} with the gate (+{n_n-n_f:,})")
          + "</div>")
 
