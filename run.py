@@ -295,7 +295,9 @@ INSIDER_COPY_STATE_PATH         = PROJECT_ROOT / "logs" / "insider_copy_position
 ENABLE_TRUMP_TRACKER            = os.environ.get("ENABLE_TRUMP_TRACKER", "false").lower() in {"1", "true", "yes"}
 TRUMP_TRACKER_COPY_BUYS         = os.environ.get("TRUMP_TRACKER_COPY_BUYS", "false").lower() in {"1", "true", "yes"}
 TRUMP_TRACKER_DOLLARS           = float(os.environ.get("TRUMP_TRACKER_DOLLARS", "500"))      # per-name notional on a P-buy
-TRUMP_TRACKER_LOOKBACK_DAYS     = int(os.environ.get("TRUMP_TRACKER_LOOKBACK_DAYS", "30"))   # EDGAR scan window
+TRUMP_TRACKER_LOOKBACK_DAYS     = int(os.environ.get("TRUMP_TRACKER_LOOKBACK_DAYS", "540"))  # EDGAR scan window for the
+# affiliation basket (long — these file rarely; last activity ~10mo ago). The COPY decision is
+# separately gated to fresh buys by TRUMP_TRACKER_MAX_AGE_DAYS, so a long basket window is safe.
 TRUMP_TRACKER_MAX_AGE_DAYS      = int(os.environ.get("TRUMP_TRACKER_MAX_AGE_DAYS", "5"))     # only copy a P-buy this fresh
 TRUMP_TRACKER_REFRESH_MIN       = int(os.environ.get("TRUMP_TRACKER_REFRESH_MIN", "180"))   # throttle EDGAR polling
 TRUMP_TRACKER_STATE_PATH        = PROJECT_ROOT / "logs" / "trump_tracker_state.json"
