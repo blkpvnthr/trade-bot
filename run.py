@@ -3371,21 +3371,83 @@ def _insider_vol_liquidity_gate(symbol: str) -> Tuple[bool, str, float, float]:
     return res
 
 
-def _insider_vol_liquidity_compute(symbol: str) -> Tuple[bool, str, float, float]:
-    """Uncached compute for the vol/liquidity gate, with one transient-error retry."""
+def _vol_gate_from_bars(closes, vols) -> Tuple[bool, str, float, float]:
+    """Pure rv20/adv decision from daily close/volume arrays (shared by single + batch paths)."""
+    import numpy as _np
+    n = 0 if closes is None else len(closes)
+    if n < 21:
+        return False, f"vol_gate_short_history:{n}", 0.0, 0.0
+    rets = _np.diff(_np.log(_np.maximum(closes, 1e-9)))
+    rv20 = float(_np.std(rets[-20:]))
+    adv = float(_np.mean([closes[k] * vols[k] for k in range(n - 20, n)]))
+    if rv20 < INSIDER_COPY_VOL_MIN_RV20:
+        return False, f"insider_copy_vol_too_low:rv20={rv20:.4f}<{INSIDER_COPY_VOL_MIN_RV20:.4f}", rv20, adv
+    if adv < INSIDER_COPY_MIN_ADV:
+        return False, f"insider_copy_illiquid:adv=${adv:,.0f}<${INSIDER_COPY_MIN_ADV:,.0f}", rv20, adv
+    return True, "vol_liquidity_ok", rv20, adv
+
+
+def _vol_gate_client_feed():
+    from alpaca.data.historical import StockHistoricalDataClient
     try:
-        import time as _t
-        import numpy as _np
+        from alpaca.data.enums import DataFeed
+        _feed = DataFeed.IEX                     # free feed; avoids SIP-entitlement edge cases
+    except Exception:
+        _feed = None
+    return StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET), _feed
+
+
+def prefetch_insider_vol_gate(symbols) -> None:
+    """Compute the vol/liquidity gate for ALL candidates in ONE multi-symbol bars request and
+    populate _VOL_GATE_CACHE, so the per-candidate gate calls hit cache. Replaces the per-candidate
+    request burst that tripped data-API rate-limit 401s. Fail-safe — on error the gate falls back
+    to its per-symbol fetch."""
+    if not INSIDER_COPY_VOL_GATE:
+        return
+    import time as _t
+    syms = list(dict.fromkeys(str(s).upper() for s in symbols if s))
+    syms = [s for s in syms if not (
+        _VOL_GATE_CACHE.get(s) is not None
+        and not str(_VOL_GATE_CACHE[s][1][1]).startswith("vol_gate_error")
+        and _t.time() - _VOL_GATE_CACHE[s][0] < _VOL_GATE_TTL_OK)]
+    if not syms:
+        return
+    try:
         from datetime import timedelta
-        from alpaca.data.historical import StockHistoricalDataClient
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame
-        try:
-            from alpaca.data.enums import DataFeed
-            _feed = DataFeed.IEX                     # free feed (SIP needs a paid subscription)
-        except Exception:
-            _feed = None
-        dc = StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET)
+        dc, _feed = _vol_gate_client_feed()
+        end = datetime.now(timezone.utc) - timedelta(minutes=20)
+        kw = dict(symbol_or_symbols=syms, timeframe=TimeFrame.Day, start=end - timedelta(days=70), end=end)
+        if _feed is not None:
+            kw["feed"] = _feed
+        df = dc.get_stock_bars(StockBarsRequest(**kw)).df
+        if df is None or df.empty:
+            return
+        now = _t.time()
+        multi = hasattr(df.index, "levels")
+        for s in syms:
+            try:
+                sub = df.xs(s, level=0) if multi else df
+                if sub is None or len(sub) == 0:
+                    continue
+                res = _vol_gate_from_bars(sub["close"].astype(float).values,
+                                          sub["volume"].astype(float).values)
+                _VOL_GATE_CACHE[s] = (now, res)
+            except Exception:
+                continue
+    except Exception:
+        pass   # leave uncached → per-symbol fallback in the gate
+
+
+def _insider_vol_liquidity_compute(symbol: str) -> Tuple[bool, str, float, float]:
+    """Single-symbol fetch fallback for the vol/liquidity gate, with one transient retry."""
+    try:
+        import time as _t
+        from datetime import timedelta
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+        dc, _feed = _vol_gate_client_feed()
         end = datetime.now(timezone.utc) - timedelta(minutes=20)   # avoid the 15-min recent-SIP limit
         kw = dict(symbol_or_symbols=symbol, timeframe=TimeFrame.Day,
                   start=end - timedelta(days=70), end=end)
@@ -3405,18 +3467,7 @@ def _insider_vol_liquidity_compute(symbol: str) -> Tuple[bool, str, float, float
             return False, "vol_gate_no_bars", 0.0, 0.0
         if hasattr(df.index, "levels"):
             df = df.xs(symbol, level=0)
-        closes = df["close"].astype(float).values
-        vols = df["volume"].astype(float).values
-        if len(closes) < 21:
-            return False, f"vol_gate_short_history:{len(closes)}", 0.0, 0.0
-        rets = _np.diff(_np.log(_np.maximum(closes, 1e-9)))
-        rv20 = float(_np.std(rets[-20:]))
-        adv = float(_np.mean([closes[k] * vols[k] for k in range(len(closes) - 20, len(closes))]))
-        if rv20 < INSIDER_COPY_VOL_MIN_RV20:
-            return False, f"insider_copy_vol_too_low:rv20={rv20:.4f}<{INSIDER_COPY_VOL_MIN_RV20:.4f}", rv20, adv
-        if adv < INSIDER_COPY_MIN_ADV:
-            return False, f"insider_copy_illiquid:adv=${adv:,.0f}<${INSIDER_COPY_MIN_ADV:,.0f}", rv20, adv
-        return True, "vol_liquidity_ok", rv20, adv
+        return _vol_gate_from_bars(df["close"].astype(float).values, df["volume"].astype(float).values)
     except Exception as e:
         return False, f"vol_gate_error:{str(e)[:40]}", 0.0, 0.0
 
@@ -3893,6 +3944,10 @@ def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
             quality_universe = set()
 
     placed = 0
+    # Batch the vol/liquidity gate's bars fetch into ONE request for all candidates (avoids the
+    # per-candidate request burst that tripped data-API rate-limit 401s). Per-candidate gate calls
+    # below then hit the populated cache. Fail-safe (no-op on error → per-symbol fallback).
+    prefetch_insider_vol_gate([c["symbol"] for c in qualified])
     # Total open insider-copy NAMES for the small-account cap. Paired-call overlays (records with
     # paired_underlying) ride alongside their share and must NOT consume a name slot.
     _open_now = sum(1 for _v in _insider_copy_state_load().values()
