@@ -284,6 +284,22 @@ INSIDER_COPY_OPTION_MIN_OI      = int(os.environ.get("INSIDER_COPY_OPTION_MIN_OI
 # exit runs in the unconditional EXIT pass (never regime-gated). 0 disables it.
 INSIDER_COPY_OPTION_MAX_HOLD_DAYS = int(os.environ.get("INSIDER_COPY_OPTION_MAX_HOLD_DAYS", 10))
 INSIDER_COPY_STATE_PATH         = PROJECT_ROOT / "logs" / "insider_copy_positions.json"
+
+# ── Trump-family insider tracker (SEC Form 4 for the CIKs that actually file) ──────────────
+# Tracks Donald Trump Jr (CIK 2016181), Donald J Trump (947033), Ivanka Trump (1406847). Their
+# recent filings are board GRANTS (code A) / gifts, not open-market buys — so by default this
+# only maintains a "Trump-affiliated" basket watchlist (DJT/PEW/PSQH/…) + logs new filings.
+# It copies a trade ONLY on a genuine open-market PURCHASE (code P), and only if
+# TRUMP_TRACKER_COPY_BUYS is on (default OFF — these are thin, volatile meme stocks on a LIVE
+# account). All copies route through the gateway (risk + ownership guard apply). Fully gated.
+ENABLE_TRUMP_TRACKER            = os.environ.get("ENABLE_TRUMP_TRACKER", "false").lower() in {"1", "true", "yes"}
+TRUMP_TRACKER_COPY_BUYS         = os.environ.get("TRUMP_TRACKER_COPY_BUYS", "false").lower() in {"1", "true", "yes"}
+TRUMP_TRACKER_DOLLARS           = float(os.environ.get("TRUMP_TRACKER_DOLLARS", "500"))      # per-name notional on a P-buy
+TRUMP_TRACKER_LOOKBACK_DAYS     = int(os.environ.get("TRUMP_TRACKER_LOOKBACK_DAYS", "30"))   # EDGAR scan window
+TRUMP_TRACKER_MAX_AGE_DAYS      = int(os.environ.get("TRUMP_TRACKER_MAX_AGE_DAYS", "5"))     # only copy a P-buy this fresh
+TRUMP_TRACKER_REFRESH_MIN       = int(os.environ.get("TRUMP_TRACKER_REFRESH_MIN", "180"))   # throttle EDGAR polling
+TRUMP_TRACKER_STATE_PATH        = PROJECT_ROOT / "logs" / "trump_tracker_state.json"
+TRUMP_TRACKER_WATCHLIST_PATH    = PROJECT_ROOT / "system-data" / "trump_basket_watchlist.txt"
 # Research-grounded sizing (options_quant.py): fractional-Kelly + risk cap instead of a fixed
 # dollar budget. Kelly fraction is shrunk for dispersed option payoffs (Perez-Marco); the full
 # Kelly was measured at 0.125 on the deep-ITM payoff distribution (backtest), scaled by KELLY_MULT.
@@ -3102,6 +3118,97 @@ def _insider_copy_state_save(state: Dict[str, Any]) -> None:
         logger.debug("insider copy state write failed", exc_info=True)
 
 
+def run_trump_insider_tracker(gateway: "AlpacaGateway", risk: "RiskManager",
+                              entries_blocked: bool = False) -> int:
+    """
+    Copy-trade the Trump family's *disclosed* SEC Form 4 activity.
+
+    Tracks the only CIKs that actually file (Don Jr / Don Trump / Ivanka — Eric Trump
+    and Jared Kushner file nothing). Each pass: refresh the "Trump-affiliated" basket
+    watchlist (the issuers they file on — DJT/PEW/PSQH/…), log new filings, and copy a
+    trade ONLY on a genuine open-market PURCHASE (code P) when TRUMP_TRACKER_COPY_BUYS
+    is on and entries aren't blocked. Throttled to TRUMP_TRACKER_REFRESH_MIN. Fail-safe.
+    Returns the number of copy BUYs placed.
+    """
+    if not ENABLE_TRUMP_TRACKER:
+        return 0
+    try:
+        import time as _t
+        import trump_insider_tracker as _tt
+
+        state: Dict[str, Any] = {}
+        try:
+            if TRUMP_TRACKER_STATE_PATH.exists():
+                state = json.loads(TRUMP_TRACKER_STATE_PATH.read_text())
+        except Exception:
+            state = {}
+
+        if _t.time() - float(state.get("last_run_ts", 0)) < TRUMP_TRACKER_REFRESH_MIN * 60:
+            return 0   # throttle: don't hammer EDGAR every cycle
+
+        seen = set(state.get("seen_accessions", []))
+        handled = set(state.get("handled_buys", []))   # "accession:symbol" already acted on/alerted
+        prev_basket = set(state.get("basket", []))
+
+        res = _tt.discover(lookback_days=TRUMP_TRACKER_LOOKBACK_DAYS, seen_accessions=seen)
+        basket = res.get("basket", [])
+        new_tickers = sorted(set(basket) - prev_basket)
+
+        # Persist the affiliated-ticker basket as a plain watchlist for other consumers.
+        try:
+            TRUMP_TRACKER_WATCHLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+            TRUMP_TRACKER_WATCHLIST_PATH.write_text("\n".join(basket) + ("\n" if basket else ""))
+        except Exception:
+            pass
+
+        if new_tickers:
+            logger.info("TRUMP TRACKER: NEW affiliated ticker(s) %s — basket now [%s]",
+                        ",".join(new_tickers), ",".join(basket))
+        for f in [x for x in res.get("filings", []) if x.get("is_new")]:
+            logger.info("TRUMP TRACKER: new Form 4 — %s %s %s codes=%s",
+                        f.get("owner"), f.get("symbol"), f.get("date"), f.get("codes"))
+
+        placed = 0
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=TRUMP_TRACKER_MAX_AGE_DAYS)).date().isoformat()
+        for b in res.get("open_market_buys", []):
+            tag = f"{b['accession']}:{b['symbol']}"
+            if tag in handled or str(b.get("date", "")) < cutoff:
+                continue
+            logger.info("TRUMP TRACKER: OPEN-MARKET BUY by %s — %s %g@$%g ($%.0f)",
+                        b["owner"], b["symbol"], b["shares"], b["price"], b["value"])
+            if TRUMP_TRACKER_COPY_BUYS and not entries_blocked:
+                ref = float(gateway._resolve_reference_price(b["symbol"]) or b.get("price") or 0.0)
+                qty = int(TRUMP_TRACKER_DOLLARS / ref) if ref > 0 else 0
+                if qty > 0:
+                    resp = gateway.submit_market_order(
+                        b["symbol"], "buy", qty, reason=f"trump_copy:{b['owner']}",
+                        reference_price=ref, bypass_trend_gate=True)
+                    if resp:
+                        placed += 1
+                        logger.info("TRUMP TRACKER: COPIED %s buy x%d (~$%.0f)", b["symbol"], qty, qty * ref)
+            else:
+                logger.info("TRUMP TRACKER: not copying (copy_buys=%s entries_blocked=%s) — watchlist only",
+                            TRUMP_TRACKER_COPY_BUYS, entries_blocked)
+            handled.add(tag)
+
+        try:
+            state.update({
+                "last_run_ts": _t.time(),
+                "seen_accessions": sorted(seen | {f["accession"] for f in res.get("filings", [])}),
+                "handled_buys": sorted(handled),
+                "basket": basket,
+                "updated_at_utc": res.get("generated_at_utc"),
+            })
+            TRUMP_TRACKER_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            TRUMP_TRACKER_STATE_PATH.write_text(json.dumps(state, indent=2, default=str))
+        except Exception:
+            pass
+        return placed
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Trump tracker failed (rest of cycle unaffected): %s", e)
+        return 0
+
+
 def _insider_copy_record_open(occ_symbol: str, underlying: str, qty: int,
                               entry_date: "date", instrument: str = "option",
                               entry_price: float = 0.0,
@@ -4077,6 +4184,17 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
             summary["sma_watch_buys"] = run_sma_watch_buys(gateway, risk, equity_positions)
         except Exception as e:
             logger.error("Insider trade copier failed (rest of cycle unaffected): %s", e)
+
+    # 4c. TRUMP-FAMILY INSIDER TRACKER — maintain the Trump-affiliated basket watchlist and
+    # copy any genuine open-market PURCHASE (code P) by the tracked CIKs. Runs even when entries
+    # are blocked (watchlist/alerts are harmless); the COPY itself respects the entry gate.
+    # Throttled internally; fully gated by ENABLE_TRUMP_TRACKER. Never breaks the cycle.
+    if ENABLE_TRUMP_TRACKER:
+        try:
+            summary["trump_copies"] = run_trump_insider_tracker(
+                gateway, risk, entries_blocked=_entries_blocked)
+        except Exception as e:
+            logger.error("Trump tracker failed (rest of cycle unaffected): %s", e)
 
     # 5. Optional monitor + outputs
     if monitor is not None:
