@@ -146,7 +146,7 @@ fig.add_trace(go.Scatter(x=spy_curve.index, y=spy_curve, name="SPY",
 _bx = [d for d in buys_n if d in notrend.index]
 _sx = [d for d in sells_n if d in notrend.index]
 fig.add_trace(go.Scatter(x=_bx, y=[notrend.loc[d] for d in _bx], mode="markers", name=f"Buys ({len(_bx)})",
-                         marker=dict(symbol="triangle-up", color="#2ea043", size=5, opacity=0.4)), 1, 1)
+                         marker=dict(symbol="triangle-up", color="#388bfd", size=5, opacity=0.5)), 1, 1)
 fig.add_trace(go.Scatter(x=_sx, y=[notrend.loc[d] for d in _sx], mode="markers", name=f"Sells ({len(_sx)})",
                          marker=dict(symbol="triangle-down", color="#da3633", size=5, opacity=0.35)), 1, 1)
 fig.add_trace(go.Scatter(x=diff.index, y=diff, name="Recaptured by removing the gate ($)",
