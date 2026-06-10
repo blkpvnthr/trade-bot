@@ -249,6 +249,9 @@ INSIDER_COPY_VOL_GATE           = os.environ.get("INSIDER_COPY_VOL_GATE", "true"
 # below their 200-SMA) instead of the broad market-context halt_new_buys, so live matches the
 # backtested behavior. Daily-loss / kill-switch / exposure caps still apply. Default ON (user directive).
 INSIDER_COPY_USE_BACKTEST_REGIME = os.environ.get("INSIDER_COPY_USE_BACKTEST_REGIME", "true").lower() in {"1", "true", "yes"}
+# Defer (queue) insider signals blocked by TRANSIENT resets-daily caps (daily-loss / order-size)
+# and replay them next session WHILE STILL FRESH (≤ INSIDER_COPY_MAX_AGE_DAYS). Never fires stale.
+INSIDER_COPY_QUEUE_ENABLED      = os.environ.get("INSIDER_COPY_QUEUE_ENABLED", "true").lower() in {"1", "true", "yes"}
 INSIDER_COPY_VOL_MIN_RV20       = float(os.environ.get("INSIDER_COPY_VOL_MIN_RV20", 0.0563))   # train P80 daily realized vol
 INSIDER_COPY_MIN_ADV            = float(os.environ.get("INSIDER_COPY_MIN_ADV", 1_000_000))     # 20d avg $-volume liquidity floor
 INSIDER_COPY_SHARE_HOLD_DAYS    = int(os.environ.get("INSIDER_COPY_SHARE_HOLD_DAYS", 3))       # validated 3-day hold
@@ -3931,6 +3934,26 @@ def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
     if not qualified:
         return 0
 
+    # Replay queued signals — ones blocked earlier by a TRANSIENT resets-daily cap (daily-loss /
+    # order-size) that are STILL fresh (≤ INSIDER_COPY_MAX_AGE_DAYS). Stale entries are dropped by
+    # replay_fresh() and never fired. Deduped against today's fresh candidates and current holds.
+    if INSIDER_COPY_QUEUE_ENABLED:
+        try:
+            import insider_signal_queue as _isq
+            _replayed = _isq.replay_fresh(INSIDER_COPY_MAX_AGE_DAYS)
+            _have = {c["symbol"] for c in qualified}
+            _added = []
+            for _qs in _replayed:
+                if _qs["symbol"] not in _have and _qs["symbol"] not in held:
+                    qualified.append(_qs)
+                    _have.add(_qs["symbol"])
+                    _added.append(_qs["symbol"])
+            if _added:
+                logger.info("INSIDER COPY: replayed %d fresh queued signal(s): %s",
+                            len(_added), ",".join(_added))
+        except Exception as _e:
+            logger.debug("insider queue replay skipped: %s", _e)
+
     # Most recent insider buy first, then largest dollar value.
     qualified.sort(key=lambda c: (c["last"], c["value"]), reverse=True)
 
@@ -4077,6 +4100,12 @@ def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
 
         if resp is not None:
             placed += 1
+            if INSIDER_COPY_QUEUE_ENABLED:
+                try:
+                    import insider_signal_queue as _isq
+                    _isq.mark_executed(sym)   # clear it from the deferred queue if it was queued
+                except Exception:
+                    pass
             if asset == "option":
                 # Record entry so the time-exit can force-close the call after N days.
                 _insider_copy_record_open(order_symbol, sym, qty, today, entry_price=exec_price)
@@ -4115,6 +4144,25 @@ def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
                     note=("insider copy call" if asset == "option" else "insider copy buy"))
             except Exception as _je:
                 logger.debug("Insider copier journal write skipped for %s: %s", sym, _je)
+        else:
+            # Order was BLOCKED. Queue ONLY transient, resets-daily caps (daily-loss / order-size)
+            # for a fresh-only replay next session; structural rejections are not queued. Shares only.
+            if INSIDER_COPY_QUEUE_ENABLED and asset != "option":
+                try:
+                    _allowed, _why = risk.gate(sym, "buy", qty, ref_price, asset_class="equity")
+                    import insider_signal_queue as _isq
+                    if (not _allowed) and _isq.is_transient_block(_why):
+                        _isq.enqueue({
+                            "symbol": sym, "value": cand["value"],
+                            "last": (cand["last"].isoformat() if hasattr(cand["last"], "isoformat")
+                                     else str(cand["last"])),
+                            "company": cand.get("company", ""), "breadth": cand.get("breadth", 1),
+                            "repeated": bool(cand.get("repeated")), "block_reason": _why,
+                        })
+                        logger.info("INSIDER COPY: queued %s (transient block: %s) — fresh-replay "
+                                    "next session", sym, _why)
+                except Exception as _qe:
+                    logger.debug("insider queue enqueue skipped for %s: %s", sym, _qe)
 
     if placed:
         logger.info("Insider trade copier: %d copy %s(s) submitted", placed,
