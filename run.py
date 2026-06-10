@@ -105,6 +105,12 @@ PDT_EQUITY_FLOOR = float(os.environ.get("PDT_EQUITY_FLOOR", "25000"))
 # bot on the same live account. They still count toward exposure/risk math but are dropped from
 # the managed option/equity position sets and from the tradable universe. Comma-separated.
 PROTECTED_SYMBOLS = {s.strip().upper() for s in os.environ.get("PROTECTED_SYMBOLS", "").split(",") if s.strip()}
+# Ownership guard: the bot may only SELL positions IT opened. Manual (Alpaca app/web) and
+# TradingView-webhook positions share this live account and must NEVER be overridden by the bot's
+# exits (sma200/option-safety/BAL/insider/kill-switch). Enforced at the order chokepoint via the
+# bot_owned_ledger; default ON. See position_ownership.py. (User directive 2026-06-10.)
+ENABLE_OWNERSHIP_GUARD = os.environ.get("ENABLE_OWNERSHIP_GUARD", "true").lower() in {"1", "true", "yes", "on"}
+import position_ownership as _ownership
 # Fractional/notional BUY orders: let the BAL deploy an exact DOLLAR amount (fractional shares) so
 # high-priced names (ASML, MU) fit at sane weights on a small account instead of being whole-share-floored.
 ENABLE_FRACTIONAL_ORDERS = os.environ.get("ENABLE_FRACTIONAL_ORDERS", "false").lower() in {"1", "true", "yes"}
@@ -285,6 +291,15 @@ INSIDER_COPY_USE_QUANT_SIZING   = os.environ.get("INSIDER_COPY_USE_QUANT_SIZING"
 INSIDER_COPY_KELLY_FULL         = float(os.environ.get("INSIDER_COPY_KELLY_FULL", 0.125))   # empirical full-Kelly f*
 INSIDER_COPY_KELLY_MULT         = float(os.environ.get("INSIDER_COPY_KELLY_MULT", 0.25))    # fractional Kelly (¼)
 INSIDER_COPY_RISK_CAP_PCT       = float(os.environ.get("INSIDER_COPY_RISK_CAP_PCT", 0.02))  # max premium-at-risk / equity
+# ── PAIRED CALL OVERLAY (INSIDER_COPY_PAIR_CALL) ─────────────────────────────────────────────
+# When ON, each insider SHARE buy ALSO buys a long call (nearest 31 DTE, just-ITM = highest strike
+# ≤ spot) at the same time; the call is sold to close when the underlying share leaves by ANY exit
+# path (linked exit, not its own timer). Routed through submit_market_order so every risk gate
+# (options BP, exposure cap, kill-switch) still applies. Default OFF — paper-validate before live.
+INSIDER_COPY_PAIR_CALL          = os.environ.get("INSIDER_COPY_PAIR_CALL", "false").lower() in {"1", "true"}
+INSIDER_COPY_PAIR_CALL_DTE      = int(os.environ.get("INSIDER_COPY_PAIR_CALL_DTE", 31))         # target days-to-expiry
+INSIDER_COPY_PAIR_CALL_DOLLARS  = float(os.environ.get("INSIDER_COPY_PAIR_CALL_DOLLARS", INSIDER_COPY_OPTION_DOLLARS))  # premium budget per pair
+INSIDER_COPY_PAIR_CALL_MIN_OI   = int(os.environ.get("INSIDER_COPY_PAIR_CALL_MIN_OI", INSIDER_COPY_OPTION_MIN_OI))      # liquidity floor
 # TradingView quality-growth screen drives the main Alpha candidate universe
 # (tv-screener.py scan_quality_growth -> tv_screener_tickers.txt). Auto-refreshed when
 # stale, fully fail-safe (a TV failure falls back to the locked-universe files).
@@ -1261,6 +1276,22 @@ class AlpacaGateway:
             return None
         opt = is_option_symbol(symbol)
         asset_class = "option" if opt else "equity"
+
+        # ── Ownership guard: the bot may only SELL what IT opened ──────────────────────────────
+        # Manual (Alpaca app/web) and TradingView-webhook positions share this live account; the
+        # bot must never override them. The ledger is keyed by EXACT symbol (OCC for options),
+        # so the bot's SOXS shares and a user's SOXS calls are independent. Fail-closed.
+        if side == "sell" and ENABLE_OWNERSHIP_GUARD:
+            allow = int(_ownership.sell_allowance(symbol, qty))
+            if allow <= 0:
+                logger.warning("ORDER BLOCKED: SELL %s x%d — NOT bot-owned (manual/webhook "
+                               "position); ownership guard (reason=%s)", symbol, qty, reason)
+                return None
+            if allow < qty:
+                logger.warning("[ownership] SELL %s clamped %d->%d — bot owns only %d, rest is "
+                               "manual/webhook (reason=%s)", symbol, qty, allow, allow, reason)
+                qty = allow
+
         # ── Fractional / notional BUY: deploy an exact dollar amount (fractional shares) ──────
         if (ENABLE_FRACTIONAL_ORDERS and notional and notional > 0 and not opt
                 and side == "buy" and order_type == "market" and not limit_price):
@@ -1334,6 +1365,9 @@ class AlpacaGateway:
                 )
             logger.info("ORDER %s %s x%d  reason=%s  asset=%s", side, symbol, qty, reason, asset_class)
             self.risk.record_fill(symbol, side, qty, ref_price, asset_class=asset_class)
+            if ENABLE_OWNERSHIP_GUARD:
+                # Track what the bot opened so it (and only it) may later exit these.
+                (_ownership.record_bot_open if side == "buy" else _ownership.record_bot_close)(symbol, qty)
             return resp
         except Exception as e:
             logger.error("Alpaca order error (%s %s x%d): %s", side, symbol, qty, e)
@@ -1343,16 +1377,18 @@ class AlpacaGateway:
         from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
         from alpaca.trading.enums import OrderSide, TimeInForce
         os_side = OrderSide.BUY if side == "buy" else OrderSide.SELL
+        coid = _ownership.make_bot_coid() if ENABLE_OWNERSHIP_GUARD else None
         if opt or limit_price or order_type == "limit":
             px = limit_price
             if px <= 0:
                 # Best-effort marketable limit for exits without an explicit price
                 px = 0.01
             req = LimitOrderRequest(symbol=symbol, qty=qty, side=os_side,
-                                    time_in_force=TimeInForce.DAY, limit_price=round(px, 2))
+                                    time_in_force=TimeInForce.DAY, limit_price=round(px, 2),
+                                    client_order_id=coid)
         else:
             req = MarketOrderRequest(symbol=symbol, qty=qty, side=os_side,
-                                     time_in_force=TimeInForce.DAY)
+                                     time_in_force=TimeInForce.DAY, client_order_id=coid)
         return self._client.submit_order(req)
 
     def _submit_notional_buy(self, symbol: str, notional: float, reason: str = "") -> Optional[Dict]:
@@ -1389,11 +1425,15 @@ class AlpacaGateway:
             from alpaca.trading.requests import MarketOrderRequest
             from alpaca.trading.enums import OrderSide, TimeInForce
             req = MarketOrderRequest(symbol=symbol, notional=round(notional, 2),
-                                     side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
+                                     side=OrderSide.BUY, time_in_force=TimeInForce.DAY,
+                                     client_order_id=(_ownership.make_bot_coid("notional")
+                                                      if ENABLE_OWNERSHIP_GUARD else None))
             resp = self._client.submit_order(req)
             logger.info("ORDER buy %s notional=$%.2f (~%.4f sh @ %.2f)  reason=%s  asset=equity",
                         symbol, notional, eff_qty, ref_price, reason)
             self.risk.record_fill(symbol, "buy", eff_qty, ref_price, asset_class="equity")
+            if ENABLE_OWNERSHIP_GUARD:
+                _ownership.record_bot_open(symbol, eff_qty)
             return resp
         except Exception as e:
             logger.error("Alpaca notional order error (buy %s $%.2f): %s", symbol, notional, e)
@@ -2195,7 +2235,9 @@ def _alpaca_feed_manager():
         try:
             import alpaca_feed_manager as afm
             _ALPACA_FEED = afm.get_manager()
-            logger.info("AlpacaFeedManager ENABLED (no SIP; iex/overnight only)")
+            logger.info("AlpacaFeedManager ENABLED (feed=%s)",
+                        "sip+iex/overnight" if getattr(afm, "SIP_ENABLED", False)
+                        else "iex/overnight only")
         except Exception as e:
             logger.warning("AlpacaFeedManager unavailable (%s)", e)
             _ALPACA_FEED = False
@@ -2217,7 +2259,7 @@ def _alpaca_feed_cycle(session: str = "rth") -> Optional[str]:
                   "session": session, "active_feed": active, "feeds": diag.get("feeds", {}),
                   "feed_failover_count": diag.get("feed_failover_count", 0),
                   "feed_reconnect_count": diag.get("feed_reconnect_count", 0),
-                  "sip_used": False, "delayed_sip_used": False}
+                  "sip_used": active == "sip", "delayed_sip_used": False}
         try:
             from rl_common import write_json as _wj
         except Exception:
@@ -2734,9 +2776,16 @@ def run_ema_exits(gateway: AlpacaGateway, equity_positions: Dict[str, Any]) -> i
     Fully fail-safe. Returns # of sells."""
     if not ENABLE_EMA_EXIT:
         return 0
+    # Insider-copied positions are managed by the copier's own hold/exhaustion logic, NOT the
+    # trend-overlay SMA-break/stop exit. Excluding them prevents whipsawing a name intentionally
+    # entered below its SMA (INSIDER_COPY_BYPASS_TREND_GATE): without this the copier buys, this
+    # exit immediately sells, and it churns every cycle. See run_insider_copy_exits.
+    _insider_held = {str(k).upper() for k in _insider_copy_state_load().keys()} if ENABLE_INSIDER_COPIER else set()
     n = 0
     for sym, pos in list((equity_positions or {}).items()):
         try:
+            if str(sym).upper() in _insider_held:
+                continue
             qty = int(abs(float(getattr(pos, "qty", 0) or 0)))
             if qty <= 0 or is_option_symbol(sym):
                 continue
@@ -2804,12 +2853,22 @@ def run_bal_entries(bal, gateway: AlpacaGateway, waterfall, risk: RiskManager,
     spendable = max(0.0, risk.cash - cash_reserve)                   # only deploy cash above the reserve
     available_capital = min(spendable, stock_room)
     if available_capital < 200:
-        logger.info(
-            "BAL entries blocked: available_capital=%.0f < 200 "
-            "(cash=%.0f reserve=%.0f[%.0f%%eq] spendable=%.0f stock_room=%.0f equity=%.0f stock_exp=%.0f)",
-            available_capital, risk.cash, cash_reserve, CASH_BUFFER_PCT * 100,
-            spendable, stock_room, risk.equity, risk.stock_exposure,
-        )
+        if stock_room == 0.0 and risk.stock_exposure > 0:
+            # Over-exposure diagnostic: positions exceed MAX_STOCK_EXPOSURE_PCT of equity.
+            # New buys are blocked until equity grows or existing positions are trimmed.
+            logger.info(
+                "BAL entries blocked: OVER-EXPOSED — stock_exp=%.0f > %.0f%%eq=%.0f "
+                "(equity=%.0f cash=%.0f spendable=%.0f). No new buys until exposure clears.",
+                risk.stock_exposure, MAX_STOCK_EXPOSURE_PCT * 100,
+                risk.equity * MAX_STOCK_EXPOSURE_PCT, risk.equity, risk.cash, spendable,
+            )
+        else:
+            logger.info(
+                "BAL entries blocked: available_capital=%.0f < 200 "
+                "(cash=%.0f reserve=%.0f[%.0f%%eq] spendable=%.0f stock_room=%.0f equity=%.0f stock_exp=%.0f)",
+                available_capital, risk.cash, cash_reserve, CASH_BUFFER_PCT * 100,
+                spendable, stock_room, risk.equity, risk.stock_exposure,
+            )
         return 0
     # Composite DCA framework is the accumulation mechanism when enabled (value decides
     # WHETHER, RSI decides WHEN, tranches decide HOW MUCH); legacy score-based scan is
@@ -3045,11 +3104,17 @@ def _insider_copy_state_save(state: Dict[str, Any]) -> None:
 
 def _insider_copy_record_open(occ_symbol: str, underlying: str, qty: int,
                               entry_date: "date", instrument: str = "option",
-                              entry_price: float = 0.0) -> None:
+                              entry_price: float = 0.0,
+                              paired_underlying: Optional[str] = None) -> None:
     state = _insider_copy_state_load()
-    state[occ_symbol] = {"entry_date": entry_date.isoformat(), "underlying": underlying,
-                         "qty": int(qty), "instrument": instrument,
-                         "entry_price": float(entry_price)}
+    rec = {"entry_date": entry_date.isoformat(), "underlying": underlying,
+           "qty": int(qty), "instrument": instrument,
+           "entry_price": float(entry_price)}
+    if paired_underlying:
+        # Marks a call as the overlay of a SHARE position; the exit pass closes it when the
+        # underlying share leaves (linked exit), not on the call's own hold timer.
+        rec["paired_underlying"] = str(paired_underlying).upper()
+    state[occ_symbol] = rec
     _insider_copy_state_save(state)
 
 
@@ -3191,6 +3256,46 @@ def run_insider_copy_exits(gateway: AlpacaGateway, risk: RiskManager,
     for key in list(state.keys()):
         rec = state[key] if isinstance(state[key], dict) else {}
         instrument = str(rec.get("instrument", "option"))      # legacy records (no tag) = option
+        # ── PAIRED-CALL LINKED EXIT ──────────────────────────────────────────────────────────
+        # A paired call (overlay of a share) is sold to close when its underlying SHARE leaves by
+        # ANY exit path (3-day time-exit, SMA200, manual) — driven off the underlying no longer
+        # being held, not the call's own timer. Fail-safe: only act on this orphan trigger when we
+        # actually have position data this cycle; otherwise fall through to the 10-day backstop.
+        paired_underlying = str(rec.get("paired_underlying") or "").upper()
+        if paired_underlying:
+            call_qty = held_qty.get(str(key).upper(), held_qty.get(key, 0))
+            if call_qty <= 0:
+                state.pop(key, None); changed = True       # paired call gone (filled out / expired)
+                continue
+            if equity_positions is not None and held_qty.get(paired_underlying, 0) <= 0:
+                resp = gateway.submit_market_order(
+                    key, "sell", call_qty,
+                    reason=f"insider_copy_pair_exit:underlying_closed:{paired_underlying}")
+                if resp is not None:
+                    closed += 1; changed = True
+                    try:
+                        _entry_px = float(rec.get("entry_price", 0.0) or 0.0)
+                        _exit_px = float(gateway._resolve_reference_price(key) or 0.0)
+                        if _entry_px > 0 and _exit_px > 0:
+                            _insider_ledger_append(today, key, "option", _exit_px / _entry_px - 1.0,
+                                                   (_exit_px - _entry_px) * call_qty * 100.0)
+                    except Exception:
+                        pass
+                    state.pop(key, None)
+                    logger.info("INSIDER COPY PAIR-EXIT %s x%d (underlying %s closed)",
+                                key, call_qty, paired_underlying)
+                    try:
+                        log_executed_order(
+                            event="insider_copy_pair_exit", engine="insider_copier",
+                            symbol=key, underlying=paired_underlying, asset_class="option",
+                            side="sell", qty=call_qty,
+                            order_id=str((resp or {}).get("id", "") if isinstance(resp, dict) else ""),
+                            sim=bool(isinstance(resp, dict) and resp.get("sim")),
+                            note="insider copy paired-call linked exit")
+                    except Exception:
+                        pass
+                continue
+            # underlying still held → keep the call; the 10-day option backstop below still applies.
         # per-instrument hold: shares exit at the validated 3 days; options at 10.
         max_hold = (INSIDER_COPY_SHARE_HOLD_DAYS if instrument == "share"
                     else INSIDER_COPY_OPTION_MAX_HOLD_DAYS)
@@ -3345,6 +3450,108 @@ def _select_insider_call(gateway: AlpacaGateway, symbol: str, target_dte: int,
     return best
 
 
+def _select_insider_pair_call(gateway: AlpacaGateway, symbol: str,
+                              target_dte: int, min_oi: int) -> Optional[Dict[str, Any]]:
+    """Pick a JUST-IN-THE-MONEY long call to pair with an insider SHARE buy: expiry nearest
+    `target_dte` (≈31), strike the highest available at/below spot (the first ITM strike, delta
+    ≈ 0.5-0.6), with a tradable ask and minimal liquidity. Prefers ITM strikes; if none exist,
+    falls back to the strike nearest spot. Returns the contract dict (chain shape) or None.
+    Never raises."""
+    try:
+        spot = float(gateway._resolve_reference_price(symbol) or 0.0)
+        if spot <= 0:
+            return None
+        chain = gateway.get_options_chain(symbol) or []
+    except Exception as e:
+        logger.debug("Insider pair-call chain/spot fetch failed for %s: %s", symbol, e)
+        return None
+    today = datetime.now(ET).date()
+    best = None
+    best_key = None
+    for c in chain:
+        try:
+            if str(c.get("type", "call")).lower() != "call":
+                continue
+            strike = float(c.get("strike_price") or 0.0)
+            ask = float(c.get("ask_price") or 0.0)
+            if strike <= 0 or ask <= 0:
+                continue
+            exp = str(c.get("expiration_date") or "")[:10]
+            try:
+                dte = (datetime.fromisoformat(exp).date() - today).days
+            except Exception:
+                continue
+            if dte <= 0:
+                continue
+            if int(c.get("open_interest") or 0) < min_oi and int(c.get("volume") or 0) <= 0:
+                continue
+            # "just ITM": prefer strikes at/below spot (in_the_money tier 0), ranked by how close
+            # the strike sits below spot; OTM strikes are only a fallback (tier 1, nearest spot).
+            itm = strike <= spot
+            tier = 0 if itm else 1
+            dist = (spot - strike) if itm else (strike - spot)
+            key = (abs(dte - target_dte), tier, dist)
+            if best_key is None or key < best_key:
+                best_key, best = key, {**c, "dte": dte}
+        except Exception:
+            continue
+    return best
+
+
+def _maybe_pair_insider_call(gateway: AlpacaGateway, sym: str, today: "date",
+                             cand: Dict[str, Any]) -> None:
+    """If INSIDER_COPY_PAIR_CALL is on, buy a just-ITM ~31DTE long call paired to a fresh insider
+    SHARE position and record it (paired_underlying=sym) for the linked exit. Routed through
+    submit_market_order so every risk gate still applies. Fully fail-safe — NEVER blocks or
+    unwinds the share buy; on any problem it just logs and returns."""
+    if not INSIDER_COPY_PAIR_CALL:
+        return
+    try:
+        contract = _select_insider_pair_call(gateway, sym, INSIDER_COPY_PAIR_CALL_DTE,
+                                              INSIDER_COPY_PAIR_CALL_MIN_OI)
+        if not contract:
+            log_skip(sym, "insider_pair_call_no_contract", phase="insider_copier",
+                     want_dte=INSIDER_COPY_PAIR_CALL_DTE)
+            return
+        occ = str(contract["symbol"])
+        ask = float(contract.get("ask_price") or 0.0)
+        per_contract = ask * 100.0
+        if per_contract <= 0:
+            return
+        qty = int(INSIDER_COPY_PAIR_CALL_DOLLARS // per_contract)
+        if qty <= 0:
+            log_skip(sym, f"insider_pair_call_size_zero:premium={per_contract:.0f}>budget",
+                     phase="insider_copier")
+            return
+        # DAY limit at the ask so the long call fills; submit_market_order applies the RiskManager
+        # gate (options buying-power + exposure cap + kill-switch) before the order goes out.
+        resp = gateway.submit_market_order(
+            occ, "buy", qty,
+            reason=(f"insider_pair_call:{sym}:dte={contract['dte']}"
+                    f":K={contract.get('strike_price')}:delta={float(contract.get('delta') or 0):.2f}"),
+            limit_price=ask, order_type="limit")
+        if resp is None:
+            return
+        _insider_copy_record_open(occ, sym, qty, today, instrument="option",
+                                  entry_price=ask, paired_underlying=sym)
+        logger.info("INSIDER COPY PAIR-CALL %s x%d (paired %s, dte=%s K=%s delta=%.2f ask=%.2f)",
+                    occ, qty, sym, contract["dte"], contract.get("strike_price"),
+                    float(contract.get("delta") or 0), ask)
+        try:
+            log_executed_order(
+                event="insider_copy_pair_call_buy", engine="insider_copier",
+                symbol=occ, underlying=sym, asset_class="option", side="buy", qty=qty,
+                limit_price=ask, grade="insider_copy_pair", option_dte=contract.get("dte"),
+                option_delta=float(contract.get("delta") or 0),
+                order_id=str((resp or {}).get("id", "") if isinstance(resp, dict) else ""),
+                sim=bool(isinstance(resp, dict) and resp.get("sim")),
+                note="insider copy paired call")
+        except Exception:
+            pass
+    except Exception as e:
+        logger.debug("Insider pair-call skipped for %s: %s", sym, e)
+
+
 def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
                              sec_candidates: List[Dict[str, Any]],
                              equity_positions: Dict[str, Any],
@@ -3475,7 +3682,10 @@ def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
             quality_universe = set()
 
     placed = 0
-    _open_now = len(_insider_copy_state_load())     # total open insider-copy positions (small-acct cap)
+    # Total open insider-copy NAMES for the small-account cap. Paired-call overlays (records with
+    # paired_underlying) ride alongside their share and must NOT consume a name slot.
+    _open_now = sum(1 for _v in _insider_copy_state_load().values()
+                    if not (isinstance(_v, dict) and _v.get("paired_underlying")))
     for cand in qualified:
         if placed >= INSIDER_COPY_MAX_NAMES:
             break
@@ -3580,6 +3790,12 @@ def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
             _eq = float(getattr(risk, "equity", 0.0) or 0.0)
             _alloc = (_eq * INSIDER_COPY_SHARE_RISK_PCT / INSIDER_COPY_SHARE_STOP_PCT) if INSIDER_COPY_SHARE_STOP_PCT > 0 else 0.0
             _alloc = _alloc or INSIDER_COPY_DOLLARS                      # fallback to legacy budget
+            # FIX 2026-06-09: Clamp alloc to MAX_ORDER_DOLLARS so insider copy orders never
+            # exceed the live per-order cap (e.g. $120).  RiskManager would reject them anyway,
+            # but sizing here avoids redundant rejected_by_order_size log spam and ensures
+            # fractional/small lots are used instead of no trade at all.
+            if MAX_ORDER_DOLLARS > 0:
+                _alloc = min(_alloc, MAX_ORDER_DOLLARS)
             qty = int(_alloc // ref_price)
             if qty <= 0:
                 log_skip(sym, f"insider_copy_size_zero:px={ref_price:.2f}:alloc=${_alloc:.0f}",
@@ -3610,6 +3826,8 @@ def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
                 logger.info("INSIDER COPY BUY %s x%d (share, rv20=%.3f adv=$%.0f; insider buy $%.0f, "
                             "last=%s, %s)", order_symbol, qty, _rv20, _adv,
                             cand["value"], cand["last"].isoformat(), cand["company"])
+                # Paired long-call overlay (opt-in): buy a just-ITM ~31DTE call alongside the share.
+                _maybe_pair_insider_call(gateway, sym, today, cand)
             # Journal it explicitly as an "insider copy buy" so it is distinguishable in
             # the execution event stream AND the executor_journal.csv funnel reads.
             try:
@@ -3768,6 +3986,16 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     # run.py only fetches + updates indicators; the engine still decides every entry.
     _update_indicators(alpha_scr.get("bars", {}))
     indicator_snapshot = _indicator_snapshot()
+    # FIX 2026-06-09: Rebuild market_state now that alpha bars (incl. SPY/QQQ) are
+    # available.  The first build at cycle-start has no bars → spy_trend/qqq_trend=None
+    # → 0.20 confidence penalty + regime defaults to "bearish" → halt_new_buys fires
+    # too aggressively.  Rebuilding here uses fresh bar data so SPY/QQQ trend is read
+    # correctly, improving data_quality_score and regime accuracy.  Advisory only.
+    if alpha_scr.get("bars"):
+        market_state = _build_market_state(market_context, indicator_snapshot,
+                                           premarket_snapshot,
+                                           bars_by_symbol=alpha_scr.get("bars", {}),
+                                           feed_type=_active_feed)
     # Alpha entries ALWAYS call evaluate_universe so the universe file is written; the
     # ENGINE rejects entries internally when the regime is hostile (engine setup gate).
     # Hard entry cutoff: no new BUYs after 15:45 ET — options orders need ~15 min to
@@ -4099,6 +4327,7 @@ def run_two_engine_trading():
     last_account_log = time.time()
     cycle_count = 0
     _premarket_planner_spawned = False  # spawn once per session
+    _zero_plan_recovery_spawned = False  # re-spawn once if plan has 0 valid setups at open
 
     logger.info("Entering two-engine loop (Ctrl-C to stop) …")
     import threading as _threading
@@ -4191,6 +4420,57 @@ def run_two_engine_trading():
                         )
             except Exception:
                 pass
+
+            # ── Zero-plan resilience (2026-06-10) ────────────────────────────────
+            # If the premarket plan file has 0 valid setups (e.g. DNS failure during
+            # session startup caused planner to run with 0 bars), re-spawn the planner
+            # immediately at market open so the session isn't wasted. Only done once
+            # per session (guard: _zero_plan_recovery_spawned). Hard risk caps are
+            # unaffected — this only ensures the plan artifact is populated.
+            if not _zero_plan_recovery_spawned:
+                try:
+                    _zp_plan_path = SYSTEM_DATA_DIR / f"{DATA_TAG}_premarket_trade_plan.json"
+                    if _zp_plan_path.exists():
+                        import json as _json
+                        _zp_data = _json.loads(_zp_plan_path.read_text())
+                        _zp_valid = _zp_data.get("valid_plan_count", -1)
+                        if _zp_valid == 0:
+                            logger.warning(
+                                "ZERO-PLAN RECOVERY: premarket_plan has 0 valid setups — "
+                                "re-spawning premarket_trade_planner.py at market open "
+                                "(likely caused by DNS/data failure during session startup)"
+                            )
+                            import subprocess as _sp_zp
+                            _zp_script = Path(__file__).parent / "premarket_trade_planner.py"
+                            if _zp_script.exists():
+                                _zp_env = {**os.environ, "PREMARKET_WAIT_FOR_MARKET_OPEN": "0"}
+                                _zp_log = open(
+                                    SYSTEM_DATA_DIR / f"{DATA_TAG}_planner_recovery.log", "a"
+                                )
+                                _sp_zp.Popen(
+                                    [sys.executable, str(_zp_script)],
+                                    env=_zp_env,
+                                    stdout=_zp_log,
+                                    stderr=_sp_zp.STDOUT,
+                                )
+                                logger.info(
+                                    "Zero-plan planner recovery spawned — "
+                                    "plan+structure_map will be refreshed in background"
+                                )
+                            else:
+                                logger.warning(
+                                    "ZERO-PLAN RECOVERY: premarket_trade_planner.py not found"
+                                )
+                        else:
+                            logger.debug(
+                                "Zero-plan check: plan has %d valid setups — no recovery needed",
+                                _zp_valid,
+                            )
+                except Exception as _zp_e:
+                    logger.debug("Zero-plan resilience check failed: %s", _zp_e)
+                finally:
+                    _zero_plan_recovery_spawned = True  # run check once only
+            # ── end zero-plan resilience ─────────────────────────────────────────
 
             if (time.time() - last_context_build) > CONTEXT_REFRESH_MIN * 60 or not market_context:
                 market_context = _build_context_safe()
