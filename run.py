@@ -357,6 +357,9 @@ ALPHA_MAX_DTE = int(os.environ.get("ALPHA_MAX_DTE", 60))
 DATA_TAG       = os.getenv("RUN_DATA_DATE", datetime.now(timezone.utc).strftime("%Y%m%d"))
 DAILY_OUTPUTS  = PROJECT_ROOT / "daily_system_outputs"
 SKIPPED_TRADES_PATH = PROJECT_ROOT / "logs" / "execution" / DATA_TAG / f"{DATA_TAG}_skipped_trades.jsonl"
+# Symmetric to SKIPPED_TRADES_PATH: every EXECUTED order, structured for signal-fidelity replay
+# (signals-fired vs executed, by engine + reason) against the backtest. See signal_fidelity_report.py.
+ACCEPTED_TRADES_PATH = PROJECT_ROOT / "logs" / "execution" / DATA_TAG / f"{DATA_TAG}_accepted_trades.jsonl"
 SCREENER_FUNNEL_PATH = DAILY_OUTPUTS / "screener_funnel_report.json"
 # Guard: suppress file writes when called from pytest
 # NOTE: evaluated at call-time (not import-time) so that PYTEST_CURRENT_TEST is seen correctly.
@@ -471,6 +474,50 @@ def log_skip(symbol: str, reason: str, **detail) -> None:
     try:
         SKIPPED_TRADES_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(SKIPPED_TRADES_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except Exception:
+        pass
+
+
+def _engine_from_reason(reason: str) -> str:
+    """Infer the originating engine from an order reason string (for signal-fidelity grouping)."""
+    r = str(reason or "").lower()
+    if "insider" in r:
+        return "insider_copy"
+    if "trump_copy" in r:
+        return "trump_copy"
+    if "buffett" in r or "dca" in r or "accumulation" in r:
+        return "buffett_dca"
+    if "scalp" in r:
+        return "scalping"
+    if "alpha" in r:
+        return "alpha_call"
+    return "other"
+
+
+def log_accept(symbol: str, side: str, qty: float, price: float, reason: str = "",
+               asset_class: str = "equity", **detail) -> None:
+    """Symmetric to log_skip: structured record of an EXECUTED (accepted) order. Always journaled.
+
+    Pairs with skipped_trades.jsonl so signal_fidelity_report.py can replay signals-fired vs
+    executed (by engine + reason) against the backtest. Fail-safe; never raises into the loop."""
+    if _in_test():
+        return
+    record = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "date_tag": DATA_TAG,
+        "symbol": symbol,
+        "side": side,
+        "qty": qty,
+        "price": price,
+        "asset_class": asset_class,
+        "engine": _engine_from_reason(reason),
+        "reason": reason,
+        "detail": detail,
+    }
+    try:
+        ACCEPTED_TRADES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(ACCEPTED_TRADES_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, default=str) + "\n")
     except Exception:
         pass
@@ -1383,6 +1430,7 @@ class AlpacaGateway:
                 )
             logger.info("ORDER %s %s x%d  reason=%s  asset=%s", side, symbol, qty, reason, asset_class)
             self.risk.record_fill(symbol, side, qty, ref_price, asset_class=asset_class)
+            log_accept(symbol, side, qty, ref_price, reason=reason, asset_class=asset_class)
             if ENABLE_OWNERSHIP_GUARD:
                 # Track what the bot opened so it (and only it) may later exit these.
                 (_ownership.record_bot_open if side == "buy" else _ownership.record_bot_close)(symbol, qty)
@@ -1450,6 +1498,8 @@ class AlpacaGateway:
             logger.info("ORDER buy %s notional=$%.2f (~%.4f sh @ %.2f)  reason=%s  asset=equity",
                         symbol, notional, eff_qty, ref_price, reason)
             self.risk.record_fill(symbol, "buy", eff_qty, ref_price, asset_class="equity")
+            log_accept(symbol, "buy", eff_qty, ref_price, reason=reason, asset_class="equity",
+                       notional=round(notional, 2))
             if ENABLE_OWNERSHIP_GUARD:
                 _ownership.record_bot_open(symbol, eff_qty)
             return resp

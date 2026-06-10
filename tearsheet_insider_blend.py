@@ -123,6 +123,18 @@ print(f"CURRENT (no trend gate): CAGR {mN['cagr']:+.1%} DD {mN['dd']:.1%} Sharpe
 print(f"OLD (with gate)        : CAGR {mF['cagr']:+.1%} DD {mF['dd']:.1%} Sharpe {mF['sharpe']:.2f}")
 print(f"Recaptured by removal  : {mN['cagr']-mF['cagr']:+.1%} CAGR, ${diff.iloc[-1]:,.0f} on $5k")
 
+# Reference numbers for the live signal-fidelity comparison (signal_fidelity_report.py).
+import json as _json
+_json.dump({
+    "start": str(notrend.index[0]), "end": str(notrend.index[-1]),
+    "signals": int(n_n), "signals_gated": int(n_f),
+    "cagr": round(mN["cagr"], 4), "max_dd": round(mN["dd"], 4), "sharpe": round(mN["sharpe"], 3),
+    "start_cash": float(START_CASH), "slippage_bps_per_side": SLIP_INS * 1e4,
+    "vol_min_rv20": VOL_MIN_RV20, "min_adv": MIN_ADV, "freshness_max_days": LAG,
+    "note": "in-sample 60/40 SPY blend; per-trade win-rate/return not modeled by the daily-return blend",
+}, open("backtest_reference.json", "w"), indent=2)
+print("wrote backtest_reference.json")
+
 # ── chart: CURRENT (no trend gate) primary; old gated version dotted; gap = recaptured ──
 fig = make_subplots(rows=2, cols=1, row_heights=[0.72, 0.28], vertical_spacing=0.13)
 fig.add_trace(go.Scatter(x=notrend.index, y=notrend, name="Current strategy — trend gate REMOVED",
