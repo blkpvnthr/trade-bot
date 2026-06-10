@@ -172,15 +172,35 @@ def main():
         accepted = [a for a in accepted if a.get("engine") == args.engine]
         skipped = [s for s in skipped if _engine_of_skip(s) == args.engine]
 
-    buys = [a for a in accepted if str(a.get("side")) == "buy"]
-    by_engine_exec = Counter(a.get("engine", "other") for a in buys)
+    # Meta-symbols are COPIER-LEVEL gates logged EVERY cycle (not per-candidate signals) — exclude
+    # them and dedupe by (symbol, day) so a name evaluated N cycles/day counts as ONE signal/day.
+    META = {"INSIDER_COPIER", "UNIVERSE", "ALPHA_ENGINE", "TRUMP_TRACKER", "BAL"}
 
-    reason_counts = Counter(_base(s.get("reason", "")) for s in skipped)
+    def _dedup(records):
+        seen = {}
+        for r in records:
+            sym = str(r.get("symbol", "")).upper()
+            if sym in META:
+                continue
+            seen[(sym, r.get("date_tag", ""))] = r
+        return list(seen.values())
+
+    buys = [a for a in accepted if str(a.get("side")) == "buy"]
+    cand_buys = _dedup(buys)
+    cand_skipped = _dedup(skipped)
+    by_engine_exec = Counter(a.get("engine", "other") for a in cand_buys)
+
+    reason_counts = Counter(_base(s.get("reason", "")) for s in cand_skipped)
     live_block = {r: c for r, c in reason_counts.items() if r in LIVE_BLOCK}
     strat_filter = {r: c for r, c in reason_counts.items() if r in STRATEGY_FILTER}
     other = {r: c for r, c in reason_counts.items() if r not in LIVE_BLOCK and r not in STRATEGY_FILTER}
 
-    n_exec = len(buys)
+    # Distinct DAYS the whole copier was halted on regime before it could evaluate candidates.
+    halt_days = sorted({s.get("date_tag") for s in skipped
+                        if str(s.get("symbol", "")).upper() in META
+                        and "regime" in str(s.get("reason", "")).lower()})
+
+    n_exec = len(cand_buys)
     n_live_block = sum(live_block.values())
     n_intended = n_exec + n_live_block
     exec_rate = (n_exec / n_intended) if n_intended else None
@@ -225,6 +245,10 @@ def main():
     print(f"{'Sharpe':<26}{cell(ref.get('sharpe')):>16}{cell(sharpe):>16}")
     print(f"{'CAGR':<26}{cell(ref.get('cagr'), pct=True):>16}{'(too short)':>16}")
 
+    if halt_days:
+        print(f"\nNOTE: the whole copier was REGIME-HALTED (couldn't evaluate candidates) on "
+              f"{len(halt_days)} day(s): {', '.join(halt_days[-7:])}{' …' if len(halt_days) > 7 else ''}")
+    print(f"signals are DISTINCT (symbol, day) — per-candidate, meta-symbols excluded.")
     print("\n--- WHY intended signals didn't execute (LIVE_BLOCK reasons) ---")
     if live_block:
         for r, c in sorted(live_block.items(), key=lambda x: -x[1]):

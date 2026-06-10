@@ -245,6 +245,10 @@ INSIDER_COPY_INSTRUMENT         = os.environ.get("INSIDER_COPY_INSTRUMENT", "sha
 # realistic (20d avg $-volume ≥ $1M). Insider conviction pays most in fear/high-vol; calm-tape
 # insider buys were net-flat-to-negative OOS. Both gates fail-CLOSED on missing data (no trade).
 INSIDER_COPY_VOL_GATE           = os.environ.get("INSIDER_COPY_VOL_GATE", "true").lower() in {"1", "true"}
+# Use the BACKTEST's regime rule for the copier (risk-off only when a majority of SPY/QQQ/IWM are
+# below their 200-SMA) instead of the broad market-context halt_new_buys, so live matches the
+# backtested behavior. Daily-loss / kill-switch / exposure caps still apply. Default ON (user directive).
+INSIDER_COPY_USE_BACKTEST_REGIME = os.environ.get("INSIDER_COPY_USE_BACKTEST_REGIME", "true").lower() in {"1", "true", "yes"}
 INSIDER_COPY_VOL_MIN_RV20       = float(os.environ.get("INSIDER_COPY_VOL_MIN_RV20", 0.0563))   # train P80 daily realized vol
 INSIDER_COPY_MIN_ADV            = float(os.environ.get("INSIDER_COPY_MIN_ADV", 1_000_000))     # 20d avg $-volume liquidity floor
 INSIDER_COPY_SHARE_HOLD_DAYS    = int(os.environ.get("INSIDER_COPY_SHARE_HOLD_DAYS", 3))       # validated 3-day hold
@@ -3338,14 +3342,39 @@ def _business_days_between(d0: "date", d1: "date") -> int:
     return count
 
 
+# Per-symbol cache for the vol/liquidity gate. rv20/adv are DAILY metrics, so re-fetching bars
+# every ~60s cycle for every candidate stormed the data API and triggered rate-limit (HTML 401)
+# errors that fail-closed and suppress real signals. Cache successes for hours; retry errors soon.
+_VOL_GATE_CACHE: Dict[str, Tuple[float, Tuple[bool, str, float, float]]] = {}
+_VOL_GATE_TTL_OK = float(os.environ.get("INSIDER_VOL_GATE_TTL_SEC", "10800"))   # 3h
+_VOL_GATE_TTL_ERR = float(os.environ.get("INSIDER_VOL_GATE_ERR_TTL_SEC", "180"))  # 3m
+
+
 def _insider_vol_liquidity_gate(symbol: str) -> Tuple[bool, str, float, float]:
     """The VALIDATED entry filter for the insider-shares edge. Returns (ok, reason, rv20, adv).
     ok ONLY when entry-day realized_vol_20 ≥ INSIDER_COPY_VOL_MIN_RV20 (high-vol regime) AND
     20-day avg $-volume ≥ INSIDER_COPY_MIN_ADV (liquid). FAIL-CLOSED on missing/short data —
-    never trade a name we can't measure (the project's standing 'missing data is not bullish' rule)."""
+    never trade a name we can't measure (the project's standing 'missing data is not bullish' rule).
+    Cached per symbol (daily metrics) so it never storms the data API into rate-limit 401s."""
     if not INSIDER_COPY_VOL_GATE:
         return True, "vol_gate_disabled", 0.0, 0.0
+    import time as _t
+    key = str(symbol).upper()
+    hit = _VOL_GATE_CACHE.get(key)
+    if hit is not None:
+        ts, res = hit
+        ttl = _VOL_GATE_TTL_ERR if str(res[1]).startswith("vol_gate_error") else _VOL_GATE_TTL_OK
+        if _t.time() - ts < ttl:
+            return res
+    res = _insider_vol_liquidity_compute(symbol)
+    _VOL_GATE_CACHE[key] = (_t.time(), res)
+    return res
+
+
+def _insider_vol_liquidity_compute(symbol: str) -> Tuple[bool, str, float, float]:
+    """Uncached compute for the vol/liquidity gate, with one transient-error retry."""
     try:
+        import time as _t
         import numpy as _np
         from datetime import timedelta
         from alpaca.data.historical import StockHistoricalDataClient
@@ -3362,7 +3391,16 @@ def _insider_vol_liquidity_gate(symbol: str) -> Tuple[bool, str, float, float]:
                   start=end - timedelta(days=70), end=end)
         if _feed is not None:
             kw["feed"] = _feed
-        df = dc.get_stock_bars(StockBarsRequest(**kw)).df
+        df = None
+        for _attempt in range(2):   # one retry to ride out a transient rate-limit / 5xx
+            try:
+                df = dc.get_stock_bars(StockBarsRequest(**kw)).df
+                break
+            except Exception:
+                if _attempt == 0:
+                    _t.sleep(0.5)
+                    continue
+                raise
         if df is None or df.empty:
             return False, "vol_gate_no_bars", 0.0, 0.0
         if hasattr(df.index, "levels"):
@@ -3760,10 +3798,24 @@ def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
     if now_et >= now_et.replace(hour=15, minute=45, second=0, microsecond=0):
         logger.info("Insider copier blocked: past 15:45 ET entry cutoff")
         return 0
-    new_buys_allowed, regime_reason = regime_allows_new_buys(market_context)
-    if not new_buys_allowed:
-        log_skip("INSIDER_COPIER", regime_reason, phase="insider_copier")
-        return 0
+    # Regime gate. By default the copier uses the BACKTEST's regime rule — risk-off ONLY when a
+    # majority of SPY/QQQ/IWM are below their 200-SMA (_market_regime) — instead of the broad
+    # market-context halt_new_buys (LLM/intraday bearishness), which fires constantly and blocked
+    # ~100% of insider signals while the backtest would have been risk-on. This makes live faithful
+    # to the backtested go-to-cash-only-in-sustained-downtrends behavior. Daily-loss / kill-switch /
+    # exposure caps still apply downstream (the gateway gates every order). (User directive 2026-06-10.)
+    if INSIDER_COPY_USE_BACKTEST_REGIME:
+        _reg = _market_regime()
+        if _reg.get("risk_off"):
+            log_skip("INSIDER_COPIER",
+                     f"rejected_by_market_regime:risk_off_200sma:dn={_reg.get('dn')}/{_reg.get('n')}",
+                     phase="insider_copier")
+            return 0
+    else:
+        new_buys_allowed, regime_reason = regime_allows_new_buys(market_context)
+        if not new_buys_allowed:
+            log_skip("INSIDER_COPIER", regime_reason, phase="insider_copier")
+            return 0
 
     # ── ROLLING-PF KILL-SWITCH — halt NEW entries on live edge decay ────────────────────────
     # Strategy-level: if the realised PF over the last N closed trades (≥ MIN_TRADES, within
