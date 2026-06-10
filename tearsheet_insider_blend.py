@@ -187,7 +187,8 @@ html = ("<!doctype html><html><head><meta charset=utf-8>"
         "<div class=note>GREEN = the current strategy (trend gate removed). The dotted line is the OLD gated version; "
         "the shaded gap + lower panel are the return <b>recaptured</b> by removing the gate &mdash; the backtest showed the "
         "gate blocked insiders' dip-buys (the highest-alpha signals), costing return AND deepening drawdown. "
-        "60/40 SPY blend, regime-gated, 15bps/side slippage, in-sample; the live discrete copier captures less than these idealized magnitudes.</div>"
+        "60/40 SPY blend, regime-gated, 15bps/side slippage, in-sample; the live discrete copier captures less than these idealized magnitudes. "
+        "<b>Live:</b> the gate is removed only for the insider copier; the BAL/Buffett-DCA sleeve still runs the <b>EMA9-cross-down / above-SMA200 dip gate</b> alongside it (accumulates quality names on the same dip signal).</div>"
         "</body></html>")
 open("crossover_tearsheet.html", "w", encoding="utf-8").write(html)
 print("wrote crossover_tearsheet.html (current = no trend gate)")
