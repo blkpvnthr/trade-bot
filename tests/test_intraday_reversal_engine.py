@@ -11,22 +11,29 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import intraday_reversal_engine as ire
 from intraday_reversal_engine import (
     EngineConfig, ReversalInput, score_candidate, scan, propose_entries, live_orders_allowed,
     select_call, estimate_option_target_premium, size_option, propose_option_entries,
     propose_for_engine, previous_day_high, _occ_symbol,
+    is_active_window, manage_eod, next_day_exit_decision, ManagedPosition,
 )
+
+_ET = ZoneInfo("America/New_York")
 
 CFG = EngineConfig(enabled=True, paper_only=True, min_score=75.0,
                    max_new_entries_per_day=2, max_open_positions=2)
 
 
 def _base(**kw) -> ReversalInput:
-    """A clean candidate that clears the universe filter and scores ~100."""
+    """A clean candidate that clears the universe filter (green today, weak 1w, vol>1M,
+    rel_vol_5m>1, price>5, analyst+os strong buy) and scores ~100."""
     d = dict(symbol="TST", price=20.0, volume=4_000_000, avg_volume=1_500_000,
-             chg_pct=-1.0, perf_1w=-3.0, analyst_rating="strong buy", os_rating="strong buy",
-             rvol=1.6, vwap_reclaim=True, rsi_rising=True, rsi_cross_40=False,
+             chg_pct=+1.0, perf_1w=-3.0, analyst_rating="strong buy", os_rating="strong buy",
+             rvol=1.6, rel_vol_5m=1.5, vwap_reclaim=True, rsi_rising=True, rsi_cross_40=False,
              close_gt_open=True, sweep_reclaim=False, orb_reclaim=False, above_ema20_5m=True,
              recovering=True, extended_atr=0.5, atr=0.4)
     d.update(kw)
@@ -37,9 +44,10 @@ class UniverseGateTests(unittest.TestCase):
     def test_passes_full_universe_filter(self):
         c = score_candidate(_base(), CFG)
         self.assertTrue(c.passed_universe)
-        self.assertNotIn(c.blocked_by, ("price_below_5", "volume_below_3m", "chg_not_negative",
-                                        "perf_1w_not_negative", "analyst_not_strong_buy",
-                                        "os_not_strong_buy", "untradable_or_halted"))
+        self.assertNotIn(c.blocked_by, ("price_below_5", "volume_below_1m", "chg_not_positive",
+                                        "perf_1w_not_negative", "rel_vol_5m_below_1",
+                                        "analyst_not_strong_buy", "os_not_strong_buy",
+                                        "untradable_or_halted"))
         self.assertGreater(c.score, 0)
 
     def test_rejects_price_le_5(self):
@@ -47,15 +55,19 @@ class UniverseGateTests(unittest.TestCase):
         self.assertFalse(c.passed_universe)
         self.assertEqual(c.blocked_by, "price_below_5")
 
-    def test_rejects_volume_le_3m(self):
-        c = score_candidate(_base(volume=3_000_000), CFG)
+    def test_rejects_volume_le_1m(self):
+        c = score_candidate(_base(volume=1_000_000), CFG)
         self.assertFalse(c.passed_universe)
-        self.assertEqual(c.blocked_by, "volume_below_3m")
+        self.assertEqual(c.blocked_by, "volume_below_1m")
 
-    def test_rejects_chg_ge_0(self):
-        c = score_candidate(_base(chg_pct=0.0), CFG)
+    def test_rejects_chg_le_0_not_green(self):
+        self.assertEqual(score_candidate(_base(chg_pct=0.0), CFG).blocked_by, "chg_not_positive")
+        self.assertEqual(score_candidate(_base(chg_pct=-1.5), CFG).blocked_by, "chg_not_positive")
+
+    def test_rejects_rel_vol_5m_le_1(self):
+        c = score_candidate(_base(rel_vol_5m=0.9), CFG)
         self.assertFalse(c.passed_universe)
-        self.assertEqual(c.blocked_by, "chg_not_negative")
+        self.assertEqual(c.blocked_by, "rel_vol_5m_below_1")
 
     def test_rejects_perf_1w_ge_0(self):
         c = score_candidate(_base(perf_1w=0.0), CFG)
@@ -175,14 +187,14 @@ class SortingAndFunnelTests(unittest.TestCase):
         self.assertEqual([c.symbol for c in res.candidates], ["HIGHV", "LOWV"])
 
     def test_funnel_has_required_fields(self):
-        res = scan([_base(vol_5m=300_000), _base(symbol="X", chg_pct=0.5)], CFG)
+        res = scan([_base(vol_5m=300_000), _base(symbol="X", chg_pct=-0.5)], CFG)
         f = res.funnel()
         for k in ("scanned", "passed_universe", "passed_setup", "eligible_for_entry",
                   "rejected_by", "sorted_by", "top_candidates"):
             self.assertIn(k, f)
         self.assertEqual(f["scanned"], 2)
         self.assertEqual(f["sorted_by"], "vol_5m_desc_then_score")
-        self.assertIn("chg_not_negative", f["rejected_by"])
+        self.assertIn("chg_not_positive", f["rejected_by"])
         self.assertIn("score_components", f["top_candidates"][0])
         self.assertIn("vol_5m", f["top_candidates"][0])
 
@@ -303,6 +315,77 @@ class OptionOverlayTests(unittest.TestCase):
         o = propose_entries(res, 100_000.0, set(), CFG)[0]
         self.assertEqual(o.target_underlying, 30.0)
         self.assertAlmostEqual(o.trailing_stop_pct, 0.0075)
+
+
+class ScheduleWindowTests(unittest.TestCase):
+    def test_active_only_after_start_before_cutoff_on_weekday(self):
+        # Thu 2026-06-11 is a weekday.
+        self.assertFalse(is_active_window(datetime(2026, 6, 11, 13, 0, tzinfo=_ET), CFG))   # before 13:30
+        self.assertTrue(is_active_window(datetime(2026, 6, 11, 13, 30, tzinfo=_ET), CFG))   # at start
+        self.assertTrue(is_active_window(datetime(2026, 6, 11, 14, 45, tzinfo=_ET), CFG))   # mid-window
+        self.assertFalse(is_active_window(datetime(2026, 6, 11, 16, 0, tzinfo=_ET), CFG))   # past cutoff
+
+    def test_inactive_on_weekend(self):
+        self.assertFalse(is_active_window(datetime(2026, 6, 13, 14, 0, tzinfo=_ET), CFG))   # Saturday
+
+
+class TowardPdhSelectionTests(unittest.TestCase):
+    def test_toward_pdh_adds_score_and_flag(self):
+        # price below PDH, reachable, recovering -> toward-PDH bonus.
+        toward = score_candidate(_base(price=20.0, prev_day_high=22.0, atr=0.4, recovering=True), CFG)
+        none_ = score_candidate(_base(price=20.0, prev_day_high=None, recovering=True), CFG)
+        self.assertTrue(toward.metrics["toward_pdh"])
+        self.assertIn("toward_pdh", toward.score_components)
+        self.assertGreater(toward.score, none_.score)
+
+    def test_not_toward_when_already_above_pdh(self):
+        c = score_candidate(_base(price=23.0, prev_day_high=22.0, atr=0.4, recovering=True), CFG)
+        self.assertFalse(c.metrics["toward_pdh"])
+        self.assertNotIn("toward_pdh", c.score_components)
+
+
+class EodManagementTests(unittest.TestCase):
+    def test_pdh_hit_is_target(self):
+        a = manage_eod(ManagedPosition("X", 100, 44.6, 44.5, unrealized_pl=200.0,
+                                       trailing_stop_pct=0.0075, pdh_hit=True), CFG)
+        self.assertEqual(a.action, "target_hit")
+
+    def test_up_and_pdh_not_hit_tightens_and_carries(self):
+        a = manage_eod(ManagedPosition("X", 100, 43.9, 44.5, unrealized_pl=150.0,
+                                       trailing_stop_pct=0.0075, pdh_hit=False), CFG)
+        self.assertEqual(a.action, "carry_overnight_tighten")
+        self.assertEqual(a.exit_plan, "sell_at_next_day_high")
+        self.assertLessEqual(a.new_trailing_stop_pct, CFG.overnight_trailing_stop_pct)
+        self.assertLess(a.new_trailing_stop_pct, 0.0075)        # strictly tighter than entry trail
+
+    def test_down_and_pdh_not_hit_exits_at_close(self):
+        a = manage_eod(ManagedPosition("X", 100, 42.0, 44.5, unrealized_pl=-80.0,
+                                       trailing_stop_pct=0.0075, pdh_hit=False), CFG)
+        self.assertEqual(a.action, "exit_eod")
+        self.assertEqual(a.exit_plan, "exit_at_close")
+
+    def test_carry_overnight_disabled_exits(self):
+        cfg = EngineConfig(carry_overnight_if_up=False)
+        a = manage_eod(ManagedPosition("X", 100, 43.9, 44.5, unrealized_pl=150.0,
+                                       trailing_stop_pct=0.0075, pdh_hit=False), cfg)
+        self.assertEqual(a.action, "exit_eod")
+
+
+class NextDayExitTests(unittest.TestCase):
+    def test_sell_when_pdh_target_reached(self):
+        d = next_day_exit_decision(price=44.6, running_high=44.6, prev_day_high=44.5, cfg=CFG)
+        self.assertTrue(d.sell)
+        self.assertEqual(d.reason, "pdh_target_reached")
+
+    def test_sell_when_retraced_from_next_day_high(self):
+        # high 44.0, trail 0.40% -> sell at <= 43.824; price 43.7 triggers.
+        d = next_day_exit_decision(price=43.70, running_high=44.0, prev_day_high=44.5, cfg=CFG)
+        self.assertTrue(d.sell)
+        self.assertIn("next_day_high_trail_hit", d.reason)
+
+    def test_hold_when_near_high_and_below_pdh(self):
+        d = next_day_exit_decision(price=43.98, running_high=44.0, prev_day_high=44.5, cfg=CFG)
+        self.assertFalse(d.sell)
 
 
 class BarDerivationTests(unittest.TestCase):

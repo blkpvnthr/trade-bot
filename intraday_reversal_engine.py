@@ -48,9 +48,11 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("intraday_reversal_engine")
 
+ET = ZoneInfo("America/New_York")
 STRONG_BUY = "strong buy"
 
 
@@ -90,10 +92,13 @@ class EngineConfig:
         default_factory=lambda: _env_int("INTRADAY_REVERSAL_MAX_NEW_ENTRIES_PER_DAY", 2))
     max_open_positions: int = field(
         default_factory=lambda: _env_int("INTRADAY_REVERSAL_MAX_OPEN_POSITIONS", 2))
-    # universe thresholds (scanner) — fixed to the spec, exposed for tests
+    # universe thresholds (scanner). Gates: price>5, vol>1M, rel_vol_5m>1 (+ chg>0,
+    # perf_1w<0, analyst/os strong buy). 3M volume is a SCORE bonus, not a gate.
     min_price: float = 5.0
-    min_volume: float = 3_000_000.0
-    pref_avg_volume: float = 1_000_000.0
+    min_volume: float = field(default_factory=lambda: _env_float("INTRADAY_REVERSAL_MIN_VOLUME", 1_000_000.0))
+    min_rel_vol_5m: float = field(default_factory=lambda: _env_float("INTRADAY_REVERSAL_MIN_REL_VOL_5M", 1.0))
+    volume_bonus_threshold: float = 3_000_000.0   # +10 score above this
+    pref_avg_volume: float = 1_000_000.0          # +5 score above this
     # sizing fallback
     risk_per_trade_pct: float = 0.005   # <= 0.5% equity at risk
     max_notional_pct: float = 0.10      # <= 10% equity per position
@@ -119,6 +124,18 @@ class EngineConfig:
     # trailing stop = this % below the post-entry peak (below).
     trailing_stop_pct: float = field(
         default_factory=lambda: _env_float("INTRADAY_REVERSAL_TRAILING_STOP_PCT", 0.0075))
+    # ── Scheduling window + PDH-approach + overnight management ──────────────────────
+    start_et: str = field(default_factory=lambda: os.getenv("INTRADAY_REVERSAL_START_ET", "13:30"))
+    entry_cutoff_et: str = field(
+        default_factory=lambda: os.getenv("INTRADAY_REVERSAL_ENTRY_CUTOFF_ET", "15:55"))
+    toward_pdh_max_atr: float = field(            # PDH "reachable" within this many ATR of price
+        default_factory=lambda: _env_float("INTRADAY_REVERSAL_TOWARD_PDH_MAX_ATR", 6.0))
+    carry_overnight_if_up: bool = field(
+        default_factory=lambda: _env_bool("INTRADAY_REVERSAL_CARRY_OVERNIGHT", True))
+    overnight_trailing_stop_pct: float = field(  # TIGHTENED trail for an overnight carry
+        default_factory=lambda: _env_float("INTRADAY_REVERSAL_OVERNIGHT_TRAIL_PCT", 0.004))
+    next_day_high_trail_pct: float = field(      # day-2 trail to sell into the next day's high
+        default_factory=lambda: _env_float("INTRADAY_REVERSAL_NEXT_DAY_TRAIL_PCT", 0.004))
 
 
 def live_orders_allowed(cfg: EngineConfig, account_mode: str, system_paper_only: bool) -> bool:
@@ -127,6 +144,28 @@ def live_orders_allowed(cfg: EngineConfig, account_mode: str, system_paper_only:
     if cfg.paper_only:
         return False
     return str(account_mode or "").strip().lower() == "live" and not bool(system_paper_only)
+
+
+def _parse_hhmm(value: str, default_h: int, default_m: int):
+    from datetime import time as _t
+    try:
+        hh, mm = (int(p) for p in str(value).split(":")[:2])
+        return _t(hh, mm)
+    except Exception:
+        return _t(default_h, default_m)
+
+
+def is_active_window(now_et, cfg: EngineConfig) -> bool:
+    """True only inside the afternoon entry window: now_et in [start_et, entry_cutoff_et)
+    on a weekday. This is the scheduling gate — the engine selects fresh entries only
+    after ~1:30 PM ET (when the day's range and the PDH-approach are well formed)."""
+    if now_et is None:
+        from datetime import datetime as _dt
+        now_et = _dt.now(ET)
+    if now_et.weekday() >= 5:                      # Sat/Sun
+        return False
+    t = now_et.timetz().replace(tzinfo=None)
+    return _parse_hhmm(cfg.start_et, 13, 30) <= t < _parse_hhmm(cfg.entry_cutoff_et, 15, 55)
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +191,8 @@ class ReversalInput:
     daily_history: Any = None # daily OHLCV (for ATR)
     # optional precomputed / override metrics
     rvol: Optional[float] = None
-    vol_5m: Optional[float] = None   # last-5-minute volume (universe sort key); else last 5 bars
+    vol_5m: Optional[float] = None       # last-5-minute volume (universe sort key); else last 5 bars
+    rel_vol_5m: Optional[float] = None   # 5-min relative volume (gate > 1); else derived
     vwap_reclaim: Optional[bool] = None
     rsi_rising: Optional[bool] = None
     rsi_cross_40: Optional[bool] = None
@@ -286,6 +326,30 @@ def _finite(x, d=0.0):
         return d
 
 
+def _vol_5m_of(inp: "ReversalInput") -> Optional[float]:
+    if inp.vol_5m is not None:
+        return _finite(inp.vol_5m)
+    if inp.bars is not None and _safe_len(inp.bars) >= 1:
+        try:
+            return float(inp.bars["volume"].tail(5).sum())
+        except Exception:
+            return None
+    return None
+
+
+def rel_vol_5m_of(inp: "ReversalInput") -> float:
+    """5-minute relative volume = last-5-min volume / the average 5-min volume
+    (avg daily volume / 78 five-min RTH bars). Prefers an explicit rel_vol_5m;
+    falls back to the day RVOL when 5-min volume is unavailable."""
+    if inp.rel_vol_5m is not None:
+        return _finite(inp.rel_vol_5m)
+    v5 = _vol_5m_of(inp)
+    if v5 is not None and inp.avg_volume > 0:
+        per_5m = inp.avg_volume / 78.0
+        return v5 / per_5m if per_5m > 0 else 0.0
+    return _finite(inp.rvol)
+
+
 def previous_day_high(inp: "ReversalInput") -> Optional[float]:
     """The underlying's Previous Day High (the call-overlay price target).
 
@@ -314,17 +378,9 @@ def derive_metrics(inp: ReversalInput, cfg: EngineConfig) -> dict[str, Any]:
     m["rvol"] = (inp.rvol if inp.rvol is not None
                  else (inp.volume / inp.avg_volume if inp.avg_volume > 0 else 0.0))
 
-    # 5-minute volume (universe sort key): explicit, else the sum of the last 5
-    # one-minute bars; None when neither is available (sort falls back to day volume).
-    if inp.vol_5m is not None:
-        m["vol_5m"] = _finite(inp.vol_5m)
-    elif bars is not None and _safe_len(bars) >= 1:
-        try:
-            m["vol_5m"] = float(bars["volume"].tail(5).sum())
-        except Exception:
-            m["vol_5m"] = None
-    else:
-        m["vol_5m"] = None
+    # 5-minute volume (universe sort key) + 5-min relative volume (universe gate >1).
+    m["vol_5m"] = _vol_5m_of(inp)
+    m["rel_vol_5m"] = round(rel_vol_5m_of(inp), 3)
 
     # ATR: explicit, else daily ATR, else intraday mean range, else price proxy.
     atr = inp.atr
@@ -438,11 +494,11 @@ def derive_metrics(inp: ReversalInput, cfg: EngineConfig) -> dict[str, Any]:
             day_low = float(bars["low"].min()); last_c = float(bars["close"].iloc[-1])
             off_lows = (last_c - day_low) > 0.5 * m["atr"]
             rising = last_c > float(bars["close"].iloc[max(0, _safe_len(bars) - 4)])
-            m["recovering"] = bool(inp.chg_pct < 0 and off_lows and rising)
+            m["recovering"] = bool(off_lows and rising)   # pushing up off the lows (red or green)
         except Exception:
             m["recovering"] = False
     else:
-        m["recovering"] = bool(inp.chg_pct < 0)
+        m["recovering"] = bool(inp.chg_pct > 0)
 
     # Distance above day-low and above VWAP, in ATR units.
     if inp.near_low_atr is not None:
@@ -464,6 +520,19 @@ def derive_metrics(inp: ReversalInput, cfg: EngineConfig) -> dict[str, Any]:
             m["extended_atr"] = 0.0
     else:
         m["extended_atr"] = 0.0
+
+    # Moving TOWARD the Previous Day High: price below PDH (room to run), recovering /
+    # pushing up, and PDH reachable within toward_pdh_max_atr. This is the late-day
+    # selection signal — names climbing into their PDH.
+    pdh = previous_day_high(inp)
+    if pdh and pdh > 0 and m["atr"] > 0:
+        dist_atr = (pdh - inp.price) / m["atr"]
+        m["pdh_distance_atr"] = round(dist_atr, 3)
+        m["toward_pdh"] = bool(inp.price < pdh and m.get("recovering")
+                               and 0 < dist_atr <= cfg.toward_pdh_max_atr)
+    else:
+        m["pdh_distance_atr"] = None
+        m["toward_pdh"] = False
     return m
 
 
@@ -485,12 +554,14 @@ def universe_block(inp: ReversalInput, cfg: EngineConfig) -> Optional[str]:
         return "untradable_or_halted"
     if _finite(inp.price) <= cfg.min_price:
         return "price_below_5"
-    if _finite(inp.volume) <= cfg.min_volume:
-        return "volume_below_3m"
-    if _finite(inp.chg_pct) >= 0:
-        return "chg_not_negative"
-    if _finite(inp.perf_1w) >= 0:
+    if _finite(inp.volume) <= cfg.min_volume:    # vol > 1M
+        return "volume_below_1m"
+    if _finite(inp.chg_pct) <= 0:                # require GREEN today (reversal already underway)
+        return "chg_not_positive"
+    if _finite(inp.perf_1w) >= 0:                # but WEAK over the last week
         return "perf_1w_not_negative"
+    if rel_vol_5m_of(inp) <= cfg.min_rel_vol_5m:  # 5-min relative volume > 1 (active right now)
+        return "rel_vol_5m_below_1"
     if str(inp.analyst_rating or "").strip().lower() != STRONG_BUY:
         return "analyst_not_strong_buy"
     if str(inp.os_rating or "").strip().lower() != STRONG_BUY:
@@ -522,10 +593,10 @@ def score_candidate(inp: ReversalInput, cfg: Optional[EngineConfig] = None) -> S
         add("perf_1w_negative", 15, "1w weak")
     if _finite(inp.perf_1w) < -5:
         add("perf_1w_lt_-5", 10, "1w very weak (<-5%)")
-    if _finite(inp.chg_pct) < 0 and m["recovering"]:
-        add("red_but_recovering", 10, "red today, recovering")
+    if _finite(inp.chg_pct) > 0:
+        add("green_today", 10, "green today (reversing weekly weakness)")
     # liquidity
-    if _finite(inp.volume) > cfg.min_volume:
+    if _finite(inp.volume) > cfg.volume_bonus_threshold:
         add("volume_gt_3m", 10, "volume > 3M")
     if _finite(inp.avg_volume) > cfg.pref_avg_volume:
         add("avg_volume_gt_1m", 5, "avg volume > 1M")
@@ -549,6 +620,9 @@ def score_candidate(inp: ReversalInput, cfg: Optional[EngineConfig] = None) -> S
         add("orb_reclaim", 20, "ORB reclaim")
     if m["above_ema20_5m"]:
         add("above_5m_ema20", 10, "above 5m EMA20")
+    # moving toward the PDH target (late-day selection signal)
+    if m.get("toward_pdh"):
+        add("toward_pdh", 15, f"moving toward PDH ({m.get('pdh_distance_atr')} ATR away)")
     # over-extension penalty
     ext = _finite(m.get("extended_atr"), 0.0)
     if ext > cfg.extended_atr_limit:
@@ -573,9 +647,10 @@ def score_candidate(inp: ReversalInput, cfg: Optional[EngineConfig] = None) -> S
         symbol=inp.symbol, score=score, volume=_finite(inp.volume), price=_finite(inp.price),
         passed_universe=True, passed_setup=passed_setup, eligible=eligible, blocked_by=blocked_by,
         reasons=reasons, score_components=comp,
-        metrics={k: m[k] for k in ("rvol", "vol_5m", "atr", "vwap_reclaim", "rsi_rising",
-                                   "rsi_cross_40", "close_gt_open", "sweep_reclaim", "orb_reclaim",
-                                   "above_ema20_5m", "recovering", "extended_atr", "near_low_atr")},
+        metrics={k: m[k] for k in ("rvol", "vol_5m", "rel_vol_5m", "atr", "vwap_reclaim",
+                                   "rsi_rising", "rsi_cross_40", "close_gt_open", "sweep_reclaim",
+                                   "orb_reclaim", "above_ema20_5m", "recovering", "extended_atr",
+                                   "near_low_atr", "toward_pdh", "pdh_distance_atr")},
         prev_day_high=previous_day_high(inp), option_chain=inp.option_chain,
         price_now=_finite(inp.price), vol_5m=m.get("vol_5m"))
 
@@ -837,6 +912,77 @@ def propose_for_engine(scan_result: ScanResult, equity: float, open_symbols: set
 
 
 # ---------------------------------------------------------------------------
+# end-of-day / overnight / next-day management (PURE — no Alpaca, no orders)
+# ---------------------------------------------------------------------------
+@dataclass
+class ManagedPosition:
+    symbol: str
+    qty: float
+    underlying_price: float            # current underlying price
+    prev_day_high: float               # PDH (the day-1 price target)
+    unrealized_pl: float               # current P/L on the position (>0 == "up")
+    trailing_stop_pct: float           # current trailing stop on the underlying
+    pdh_hit: bool = False              # did the underlying reach PDH during the session?
+    is_option: bool = False
+    occ_symbol: Optional[str] = None
+
+
+@dataclass
+class EodAction:
+    symbol: str
+    action: str                        # target_hit | carry_overnight_tighten | exit_eod | hold
+    new_trailing_stop_pct: Optional[float]
+    exit_plan: Optional[str]           # sell_at_next_day_high | exit_at_close | None
+    reason: str
+
+
+def manage_eod(pos: ManagedPosition, cfg: Optional[EngineConfig] = None) -> EodAction:
+    """End-of-day decision for a reversal position:
+      * PDH already hit  -> target reached; the exit engine takes the target (no carry here).
+      * PDH NOT hit AND position UP -> TIGHTEN the trailing stop and carry overnight to
+        sell into the next day's high (the requested behavior).
+      * PDH NOT hit AND not up -> close at EOD (no overnight risk on a losing reversal)."""
+    cfg = cfg or EngineConfig()
+    if pos.pdh_hit:
+        return EodAction(pos.symbol, "target_hit", None, None,
+                         "PDH reached intraday — exit engine takes the target")
+    up = _finite(pos.unrealized_pl) > 0
+    if up and cfg.carry_overnight_if_up:
+        tightened = min(_finite(pos.trailing_stop_pct, cfg.trailing_stop_pct),
+                        cfg.overnight_trailing_stop_pct)
+        return EodAction(pos.symbol, "carry_overnight_tighten", round(tightened, 5),
+                         "sell_at_next_day_high",
+                         (f"PDH not hit but position +{pos.unrealized_pl:.2f} — tighten trail to "
+                          f"{tightened*100:.2f}% and carry overnight; sell into next day's high"))
+    return EodAction(pos.symbol, "exit_eod", None, "exit_at_close",
+                     "PDH not hit and position not up — close at EOD (no overnight risk)")
+
+
+@dataclass
+class NextDayExit:
+    symbol: str
+    sell: bool
+    reason: str
+
+
+def next_day_exit_decision(price: float, running_high: float, prev_day_high: float,
+                           cfg: Optional[EngineConfig] = None) -> NextDayExit:
+    """Day-2 exit for an overnight carry — "sell at the next day's high":
+      * if the underlying finally reaches the PDH target, sell (target);
+      * otherwise track the running intraday high and sell when price retraces
+        next_day_high_trail_pct below it, locking in NEAR the day's high."""
+    cfg = cfg or EngineConfig()
+    p, hi = _finite(price), _finite(running_high)
+    if prev_day_high and p >= _finite(prev_day_high) > 0:
+        return NextDayExit("", True, "pdh_target_reached")
+    if hi > 0 and p <= hi * (1.0 - cfg.next_day_high_trail_pct):
+        return NextDayExit("", True,
+                           f"next_day_high_trail_hit (retraced {cfg.next_day_high_trail_pct*100:.2f}% "
+                           f"from high {hi:.2f})")
+    return NextDayExit("", False, "holding for next-day high / PDH target")
+
+
+# ---------------------------------------------------------------------------
 # funnel logging
 # ---------------------------------------------------------------------------
 def write_funnel(scan_result: ScanResult, path: Path | str) -> Path:
@@ -860,9 +1006,9 @@ def log_funnel(scan_result: ScanResult) -> None:
 def _demo_rows() -> list[ReversalInput]:
     """Synthetic universe spanning eligible, sub-score, and rejected cases."""
     return [
-        # Strong reversal: weak 1w, red today recovering, high RVOL, full reclaim stack.
+        # Strong reversal: weak 1w, GREEN today off the lows, high 5m RVOL, full reclaim stack.
         ReversalInput(symbol="RVRS", price=42.10, volume=8_200_000, avg_volume=3_100_000,
-                      chg_pct=-1.8, perf_1w=-7.4, analyst_rating="strong buy", os_rating="strong buy",
+                      chg_pct=+1.8, perf_1w=-7.4, analyst_rating="strong buy", os_rating="strong buy",
                       rvol=2.6, vwap_reclaim=True, rsi_rising=True, rsi_cross_40=True,
                       close_gt_open=True, sweep_reclaim=True, orb_reclaim=True, above_ema20_5m=True,
                       recovering=True, extended_atr=0.6, atr=0.9, prev_day_high=44.50,
@@ -876,7 +1022,7 @@ def _demo_rows() -> list[ReversalInput]:
                            "ask": 1.92, "dte": 7, "open_interest": 4200, "volume": 300}]),
         # Decent but milder: moderate RVOL, VWAP reclaim only.
         ReversalInput(symbol="MILD", price=18.55, volume=5_400_000, avg_volume=1_500_000,
-                      chg_pct=-0.9, perf_1w=-3.1, analyst_rating="strong buy", os_rating="strong buy",
+                      chg_pct=+0.9, perf_1w=-3.1, analyst_rating="strong buy", os_rating="strong buy",
                       rvol=1.7, vwap_reclaim=True, rsi_rising=True, rsi_cross_40=False,
                       close_gt_open=True, sweep_reclaim=False, orb_reclaim=False, above_ema20_5m=True,
                       recovering=True, extended_atr=0.4, atr=0.4, prev_day_high=19.40,
@@ -888,16 +1034,22 @@ def _demo_rows() -> list[ReversalInput]:
                            "ask": 0.46, "dte": 7, "open_interest": 900, "volume": 100}]),
         # Over-extended: triggers but penalized hard, likely below min score.
         ReversalInput(symbol="EXTD", price=120.0, volume=4_100_000, avg_volume=900_000,
-                      chg_pct=-0.4, perf_1w=-1.2, analyst_rating="strong buy", os_rating="strong buy",
+                      chg_pct=+0.4, perf_1w=-1.2, analyst_rating="strong buy", os_rating="strong buy",
                       rvol=1.6, vwap_reclaim=True, rsi_rising=True, rsi_cross_40=False,
                       close_gt_open=True, sweep_reclaim=False, orb_reclaim=False, above_ema20_5m=False,
                       recovering=False, extended_atr=4.5, atr=2.0, vol_5m=180_000),
-        # Rejected universe: green today.
-        ReversalInput(symbol="GREN", price=33.0, volume=6_000_000, avg_volume=2_000_000,
-                      chg_pct=+1.1, perf_1w=-2.0, analyst_rating="strong buy", os_rating="strong buy"),
+        # Rejected universe: RED today (must be green).
+        ReversalInput(symbol="REDT", price=33.0, volume=6_000_000, avg_volume=2_000_000,
+                      chg_pct=-0.8, perf_1w=-2.0, analyst_rating="strong buy", os_rating="strong buy",
+                      vol_5m=200_000),
+        # Rejected universe: 5-min relative volume <= 1 (not active right now).
+        ReversalInput(symbol="QUIT", price=27.0, volume=2_000_000, avg_volume=5_000_000,
+                      chg_pct=+0.3, perf_1w=-2.0, analyst_rating="strong buy", os_rating="strong buy",
+                      vol_5m=30_000),
         # Rejected universe: not strong buy.
         ReversalInput(symbol="HOLD", price=9.0, volume=9_000_000, avg_volume=2_000_000,
-                      chg_pct=-2.0, perf_1w=-4.0, analyst_rating="buy", os_rating="strong buy"),
+                      chg_pct=+0.5, perf_1w=-4.0, analyst_rating="buy", os_rating="strong buy",
+                      vol_5m=300_000),
     ]
 
 
@@ -941,17 +1093,108 @@ def run_demo(cfg: Optional[EngineConfig] = None) -> ScanResult:
     return res
 
 
+def _rows_from_json(path: str) -> list[ReversalInput]:
+    import dataclasses as _dc
+    fields = {f.name for f in _dc.fields(ReversalInput)}
+    data = json.loads(Path(path).read_text())
+    rows = data.get("rows", data) if isinstance(data, dict) else data
+    return [ReversalInput(**{k: v for k, v in r.items() if k in fields}) for r in rows]
+
+
+def _positions_from_json(path: str) -> list[ManagedPosition]:
+    import dataclasses as _dc
+    fields = {f.name for f in _dc.fields(ManagedPosition)}
+    data = json.loads(Path(path).read_text())
+    rows = data.get("positions", data) if isinstance(data, dict) else data
+    return [ManagedPosition(**{k: v for k, v in r.items() if k in fields}) for r in rows]
+
+
+def _marker_path(now_et) -> Path:
+    base = os.getenv("INTRADAY_REVERSAL_LOG_DIR", "logs/intraday_reversal")
+    return Path(base) / f"scan_{now_et.strftime('%Y%m%d')}.done"
+
+
+def run_scan(cfg: EngineConfig, universe: Optional[str], funnel_out: str,
+             force: bool, equity: float) -> int:
+    """Scheduled scan: only acts inside the after-1:30 PM ET window (unless --force), at
+    most once per day. Dry-run output; live routing is the caller's job via run.py."""
+    now_et = datetime.now(ET)
+    if not force and not is_active_window(now_et, cfg):
+        print(f"[intraday-reversal] {now_et:%H:%M ET} outside active window "
+              f"[{cfg.start_et}, {cfg.entry_cutoff_et}) — no-op")
+        return 0
+    marker = _marker_path(now_et)
+    if not force and marker.exists():
+        print(f"[intraday-reversal] already scanned today ({marker}) — no-op")
+        return 0
+    rows = _rows_from_json(universe) if universe else _demo_rows()
+    res = scan(rows, cfg)
+    f = res.funnel()
+    print(f"[intraday-reversal] {now_et:%Y-%m-%d %H:%M ET}  scanned={f['scanned']} "
+          f"universe={f['passed_universe']} setup={f['passed_setup']} eligible={f['eligible_for_entry']}")
+    for c in res.candidates:
+        tag = "*toward_PDH" if c.metrics.get("toward_pdh") else ""
+        print(f"  {c.symbol:<8} 5mVol={int(c.vol_5m or 0):>9,} score={c.score:>4.0f} "
+              f"PDH={c.prev_day_high} {('ELIGIBLE' if c.eligible else c.blocked_by or '')} {tag}")
+    orders = propose_for_engine(res, equity=equity, open_symbols=set(), cfg=cfg)
+    print(f"[intraday-reversal] proposed {len(orders)} entries "
+          f"({'CALLS' if cfg.options_enabled else 'shares'}, dry-run, NOT submitted)")
+    out = funnel_out or str(_marker_path(now_et).with_name(f"funnel_{now_et:%Y%m%d}.json"))
+    write_funnel(res, out)
+    print(f"[intraday-reversal] funnel -> {out}")
+    if not force:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(now_et.isoformat())
+    return 0
+
+
+def run_manage_eod(cfg: EngineConfig, positions: Optional[str]) -> int:
+    """Near-close pass: for each open reversal position decide hold/tighten+carry/exit.
+    Dry-run — prints intended actions; the existing exit engine executes them."""
+    if positions:
+        poss = _positions_from_json(positions)
+    else:   # demo: one up-but-PDH-not-hit carry, one loser to close, one target hit
+        poss = [
+            ManagedPosition("CARRY", qty=200, underlying_price=43.9, prev_day_high=44.5,
+                            unrealized_pl=185.0, trailing_stop_pct=0.0075, pdh_hit=False),
+            ManagedPosition("LOSER", qty=150, underlying_price=17.8, prev_day_high=19.4,
+                            unrealized_pl=-90.0, trailing_stop_pct=0.0075, pdh_hit=False),
+            ManagedPosition("WONIT", qty=100, underlying_price=44.6, prev_day_high=44.5,
+                            unrealized_pl=240.0, trailing_stop_pct=0.0075, pdh_hit=True),
+        ]
+    print(f"[intraday-reversal] EOD management of {len(poss)} position(s):")
+    for pos in poss:
+        a = manage_eod(pos, cfg)
+        extra = (f" -> trail {a.new_trailing_stop_pct*100:.2f}% / {a.exit_plan}"
+                 if a.new_trailing_stop_pct is not None else
+                 (f" -> {a.exit_plan}" if a.exit_plan else ""))
+        print(f"  {pos.symbol:<8} {a.action}{extra}")
+        print(f"           {a.reason}")
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(description="Intraday Reversal Engine (isolated candidate source)")
-    p.add_argument("--demo", action="store_true", help="dry-run: print ranked candidates, place NO orders")
-    p.add_argument("--funnel-out", default="", help="optional path to write the funnel JSON")
+    p.add_argument("--demo", action="store_true", help="dry-run: print ranked candidates, NO orders")
+    p.add_argument("--scan", action="store_true",
+                   help="scheduled scan (gated to the after-1:30 PM ET window, once/day)")
+    p.add_argument("--manage-eod", action="store_true",
+                   help="near-close pass: tighten+carry up positions that didn't hit PDH")
+    p.add_argument("--universe", default="", help="JSON of universe rows for --scan (else demo)")
+    p.add_argument("--positions", default="", help="JSON of positions for --manage-eod (else demo)")
+    p.add_argument("--force", action="store_true", help="ignore the active-window/once-a-day gate")
+    p.add_argument("--equity", type=float, default=100_000.0, help="account equity for dry-run sizing")
+    p.add_argument("--funnel-out", default="", help="path to write the funnel JSON")
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
     cfg = EngineConfig()
-    if args.demo or True:   # CLI is dry-run only; live routing is the caller's job via run.py
-        res = run_demo(cfg)
-        if args.funnel_out:
-            print("funnel ->", write_funnel(res, args.funnel_out))
+    if args.manage_eod:
+        return run_manage_eod(cfg, args.positions or None)
+    if args.scan:
+        return run_scan(cfg, args.universe or None, args.funnel_out, args.force, args.equity)
+    res = run_demo(cfg)
+    if args.funnel_out:
+        print("funnel ->", write_funnel(res, args.funnel_out))
     return 0
 
 

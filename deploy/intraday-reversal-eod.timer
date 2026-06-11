@@ -1,0 +1,13 @@
+[Unit]
+Description=Run intraday reversal EOD management near the close on weekdays
+
+[Timer]
+# ~15:55 ET, just before the close, so up-but-PDH-not-hit positions get tightened and
+# carried overnight (to be sold into the next day's high). systemd >= v252 for the TZ
+# suffix; otherwise set host TZ to ET or convert to UTC.
+OnCalendar=Mon-Fri 15:55 America/New_York
+Persistent=true
+Unit=intraday-reversal-eod.service
+
+[Install]
+WantedBy=timers.target
