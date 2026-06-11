@@ -3333,6 +3333,94 @@ def collect_daily_profit_opportunities(alpha=None, bal=None, gateway: Optional[A
     }
 
 
+
+
+# ── Profit-first daily opportunity router (v2) ──────────────────────────────
+# In-memory tracker of symbols entered via the daily-profit tactical path (used to
+# enforce the max OPEN intraday-tactical cap across cycles).
+_DAILY_PROFIT_TACTICAL_SYMBOLS: set = set()
+
+
+def run_daily_profit_entries(gateway: AlpacaGateway, risk: RiskManager,
+                             market_context: dict,
+                             equity_positions: Optional[Dict[str, Any]] = None) -> dict:
+    """Profit-first daily opportunity router (v2).
+
+    Adds the NEW intraday supply (alpaca_daily_income: VWAP-reclaim / ORB /
+    momentum-pullback), ranks + gates + caps it via
+    daily_profit_engine.DailyOpportunityRouter, and submits ONLY approved
+    new-supply candidates through the RiskManager-gated gateway. Existing engines
+    (alpha / BAL / insider) keep their own entry paths and are never re-submitted
+    here; EXITS are never touched. Fully fail-safe: any data error resolves to
+    safe-mode no-trade. Gated by DAILY_PROFIT_ENGINE_ENABLED (default off).
+    """
+    if os.environ.get("DAILY_PROFIT_ENGINE_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
+        return {}
+    equity_positions = equity_positions or {}
+    try:
+        from daily_profit_engine import DailyOpportunityRouter
+    except Exception as e:
+        logger.warning("daily-profit engine unavailable: %s", e)
+        return {}
+
+    opportunities: List[Any] = []
+    feed_timeout = False
+    try:
+        if is_market_open():
+            universe = load_candidate_universe()
+            opportunities = _daily_profit_collect_alpaca_income(gateway, universe, market_context)
+    except Exception as e:
+        logger.warning("daily-profit collection failed safe (no-trade): %s", e)
+        feed_timeout = True
+
+    router = DailyOpportunityRouter()
+    tactical_open = len(_DAILY_PROFIT_TACTICAL_SYMBOLS & set(equity_positions.keys()))
+    result = router.route(opportunities, market_context,
+                          open_intraday_tactical_positions=tactical_open,
+                          feed_timeout=feed_timeout)
+
+    # Structured rejection logging — blocked_by tags per the v2 spec.
+    for r in result.rejected:
+        log_skip(r.symbol, "blocked_by:" + r.blocked_by, reason=r.reason,
+                 strategy=r.opportunity.strategy_id, phase="daily_profit")
+
+    try:
+        order_dollars = float(os.environ.get("DAILY_PROFIT_ORDER_DOLLARS", "100"))
+    except Exception:
+        order_dollars = 100.0
+    submitted = 0
+    for opp in result.approved:
+        if opp.strategy_id != "alpaca_daily_income":
+            continue  # phase 1: only the NEW intraday supply executes via the router
+        price = opp.reference_price or opp.limit_price
+        if price <= 0:
+            continue
+        qty = max(1, int(order_dollars / price))
+        try:
+            placed = gateway.submit_market_order(
+                opp.symbol, "buy", qty,
+                reason="daily_profit:%s:%s" % (opp.strategy_id, opp.setup_type),
+                reference_price=price)
+            if placed is not None:
+                submitted += 1
+                _DAILY_PROFIT_TACTICAL_SYMBOLS.add(opp.symbol)
+        except Exception as e:
+            logger.error("daily-profit submit failed for %s: %s", opp.symbol, e)
+
+    payload = router.funnel_payload(result, actual_trades=submitted)
+    logger.info("DAILY-PROFIT candidates=%d approved=%d rejected=%d submitted=%d "
+                "overnight_shares=%d overnight_calls=%d safe_mode=%s%s",
+                payload["candidates"], payload["approved_entries"], payload["rejected_entries"],
+                submitted, payload["overnight_approved_shares"], payload["overnight_approved_calls"],
+                payload["safe_mode"], (":" + payload["safe_mode_reason"]) if payload["safe_mode"] else "")
+    try:
+        router.write_funnel(DAILY_OUTPUTS / DATA_TAG / ("%s_daily_profit_funnel.json" % DATA_TAG),
+                            result, actual_trades=submitted)
+    except Exception:
+        pass
+    return payload
+
+
 def run_portfolio_monitor(monitor, gateway: AlpacaGateway, risk: RiskManager,
                           equity_positions: Dict[str, Any], market_context: dict) -> dict:
     """Optional BAL portfolio monitor / hedging (opt-in via ENABLE_BAL_PORTFOLIO_MONITOR)."""
@@ -4690,6 +4778,18 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
                 gateway, risk, entries_blocked=_entries_blocked)
         except Exception as e:
             logger.error("Trump tracker failed (rest of cycle unaffected): %s", e)
+
+    # 4d. PROFIT-FIRST DAILY OPPORTUNITY ROUTER (v2) — normalizes + ranks the new
+    # intraday supply (VWAP/ORB/momentum) and submits only approved new-supply through
+    # the RiskManager gate. Gated by DAILY_PROFIT_ENGINE_ENABLED. Exits + the existing
+    # alpha/BAL/insider entry paths are untouched. Never breaks the cycle.
+    try:
+        # The router self-gates submission (market-open + DAILY_PROFIT_ENGINE_ENABLED +
+        # bearish regime + 15:30 cutoff); run every cycle for funnel observability.
+        summary["daily_profit"] = run_daily_profit_entries(
+            gateway, risk, market_context, equity_positions=equity_positions)
+    except Exception as e:
+        logger.error("Daily-profit router failed (rest of cycle unaffected): %s", e)
 
     # 5. Optional monitor + outputs
     if monitor is not None:
