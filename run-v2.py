@@ -374,6 +374,7 @@ ALPHA_MAX_DTE = int(os.environ.get("ALPHA_MAX_DTE", 60))
 # Daily tag shared with the engine modules (so all outputs land in the same dated buckets)
 DATA_TAG       = os.getenv("RUN_DATA_DATE", datetime.now(timezone.utc).strftime("%Y%m%d"))
 DAILY_OUTPUTS  = PROJECT_ROOT / "daily_system_outputs"
+SYSTEM_DATA_DIR = PROJECT_ROOT / "system-data" / DATA_TAG  # premarket plan / structure-map / planner-recovery dir
 SKIPPED_TRADES_PATH = PROJECT_ROOT / "logs" / "execution" / DATA_TAG / f"{DATA_TAG}_skipped_trades.jsonl"
 # Symmetric to SKIPPED_TRADES_PATH: every EXECUTED order, structured for signal-fidelity replay
 # (signals-fired vs executed, by engine + reason) against the backtest. See signal_fidelity_report.py.
