@@ -203,6 +203,14 @@ class AlpacaNewsClient:
         rows.sort(key=lambda r: r.get("published_at") or "", reverse=True)
         return rows
 
+    def window_news(self, symbol: str, start: datetime, end: datetime,
+                    limit: int = 1000) -> list[dict[str, Any]]:
+        """Normalized news for ``symbol`` over [start, end] (PIT-safe when end <= as-of). Never raises."""
+        symbol = (symbol or "").upper().strip()
+        items = self._fetch(symbol, start=start, end=end, limit=limit, sort="asc")
+        sents = _score_items(items)
+        return [normalize_alpaca_news_item(it, symbol, s) for it, s in zip(items, sents)]
+
     def backfill_symbol(self, symbol: str, days: int = 90, as_of: Optional[datetime] = None,
                         persist: bool = True, **_ignored: Any) -> list[dict[str, Any]]:
         """Historical news for ``symbol`` over [as_of-days, as_of], persisted to

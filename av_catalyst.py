@@ -132,10 +132,35 @@ def earnings(symbol: str) -> List[dict]:
     return out
 
 
+def _alpaca_news_window(symbol: str, t_from: str, t_to: str, limit: int) -> Optional[dict]:
+    """news_window via Alpaca news + FinBERT (same {n, mean_score, mean_relevance, pos_frac} shape)."""
+    try:
+        import os as _os
+        from datetime import datetime as _dt, timezone as _tz
+        from data_sources.alpaca_news_client import get_default_alpaca_news_client
+        start = _dt.strptime(t_from, "%Y%m%dT%H%M").replace(tzinfo=_tz.utc)
+        end = _dt.strptime(t_to, "%Y%m%dT%H%M").replace(tzinfo=_tz.utc)
+        rows = get_default_alpaca_news_client().window_news(symbol, start, end, limit=max(limit, 200))
+    except Exception:
+        return None
+    scores = [r["ticker_sentiment_score"] for r in rows if r.get("ticker_sentiment_score") is not None]
+    rels = [r.get("relevance_score") or 0.0 for r in rows if r.get("ticker_sentiment_score") is not None]
+    if not scores:
+        return {"n": 0, "mean_score": 0.0, "mean_relevance": 0.0, "pos_frac": 0.0}
+    return {"n": len(scores), "mean_score": mean(scores), "mean_relevance": mean(rels),
+            "pos_frac": sum(1 for v in scores if v > 0.15) / len(scores)}
+
+
 def news_window(symbol: str, t_from: str, t_to: str, limit: int = 200) -> Optional[dict]:
     """Aggregate ticker news sentiment over [t_from, t_to] (AV YYYYMMDDTHHMM). Returns
-    {n, mean_score, mean_relevance, pos_frac} or None. PIT-safe when t_to <= entry date."""
+    {n, mean_score, mean_relevance, pos_frac} or None. PIT-safe when t_to <= entry date.
+
+    DEPRECATED source: NEWS_SOURCE=alpaca routes to Alpaca news + FinBERT (data_sources.alpaca_news_client).
+    """
     symbol = symbol.upper().strip()
+    import os as _os
+    if _os.getenv("NEWS_SOURCE", "av").strip().lower() == "alpaca":
+        return _alpaca_news_window(symbol, t_from, t_to, limit)
     p = _get({"function": "NEWS_SENTIMENT", "tickers": symbol, "time_from": t_from,
               "time_to": t_to, "sort": "RELEVANCE", "limit": str(limit)},
              f"news_{symbol}_{t_from}_{t_to}")
