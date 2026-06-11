@@ -46,8 +46,12 @@ class FeedManagerTests(unittest.TestCase):
 
     def test_forbidden_feed_fetch_refused(self):
         m = afm.AlpacaFeedManager()
-        self.assertEqual(m.fetch_bars(["AAPL"], None, None, feed="sip"), {})
+        # delayed-SIP is forbidden in ALL modes -> always refused (returns {}).
         self.assertEqual(m.fetch_bars(["AAPL"], None, None, feed="delayed_sip"), {})
+        # Plain SIP is entitlement-gated: refused only when the SIP entitlement is OFF.
+        # When ON, fetch_bars would attempt a real fetch, so don't call it here.
+        if not afm.SIP_ENABLED:
+            self.assertEqual(m.fetch_bars(["AAPL"], None, None, feed="sip"), {})
 
     def test_no_creds_downgrades_gracefully(self):
         m = afm.AlpacaFeedManager()
