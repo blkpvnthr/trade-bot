@@ -452,6 +452,10 @@ SKIP_REASONS = {
     "rejected_by_drawdown",
     "rejected_by_order_size",
     "rejected_by_data_unavailable",
+    "opportunity_rank",
+    "daily_trade_cap",
+    "overnight_gate",
+    "setup_not_validated",
     "throttled_by_self_assessment",
     "insider_copy_below_min",
     "insider_copy_stale",
@@ -1353,7 +1357,7 @@ class AlpacaGateway:
         # Manual (Alpaca app/web) and TradingView-webhook positions share this live account; the
         # bot must never override them. The ledger is keyed by EXACT symbol (OCC for options),
         # so the bot's SOXS shares and a user's SOXS calls are independent. Fail-closed.
-        if side == "sell" and ENABLE_OWNERSHIP_GUARD:
+        if side == "sell" and ENABLE_OWNERSHIP_GUARD and self._available:
             allow = int(_ownership.sell_allowance(symbol, qty))
             if allow <= 0:
                 logger.warning("ORDER BLOCKED: SELL %s x%d — NOT bot-owned (manual/webhook "
@@ -1382,7 +1386,7 @@ class AlpacaGateway:
         # 9-EMA execution gate: only BUY above the daily 9-EMA (trend confirmation / cross-up).
         # bypass_trend_gate lets event-driven insider copies skip this timing filter (see
         # INSIDER_COPY_BYPASS_TREND_GATE) — risk caps below still apply.
-        if side == "buy" and not bypass_trend_gate:
+        if side == "buy" and not bypass_trend_gate and self._available:
             _trend_blk = _ema_buy_blocked(symbol, ref_price)
             if _trend_blk:
                 log_skip(symbol, _trend_blk, side=side, qty=qty, source=reason or "broker")
@@ -1393,7 +1397,7 @@ class AlpacaGateway:
         # Self-assessment BUY throttle (downside protection): scale BUY size by the
         # data/model/regime/execution-risk multiplier from system_self_awareness. Buys only —
         # exits are never throttled. multiplier ∈ [0,1]; 0 → skip the buy entirely.
-        if side == "buy":
+        if side == "buy" and self._available:
             sa_mult = _self_assessment_buy_multiplier()
             if sa_mult < 1.0:
                 new_qty = int(qty * sa_mult)
@@ -1475,7 +1479,7 @@ class AlpacaGateway:
         if _trend_blk:
             log_skip(symbol, _trend_blk, side="buy", source=reason or "broker")
             return None
-        sa = _self_assessment_buy_multiplier()
+        sa = _self_assessment_buy_multiplier() if self._available else 1.0
         if sa < 1.0:
             notional *= sa
         if notional < 1.0:
@@ -2916,13 +2920,30 @@ def run_bal_entries(bal, gateway: AlpacaGateway, waterfall, risk: RiskManager,
     # account sync.  If it is still empty the system is running on the $100k
     # STARTING_EQUITY fallback, meaning every order would also fail auth at Alpaca.
     # Blocking here prevents phantom-account order noise in logs/journals.
-    if not risk.account_status:
+    if not risk.account_status and getattr(gateway, "available", True):
         logger.warning(
             "BAL entries blocked: broker account_status='%s' (auth not confirmed) — "
             "equity=%.0f may be STARTING_EQUITY fallback; will retry next cycle",
             risk.account_status, risk.equity,
         )
         return 0
+    # FIX 2026-06-10: Warn when buffett_dca_signals.json is from a prior date so the operator
+    # knows scores are stale before the first BAL entry attempt of the day.  Runs every cycle
+    # (including when capital is 0) so the alert fires regardless of capital state.
+    try:
+        _sig_path = DAILY_OUTPUTS / "buffett_dca_signals.json"
+        if _sig_path.exists():
+            _sig_meta = json.loads(_sig_path.read_text())
+            _sig_date = str(_sig_meta.get("date_tag") or "")
+            if _sig_date and _sig_date != DATA_TAG:
+                logger.warning(
+                    "BAL SIGNALS STALE: buffett_dca_signals.json date_tag=%s != today=%s — "
+                    "conviction scores reflect prior-day market conditions; fresh scores will be "
+                    "generated on first cycle where available_capital >= 200",
+                    _sig_date, DATA_TAG,
+                )
+    except Exception:
+        pass
     stock_room = max(0.0, risk.equity * MAX_STOCK_EXPOSURE_PCT - risk.stock_exposure)
     cash_reserve = CASH_BUFFER_PCT * risk.equity                      # always-free cash
     spendable = max(0.0, risk.cash - cash_reserve)                   # only deploy cash above the reserve
@@ -3070,6 +3091,235 @@ def write_screener_funnel_report(alpha_screen_funnel: dict, buffett_res: dict,
         SCREENER_FUNNEL_PATH.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     except Exception as e:
         logger.debug("write_screener_funnel_report failed: %s", e)
+
+
+def _daily_profit_prob_from_score(score: float) -> float:
+    try:
+        return max(0.05, min(0.95, 0.40 + (float(score) / 100.0) * 0.45))
+    except Exception:
+        return 0.50
+
+
+def _daily_profit_trade_opportunity(**kwargs):
+    from daily_profit_engine import TradeOpportunity
+    return TradeOpportunity(**kwargs)
+
+
+def _daily_profit_opportunity_from_alpha_signal(sig: Any):
+    """Normalize a ready Alpha call signal into a buy-side opportunity. No orders."""
+    limit_px = float(getattr(sig, "ask", 0.0) or getattr(sig, "mid", 0.0) or 0.0)
+    score = float(getattr(sig, "setup_score", 0.0) or 0.0)
+    probability = float(getattr(sig, "probability_of_profit", 0.0) or 0.0) or _daily_profit_prob_from_score(score)
+    return _daily_profit_trade_opportunity(
+        symbol=str(getattr(sig, "contract_symbol", "") or "").upper(),
+        asset_class="option",
+        side="buy",
+        strategy_id="alpha_call",
+        setup_type=str(getattr(sig, "setup_type", "") or "UNKNOWN"),
+        score=score,
+        probability=probability,
+        expected_r=max(1.5, float(getattr(sig, "expected_R", 0.0) or getattr(sig, "expected_r", 0.0) or 2.0)),
+        liquidity_score=max(0.0, min(1.0, float(getattr(sig, "liquidity_score", 0.75) or 0.75))),
+        regime_alignment=0.80,
+        risk_score=0.35,
+        freshness_score=1.0,
+        qty=1,
+        reference_price=limit_px,
+        limit_price=limit_px,
+        reason=f"alpha_call:{getattr(sig, 'setup_type', 'UNKNOWN')}",
+        overnight_candidate=bool(getattr(sig, "overnight_allowed_by_probability", False)),
+        metadata={
+            "underlying": str(getattr(sig, "symbol", "") or "").upper(),
+            "dte": int(float(getattr(sig, "dte", 0) or 0)),
+            "iv_crush_risk": float(getattr(sig, "iv_crush_risk", 100.0) or 100.0),
+            "protected_or_partialed": bool(getattr(sig, "partial_taken", False)),
+            "active_exit_ladder": True,
+            "tactical": True,
+        },
+    )
+
+
+def _daily_profit_collect_alpha(alpha, gateway: AlpacaGateway, risk: RiskManager,
+                                market_context: dict, equity_positions: Dict[str, Any],
+                                option_positions: List[Dict]) -> tuple[List[Any], dict]:
+    if alpha is None:
+        return [], {"disabled": True}
+    dynamic = load_candidate_universe()
+    alpha_scr = run_alpha_screener(alpha, gateway, market_context, dynamic)
+    market_state = _build_market_state(market_context, _indicator_snapshot(), _premarket_snapshot(),
+                                       bars_by_symbol=alpha_scr.get("bars", {}), feed_type=None)
+    signals = alpha.evaluate_universe(
+        symbols=alpha_scr.get("base", []),
+        bars_by_symbol=alpha_scr.get("bars", {}),
+        market_context=market_context,
+        equity=risk.equity,
+        options_exposure=risk.options_exposure,
+        waterfall_budget=0.0,
+        chains_by_symbol=alpha_scr.get("chains", {}),
+        positions=equity_positions,
+        account_state={"equity": risk.equity, "buying_power": risk.buying_power},
+        indicator_snapshot=_indicator_snapshot(),
+        premarket_snapshot=_premarket_snapshot(),
+        market_state=market_state,
+    )
+    return [
+        _daily_profit_opportunity_from_alpha_signal(sig)
+        for sig in (signals or [])
+        if getattr(sig, "status", "") == "ready"
+    ], {"alpha_screener": alpha_scr.get("funnel", {})}
+
+
+def _daily_profit_collect_alpaca_income(gateway: AlpacaGateway, symbols: List[str],
+                                        market_context: dict) -> List[Any]:
+    if not symbols:
+        return []
+    from strategies.alpaca_daily_income import AlpacaDailyIncomeStrategy
+    strategy = AlpacaDailyIncomeStrategy()
+    bars_by_symbol = fetch_1m_bars(gateway, symbols[:25])
+    out = []
+    for sym, bars in (bars_by_symbol or {}).items():
+        try:
+            if bars is None or len(bars) == 0:
+                continue
+            signals = strategy.generate_signals(bars, context=market_context)
+            buys = signals[signals["buy_signal"] == True]  # noqa: E712
+            if buys.empty:
+                continue
+            row = buys.iloc[-1]
+            price = float(getattr(bars.iloc[-1], "close", 0.0) if hasattr(bars.iloc[-1], "close")
+                          else bars["close"].iloc[-1])
+            rr = float(row.get("risk_reward", 2.0) or 2.0)
+            out.append(_daily_profit_trade_opportunity(
+                symbol=str(sym).upper(),
+                asset_class="equity",
+                side="buy",
+                strategy_id="alpaca_daily_income",
+                setup_type=str(row.get("entry_reason", "intraday_signal")).split(":")[1]
+                if ":" in str(row.get("entry_reason", "")) else "intraday_signal",
+                score=78.0,
+                probability=0.68,
+                expected_r=max(1.5, rr),
+                liquidity_score=0.75,
+                regime_alignment=0.75,
+                risk_score=0.25,
+                freshness_score=1.0,
+                qty=1,
+                reference_price=price,
+                reason=str(row.get("entry_reason", "alpaca_daily_income")),
+                overnight_candidate=False,
+                metadata={"tactical": True, "trend_intact": True},
+            ))
+        except Exception as e:
+            logger.debug("daily-profit alpaca_income candidate failed for %s: %s", sym, e)
+    return out
+
+
+def _daily_profit_collect_bal_and_insider(market_context: dict,
+                                          premarket_snapshot: Optional[dict] = None) -> tuple[List[Any], dict]:
+    opportunities: List[Any] = []
+    buffett_res = run_buffett_screener(market_context, premarket_snapshot)
+    detail = buffett_res.get("detail", []) or []
+    detail_by_symbol = {str(d.get("symbol", "")).upper(): d for d in detail if d.get("symbol")}
+    for sym in buffett_res.get("candidates", []) or []:
+        rec = detail_by_symbol.get(str(sym).upper(), {})
+        score = float(rec.get("score", rec.get("composite_score", 70.0)) or 70.0)
+        price = float(rec.get("price", rec.get("current_price", 0.0)) or 0.0)
+        opportunities.append(_daily_profit_trade_opportunity(
+            symbol=str(sym).upper(),
+            asset_class="equity",
+            side="buy",
+            strategy_id="buffett_accumulation",
+            setup_type="BAL_DCA",
+            score=score,
+            probability=_daily_profit_prob_from_score(score),
+            expected_r=max(1.5, float(rec.get("expected_r", 1.8) or 1.8)),
+            liquidity_score=0.70,
+            regime_alignment=0.70,
+            risk_score=0.30,
+            freshness_score=0.80,
+            qty=1,
+            reference_price=price,
+            reason="buffett_accumulation_candidate",
+            overnight_candidate=True,
+            metadata={"tactical": False, "thesis_backed": True, "trend_intact": True},
+        ))
+    try:
+        import sec_form4_feed as _sec_mod
+        for sym, cand in (_sec_mod.load_insider_candidates() or {}).items():
+            price = float(cand.get("price", cand.get("current_price", 0.0)) or 0.0)
+            value = float(cand.get("value", cand.get("insider_buy_amount", 0.0)) or 0.0)
+            score = 80.0 if value >= INSIDER_COPY_MIN_VALUE else 65.0
+            opportunities.append(_daily_profit_trade_opportunity(
+                symbol=str(sym).upper(),
+                asset_class="equity",
+                side="buy",
+                strategy_id="insider_swing",
+                setup_type="INSIDER_BUY",
+                score=score,
+                probability=_daily_profit_prob_from_score(score),
+                expected_r=2.0,
+                liquidity_score=0.65,
+                regime_alignment=0.70,
+                risk_score=0.35,
+                freshness_score=0.90,
+                qty=1,
+                reference_price=price,
+                reason="insider_swing_candidate",
+                overnight_candidate=True,
+                metadata={"tactical": False, "thesis_backed": True, "trend_intact": True,
+                          "insider_buy_value": value},
+            ))
+    except Exception as e:
+        logger.debug("daily-profit insider candidates skipped: %s", e)
+    return opportunities, buffett_res
+
+
+def collect_daily_profit_opportunities(alpha=None, bal=None, gateway: Optional[AlpacaGateway] = None,
+                                       risk: Optional[RiskManager] = None,
+                                       market_context: Optional[dict] = None,
+                                       equity_positions: Optional[Dict[str, Any]] = None,
+                                       option_positions: Optional[List[Dict]] = None) -> dict:
+    """Collect normalized v2 buy opportunities without submitting orders.
+
+    Any data/API exception resolves to ``feed_timeout=True`` so run-v2 enters
+    safe-mode/no-trade.  Existing direct entry functions remain unchanged.
+    """
+    from daily_profit_engine import is_bearish_context
+    market_context = market_context or {}
+    equity_positions = equity_positions or {}
+    option_positions = option_positions or []
+    opportunities: List[Any] = []
+    diagnostics: Dict[str, Any] = {}
+    feed_timeout = False
+    missing_data = False
+    stale_state = False
+    try:
+        dynamic = load_candidate_universe()
+        if alpha is not None and gateway is not None and risk is not None:
+            alpha_ops, alpha_diag = _daily_profit_collect_alpha(
+                alpha, gateway, risk, market_context, equity_positions, option_positions)
+            opportunities.extend(alpha_ops)
+            diagnostics.update(alpha_diag)
+        if gateway is not None:
+            opportunities.extend(_daily_profit_collect_alpaca_income(gateway, dynamic, market_context))
+        bal_ops, buffett_res = _daily_profit_collect_bal_and_insider(market_context, _premarket_snapshot())
+        opportunities.extend(bal_ops)
+        diagnostics["buffett_funnel"] = buffett_res.get("funnel", {})
+        if not opportunities and (not dynamic or is_bearish_context(market_context)):
+            missing_data = True
+    except TimeoutError as e:
+        logger.warning("daily-profit candidate collection timeout: %s", e)
+        feed_timeout = True
+    except Exception as e:
+        logger.warning("daily-profit candidate collection failed safe: %s", e)
+        feed_timeout = True
+    return {
+        "opportunities": opportunities,
+        "diagnostics": diagnostics,
+        "feed_timeout": feed_timeout,
+        "missing_data": missing_data,
+        "stale_state": stale_state,
+    }
 
 
 def run_portfolio_monitor(monitor, gateway: AlpacaGateway, risk: RiskManager,
@@ -3887,10 +4137,19 @@ def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
             return 0
 
     today = now_et.date()
-    # "Already held" spans BOTH equity holdings and any open call on the underlying, so a
-    # name is never copied twice regardless of which instrument the copier trades.
+    state = _insider_copy_state_load()
+    # "Already held" spans broker-reported positions PLUS the copier's persisted local state so
+    # a freshly-submitted share/call cannot be re-entered on the next loop before Alpaca reflects
+    # the position. This specifically blocks duplicate paper/live submissions like the 2026-06-09
+    # repeated RYAN insider-copy buys.
     held = {str(s).upper() for s in (equity_positions or {})}
     held |= {_occ_underlying(str(p.get("symbol", ""))) for p in (option_positions or [])}
+    held |= {str(sym).upper() for sym in state}
+    held |= {
+        str(rec.get("underlying", "")).upper()
+        for rec in state.values()
+        if isinstance(rec, dict) and rec.get("underlying")
+    }
 
     # Filter Form 4 candidates to large + recent open-market buys.
     qualified: List[Dict[str, Any]] = []
@@ -3973,7 +4232,7 @@ def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
     prefetch_insider_vol_gate([c["symbol"] for c in qualified])
     # Total open insider-copy NAMES for the small-account cap. Paired-call overlays (records with
     # paired_underlying) ride alongside their share and must NOT consume a name slot.
-    _open_now = sum(1 for _v in _insider_copy_state_load().values()
+    _open_now = sum(1 for _v in state.values()
                     if not (isinstance(_v, dict) and _v.get("paired_underlying")))
     for cand in qualified:
         if placed >= INSIDER_COPY_MAX_NAMES:
@@ -4079,12 +4338,11 @@ def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
             _eq = float(getattr(risk, "equity", 0.0) or 0.0)
             _alloc = (_eq * INSIDER_COPY_SHARE_RISK_PCT / INSIDER_COPY_SHARE_STOP_PCT) if INSIDER_COPY_SHARE_STOP_PCT > 0 else 0.0
             _alloc = _alloc or INSIDER_COPY_DOLLARS                      # fallback to legacy budget
-            # FIX 2026-06-09: Clamp alloc to MAX_ORDER_DOLLARS so insider copy orders never
-            # exceed the live per-order cap (e.g. $120).  RiskManager would reject them anyway,
-            # but sizing here avoids redundant rejected_by_order_size log spam and ensures
-            # fractional/small lots are used instead of no trade at all.
-            if MAX_ORDER_DOLLARS > 0:
-                _alloc = min(_alloc, MAX_ORDER_DOLLARS)
+            # Clamp alloc to the active per-order dollar cap tracked by RiskManager so insider
+            # copy sizing respects the live limit without depending on a module-global override.
+            _max_order_dollars = float(getattr(risk, "max_order_dollars", 0.0) or 0.0)
+            if _max_order_dollars > 0:
+                _alloc = min(_alloc, _max_order_dollars)
             qty = int(_alloc // ref_price)
             if qty <= 0:
                 log_skip(sym, f"insider_copy_size_zero:px={ref_price:.2f}:alloc=${_alloc:.0f}",
@@ -4133,7 +4391,26 @@ def run_insider_trade_copier(gateway: AlpacaGateway, risk: RiskManager,
                     option_dte=(contract.get("dte") if contract else ""),
                     option_delta=(float(contract.get("delta") or 0) if contract else ""),
                     option_omega=(round(omega, 2) if asset == "option" else ""),
-                    order_id=str((resp or {}).get("id", "") if isinstance(resp, dict) else ""),
+                    client_order_id=(
+                        str((resp or {}).get("client_order_id", ""))
+                        if isinstance(resp, dict) else str(getattr(resp, "client_order_id", "") or "")
+                    ),
+                    order_id=(
+                        str((resp or {}).get("id", ""))
+                        if isinstance(resp, dict) else str(getattr(resp, "id", "") or "")
+                    ),
+                    order_status=(
+                        str((resp or {}).get("status", "submitted"))
+                        if isinstance(resp, dict) else str(getattr(resp, "status", "submitted") or "submitted")
+                    ),
+                    filled_qty=(
+                        (resp or {}).get("filled_qty", "")
+                        if isinstance(resp, dict) else getattr(resp, "filled_qty", "")
+                    ),
+                    filled_avg_price=(
+                        (resp or {}).get("filled_avg_price", "")
+                        if isinstance(resp, dict) else getattr(resp, "filled_avg_price", "")
+                    ),
                     sim=bool(isinstance(resp, dict) and resp.get("sim")),
                     insider_buy_value=cand["value"],
                     insider_last_date=cand["last"].isoformat(),
@@ -5115,14 +5392,14 @@ def log_executed_order(**kwargs) -> None:
             "max_order_notional": "",
             "stop_price": "", "target_price": "",
             "bracket_attached": False,
-            "client_order_id": "",
+            "client_order_id": _safe_kwargs.get("client_order_id", ""),
             "order_id": _safe_kwargs.get("order_id", ""),
-            "order_status": "submitted",
-            "filled_qty": "",
-            "filled_avg_price": "",
-            "slippage_pct": "",
+            "order_status": _safe_kwargs.get("order_status", "submitted"),
+            "filled_qty": _safe_kwargs.get("filled_qty", ""),
+            "filled_avg_price": _safe_kwargs.get("filled_avg_price", ""),
+            "slippage_pct": _safe_kwargs.get("slippage_pct", ""),
             "skip_reason": "",
-            "broker_message": "sim" if _safe_kwargs.get("sim") else "",
+            "broker_message": _safe_kwargs.get("broker_message", ("sim" if _safe_kwargs.get("sim") else "")),
             "message": f"engine={_safe_kwargs.get('engine','')} grade={_safe_kwargs.get('grade','')}",
         }
         _cols = list(_row.keys())

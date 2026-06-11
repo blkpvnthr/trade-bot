@@ -161,6 +161,11 @@ def _cached_bars(sym: str):
 
 
 _EQ_SPLIT_RATIO = 0.40   # consecutive equity jump > this ⇒ account switch / deposit (new segment)
+# Alpaca paper-account default seed balances. A reading sitting EXACTLY on a seed is an idle paper
+# sandbox that has never traded; it would otherwise log forever (e.g. a flat $1M line) and, being the
+# newest segment, hide the real account. Once an account actually trades it moves off the round seed
+# and reappears, so this only filters idle sandboxes. (A live ~$6k account never lands here.)
+_PAPER_SEED_BALANCES = frozenset({1_000_000.00, 100_000.00})
 
 
 def _keep_last_account_segment(pts):
@@ -200,9 +205,14 @@ def _equity_points():
                 # the live account loads; those readings would otherwise spike the equity curve.
                 if "status=n/a" in line:
                     continue
+                eq = float(m.group(3))
+                # Drop idle paper-sandbox seed balances ($1M / $100k flat) so they don't mask the
+                # real account (they log as the newest segment when a fresh paper bot restarts).
+                if eq in _PAPER_SEED_BALANCES:
+                    continue
                 t = int(datetime.datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M:%S")
                         .replace(tzinfo=datetime.timezone.utc).timestamp())
-                pts.append((t, float(m.group(3))))
+                pts.append((t, eq))
     except Exception as e:
         logger.debug("equity_points: %s", e)
     pts.sort()

@@ -18,6 +18,8 @@ import run
 
 def _sim_gateway(equity=100_000.0):
     risk = run.RiskManager(equity=equity)
+    risk.max_order_dollars = equity
+    risk.refresh_dynamic_limits = lambda: None
     gw = run.AlpacaGateway(risk)
     gw._available = False      # simulation: no live market-data resolution
     gw._mode = "sim"

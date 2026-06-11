@@ -72,6 +72,12 @@ def _alpha_bucket(reason: str) -> str:
 
 def _buffett_bucket(reason: str) -> str:
     r = (reason or "").lower()
+    # FIX 2026-06-10: "dca_triggered_*" means the symbol PASSED composite scoring and triggered
+    # a DCA buy action (e.g. "dca_triggered_composite_score" for ADBE/TSM). Must be checked
+    # BEFORE the "composite" substring check below, which would otherwise misclassify these as
+    # a "buffett_score" rejection.
+    if "dca_triggered" in r:
+        return "(approved)"
     if any(k in r for k in ("data_unavailable", "no_data", "missing")):
         return "missing_data"
     if "regime_gate" in r:

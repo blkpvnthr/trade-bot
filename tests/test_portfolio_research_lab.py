@@ -156,6 +156,52 @@ class ResearchLabTests(unittest.TestCase):
                 self.assertIn("rankings", disk)
                 self.assertIn("capital_waterfall", disk)
 
+    def test_bal_rejections_are_deduped_by_symbol_and_reason(self):
+        with TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            with patch.object(prl, "DAILY_OUTPUTS", tmpdir):
+                prl.record_bal_rejection(
+                    {
+                        "symbol": "ADBE",
+                        "BAL_score": 69.5,
+                        "conviction_score": 73.7,
+                        "price_to_intrinsic_value": 0.6512,
+                        "composite_dca_score": 56.8,
+                        "journal_reason": "rejected_dca_cash_buffer",
+                        "reject_reason": "order_too_small:$64",
+                    },
+                    {"overall_market_bias": "mixed"},
+                )
+                prl.record_bal_rejection(
+                    {
+                        "symbol": "ADBE",
+                        "BAL_score": 69.5,
+                        "conviction_score": 73.7,
+                        "price_to_intrinsic_value": 0.6512,
+                        "composite_dca_score": 56.8,
+                        "journal_reason": "rejected_dca_cash_buffer",
+                        "reject_reason": "order_too_small:$64",
+                    },
+                    {"overall_market_bias": "bullish"},
+                )
+                prl.record_bal_rejection(
+                    {
+                        "symbol": "ADBE",
+                        "BAL_score": 69.5,
+                        "conviction_score": 73.7,
+                        "price_to_intrinsic_value": 0.6512,
+                        "composite_dca_score": 56.8,
+                        "journal_reason": "rejected_dca_concentration",
+                        "reject_reason": "order_too_small:$40",
+                    },
+                    {"overall_market_bias": "bullish"},
+                )
+
+                events = prl.read_events()
+                self.assertEqual(len(events), 2)
+                self.assertEqual(events[0]["journal_reason"], "rejected_dca_cash_buffer")
+                self.assertEqual(events[1]["journal_reason"], "rejected_dca_concentration")
+
     def test_safe_wrappers_never_raise(self):
         # Bad inputs must never raise (trading-loop safety) — they degrade gracefully.
         try:

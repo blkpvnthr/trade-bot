@@ -1950,6 +1950,39 @@ class AlphaCallEngine:
                                           "option_positions_from_broker": len(options_positions)})
 
         for key, call in list(self._active.items()):
+            # FIX 2026-06-10: Purge stale/test positions whose OCC contract has already expired.
+            # These can appear as phantom broker positions (e.g. XYZ250620C00100000 from a prior
+            # test session) that keep triggering the hard-stop loop each cycle.  Parse the YYMMDD
+            # block from the OCC symbol; if the expiry is ≥ 2 days in the past, remove from
+            # _active, log a warning, and skip — no exit order is generated (Alpaca would reject
+            # an order on an expired series anyway).
+            try:
+                import re as _re
+                _m = _re.match(r"^[A-Z]+(\d{2})(\d{2})(\d{2})[CP]\d+$",
+                               (call.contract_symbol or "").strip().upper())
+                if _m:
+                    _yy, _mm, _dd = (int(g) for g in _m.groups())
+                    from datetime import date as _date_cls, datetime as _dt_cls, timezone as _tz_cls
+                    _exp = _date_cls(2000 + _yy, _mm, _dd)
+                    _dte = (_exp - _dt_cls.now(_tz_cls.utc).date()).days
+                    if _dte < -1:
+                        _alpha_event("stale_contract_purged", {
+                            "contract": call.contract_symbol,
+                            "underlying": call.symbol,
+                            "expiry": str(_exp),
+                            "dte": _dte,
+                        })
+                        logger.warning(
+                            "ALPHA purging expired contract from active state: %s "
+                            "(underlying=%s expiry=%s dte=%d) — phantom broker artifact",
+                            call.contract_symbol, call.symbol, _exp, _dte,
+                        )
+                        del self._active[key]
+                        self._save_state()
+                        continue
+            except Exception:
+                pass
+
             pos = pos_by_contract.get(call.contract_symbol)
             if pos is None:
                 _alpha_event("call_position_gone", {"contract": call.contract_symbol})

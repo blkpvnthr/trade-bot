@@ -40,6 +40,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 ET = ZoneInfo("America/New_York")
 DATA_TAG = os.getenv("RUN_DATA_DATE", datetime.now(ET).strftime("%Y%m%d"))
 DAILY_OUTPUTS = PROJECT_ROOT / "daily_system_outputs"
+_SEEN_EVENT_KEYS: set[tuple] = set()
 
 
 def research_dir(date_tag: str | None = None) -> Path:
@@ -53,6 +54,24 @@ def research_dir(date_tag: str | None = None) -> Path:
 
 def _path(name: str, date_tag: str | None = None) -> Path:
     return research_dir(date_tag) / name
+
+
+def _event_dedupe_key(event: dict) -> tuple | None:
+    """Return a stable key for events that should only be recorded once per day.
+
+    BAL rejection signals are re-read from the latest signals file every executor loop,
+    so identical rejections can otherwise be appended hundreds of times and distort
+    evidence reports. Other event types are preserved as-is.
+    """
+    if event.get("event_type") != "bal_rejection":
+        return None
+    return (
+        event.get("date_tag"),
+        event.get("event_type"),
+        event.get("symbol"),
+        event.get("journal_reason"),
+        event.get("reject_reason"),
+    )
 
 
 RESEARCH_EVENTS = "research_events.jsonl"
@@ -82,9 +101,22 @@ def record_event(event_type: str, symbol: str, *, date_tag: str | None = None, *
         "sector": fields.pop("sector", ""),
     }
     event.update(fields)
+    dedupe_key = _event_dedupe_key(event)
+    if dedupe_key is not None:
+        if dedupe_key in _SEEN_EVENT_KEYS:
+            return event
+        try:
+            existing = read_events(date_tag)
+            if any(_event_dedupe_key(e) == dedupe_key for e in existing):
+                _SEEN_EVENT_KEYS.add(dedupe_key)
+                return event
+        except Exception:
+            pass
     try:
         with open(_path(RESEARCH_EVENTS, date_tag), "a", encoding="utf-8") as f:
             f.write(json.dumps(event, default=str) + "\n")
+        if dedupe_key is not None:
+            _SEEN_EVENT_KEYS.add(dedupe_key)
     except Exception as exc:
         logger.debug("record_event failed: %s", exc)
     return event

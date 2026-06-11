@@ -372,8 +372,10 @@ def diagnose_model_layers(date_tag: str) -> dict[str, Any]:
     # --- Forecast Ensemble ---
     fc = scorecard.get("models", {}).get("forecast_ensemble", {})
     pct_approved = fc.get("pct_buy_approved", -1)
-    fc_source = fc.get("source", "unknown")
-    mean_score = fc.get("mean_ensemble_score", 0)
+    if pct_approved is None:
+        pct_approved = -1
+    fc_source = fc.get("source") or "unknown"
+    mean_score = fc.get("mean_ensemble_score") or 0.0  # guard None → 0.0
     if pct_approved == 0.0 or fc_source == "no_data":
         issues.append(
             f"forecast_ensemble: 0% buy-approved, source='{fc_source}' — ensemble not gating; all signals failing. "
