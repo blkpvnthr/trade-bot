@@ -149,6 +149,8 @@ def _read_snapshot():
 
 
 def snapshot_age_sec():
+    if os.environ.get("DASH_LIVE_ACCOUNT", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return 0
     try:
         return max(0, int(time.time() - SNAP_PATH.stat().st_mtime))
     except Exception:
@@ -156,6 +158,21 @@ def snapshot_age_sec():
 
 
 def get_account_snapshot(ttl=30):
+    # DASH_LIVE_ACCOUNT: fetch the real account from the broker instead of a (possibly
+    # stale) snapshot file. For local/paper dev instances with no bot writing snapshots.
+    if os.environ.get("DASH_LIVE_ACCOUNT", "").strip().lower() in {"1", "true", "yes", "on"}:
+        now = time.time()
+        if _CACHE.get("acct") is not None and now - _CACHE.get("acct_t", 0) < ttl:
+            return _CACHE["acct"]
+        try:
+            ac = _client().get_account()
+            eq = float(ac.equity); le = float(ac.last_equity or eq)
+            out = {"equity": eq, "last_equity": le, "cash": float(ac.cash or 0),
+                   "day_pnl": eq - le, "day_pnl_pct": ((eq - le) / le if le else 0.0)}
+            _CACHE["acct"], _CACHE["acct_t"] = out, now
+            return out
+        except Exception:
+            pass
     a = _read_snapshot().get("account", {})
     eq = float(a.get("equity", 0) or 0)
     le = float(a.get("last_equity", eq) or eq)
@@ -166,6 +183,20 @@ def get_account_snapshot(ttl=30):
 
 def get_positions(ttl=30):
     from types import SimpleNamespace
+    if os.environ.get("DASH_LIVE_ACCOUNT", "").strip().lower() in {"1", "true", "yes", "on"}:
+        now = time.time()
+        if _CACHE.get("pos") is not None and now - _CACHE.get("pos_t", 0) < ttl:
+            return _CACHE["pos"]
+        try:
+            out = [SimpleNamespace(symbol=p.symbol, qty=p.qty, market_value=p.market_value,
+                                   avg_entry_price=p.avg_entry_price, current_price=p.current_price,
+                                   unrealized_pl=p.unrealized_pl, unrealized_plpc=p.unrealized_plpc,
+                                   side=str(p.side).split(".")[-1])
+                   for p in _client().get_all_positions()]
+            _CACHE["pos"], _CACHE["pos_t"] = out, now
+            return out
+        except Exception:
+            pass
     return [SimpleNamespace(**p) for p in _read_snapshot().get("positions", [])]
 
 
@@ -416,6 +447,10 @@ def _pf_str(pf):
 
 # ── auth ──────────────────────────────────────────────────────────────────────
 def _authed():
+    # Local/paper open-access escape hatch: when DASH_OPEN_ACCESS is set the dashboard
+    # skips login entirely. Default OFF so the live/droplet deployments keep their auth.
+    if os.environ.get("DASH_OPEN_ACCESS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
     if session.get("auth"):
         return True
     if DASH_TOKEN and (request.args.get("token") == DASH_TOKEN
@@ -533,6 +568,9 @@ tr.main td{border-bottom:none}
 .lbl{color:#9b85d6;text-transform:uppercase;font-size:9px;border:1px solid #3a3550;border-radius:4px;
 padding:1px 4px;margin-right:4px;letter-spacing:.05em}.lbl.x{color:#15b4ff;border-color:#2f4a66}
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tradingview-widget-container{position:relative;width:100%;max-width:100%;overflow:hidden;border-radius:6px}
+.tradingview-widget-container__widget{width:100%;height:100%}
+.tradingview-widget-container iframe{width:100%!important;max-width:100%!important;height:100%!important;border:0;display:block}
 .sub{color:#6a6a88;font-size:12px;margin-top:2px}
 .logbox{background:#000;border:1px solid #23232e;border-radius:8px;padding:10px;height:72vh;overflow:auto;
 font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word;color:#9391d4}
@@ -714,8 +752,6 @@ def home():
       <div class=card><div class=k>Account equity</div><div class=v>{_money(acct['equity'])}</div><div class=sub>cash {_money(acct['cash'])}</div></div>
       <div class=card><div class=k>Today account P&L</div><div class=v>{_pnl(acct['day_pnl'])}</div><div class=sub>{_pct(acct['day_pnl_pct'])} vs prior close</div></div>
       <div class=card><div class=k>Today realized</div><div class=v>{_pnl(td['pnl'])}</div><div class=sub>{td['n']} trades · {(td['wins']/td['n']*100 if td['n'] else 0):.0f}% win</div></div>
-    </div>
-    <div class=cards style="margin-top:10px">
       <div class=card><div class=k>Month · Automated</div><div class=v>{_pnl(auto_pnl)}</div><div class=sub>{auto_n} bot round-trips (qqbot-*)</div></div>
       <div class=card><div class=k>Month · Manual</div><div class=v>{_pnl(man_pnl)}</div><div class=sub>{man_n} discretionary round-trips</div></div>
       <div class=card><div class=k>Month · Net realized</div><div class=v>{_pnl(m_pnl)}</div><div class=sub>automated + manual</div></div>
@@ -1068,46 +1104,34 @@ def positions_charts():
     if not pos:
         body = '<h1>Open positions</h1><div class="card"><span class="muted">Flat — no open positions.</span></div>'
         return page("Positions", body, "positions")
-    syms, cards = [], []
+    cards = []
     for p in pos:
         sym = str(getattr(p, "symbol", "") or "")
         if not sym:
             continue
-        syms.append(sym)
         qty = getattr(p, "qty", "")
         mv = float(getattr(p, "market_value", 0) or 0)
         upl = getattr(p, "unrealized_pl", None)
         upl_s = f" · {_pnl(float(upl))}" if upl not in (None, "") else ""
+        if _occ(sym):
+            tv_sym = sym[:-15]; tag = ' <span class="muted">opt</span>'
+        else:
+            tv_sym = sym; tag = ""
+        cfg = json.dumps({"symbol": tv_sym, "width": "100%", "height": "100%", "locale": "en",
+                          "dateRange": "1D", "colorTheme": "dark", "isTransparent": True,
+                          "autosize": True, "chartOnly": False})
         cards.append(
-            f'<div class="card" style="padding:10px">'
-            f'<div class=k>{sym}</div>'
+            '<div class="card" style="padding:10px">'
+            f'<div class=k>{sym}{tag}</div>'
             f'<div class=sub>qty {qty} · mv {_money(mv)}{upl_s}</div>'
-            f'<div id="ch_{sym}" style="height:200px;margin-top:6px"></div></div>')
+            '<div class="tradingview-widget-container" style="height:260px;margin-top:6px">'
+            '<div class="tradingview-widget-container__widget" style="height:100%;width:100%"></div>'
+            '<script type="text/javascript" async '
+            'src="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js">'
+            f'{cfg}</script></div></div>')
     grid = ('<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">'
             + "".join(cards) + "</div>")
-    js = (
-        '<script src="https://unpkg.com/lightweight-charts@5/dist/lightweight-charts.standalone.production.js"></script>'
-        '<script>(function(){'
-        f'var P="{PREFIX}";var syms={json.dumps(syms)};'
-        'var LWC=window.LightweightCharts;'
-        'if(!(LWC&&LWC.createChart&&LWC.CandlestickSeries))return;'
-        'syms.forEach(function(sym){'
-        ' var el=document.getElementById("ch_"+sym);if(!el)return;'
-        ' var chart=LWC.createChart(el,{height:200,width:el.clientWidth,'
-        '   layout:{background:{type:"solid",color:"transparent"},textColor:"#8b949e",attributionLogo:false},'
-        '   grid:{vertLines:{visible:false},horzLines:{color:"rgba(255,255,255,0.05)"}},'
-        '   rightPriceScale:{borderVisible:false},timeScale:{borderVisible:false,timeVisible:true,secondsVisible:false},'
-        '   handleScroll:false,handleScale:false});'
-        ' var s=chart.addSeries(LWC.CandlestickSeries,{upColor:"#3fb950",downColor:"#f85149",'
-        '   borderVisible:false,wickUpColor:"#3fb950",wickDownColor:"#f85149"});'
-        ' fetch(P+"/candles?symbol="+encodeURIComponent(sym),{credentials:"same-origin"})'
-        '  .then(function(r){return r.json();})'
-        '  .then(function(d){if(d.candles&&d.candles.length){s.setData(d.candles);chart.timeScale().fitContent();}'
-        '    else{el.innerHTML="<span class=\\"muted\\" style=\\"font-size:12px\\">no intraday data</span>";}})'
-        '  .catch(function(){el.innerHTML="<span class=\\"muted\\" style=\\"font-size:12px\\">chart error</span>";});'
-        ' new ResizeObserver(function(){chart.resize(el.clientWidth,200);}).observe(el);'
-        '});})();</script>')
-    body = f"<h1>Open positions <span class=muted style=font-size:13px>· {len(syms)} · intraday 1-min</span></h1>{fresh}</h2>{grid}{js}"
+    body = f"<h1>Open positions <span class=muted style=font-size:13px>· {len(pos)} · TradingView</span></h1>{fresh}</h2>{grid}"
     return page("Positions", body, "positions")
 
 
