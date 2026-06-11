@@ -10,6 +10,7 @@ zoneinfo; python_version < "3.9"
 
 # ML/RL stack
 torch
+transformers  # FinBERT news sentiment (data_sources/finbert_scorer.py); model via `python bootstrap_finbert.py --download` (~440MB → models/nlp/finbert/)
 scikit-learn
 stable-baselines3
 
