@@ -964,8 +964,15 @@ def collect_reversal_opportunities(universe: Optional[list] = None,
         return []
     rows = universe
     if rows is None:
-        path = os.getenv("INTRADAY_REVERSAL_UNIVERSE_JSON", "")
-        rows = _rows_from_json(path) if path and Path(path).exists() else []
+        # Prefer the universe-feed adapter (CSV/JSON/inline screener export, normalized);
+        # fall back to the raw INTRADAY_REVERSAL_UNIVERSE_JSON loader if it's unavailable.
+        try:
+            from intraday_reversal_universe_feed import load_universe
+            rows = load_universe()
+        except Exception as exc:
+            logger.debug("universe feed adapter unavailable (%s); using JSON loader", exc)
+            path = os.getenv("INTRADAY_REVERSAL_UNIVERSE_JSON", "")
+            rows = _rows_from_json(path) if path and Path(path).exists() else []
     if not rows:
         return []
     res = scan(rows, cfg)
