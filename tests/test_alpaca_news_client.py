@@ -116,5 +116,31 @@ class AlpacaNewsFailSafeTests(unittest.TestCase):
             self.assertEqual(set(loaded[0].keys()), CONTRACT_KEYS)
 
 
+class NewsSourceSwapTests(unittest.TestCase):
+    """get_default_news_client() honors NEWS_SOURCE and resets cleanly between sources."""
+
+    def setUp(self):
+        import data_sources.news_sentiment_client as nsc
+        nsc._DEFAULT_NEWS_CLIENT = None
+        nsc._DEFAULT_ALPACA_NEWS_CLIENT = None
+        self._prev = os.environ.get("NEWS_SOURCE")
+
+    def tearDown(self):
+        if self._prev is None:
+            os.environ.pop("NEWS_SOURCE", None)
+        else:
+            os.environ["NEWS_SOURCE"] = self._prev
+
+    def test_default_is_av(self):
+        import data_sources.news_sentiment_client as nsc
+        os.environ.pop("NEWS_SOURCE", None)
+        self.assertEqual(type(nsc.get_default_news_client()).__name__, "NewsSentimentClient")
+
+    def test_alpaca_selected_when_flagged(self):
+        import data_sources.news_sentiment_client as nsc
+        os.environ["NEWS_SOURCE"] = "alpaca"
+        self.assertEqual(type(nsc.get_default_news_client()).__name__, "AlpacaNewsClient")
+
+
 if __name__ == "__main__":
     unittest.main()

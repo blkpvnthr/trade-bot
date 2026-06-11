@@ -342,10 +342,24 @@ class NewsSentimentClient:
 # =============================================================================
 
 _DEFAULT_NEWS_CLIENT: Optional[NewsSentimentClient] = None
+_DEFAULT_ALPACA_NEWS_CLIENT: Any = None
 
 
-def get_default_news_client() -> NewsSentimentClient:
-    global _DEFAULT_NEWS_CLIENT
+def get_default_news_client() -> Any:
+    """Configured news client. ``NEWS_SOURCE=alpaca`` → Alpaca news + local FinBERT sentiment
+    (data_sources.alpaca_news_client); otherwise the Alpha Vantage NEWS_SENTIMENT client (default).
+
+    Both expose get_symbol_news / backfill_symbol / load_symbol_history with the IDENTICAL row
+    schema, so callers don't change. The Alpaca module is imported lazily so the AV path never
+    pulls in torch/transformers. Source is re-read each call → flip NEWS_SOURCE without restart.
+    """
+    global _DEFAULT_NEWS_CLIENT, _DEFAULT_ALPACA_NEWS_CLIENT
+    import os as _os
+    if _os.getenv("NEWS_SOURCE", "av").strip().lower() == "alpaca":
+        if _DEFAULT_ALPACA_NEWS_CLIENT is None:
+            from data_sources.alpaca_news_client import get_default_alpaca_news_client
+            _DEFAULT_ALPACA_NEWS_CLIENT = get_default_alpaca_news_client()
+        return _DEFAULT_ALPACA_NEWS_CLIENT
     if _DEFAULT_NEWS_CLIENT is None:
         _DEFAULT_NEWS_CLIENT = NewsSentimentClient()
     return _DEFAULT_NEWS_CLIENT
