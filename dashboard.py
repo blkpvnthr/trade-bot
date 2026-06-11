@@ -461,7 +461,7 @@ font:14px/1.55 ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation 
 a{color:#15b4ff;text-decoration:none;border-bottom:1px dotted #2f3650}
 a:hover{border-bottom-color:#15b4ff}
 .wrap{max-width:1040px;margin:0 auto;padding:16px}
-.nav{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.nav{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;justify-content:center}
 .nav a{background:#08080f;border:1px solid #2a2a3a;border-radius:6px;padding:7px 12px;font-weight:600;
 text-transform:uppercase;letter-spacing:.05em;font-size:12px;color:#b2aee6}
 .nav a.on{background:#15b4ff;border-color:#15b4ff;color:#000}
@@ -510,6 +510,10 @@ color:#d8dcdf;background:#121416;font-family:inherit;text-transform:uppercase;le
 .btn.buy{background:#89ffdc;color:#000;border-color:#89ffdc}.btn.buy:hover{background:#a6ffe6}
 .btn.sell{background:#db9da7;color:#000;border-color:#db9da7}.btn.sell:hover{background:#e8b3bb}
 .mresult{min-height:22px;font-size:13px;margin:6px 0}.hint{color:#6a6a88;font-size:11px}
+.footer{margin-top:30px;padding:18px 0 26px;border-top:1px solid #23232e;text-align:center;color:#6a6a88;font-size:12px;line-height:1.9}
+.footer a{color:#8aa0ff;border-bottom:1px dotted #2f3650}.footer a:hover{border-bottom-color:#8aa0ff}
+.footer .fbrand{color:#b2aee6;font-weight:700;letter-spacing:.05em;font-size:13px}
+.footer .fmode{color:#15b4ff;font-weight:700;letter-spacing:.08em;margin-left:8px}
 """
 
 MODAL = """
@@ -553,11 +557,18 @@ def page(title, body, active=""):
            + navlink("/monthly", "Monthly", "monthly")
            + navlink("/journal", "Journal", "journal") + navlink("/logs", "Logs", "logs")
            + navlink("/backtest", "Strategy", "backtest") + navlink("/chart", "Chart", "chart"))
+    _mode_lbl = "PAPER" if _paper_mode() else "LIVE"
+    _inst = os.environ.get("INSTANCE_LABEL") or os.environ.get("INSTANCE") or "—"
+    _host = os.environ.get("INSTANCE_HOST_IP", "107.170.25.88")
     return Response(f"""<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>{title} · QuantumQuant</title><style>{CSS}</style></head>
 <body><div class=wrap><div class=nav>{nav}</div>{body}
-<div class=sub>QuantumQuant · live · updated {datetime.now(ET):%Y-%m-%d %H:%M ET} · <a href="{PREFIX}/logout">sign out</a></div>
+<footer class=footer>
+<div class=fbrand>QuantumQuant<span class=fmode>{_mode_lbl}</span></div>
+<div>instance {_inst} · {_host} · updated {datetime.now(ET):%Y-%m-%d %H:%M ET}</div>
+<div><a href="{PREFIX}/">overview</a> · <a href="{PREFIX}/journal">journal</a> · <a href="{PREFIX}/logout">sign out</a></div>
+</footer>
 </div>{MODAL}</body></html>""", mimetype="text/html")
 
 
