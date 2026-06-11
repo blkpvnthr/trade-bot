@@ -6,14 +6,14 @@ alpaca_feed_manager.py — Alpaca live-feed detection + overnight metrics (read-
 Phase 4 data-quality layer. Detects which Alpaca market-data feeds are available under
 the current subscription and gracefully downgrades, in priority order:
 
-    Premarket / overnight :  overnight (v1beta1/overnight) → iex → (yliveticker fallback)
-    Regular trading hours :  iex (v2/iex)
+    Premarket / overnight :  overnight (v1beta1/overnight) → sip → iex → (yliveticker fallback)
+    Regular trading hours :  sip (v2/sip) → iex
     Optional / advisory   :  boats (if available)
 
-FEED POLICY: delayed-SIP is never used. Real-time SIP is OFF by default and is enabled only
-when entitled, via ALPACA_DATA_FEED=sip (or ALPACA_SIP_ENABLED=true) — e.g. an Alpaca Algo
-Trader Plus subscription. With the flag off, behavior is IEX/overnight-only exactly as before
-(`v2/sip` / `v2/delayed_sip` excluded by construction). This module is READ-ONLY market data —
+FEED POLICY: delayed-SIP is never used. Real-time SIP is now the DEFAULT (ALPACA_DATA_FEED=sip;
+requires an Alpaca Algo Trader Plus entitlement). An unentitled account must opt out explicitly
+with ALPACA_DATA_FEED=iex, which restores IEX/overnight-only behavior
+(`v2/delayed_sip` excluded by construction). This module is READ-ONLY market data —
 it never imports AlpacaGateway / alpaca.trading, never submits an order, and never
 changes execution authority. All probes are bounded + guarded; on missing creds or any
 error it downgrades safely (everything "unavailable") and never raises into the loop.
@@ -39,7 +39,7 @@ DAILY_OUTPUTS = PROJECT_ROOT / "daily_system_outputs"
 
 # Real-time SIP is opt-in and entitlement-gated (Algo Trader Plus). delayed_sip stays off.
 SIP_ENABLED = (
-    os.getenv("ALPACA_DATA_FEED", "iex").strip().lower() == "sip"
+    os.getenv("ALPACA_DATA_FEED", "sip").strip().lower() == "sip"
     or os.getenv("ALPACA_SIP_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
 )
 if SIP_ENABLED:

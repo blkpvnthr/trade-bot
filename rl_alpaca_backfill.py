@@ -60,7 +60,7 @@ def fetch_bars(symbols: List[str], start, end, timeframe: str = "day") -> Dict[s
         from alpaca.data.timeframe import TimeFrame
         from alpaca.data.enums import DataFeed
         tf = TimeFrame.Day if timeframe == "day" else TimeFrame.Minute
-        feed = DataFeed.SIP if os.getenv("ALPACA_DATA_FEED", "iex").lower() == "sip" else DataFeed.IEX
+        feed = DataFeed.SIP if os.getenv("ALPACA_DATA_FEED", "sip").lower() == "sip" else DataFeed.IEX
         client = StockHistoricalDataClient(key, sec)
         if timeframe.endswith("min"):
             from alpaca.data.timeframe import TimeFrameUnit

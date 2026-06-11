@@ -112,7 +112,7 @@ PLAN_PATH = Path(os.getenv("SPX_RL_PLAN_PATH", OUT_DIR / f"{DATA_TAG}_spx_intrad
 MARKET_CONTEXT_PATH = OUT_DIR / f"{DATA_TAG}_market_context.json"
 PREMARKET_PLAN_PATH = OUT_DIR / f"{DATA_TAG}_premarket_trade_plan.json"
 
-ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower().strip()
+ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "sip").lower().strip()
 
 # State/action controls
 MAX_EPISODE_BARS = int(os.getenv("SPX_RL_MAX_EPISODE_BARS", "390"))

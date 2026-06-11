@@ -55,7 +55,7 @@ FEATURE_STREAM_JSONL_PATH = FEATURE_STREAM_DIR / f"{TODAY_TAG}_intraday_feature_
 LOOKBACK_DAYS = int(os.getenv("RL_INTRADAY_LOOKBACK_DAYS", "30"))
 # Must match ALPACA_REGULAR_FEED in premarket_trade_planner.py so RL training
 # uses the same data feed as live execution.
-ALPACA_REGULAR_FEED = os.getenv("ALPACA_REGULAR_FEED", "iex").lower().strip()
+ALPACA_REGULAR_FEED = os.getenv("ALPACA_REGULAR_FEED", "sip").lower().strip()
 ALPACA_FAIL_ON_FEED_ERROR = os.getenv("ALPACA_FAIL_ON_FEED_ERROR", "0").lower() in {"1", "true", "yes"}
 # Legacy alias — if set, overrides ALPACA_REGULAR_FEED.
 _LEGACY_FEED = os.getenv("ALPACA_DATA_FEED", "").lower().strip()

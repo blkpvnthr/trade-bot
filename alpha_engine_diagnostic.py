@@ -109,7 +109,7 @@ class DiagClients:
             from alpaca.data.historical import StockHistoricalDataClient
             from alpaca.data.enums import DataFeed
             self.stock = StockHistoricalDataClient(self.key, self.sec)
-            self.feed = DataFeed.SIP if os.getenv("ALPACA_DATA_FEED", "iex").lower() == "sip" else DataFeed.IEX
+            self.feed = DataFeed.SIP if os.getenv("ALPACA_DATA_FEED", "sip").lower() == "sip" else DataFeed.IEX
         except Exception as e:
             print(f"[diag] StockHistoricalDataClient init failed: {e}")
         try:

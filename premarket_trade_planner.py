@@ -114,11 +114,11 @@ YF_AUTO_ADJUST = os.getenv("YF_AUTO_ADJUST", "0").lower() in {"1", "true", "yes"
 
 # Alpaca primary data source config — feed separation.
 # Premarket bars (04:00–09:30 ET) require extended-hours coverage.
-#   boats = Alpaca overnight/premarket feed (paid subscription)
-#   sip   = SIP consolidated tape (extended hours, paid subscription)
-# Regular-session bars (09:30–16:00 ET) use IEX by default (free tier).
-ALPACA_PREMARKET_FEED = os.getenv("ALPACA_PREMARKET_FEED", "sip").lower().strip()
-ALPACA_REGULAR_FEED = os.getenv("ALPACA_REGULAR_FEED", "iex").lower().strip()
+#   overnight/boats = Alpaca overnight/premarket feed (Blue Ocean ATS; → DataFeed.BOATS)
+#   sip             = SIP consolidated tape (extended hours, paid subscription)
+# Default: premarket = overnight feed, regular session = SIP.
+ALPACA_PREMARKET_FEED = os.getenv("ALPACA_PREMARKET_FEED", "overnight").lower().strip()
+ALPACA_REGULAR_FEED = os.getenv("ALPACA_REGULAR_FEED", "sip").lower().strip()
 # When 1: raise immediately on feed errors instead of silent retry/fallback.
 ALPACA_FAIL_ON_FEED_ERROR = os.getenv("ALPACA_FAIL_ON_FEED_ERROR", "0").lower() in {"1", "true", "yes"}
 # When 0: never fall back to yfinance for market data.
@@ -126,11 +126,11 @@ ALLOW_YFINANCE_MARKET_DATA_FALLBACK = os.getenv("ALLOW_YFINANCE_MARKET_DATA_FALL
 ALPACA_BARS_TIMEOUT = int(os.getenv("ALPACA_BARS_TIMEOUT_SECONDS", "30"))
 ALPACA_BATCH_SIZE = int(os.getenv("ALPACA_BATCH_SIZE", "100"))
 
-# Legacy alias kept for backward compat with any callers that set ALPACA_DATA_FEED.
-# Overrides both PREMARKET and REGULAR if explicitly set.
+# Legacy alias kept for backward compat with callers that set ALPACA_DATA_FEED.
+# Overrides only the REGULAR-session feed; premarket stays on the overnight feed
+# (ALPACA_PREMARKET_FEED) so the global SIP flag can't silently disable overnight coverage.
 _LEGACY_FEED = os.getenv("ALPACA_DATA_FEED", "").lower().strip()
 if _LEGACY_FEED:
-    ALPACA_PREMARKET_FEED = _LEGACY_FEED
     ALPACA_REGULAR_FEED = _LEGACY_FEED
 
 MIN_PREMARKET_VOLUME = int(os.getenv("MIN_PREMARKET_VOLUME", "1000"))
@@ -442,8 +442,12 @@ def _resolve_feed(feed_name: str) -> Any:
     name = feed_name.lower().strip()
     if name == "sip":
         return DataFeed.SIP
-    if name in {"boats", "overnight"}:
-        # BOATS is exposed as DataFeed.BOATS in alpaca-py >= 0.20; fall back to SIP.
+    if name == "overnight":
+        # v1beta1/overnight — the derived Alpaca overnight feed (distinct from BOATS).
+        # Fall back to BOATS then SIP on older SDKs that lack DataFeed.OVERNIGHT.
+        return getattr(DataFeed, "OVERNIGHT", getattr(DataFeed, "BOATS", DataFeed.SIP))
+    if name == "boats":
+        # v1beta1/boats — the Blue Ocean ATS feed.
         return getattr(DataFeed, "BOATS", DataFeed.SIP)
     return DataFeed.IEX
 

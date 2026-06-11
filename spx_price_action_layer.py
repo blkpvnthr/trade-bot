@@ -97,7 +97,7 @@ SPX_RL_PLAN_PATH = PROJECT_ROOT / "system-data" / f"{DATA_TAG}_SPX" / f"{DATA_TA
 LOGICAL_SYMBOL = os.getenv("SPX_LOGICAL_SYMBOL", "SPX").upper().strip()
 TRADE_SYMBOL = os.getenv("SPX_TRADE_SYMBOL", os.getenv("SPX_TRAIN_SYMBOL", "SPY")).upper().strip()
 
-ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower().strip()
+ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "sip").lower().strip()
 PAPER = os.getenv("APCA_PAPER", "1").lower() in {"1", "true", "yes"}
 EXECUTE_ORDERS = os.getenv("SPX_LAYER_EXECUTE", "1").lower() in {"1", "true", "yes"}
 

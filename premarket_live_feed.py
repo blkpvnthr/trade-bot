@@ -266,7 +266,7 @@ class PremarketLiveFeed:
             self._thread.start()
             self.feed_status = "running"
             _poll_s = os.getenv("ALPACA_POLL_SECONDS", str(ALPACA_POLL_SECONDS))
-            _feed = os.getenv("ALPACA_DATA_FEED", "iex").lower()
+            _feed = os.getenv("ALPACA_DATA_FEED", "sip").lower()
             logger.info("PremarketLiveFeed source=alpaca feed=%s mode=REST batch snapshots "
                         "poll_seconds=%s (%d symbols)", _feed, _poll_s, len(self.symbols))
         except Exception as e:
@@ -453,7 +453,7 @@ class PremarketLiveFeed:
             self._mark_fallback("alpaca_creds_missing")
             return
         client = StockHistoricalDataClient(key, secret)
-        feed = DataFeed.SIP if os.getenv("ALPACA_DATA_FEED", "iex").lower() == "sip" else DataFeed.IEX
+        feed = DataFeed.SIP if os.getenv("ALPACA_DATA_FEED", "sip").lower() == "sip" else DataFeed.IEX
         poll = float(os.getenv("ALPACA_POLL_SECONDS", str(ALPACA_POLL_SECONDS)) or 2)
         fails = 0
         while not self._stop_event.is_set() and not self.shutdown_requested:

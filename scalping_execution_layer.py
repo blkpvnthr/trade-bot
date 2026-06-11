@@ -100,7 +100,8 @@ PAPER: bool = _bool("APCA_PAPER", "true") or not _bool("ALLOW_LIVE_TRADING", "0"
 
 APCA_KEY = os.getenv("APCA_API_KEY_ID", "")
 APCA_SECRET = os.getenv("APCA_API_SECRET_KEY", "")
-APCA_DATA_FEED = os.getenv("SCALP_DATA_FEED", "iex")
+# Honor the global ALPACA_DATA_FEED (SIP by default); SCALP_DATA_FEED stays an explicit override.
+APCA_DATA_FEED = (os.getenv("SCALP_DATA_FEED") or os.getenv("ALPACA_DATA_FEED", "sip")).lower().strip()
 
 
 # ======================================================================

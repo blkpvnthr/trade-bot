@@ -111,7 +111,7 @@ LLM_UNIVERSE_PATH = OUT_DIR / f"{DATA_TAG}_latest_llm_sentiment_universe.json"
 LOCKED_UNIVERSE_PATH = PROJECT_ROOT / f"{DATA_TAG}_locked_trading_universe.txt"
 PREMARKET_PLAN_PATH = OUT_DIR / f"{DATA_TAG}_premarket_trade_plan.json"
 
-ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower().strip()
+ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "sip").lower().strip()
 PAPER = os.getenv("APCA_PAPER", "1").lower() in {"1", "true", "yes"}
 
 STREAM_CONFIRM_EXECUTE = os.getenv("STREAM_CONFIRM_EXECUTE", "0").lower() in {"1", "true", "yes"}
