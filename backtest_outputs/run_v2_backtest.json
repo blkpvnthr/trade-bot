@@ -1,0 +1,768 @@
+{
+  "config": {
+    "min_expected_r": 1.5,
+    "min_rank_score": 0.6,
+    "max_new_entries": 15,
+    "max_intraday_tactical_open": 4
+  },
+  "n_symbols": 118,
+  "n_days": 92,
+  "safe_days": 0,
+  "evaluation": {
+    "all_candidates": {
+      "n": 3230,
+      "hit_rate": 0.5282,
+      "avg_ret_bps": 26.36,
+      "median_bps": 11.61,
+      "profit_factor": 1.335,
+      "avg_win_bps": 198.86,
+      "avg_loss_bps": -167.85,
+      "ret_per_trade_std_bps": 319.15,
+      "t_stat": 4.69
+    },
+    "approved": {
+      "n": 368,
+      "hit_rate": 0.5707,
+      "avg_ret_bps": 28.2,
+      "median_bps": 19.33,
+      "profit_factor": 1.467,
+      "avg_win_bps": 155.27,
+      "avg_loss_bps": -140.69,
+      "ret_per_trade_std_bps": 209.59,
+      "t_stat": 2.58
+    },
+    "rejected": {
+      "n": 2862,
+      "hit_rate": 0.5227,
+      "avg_ret_bps": 26.12,
+      "median_bps": 9.91,
+      "profit_factor": 1.322,
+      "avg_win_bps": 204.98,
+      "avg_loss_bps": -171.01,
+      "ret_per_trade_std_bps": 330.64,
+      "t_stat": 4.23
+    },
+    "approval_rate": 0.1139
+  },
+  "value_add": {
+    "edge_vs_all_bps": 1.84,
+    "pf_lift": 0.132,
+    "hit_rate_lift": 0.0425
+  },
+  "reject_reasons": {
+    "daily_trade_cap:max_intraday_tactical_open": 2641,
+    "opportunity_rank:rank_score_below_floor": 115,
+    "setup_not_validated:expected_r=1.38<1.50": 13,
+    "setup_not_validated:expected_r=1.43<1.50": 9,
+    "setup_not_validated:expected_r=1.49<1.50": 9,
+    "setup_not_validated:expected_r=1.32<1.50": 7,
+    "setup_not_validated:expected_r=1.35<1.50": 7,
+    "setup_not_validated:expected_r=1.31<1.50": 7,
+    "setup_not_validated:expected_r=1.36<1.50": 7,
+    "setup_not_validated:expected_r=1.34<1.50": 6,
+    "setup_not_validated:expected_r=1.33<1.50": 5,
+    "setup_not_validated:expected_r=1.39<1.50": 5,
+    "setup_not_validated:expected_r=1.44<1.50": 5,
+    "setup_not_validated:expected_r=1.47<1.50": 4,
+    "setup_not_validated:expected_r=1.48<1.50": 3,
+    "setup_not_validated:expected_r=1.37<1.50": 3,
+    "setup_not_validated:expected_r=1.46<1.50": 3,
+    "setup_not_validated:expected_r=1.45<1.50": 3,
+    "setup_not_validated:expected_r=1.42<1.50": 3,
+    "setup_not_validated:expected_r=1.30<1.50": 3,
+    "setup_not_validated:expected_r=1.41<1.50": 2,
+    "setup_not_validated:expected_r=1.40<1.50": 2
+  },
+  "sweep": [
+    {
+      "max_tactical": 2,
+      "min_rank_score": 0.55,
+      "min_expected_r": 1.5,
+      "eval": {
+        "all_candidates": {
+          "n": 3230,
+          "hit_rate": 0.5282,
+          "avg_ret_bps": 26.36,
+          "median_bps": 11.61,
+          "profit_factor": 1.335,
+          "avg_win_bps": 198.86,
+          "avg_loss_bps": -167.85,
+          "ret_per_trade_std_bps": 319.15,
+          "t_stat": 4.69
+        },
+        "approved": {
+          "n": 184,
+          "hit_rate": 0.587,
+          "avg_ret_bps": 27.39,
+          "median_bps": 20.11,
+          "profit_factor": 1.509,
+          "avg_win_bps": 138.29,
+          "avg_loss_bps": -130.2,
+          "ret_per_trade_std_bps": 190.3,
+          "t_stat": 1.95
+        },
+        "rejected": {
+          "n": 3046,
+          "hit_rate": 0.5246,
+          "avg_ret_bps": 26.3,
+          "median_bps": 10.56,
+          "profit_factor": 1.328,
+          "avg_win_bps": 202.96,
+          "avg_loss_bps": -169.84,
+          "ret_per_trade_std_bps": 325.32,
+          "t_stat": 4.46
+        },
+        "approval_rate": 0.057
+      },
+      "value_add": {
+        "edge_vs_all_bps": 1.03,
+        "pf_lift": 0.174,
+        "hit_rate_lift": 0.0588
+      }
+    },
+    {
+      "max_tactical": 2,
+      "min_rank_score": 0.6,
+      "min_expected_r": 1.5,
+      "eval": {
+        "all_candidates": {
+          "n": 3230,
+          "hit_rate": 0.5282,
+          "avg_ret_bps": 26.36,
+          "median_bps": 11.61,
+          "profit_factor": 1.335,
+          "avg_win_bps": 198.86,
+          "avg_loss_bps": -167.85,
+          "ret_per_trade_std_bps": 319.15,
+          "t_stat": 4.69
+        },
+        "approved": {
+          "n": 184,
+          "hit_rate": 0.587,
+          "avg_ret_bps": 27.39,
+          "median_bps": 20.11,
+          "profit_factor": 1.509,
+          "avg_win_bps": 138.29,
+          "avg_loss_bps": -130.2,
+          "ret_per_trade_std_bps": 190.3,
+          "t_stat": 1.95
+        },
+        "rejected": {
+          "n": 3046,
+          "hit_rate": 0.5246,
+          "avg_ret_bps": 26.3,
+          "median_bps": 10.56,
+          "profit_factor": 1.328,
+          "avg_win_bps": 202.96,
+          "avg_loss_bps": -169.84,
+          "ret_per_trade_std_bps": 325.32,
+          "t_stat": 4.46
+        },
+        "approval_rate": 0.057
+      },
+      "value_add": {
+        "edge_vs_all_bps": 1.03,
+        "pf_lift": 0.174,
+        "hit_rate_lift": 0.0588
+      }
+    },
+    {
+      "max_tactical": 2,
+      "min_rank_score": 0.65,
+      "min_expected_r": 1.5,
+      "eval": {
+        "all_candidates": {
+          "n": 3230,
+          "hit_rate": 0.5282,
+          "avg_ret_bps": 26.36,
+          "median_bps": 11.61,
+          "profit_factor": 1.335,
+          "avg_win_bps": 198.86,
+          "avg_loss_bps": -167.85,
+          "ret_per_trade_std_bps": 319.15,
+          "t_stat": 4.69
+        },
+        "approved": {
+          "n": 184,
+          "hit_rate": 0.587,
+          "avg_ret_bps": 27.39,
+          "median_bps": 20.11,
+          "profit_factor": 1.509,
+          "avg_win_bps": 138.29,
+          "avg_loss_bps": -130.2,
+          "ret_per_trade_std_bps": 190.3,
+          "t_stat": 1.95
+        },
+        "rejected": {
+          "n": 3046,
+          "hit_rate": 0.5246,
+          "avg_ret_bps": 26.3,
+          "median_bps": 10.56,
+          "profit_factor": 1.328,
+          "avg_win_bps": 202.96,
+          "avg_loss_bps": -169.84,
+          "ret_per_trade_std_bps": 325.32,
+          "t_stat": 4.46
+        },
+        "approval_rate": 0.057
+      },
+      "value_add": {
+        "edge_vs_all_bps": 1.03,
+        "pf_lift": 0.174,
+        "hit_rate_lift": 0.0588
+      }
+    },
+    {
+      "max_tactical": 4,
+      "min_rank_score": 0.55,
+      "min_expected_r": 1.5,
+      "eval": {
+        "all_candidates": {
+          "n": 3230,
+          "hit_rate": 0.5282,
+          "avg_ret_bps": 26.36,
+          "median_bps": 11.61,
+          "profit_factor": 1.335,
+          "avg_win_bps": 198.86,
+          "avg_loss_bps": -167.85,
+          "ret_per_trade_std_bps": 319.15,
+          "t_stat": 4.69
+        },
+        "approved": {
+          "n": 368,
+          "hit_rate": 0.5707,
+          "avg_ret_bps": 28.2,
+          "median_bps": 19.33,
+          "profit_factor": 1.467,
+          "avg_win_bps": 155.27,
+          "avg_loss_bps": -140.69,
+          "ret_per_trade_std_bps": 209.59,
+          "t_stat": 2.58
+        },
+        "rejected": {
+          "n": 2862,
+          "hit_rate": 0.5227,
+          "avg_ret_bps": 26.12,
+          "median_bps": 9.91,
+          "profit_factor": 1.322,
+          "avg_win_bps": 204.98,
+          "avg_loss_bps": -171.01,
+          "ret_per_trade_std_bps": 330.64,
+          "t_stat": 4.23
+        },
+        "approval_rate": 0.1139
+      },
+      "value_add": {
+        "edge_vs_all_bps": 1.84,
+        "pf_lift": 0.132,
+        "hit_rate_lift": 0.0425
+      }
+    },
+    {
+      "max_tactical": 4,
+      "min_rank_score": 0.6,
+      "min_expected_r": 1.5,
+      "eval": {
+        "all_candidates": {
+          "n": 3230,
+          "hit_rate": 0.5282,
+          "avg_ret_bps": 26.36,
+          "median_bps": 11.61,
+          "profit_factor": 1.335,
+          "avg_win_bps": 198.86,
+          "avg_loss_bps": -167.85,
+          "ret_per_trade_std_bps": 319.15,
+          "t_stat": 4.69
+        },
+        "approved": {
+          "n": 368,
+          "hit_rate": 0.5707,
+          "avg_ret_bps": 28.2,
+          "median_bps": 19.33,
+          "profit_factor": 1.467,
+          "avg_win_bps": 155.27,
+          "avg_loss_bps": -140.69,
+          "ret_per_trade_std_bps": 209.59,
+          "t_stat": 2.58
+        },
+        "rejected": {
+          "n": 2862,
+          "hit_rate": 0.5227,
+          "avg_ret_bps": 26.12,
+          "median_bps": 9.91,
+          "profit_factor": 1.322,
+          "avg_win_bps": 204.98,
+          "avg_loss_bps": -171.01,
+          "ret_per_trade_std_bps": 330.64,
+          "t_stat": 4.23
+        },
+        "approval_rate": 0.1139
+      },
+      "value_add": {
+        "edge_vs_all_bps": 1.84,
+        "pf_lift": 0.132,
+        "hit_rate_lift": 0.0425
+      }
+    },
+    {
+      "max_tactical": 4,
+      "min_rank_score": 0.65,
+      "min_expected_r": 1.5,
+      "eval": {
+        "all_candidates": {
+          "n": 3230,
+          "hit_rate": 0.5282,
+          "avg_ret_bps": 26.36,
+          "median_bps": 11.61,
+          "profit_factor": 1.335,
+          "avg_win_bps": 198.86,
+          "avg_loss_bps": -167.85,
+          "ret_per_trade_std_bps": 319.15,
+          "t_stat": 4.69
+        },
+        "approved": {
+          "n": 368,
+          "hit_rate": 0.5707,
+          "avg_ret_bps": 28.2,
+          "median_bps": 19.33,
+          "profit_factor": 1.467,
+          "avg_win_bps": 155.27,
+          "avg_loss_bps": -140.69,
+          "ret_per_trade_std_bps": 209.59,
+          "t_stat": 2.58
+        },
+        "rejected": {
+          "n": 2862,
+          "hit_rate": 0.5227,
+          "avg_ret_bps": 26.12,
+          "median_bps": 9.91,
+          "profit_factor": 1.322,
+          "avg_win_bps": 204.98,
+          "avg_loss_bps": -171.01,
+          "ret_per_trade_std_bps": 330.64,
+          "t_stat": 4.23
+        },
+        "approval_rate": 0.1139
+      },
+      "value_add": {
+        "edge_vs_all_bps": 1.84,
+        "pf_lift": 0.132,
+        "hit_rate_lift": 0.0425
+      }
+    },
+    {
+      "max_tactical": 6,
+      "min_rank_score": 0.55,
+      "min_expected_r": 1.5,
+      "eval": {
+        "all_candidates": {
+          "n": 3230,
+          "hit_rate": 0.5282,
+          "avg_ret_bps": 26.36,
+          "median_bps": 11.61,
+          "profit_factor": 1.335,
+          "avg_win_bps": 198.86,
+          "avg_loss_bps": -167.85,
+          "ret_per_trade_std_bps": 319.15,
+          "t_stat": 4.69
+        },
+        "approved": {
+          "n": 552,
+          "hit_rate": 0.5688,
+          "avg_ret_bps": 32.48,
+          "median_bps": 20.89,
+          "profit_factor": 1.499,
+          "avg_win_bps": 171.6,
+          "avg_loss_bps": -151.06,
+          "ret_per_trade_std_bps": 229.7,
+          "t_stat": 3.32
+        },
+        "rejected": {
+          "n": 2678,
+          "hit_rate": 0.5198,
+          "avg_ret_bps": 25.1,
+          "median_bps": 8.48,
+          "profit_factor": 1.308,
+          "avg_win_bps": 205.01,
+          "avg_loss_bps": -170.98,
+          "ret_per_trade_std_bps": 334.65,
+          "t_stat": 3.88
+        },
+        "approval_rate": 0.1709
+      },
+      "value_add": {
+        "edge_vs_all_bps": 6.12,
+        "pf_lift": 0.164,
+        "hit_rate_lift": 0.0406
+      }
+    },
+    {
+      "max_tactical": 6,
+      "min_rank_score": 0.6,
+      "min_expected_r": 1.5,
+      "eval": {
+        "all_candidates": {
+          "n": 3230,
+          "hit_rate": 0.5282,
+          "avg_ret_bps": 26.36,
+          "median_bps": 11.61,
+          "profit_factor": 1.335,
+          "avg_win_bps": 198.86,
+          "avg_loss_bps": -167.85,
+          "ret_per_trade_std_bps": 319.15,
+          "t_stat": 4.69
+        },
+        "approved": {
+          "n": 552,
+          "hit_rate": 0.5688,
+          "avg_ret_bps": 32.48,
+          "median_bps": 20.89,
+          "profit_factor": 1.499,
+          "avg_win_bps": 171.6,
+          "avg_loss_bps": -151.06,
+          "ret_per_trade_std_bps": 229.7,
+          "t_stat": 3.32
+        },
+        "rejected": {
+          "n": 2678,
+          "hit_rate": 0.5198,
+          "avg_ret_bps": 25.1,
+          "median_bps": 8.48,
+          "profit_factor": 1.308,
+          "avg_win_bps": 205.01,
+          "avg_loss_bps": -170.98,
+          "ret_per_trade_std_bps": 334.65,
+          "t_stat": 3.88
+        },
+        "approval_rate": 0.1709
+      },
+      "value_add": {
+        "edge_vs_all_bps": 6.12,
+        "pf_lift": 0.164,
+        "hit_rate_lift": 0.0406
+      }
+    },
+    {
+      "max_tactical": 6,
+      "min_rank_score": 0.65,
+      "min_expected_r": 1.5,
+      "eval": {
+        "all_candidates": {
+          "n": 3230,
+          "hit_rate": 0.5282,
+          "avg_ret_bps": 26.36,
+          "median_bps": 11.61,
+          "profit_factor": 1.335,
+          "avg_win_bps": 198.86,
+          "avg_loss_bps": -167.85,
+          "ret_per_trade_std_bps": 319.15,
+          "t_stat": 4.69
+        },
+        "approved": {
+          "n": 552,
+          "hit_rate": 0.5688,
+          "avg_ret_bps": 32.48,
+          "median_bps": 20.89,
+          "profit_factor": 1.499,
+          "avg_win_bps": 171.6,
+          "avg_loss_bps": -151.06,
+          "ret_per_trade_std_bps": 229.7,
+          "t_stat": 3.32
+        },
+        "rejected": {
+          "n": 2678,
+          "hit_rate": 0.5198,
+          "avg_ret_bps": 25.1,
+          "median_bps": 8.48,
+          "profit_factor": 1.308,
+          "avg_win_bps": 205.01,
+          "avg_loss_bps": -170.98,
+          "ret_per_trade_std_bps": 334.65,
+          "t_stat": 3.88
+        },
+        "approval_rate": 0.1709
+      },
+      "value_add": {
+        "edge_vs_all_bps": 6.12,
+        "pf_lift": 0.164,
+        "hit_rate_lift": 0.0406
+      }
+    },
+    {
+      "max_tactical": 10,
+      "min_rank_score": 0.55,
+      "min_expected_r": 1.5,
+      "eval": {
+        "all_candidates": {
+          "n": 3230,
+          "hit_rate": 0.5282,
+          "avg_ret_bps": 26.36,
+          "median_bps": 11.61,
+          "profit_factor": 1.335,
+          "avg_win_bps": 198.86,
+          "avg_loss_bps": -167.85,
+          "ret_per_trade_std_bps": 319.15,
+          "t_stat": 4.69
+        },
+        "approved": {
+          "n": 920,
+          "hit_rate": 0.5554,
+          "avg_ret_bps": 29.67,
+          "median_bps": 20.19,
+          "profit_factor": 1.434,
+          "avg_win_bps": 176.42,
+          "avg_loss_bps": -153.68,
+          "ret_per_trade_std_bps": 234.33,
+          "t_stat": 3.84
+        },
+        "rejected": {
+          "n": 2310,
+          "hit_rate": 0.5173,
+          "avg_ret_bps": 25.04,
+          "median_bps": 7.65,
+          "profit_factor": 1.302,
+          "avg_win_bps": 208.46,
+          "avg_loss_bps": -173.09,
+          "ret_per_trade_std_bps": 347.24,
+          "t_stat": 3.47
+        },
+        "approval_rate": 0.2848
+      },
+      "value_add": {
+        "edge_vs_all_bps": 3.31,
+        "pf_lift": 0.099,
+        "hit_rate_lift": 0.0272
+      }
+    },
+    {
+      "max_tactical": 10,
+      "min_rank_score": 0.6,
+      "min_expected_r": 1.5,
+      "eval": {
+        "all_candidates": {
+          "n": 3230,
+          "hit_rate": 0.5282,
+          "avg_ret_bps": 26.36,
+          "median_bps": 11.61,
+          "profit_factor": 1.335,
+          "avg_win_bps": 198.86,
+          "avg_loss_bps": -167.85,
+          "ret_per_trade_std_bps": 319.15,
+          "t_stat": 4.69
+        },
+        "approved": {
+          "n": 920,
+          "hit_rate": 0.5554,
+          "avg_ret_bps": 29.67,
+          "median_bps": 20.19,
+          "profit_factor": 1.434,
+          "avg_win_bps": 176.42,
+          "avg_loss_bps": -153.68,
+          "ret_per_trade_std_bps": 234.33,
+          "t_stat": 3.84
+        },
+        "rejected": {
+          "n": 2310,
+          "hit_rate": 0.5173,
+          "avg_ret_bps": 25.04,
+          "median_bps": 7.65,
+          "profit_factor": 1.302,
+          "avg_win_bps": 208.46,
+          "avg_loss_bps": -173.09,
+          "ret_per_trade_std_bps": 347.24,
+          "t_stat": 3.47
+        },
+        "approval_rate": 0.2848
+      },
+      "value_add": {
+        "edge_vs_all_bps": 3.31,
+        "pf_lift": 0.099,
+        "hit_rate_lift": 0.0272
+      }
+    },
+    {
+      "max_tactical": 10,
+      "min_rank_score": 0.65,
+      "min_expected_r": 1.5,
+      "eval": {
+        "all_candidates": {
+          "n": 3230,
+          "hit_rate": 0.5282,
+          "avg_ret_bps": 26.36,
+          "median_bps": 11.61,
+          "profit_factor": 1.335,
+          "avg_win_bps": 198.86,
+          "avg_loss_bps": -167.85,
+          "ret_per_trade_std_bps": 319.15,
+          "t_stat": 4.69
+        },
+        "approved": {
+          "n": 920,
+          "hit_rate": 0.5554,
+          "avg_ret_bps": 29.67,
+          "median_bps": 20.19,
+          "profit_factor": 1.434,
+          "avg_win_bps": 176.42,
+          "avg_loss_bps": -153.68,
+          "ret_per_trade_std_bps": 234.33,
+          "t_stat": 3.84
+        },
+        "rejected": {
+          "n": 2310,
+          "hit_rate": 0.5173,
+          "avg_ret_bps": 25.04,
+          "median_bps": 7.65,
+          "profit_factor": 1.302,
+          "avg_win_bps": 208.46,
+          "avg_loss_bps": -173.09,
+          "ret_per_trade_std_bps": 347.24,
+          "t_stat": 3.47
+        },
+        "approval_rate": 0.2848
+      },
+      "value_add": {
+        "edge_vs_all_bps": 3.31,
+        "pf_lift": 0.099,
+        "hit_rate_lift": 0.0272
+      }
+    },
+    {
+      "max_tactical": 20,
+      "min_rank_score": 0.55,
+      "min_expected_r": 1.5,
+      "eval": {
+        "all_candidates": {
+          "n": 3230,
+          "hit_rate": 0.5282,
+          "avg_ret_bps": 26.36,
+          "median_bps": 11.61,
+          "profit_factor": 1.335,
+          "avg_win_bps": 198.86,
+          "avg_loss_bps": -167.85,
+          "ret_per_trade_std_bps": 319.15,
+          "t_stat": 4.69
+        },
+        "approved": {
+          "n": 1380,
+          "hit_rate": 0.5355,
+          "avg_ret_bps": 25.55,
+          "median_bps": 14.84,
+          "profit_factor": 1.36,
+          "avg_win_bps": 180.07,
+          "avg_loss_bps": -153.32,
+          "ret_per_trade_std_bps": 242.78,
+          "t_stat": 3.91
+        },
+        "rejected": {
+          "n": 1850,
+          "hit_rate": 0.5227,
+          "avg_ret_bps": 26.96,
+          "median_bps": 8.46,
+          "profit_factor": 1.319,
+          "avg_win_bps": 213.22,
+          "avg_loss_bps": -178.43,
+          "ret_per_trade_std_bps": 365.94,
+          "t_stat": 3.17
+        },
+        "approval_rate": 0.4272
+      },
+      "value_add": {
+        "edge_vs_all_bps": -0.81,
+        "pf_lift": 0.025,
+        "hit_rate_lift": 0.0073
+      }
+    },
+    {
+      "max_tactical": 20,
+      "min_rank_score": 0.6,
+      "min_expected_r": 1.5,
+      "eval": {
+        "all_candidates": {
+          "n": 3230,
+          "hit_rate": 0.5282,
+          "avg_ret_bps": 26.36,
+          "median_bps": 11.61,
+          "profit_factor": 1.335,
+          "avg_win_bps": 198.86,
+          "avg_loss_bps": -167.85,
+          "ret_per_trade_std_bps": 319.15,
+          "t_stat": 4.69
+        },
+        "approved": {
+          "n": 1380,
+          "hit_rate": 0.5355,
+          "avg_ret_bps": 25.55,
+          "median_bps": 14.84,
+          "profit_factor": 1.36,
+          "avg_win_bps": 180.07,
+          "avg_loss_bps": -153.32,
+          "ret_per_trade_std_bps": 242.78,
+          "t_stat": 3.91
+        },
+        "rejected": {
+          "n": 1850,
+          "hit_rate": 0.5227,
+          "avg_ret_bps": 26.96,
+          "median_bps": 8.46,
+          "profit_factor": 1.319,
+          "avg_win_bps": 213.22,
+          "avg_loss_bps": -178.43,
+          "ret_per_trade_std_bps": 365.94,
+          "t_stat": 3.17
+        },
+        "approval_rate": 0.4272
+      },
+      "value_add": {
+        "edge_vs_all_bps": -0.81,
+        "pf_lift": 0.025,
+        "hit_rate_lift": 0.0073
+      }
+    },
+    {
+      "max_tactical": 20,
+      "min_rank_score": 0.65,
+      "min_expected_r": 1.5,
+      "eval": {
+        "all_candidates": {
+          "n": 3230,
+          "hit_rate": 0.5282,
+          "avg_ret_bps": 26.36,
+          "median_bps": 11.61,
+          "profit_factor": 1.335,
+          "avg_win_bps": 198.86,
+          "avg_loss_bps": -167.85,
+          "ret_per_trade_std_bps": 319.15,
+          "t_stat": 4.69
+        },
+        "approved": {
+          "n": 1378,
+          "hit_rate": 0.5356,
+          "avg_ret_bps": 25.56,
+          "median_bps": 14.84,
+          "profit_factor": 1.36,
+          "avg_win_bps": 180.24,
+          "avg_loss_bps": -153.51,
+          "ret_per_trade_std_bps": 242.95,
+          "t_stat": 3.91
+        },
+        "rejected": {
+          "n": 1852,
+          "hit_rate": 0.5227,
+          "avg_ret_bps": 26.95,
+          "median_bps": 8.46,
+          "profit_factor": 1.319,
+          "avg_win_bps": 213.06,
+          "avg_loss_bps": -178.26,
+          "ret_per_trade_std_bps": 365.75,
+          "t_stat": 3.17
+        },
+        "approval_rate": 0.4266
+      },
+      "value_add": {
+        "edge_vs_all_bps": -0.8,
+        "pf_lift": 0.025,
+        "hit_rate_lift": 0.0074
+      }
+    }
+  ]
+}

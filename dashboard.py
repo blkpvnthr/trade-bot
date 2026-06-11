@@ -999,13 +999,107 @@ def trade():
         return jsonify({"ok": False, "error": msg[:220]}), 400
 
 
+def _render_v2_backtest() -> str:
+    """Render backtest_outputs/run_v2_backtest.json (the run-v2.py DailyOpportunityRouter
+    backtest) as native dashboard HTML. Empty-safe."""
+    from html import escape
+    f = ROOT / "backtest_outputs" / "run_v2_backtest.json"
+    if not f.exists():
+        return ('<p style="color:#8786b5">No run-v2 backtest yet. Generate one with '
+                '<code>python backtest_run_v2.py --config-sweep</code>.</p>')
+    try:
+        d = json.loads(f.read_text())
+    except Exception as e:
+        return f'<p style="color:#ff6b6b">Could not read backtest: {escape(str(e))}</p>'
+
+    ev, va, cfg = d.get("evaluation", {}), d.get("value_add", {}), d.get("config", {})
+    appd = ev.get("approved", {})
+    mtime = datetime.fromtimestamp(f.stat().st_mtime, ET).strftime("%Y-%m-%d %H:%M ET")
+
+    def _n(x, suf=""):
+        return ("—" if x is None else f"{x}{suf}")
+
+    cards = "".join(
+        f'<div class=card><div class=k>{k}</div><div class=v>{v}</div></div>' for k, v in [
+            ("candidate days", d.get("n_days", "—")),
+            ("symbols", d.get("n_symbols", "—")),
+            ("approval rate", _n(ev.get("approval_rate"))),
+            ("approved avg", _n(appd.get("avg_ret_bps"), " bps")),
+            ("approved PF", _n(appd.get("profit_factor"))),
+            ("router edge vs all", _n(va.get("edge_vs_all_bps"), " bps")),
+        ])
+
+    def _row(name, b):
+        return ("<tr><td style='text-align:left'>%s</td><td>%s</td><td>%s</td><td>%s</td>"
+                "<td>%s</td><td>%s</td><td>%s</td></tr>" % (
+                    name, b.get("n"), _n(b.get("hit_rate")), _n(b.get("avg_ret_bps")),
+                    _n(b.get("median_bps")), _n(b.get("profit_factor")), _n(b.get("t_stat"))))
+    buckets = (
+        "<table><thead><tr><th style='text-align:left'>Decision</th><th>n</th><th>hit</th>"
+        "<th>avg bps</th><th>median bps</th><th>PF</th><th>t-stat</th></tr></thead><tbody>"
+        + _row("ALL candidates", ev.get("all_candidates", {}))
+        + _row("APPROVED", appd)
+        + _row("REJECTED", ev.get("rejected", {}))
+        + "</tbody></table>")
+
+    sweep = d.get("sweep") or []
+    sweep_html = ""
+    if sweep:
+        rows = "".join(
+            "<tr><td style='text-align:left'>%s</td><td>%s</td><td>%s</td><td>%s</td>"
+            "<td>%s</td><td>%s</td></tr>" % (
+                s.get("max_tactical"), s.get("min_rank_score"),
+                _n(s["eval"]["approved"].get("n")), _n(s["eval"]["approved"].get("avg_ret_bps")),
+                _n(s["eval"]["approved"].get("profit_factor")),
+                _n(s["value_add"].get("edge_vs_all_bps")))
+            for s in sweep)
+        sweep_html = (
+            "<h2 style='margin-top:22px'>Config sensitivity — tactical cap is the throughput knob</h2>"
+            "<table><thead><tr><th style='text-align:left'>max_tactical</th><th>min_rank</th>"
+            "<th>approved n</th><th>approved avg bps</th><th>approved PF</th><th>edge vs all bps</th>"
+            "</tr></thead><tbody>" + rows + "</tbody></table>")
+
+    rr = d.get("reject_reasons") or {}
+    rr_rows = "".join(
+        f"<tr><td style='text-align:left'>{escape(str(k))}</td><td>{v}</td></tr>"
+        for k, v in list(rr.items())[:8])
+    rr_html = ("<h2 style='margin-top:22px'>Why candidates were rejected</h2>"
+               "<table><thead><tr><th style='text-align:left'>blocked_by:reason</th><th>count</th>"
+               "</tr></thead><tbody>" + rr_rows + "</tbody></table>") if rr_rows else ""
+
+    findings = (
+        "<h2 style='margin-top:22px'>Key findings</h2><ul style='line-height:1.55;color:#c7c7e6'>"
+        "<li><b>rank_score adds little on a momentum pool</b> — selecting top-ranked candidates "
+        f"beats taking all by only {_n(va.get('edge_vs_all_bps'),' bps')}; the strongest opening "
+        "movers mean-revert. Most selectivity value comes from the day-level bearish-context gate.</li>"
+        "<li><b>The tactical cap is the binding constraint and is applied pre-ranking</b> "
+        "(in <code>route()</code> input order, before the rank sort) — moving it after the sort is a "
+        "low-risk correctness improvement. This backtest pre-sorts by rank to reflect intent.</li>"
+        "<li><b>The cap is the throughput knob</b>: tighter → fewer, slightly better trades; looser → "
+        "more trades, edge decays toward the candidate average (see sweep).</li></ul>")
+
+    header = (
+        f"<h1>Strategy · run-v2 router backtest</h1>"
+        f"<p style='color:#8786b5;margin-top:-6px'>Opening-range-momentum candidates → "
+        f"<code>DailyOpportunityRouter.route()</code> → realized forward return (decision→close). "
+        f"Config: min_expected_r={cfg.get('min_expected_r')}, min_rank_score={cfg.get('min_rank_score')}, "
+        f"max_new_entries={cfg.get('max_new_entries')}, max_intraday_tactical_open="
+        f"{cfg.get('max_intraday_tactical_open')}. Updated {mtime}. "
+        f"<a href='{PREFIX}/backtest/raw'>legacy crossover tearsheet ↗</a></p>")
+
+    caveat = ("<p style='color:#6f6f8c;font-size:12px;margin-top:18px'>Validates the ROUTER "
+              "(filter/rank/caps/gates), not a live P&L claim — real opportunities come from "
+              "collect_daily_profit_opportunities (BAL/alpha/insider). Gross returns, intraday hold "
+              "to close.</p>")
+    return header + f"<div class=cards style='margin-top:12px'>{cards}</div>" + \
+        "<h2 style='margin-top:22px'>Forward return by router decision</h2>" + buckets + \
+        findings + sweep_html + rr_html + caveat
+
+
 @app.route(PREFIX + "/backtest")
 @need_auth
 def backtest():
-    iframe = (f'<iframe src="{PREFIX}/backtest/raw" loading="eager" '
-              f'style="width:100%;height:82vh;border:1px solid #21262d;border-radius:10px;'
-              f'background:#0d1117"></iframe>')
-    return page("Strategy", iframe, "backtest")
+    return page("Strategy", _render_v2_backtest(), "backtest")
 
 
 @app.route(PREFIX + "/backtest/raw")
