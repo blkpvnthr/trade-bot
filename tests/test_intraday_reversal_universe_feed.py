@@ -109,21 +109,21 @@ class CsvJsonParsingTests(unittest.TestCase):
 
 
 class CollectIntegrationTests(unittest.TestCase):
-    # Rows RED today (clear the engine's chg<0 gate) WITH enriched reversal-trigger columns
+    # Rows GREEN today (clear the engine's chg>0 gate) WITH enriched reversal-trigger columns
     # (a screener-only export has no triggers, so the live system attaches bars/signals
     # first). Proves collect_reversal_opportunities consumes the feed end-to-end.
-    _RED_CSV = (
+    _GREEN_CSV = (
         "Ticker,Last,Volume,Change %,Perf.W,Analyst Rating,Technical Rating,Relative Volume,"
         "5m Volume,Average Volume,vwap_reclaim,rsi_cross_40,close_gt_open,above_ema20_5m,"
         "recovering,prev_day_high,atr\n"
-        "NASDAQ:GRN,42.10,8.2M,-1.80%,-7.40%,Strong Buy,Strong Buy,2.6,420K,3.1M,"
+        "NASDAQ:GRN,42.10,8.2M,+1.80%,-7.40%,Strong Buy,Strong Buy,2.6,420K,3.1M,"
         "true,true,true,true,true,44.5,0.9\n"
     )
     _IN_WINDOW = datetime(2026, 6, 11, 14, 0, tzinfo=_ET)
 
     def test_collect_uses_feed_when_env_path_set(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = _write(tmp, "u.csv", self._RED_CSV)
+            path = _write(tmp, "u.csv", self._GREEN_CSV)
             saved = os.environ.get("INTRADAY_REVERSAL_UNIVERSE_CSV")
             os.environ["INTRADAY_REVERSAL_UNIVERSE_CSV"] = path
             try:

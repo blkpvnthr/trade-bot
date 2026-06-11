@@ -80,8 +80,8 @@ class EnrichUniverseTests(unittest.TestCase):
         return _bars([102] * 8 + [99, 98, 98, 99, 100, 101, 102, 103], vol=60_000)
 
     def test_enriched_screener_row_becomes_eligible(self):
-        # Red screener row with NO triggers -> enrich -> eligible in the engine scan.
-        inp = ReversalInput(symbol="RVR", price=103.0, volume=8e6, avg_volume=3e6, chg_pct=-1.5,
+        # Green-today screener row with NO triggers -> enrich -> eligible in the engine scan.
+        inp = ReversalInput(symbol="RVR", price=103.0, volume=8e6, avg_volume=3e6, chg_pct=+1.5,
                             perf_1w=-6.0, analyst_rating="strong buy", os_rating="strong buy")
         self.assertIsNone(inp.vwap_reclaim)                    # no trigger before enrichment
         provider = lambda sym: (self._eligible_bars(), _DAILY)
@@ -101,7 +101,7 @@ class EnrichUniverseTests(unittest.TestCase):
         saved = os.environ.get("INTRADAY_REVERSAL_ENRICH_BARS")
         os.environ["INTRADAY_REVERSAL_ENRICH_BARS"] = "true"
         try:
-            inp = ReversalInput(symbol="Y", price=103.0, volume=8e6, avg_volume=3e6, chg_pct=-1.2,
+            inp = ReversalInput(symbol="Y", price=103.0, volume=8e6, avg_volume=3e6, chg_pct=+1.2,
                                 perf_1w=-4.0, analyst_rating="strong buy", os_rating="strong buy")
             out = maybe_enrich([inp], bar_provider=lambda s: (self._eligible_bars(), _DAILY))
             self.assertTrue(out[0].vwap_reclaim)
