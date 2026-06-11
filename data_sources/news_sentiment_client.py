@@ -2,6 +2,11 @@
 """
 data_sources/news_sentiment_client.py — Alpha Vantage NEWS_SENTIMENT client.
 
+DEPRECATED as the primary news source: the system now defaults to Alpaca news + local FinBERT
+(data_sources/alpaca_news_client.py) via NEWS_SOURCE=alpaca. This AV client is retained as the
+rollback path (NEWS_SOURCE=av) and still backs the existing tests. Only AV's NEWS_SENTIMENT is
+deprecated — AV earnings/insider/options/technicals are unaffected.
+
 Fetches and normalizes Market News & Sentiment for the discovered universe and
 serves as a core input to universe discovery, catalyst detection, hidden-alpha
 discovery, predictive state compression and the RL options models.
