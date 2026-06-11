@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import intraday_reversal_engine as ire
 from intraday_reversal_engine import (
     EngineConfig, ReversalInput, score_candidate, scan, propose_entries, live_orders_allowed,
+    select_call, estimate_option_target_premium, size_option, propose_option_entries,
+    propose_for_engine, previous_day_high, _occ_symbol,
 )
 
 CFG = EngineConfig(enabled=True, paper_only=True, min_score=75.0,
@@ -185,6 +187,112 @@ class PaperGateTests(unittest.TestCase):
         self.assertTrue(live_orders_allowed(cfg, "live", False))
         self.assertFalse(live_orders_allowed(cfg, "paper", False))
         self.assertFalse(live_orders_allowed(cfg, "live", True))
+
+
+def _chain():
+    return [
+        {"expiry": "2026-06-12", "strike": 20.0, "type": "call", "bid": 0.80, "ask": 0.88,
+         "dte": 1, "open_interest": 1500, "volume": 300},
+        {"expiry": "2026-06-12", "strike": 21.0, "type": "call", "bid": 0.45, "ask": 0.52,
+         "dte": 1, "open_interest": 1200, "volume": 200},
+        {"expiry": "2026-06-19", "strike": 20.0, "type": "call", "bid": 1.20, "ask": 1.30,
+         "dte": 7, "open_interest": 3000, "volume": 200},
+        {"expiry": "2026-06-12", "strike": 20.0, "type": "put", "bid": 0.50, "ask": 0.58,
+         "dte": 1, "open_interest": 1000, "volume": 100},
+        {"expiry": "2026-07-17", "strike": 20.0, "type": "call", "bid": 2.0, "ask": 2.2,
+         "dte": 35, "open_interest": 5000, "volume": 50},   # out of 1-7 DTE window
+    ]
+
+
+class OptionOverlayTests(unittest.TestCase):
+    def test_prev_day_high_explicit_and_derived(self):
+        self.assertEqual(previous_day_high(_base(prev_day_high=22.0)), 22.0)
+        import pandas as pd
+        dh = pd.DataFrame({"high": [21.0, 22.5], "low": [20, 21], "close": [20.5, 22.0]})
+        self.assertEqual(previous_day_high(_base(prev_day_high=None, daily_history=dh)), 22.5)
+
+    def test_occ_symbol_format(self):
+        self.assertEqual(_occ_symbol("AAPL", "2026-01-16", "C", 150.0), "AAPL260116C00150000")
+
+    def test_select_call_picks_1_7_dte_atm_call(self):
+        c, why = select_call(20.0, _chain(), CFG)
+        self.assertIsNone(why)
+        self.assertEqual(str(c["type"]).lower(), "call")
+        self.assertTrue(CFG.option_min_dte <= c["dte"] <= CFG.option_max_dte)
+        self.assertEqual(c["strike"], 20.0)   # nearest ATM, shortest DTE
+
+    def test_select_call_rejects_when_only_out_of_window_or_puts(self):
+        chain = [c for c in _chain() if c["type"] == "put" or c["dte"] > 7]
+        c, why = select_call(20.0, chain, CFG)
+        self.assertIsNone(c)
+        self.assertIn(why, ("no_call_in_dte_window", "no_liquid_call", "no_call_chain"))
+
+    def test_select_call_rejects_illiquid(self):
+        wide = [{"expiry": "2026-06-12", "strike": 20.0, "type": "call", "bid": 0.20, "ask": 1.20,
+                 "dte": 1, "open_interest": 5, "volume": 1}]   # huge spread + tiny OI
+        c, why = select_call(20.0, wide, CFG)
+        self.assertIsNone(c)
+        self.assertEqual(why, "no_liquid_call")
+
+    def test_target_premium_intrinsic_plus_extrinsic_and_monotonic(self):
+        # strike 20, price 20 (intrinsic 0, extrinsic = mid), pdh 22 -> 2 + 1 = 3.0
+        self.assertEqual(estimate_option_target_premium(20.0, 22.0, 20.0, 1.0), 3.0)
+        hi = estimate_option_target_premium(20.0, 24.0, 20.0, 1.0)
+        lo = estimate_option_target_premium(20.0, 22.0, 20.0, 1.0)
+        self.assertGreater(hi, lo)
+
+    def test_size_option_respects_risk_and_notional(self):
+        # 0.5% of 100k = $500 risk; premium $1.00 -> $100/contract -> 5 contracts.
+        self.assertEqual(size_option(100_000.0, 1.00, CFG), 5)
+        self.assertEqual(size_option(0.0, 1.0, CFG), 0)
+        self.assertEqual(size_option(100_000.0, 0.0, CFG), 0)
+
+    def test_propose_option_entries_targets_pdh_with_trailing_stop(self):
+        row = _base(symbol="OPT", price=20.0, prev_day_high=22.0, option_chain=_chain())
+        res = scan([row], CFG)
+        orders = propose_option_entries(res, equity=100_000.0, open_symbols=set(), cfg=CFG)
+        self.assertEqual(len(orders), 1)
+        o = orders[0]
+        self.assertEqual((o.underlying, o.side, o.order_type), ("OPT", "buy", "limit"))
+        self.assertEqual(o.target_underlying, 22.0)              # PDH target
+        self.assertAlmostEqual(o.trailing_stop_pct, 0.0075)      # 0.75% trailing stop
+        self.assertTrue(1 <= o.dte <= 7)
+        self.assertTrue(o.occ_symbol.startswith("OPT"))
+        self.assertGreater(o.qty, 0)
+        self.assertGreater(o.est_target_premium, o.est_premium)  # PDH is above -> ITM gain
+
+    def test_option_overlay_skips_below_min_score(self):
+        low = _base(symbol="LOW", price=20.0, prev_day_high=22.0, option_chain=_chain(),
+                    avg_volume=500_000, rvol=1.0, perf_1w=-1.0, recovering=False, rsi_rising=False,
+                    rsi_cross_40=False, close_gt_open=False, above_ema20_5m=False, vwap_reclaim=True)
+        res = scan([low], CFG)
+        self.assertEqual(propose_option_entries(res, 100_000.0, set(), CFG), [])
+
+    def test_option_overlay_never_averages_into_held_underlying(self):
+        res = scan([_base(symbol="HELD", price=20.0, prev_day_high=22.0, option_chain=_chain())], CFG)
+        self.assertEqual(propose_option_entries(res, 100_000.0, {"HELD"}, CFG), [])
+
+    def test_option_overlay_skips_when_pdh_not_above_price(self):
+        res = scan([_base(symbol="ABOVE", price=23.0, prev_day_high=22.0, option_chain=_chain())], CFG)
+        self.assertEqual(propose_option_entries(res, 100_000.0, set(), CFG), [])
+
+    def test_propose_for_engine_routes_by_options_flag(self):
+        row = _base(symbol="RT", price=20.0, prev_day_high=22.0, option_chain=_chain())
+        res = scan([row], CFG)
+        opt_cfg = EngineConfig(min_score=75.0, max_new_entries_per_day=2, max_open_positions=2,
+                               options_enabled=True)
+        eq_cfg = EngineConfig(min_score=75.0, max_new_entries_per_day=2, max_open_positions=2,
+                              options_enabled=False)
+        self.assertEqual(type(propose_for_engine(res, 100_000.0, set(), opt_cfg)[0]).__name__,
+                         "OptionEntryOrder")
+        self.assertEqual(type(propose_for_engine(res, 100_000.0, set(), eq_cfg)[0]).__name__,
+                         "EntryOrder")
+
+    def test_share_order_carries_target_and_trailing_stop(self):
+        res = scan([_base(symbol="SH", prev_day_high=30.0)], CFG)
+        o = propose_entries(res, 100_000.0, set(), CFG)[0]
+        self.assertEqual(o.target_underlying, 30.0)
+        self.assertAlmostEqual(o.trailing_stop_pct, 0.0075)
 
 
 class BarDerivationTests(unittest.TestCase):

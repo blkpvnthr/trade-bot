@@ -100,6 +100,25 @@ class EngineConfig:
     atr_stop_mult: float = 1.0          # stop = entry - atr_stop_mult * ATR
     marketable_buffer: float = 0.001    # marketable BUY limit = price * (1 + buffer)
     extended_atr_limit: float = 2.0     # penalize beyond this many ATR from VWAP
+    # ── 1-7 DTE call-option overlay (target = underlying Previous Day High) ──────────
+    options_enabled: bool = field(
+        default_factory=lambda: _env_bool("INTRADAY_REVERSAL_OPTIONS_ENABLED", False))
+    option_min_dte: int = field(default_factory=lambda: _env_int("INTRADAY_REVERSAL_OPTION_MIN_DTE", 1))
+    option_max_dte: int = field(default_factory=lambda: _env_int("INTRADAY_REVERSAL_OPTION_MAX_DTE", 7))
+    option_strike_offset_pct: float = field(            # 0 = ATM, >0 = OTM strike target
+        default_factory=lambda: _env_float("INTRADAY_REVERSAL_OPTION_STRIKE_OFFSET_PCT", 0.0))
+    option_max_spread_pct: float = field(               # reject wide bid/ask
+        default_factory=lambda: _env_float("INTRADAY_REVERSAL_OPTION_MAX_SPREAD_PCT", 0.20))
+    option_min_open_interest: int = field(
+        default_factory=lambda: _env_int("INTRADAY_REVERSAL_OPTION_MIN_OI", 100))
+    option_risk_pct: float = field(                     # premium-at-risk per trade (long call max loss = premium)
+        default_factory=lambda: _env_float("INTRADAY_REVERSAL_OPTION_RISK_PCT", 0.005))
+    option_marketable_buffer: float = 0.02              # buy this far over mid when no ask
+    # Trailing stop on the UNDERLYING (high-water-mark trail). Recorded on every proposed
+    # entry; the existing exit engine is responsible for executing it. Target = PDH (above);
+    # trailing stop = this % below the post-entry peak (below).
+    trailing_stop_pct: float = field(
+        default_factory=lambda: _env_float("INTRADAY_REVERSAL_TRAILING_STOP_PCT", 0.0075))
 
 
 def live_orders_allowed(cfg: EngineConfig, account_mode: str, system_paper_only: bool) -> bool:
@@ -144,6 +163,10 @@ class ReversalInput:
     extended_atr: Optional[float] = None   # distance of price above VWAP, in ATR
     near_low_atr: Optional[float] = None   # distance of price above day-low, in ATR
     atr: Optional[float] = None
+    # Options overlay inputs
+    prev_day_high: Optional[float] = None  # PDH (target). If None, derived from daily_history.
+    option_chain: Optional[list] = None    # list of dicts: {symbol?, expiry, strike, type,
+    #   bid, ask, mid?, dte?, open_interest, volume} — calls used for the 1-7 DTE overlay.
 
 
 @dataclass
@@ -159,6 +182,9 @@ class ScoredCandidate:
     reasons: list[str] = field(default_factory=list)
     score_components: dict[str, float] = field(default_factory=dict)
     metrics: dict[str, Any] = field(default_factory=dict)
+    prev_day_high: Optional[float] = None         # PDH target (carried from input)
+    option_chain: Optional[list] = None           # carried for the options overlay
+    price_now: float = 0.0
 
 
 @dataclass
@@ -168,6 +194,28 @@ class EntryOrder:
     qty: int
     limit_price: float
     order_type: str
+    score: float
+    reason: str
+    target_underlying: Optional[float] = None   # PDH price target
+    trailing_stop_pct: Optional[float] = None    # trailing stop on the underlying (high-water trail)
+
+
+@dataclass
+class OptionEntryOrder:
+    occ_symbol: str
+    underlying: str
+    side: str                 # "buy"
+    qty: int                  # number of contracts
+    limit_price: float        # marketable per-contract premium
+    order_type: str           # "limit"
+    strike: float
+    expiry: str
+    dte: int
+    est_premium: float        # mid at proposal
+    target_underlying: float  # PDH (the price target on the underlying)
+    est_target_premium: float # rough first-order premium when underlying reaches PDH
+    est_target_multiple: float
+    trailing_stop_pct: float  # trailing stop on the UNDERLYING (high-water trail)
     score: float
     reason: str
 
@@ -234,6 +282,23 @@ def _finite(x, d=0.0):
         return d if (math.isnan(x) or math.isinf(x)) else x
     except Exception:
         return d
+
+
+def previous_day_high(inp: "ReversalInput") -> Optional[float]:
+    """The underlying's Previous Day High (the call-overlay price target).
+
+    Prefers the explicit ``prev_day_high``; otherwise the high of the last row of
+    ``daily_history`` (which is expected to end on the PRIOR completed session — a
+    live intraday feed excludes today's forming bar)."""
+    if inp.prev_day_high is not None:
+        return _finite(inp.prev_day_high)
+    dh = inp.daily_history
+    try:
+        if dh is not None and _safe_len(dh) >= 1:
+            return float(dh["high"].iloc[-1])
+    except Exception:
+        pass
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -496,7 +561,9 @@ def score_candidate(inp: ReversalInput, cfg: Optional[EngineConfig] = None) -> S
         reasons=reasons, score_components=comp,
         metrics={k: m[k] for k in ("rvol", "atr", "vwap_reclaim", "rsi_rising", "rsi_cross_40",
                                    "close_gt_open", "sweep_reclaim", "orb_reclaim",
-                                   "above_ema20_5m", "recovering", "extended_atr", "near_low_atr")})
+                                   "above_ema20_5m", "recovering", "extended_atr", "near_low_atr")},
+        prev_day_high=previous_day_high(inp), option_chain=inp.option_chain,
+        price_now=_finite(inp.price))
 
 
 # ---------------------------------------------------------------------------
@@ -600,9 +667,151 @@ def propose_entries(scan_result: ScanResult, equity: float, open_symbols: set[st
         orders.append(EntryOrder(
             symbol=c.symbol, side="buy", qty=int(qty), limit_price=limit_price,
             order_type="limit", score=c.score,
-            reason=f"intraday_reversal:score={c.score:.0f}:{','.join(c.reasons[:3])}"))
+            reason=f"intraday_reversal:score={c.score:.0f}:{','.join(c.reasons[:3])}",
+            target_underlying=c.prev_day_high, trailing_stop_pct=cfg.trailing_stop_pct))
         opened += 1
     return orders
+
+
+# ---------------------------------------------------------------------------
+# 1-7 DTE call-option overlay (target = underlying PDH; trailing stop on underlying)
+# ---------------------------------------------------------------------------
+def _occ_symbol(underlying: str, expiry: str, cp: str, strike: float) -> str:
+    """Build an OCC-21 option symbol, e.g. AAPL + 260116 + C + 00150000."""
+    root = str(underlying or "").upper()
+    e = str(expiry or "").replace("-", "")
+    yymmdd = e[2:8] if len(e) >= 8 else e[-6:]
+    return f"{root}{yymmdd}{cp.upper()}{int(round(float(strike) * 1000)):08d}"
+
+
+def _contract_dte(c: dict) -> Optional[int]:
+    if c.get("dte") is not None:
+        try:
+            return int(c["dte"])
+        except Exception:
+            return None
+    return None
+
+
+def _contract_mid(c: dict) -> float:
+    if c.get("mid") not in (None, ""):
+        return _finite(c["mid"])
+    b, a = _finite(c.get("bid")), _finite(c.get("ask"))
+    return (b + a) / 2.0 if (b > 0 and a > 0) else 0.0
+
+
+def select_call(price: float, chain: Optional[list], cfg: EngineConfig) -> tuple[Optional[dict], Optional[str]]:
+    """Pick the best CALL within [option_min_dte, option_max_dte]: liquid (two-sided,
+    spread <= max_spread_pct, OI >= floor), strike nearest the ATM*(1+offset) target,
+    preferring the SHORTEST DTE in the window (cheapest / most leverage for an intraday
+    move). Returns (contract, None) or (None, reason). Pure — no I/O."""
+    calls = [c for c in (chain or []) if str(c.get("type", "call")).lower() == "call"]
+    if not calls:
+        return None, "no_call_chain"
+    in_window = [c for c in calls if (_contract_dte(c) is not None
+                 and cfg.option_min_dte <= _contract_dte(c) <= cfg.option_max_dte)]
+    if not in_window:
+        return None, "no_call_in_dte_window"
+
+    def liquid(c: dict) -> bool:
+        b, a, mid = _finite(c.get("bid")), _finite(c.get("ask")), _contract_mid(c)
+        if b <= 0 or a <= 0 or mid <= 0:
+            return False
+        if (a - b) / mid > cfg.option_max_spread_pct:
+            return False
+        if _finite(c.get("open_interest")) < cfg.option_min_open_interest:
+            return False
+        return True
+
+    liq = [c for c in in_window if liquid(c)]
+    if not liq:
+        return None, "no_liquid_call"
+    target_strike = price * (1.0 + cfg.option_strike_offset_pct)
+    best = min(liq, key=lambda c: (_contract_dte(c), abs(_finite(c["strike"]) - target_strike)))
+    return best, None
+
+
+def estimate_option_target_premium(strike: float, pdh: float, price: float, mid: float) -> float:
+    """Rough FIRST-ORDER estimate of the call's value when the underlying reaches PDH:
+    intrinsic at the target plus the current extrinsic held flat (ignores theta/vega/
+    second-order delta). A planning number, NOT a pricing model."""
+    intrinsic_now = max(0.0, price - strike)
+    intrinsic_tgt = max(0.0, pdh - strike)
+    extrinsic_now = max(0.0, mid - intrinsic_now)
+    return round(intrinsic_tgt + extrinsic_now, 2)
+
+
+def size_option(equity: float, premium: float, cfg: EngineConfig) -> int:
+    """Contracts for a long call. Premium IS the defined max loss, so size by the
+    smaller of the premium-risk budget and the 10% notional cap."""
+    if equity <= 0 or premium <= 0:
+        return 0
+    per_contract = premium * 100.0
+    by_risk = (cfg.option_risk_pct * equity) / per_contract
+    by_notional = (cfg.max_notional_pct * equity) / per_contract
+    return int(max(0.0, min(by_risk, by_notional)))
+
+
+def propose_option_entries(scan_result: ScanResult, equity: float, open_symbols: set[str],
+                           cfg: Optional[EngineConfig] = None,
+                           opened_today: int = 0) -> list[OptionEntryOrder]:
+    """For each eligible candidate, buy a 1-7 DTE CALL with a price target at the
+    underlying's Previous Day High and a 0.75% trailing stop on the underlying.
+    Honors the same engine gates as the share path (min score, engine max-open / per-day,
+    never average into a held underlying). Returns intended orders only — the caller
+    routes the OCC symbol through run.AlpacaGateway.submit_market_order (limit), where all
+    existing safety gates still apply."""
+    cfg = cfg or scan_result.cfg
+    open_symbols = {str(s).upper() for s in (open_symbols or set())}
+    orders: list[OptionEntryOrder] = []
+    opened = int(opened_today)
+    for c in scan_result.eligible:
+        if opened >= cfg.max_new_entries_per_day:
+            break
+        if (len(open_symbols) + len(orders)) >= cfg.max_open_positions:
+            break
+        if c.symbol.upper() in open_symbols:                 # never average into a held name
+            continue
+        if c.score < cfg.min_score:
+            continue
+        pdh = c.prev_day_high
+        if pdh is None or pdh <= c.price_now:                # target must be above current price
+            continue
+        contract, why = select_call(c.price_now, c.option_chain, cfg)
+        if contract is None:
+            continue
+        mid = _contract_mid(contract)
+        ask = _finite(contract.get("ask"))
+        limit_price = round(ask if ask > 0 else mid * (1.0 + cfg.option_marketable_buffer), 2)
+        qty = size_option(equity, limit_price, cfg)
+        if qty <= 0:
+            continue
+        strike = _finite(contract["strike"])
+        dte = _contract_dte(contract) or 0
+        occ = contract.get("symbol") or _occ_symbol(c.symbol, contract.get("expiry", ""), "C", strike)
+        tgt_prem = estimate_option_target_premium(strike, pdh, c.price_now, mid)
+        mult = round(tgt_prem / mid, 2) if mid > 0 else 0.0
+        orders.append(OptionEntryOrder(
+            occ_symbol=occ, underlying=c.symbol, side="buy", qty=int(qty), limit_price=limit_price,
+            order_type="limit", strike=strike, expiry=str(contract.get("expiry", "")), dte=int(dte),
+            est_premium=round(mid, 2), target_underlying=round(pdh, 2), est_target_premium=tgt_prem,
+            est_target_multiple=mult, trailing_stop_pct=cfg.trailing_stop_pct, score=c.score,
+            reason=(f"intraday_reversal_call:score={c.score:.0f}:dte={dte}:"
+                    f"target=PDH({pdh:.2f}):trail={cfg.trailing_stop_pct*100:.2f}%")))
+        opened += 1
+    return orders
+
+
+def propose_for_engine(scan_result: ScanResult, equity: float, open_symbols: set[str],
+                       cfg: Optional[EngineConfig] = None,
+                       sizer: Optional[Callable[[ScoredCandidate], int]] = None,
+                       opened_today: int = 0):
+    """Route to the configured entry instrument: option calls when options_enabled,
+    else shares."""
+    cfg = cfg or scan_result.cfg
+    if cfg.options_enabled:
+        return propose_option_entries(scan_result, equity, open_symbols, cfg, opened_today)
+    return propose_entries(scan_result, equity, open_symbols, cfg, sizer, opened_today)
 
 
 # ---------------------------------------------------------------------------
@@ -634,13 +843,25 @@ def _demo_rows() -> list[ReversalInput]:
                       chg_pct=-1.8, perf_1w=-7.4, analyst_rating="strong buy", os_rating="strong buy",
                       rvol=2.6, vwap_reclaim=True, rsi_rising=True, rsi_cross_40=True,
                       close_gt_open=True, sweep_reclaim=True, orb_reclaim=True, above_ema20_5m=True,
-                      recovering=True, extended_atr=0.6, atr=0.9),
+                      recovering=True, extended_atr=0.6, atr=0.9, prev_day_high=44.50,
+                      option_chain=[
+                          {"expiry": "2026-06-12", "strike": 42.0, "type": "call", "bid": 1.10,
+                           "ask": 1.20, "dte": 1, "open_interest": 2500, "volume": 800},
+                          {"expiry": "2026-06-12", "strike": 43.0, "type": "call", "bid": 0.65,
+                           "ask": 0.72, "dte": 1, "open_interest": 1800, "volume": 600},
+                          {"expiry": "2026-06-19", "strike": 42.0, "type": "call", "bid": 1.80,
+                           "ask": 1.92, "dte": 7, "open_interest": 4200, "volume": 300}]),
         # Decent but milder: moderate RVOL, VWAP reclaim only.
         ReversalInput(symbol="MILD", price=18.55, volume=5_400_000, avg_volume=1_500_000,
                       chg_pct=-0.9, perf_1w=-3.1, analyst_rating="strong buy", os_rating="strong buy",
                       rvol=1.7, vwap_reclaim=True, rsi_rising=True, rsi_cross_40=False,
                       close_gt_open=True, sweep_reclaim=False, orb_reclaim=False, above_ema20_5m=True,
-                      recovering=True, extended_atr=0.4, atr=0.4),
+                      recovering=True, extended_atr=0.4, atr=0.4, prev_day_high=19.40,
+                      option_chain=[
+                          {"expiry": "2026-06-13", "strike": 18.5, "type": "call", "bid": 0.55,
+                           "ask": 0.62, "dte": 2, "open_interest": 1200, "volume": 150},
+                          {"expiry": "2026-06-19", "strike": 19.0, "type": "call", "bid": 0.40,
+                           "ask": 0.46, "dte": 7, "open_interest": 900, "volume": 100}]),
         # Over-extended: triggers but penalized hard, likely below min score.
         ReversalInput(symbol="EXTD", price=120.0, volume=4_100_000, avg_volume=900_000,
                       chg_pct=-0.4, perf_1w=-1.2, analyst_rating="strong buy", os_rating="strong buy",
@@ -673,12 +894,23 @@ def run_demo(cfg: Optional[EngineConfig] = None) -> ScanResult:
     for c in res.candidates:
         print(f"{c.symbol:<8}{int(c.volume):>12,}{c.score:>8.0f}{('Y' if c.eligible else '-'):>6}  "
               f"{', '.join(c.reasons[:5])}")
-    # proposed entries (dry-run sizing on a demo account; still NO orders placed)
-    orders = propose_entries(res, equity=25_000.0, open_symbols=set(), cfg=cfg)
+    # proposed share entries (dry-run sizing on a demo account; still NO orders placed)
+    equity = 100_000.0
+    orders = propose_entries(res, equity=equity, open_symbols=set(), cfg=cfg)
     print("-" * 78)
-    print(f"PROPOSED ENTRIES (dry-run, NOT submitted): {len(orders)}")
+    print(f"PROPOSED SHARE ENTRIES (dry-run, NOT submitted): {len(orders)}")
     for o in orders:
-        print(f"  BUY {o.symbol} x{o.qty} @ limit {o.limit_price}  ({o.reason})")
+        print(f"  BUY {o.symbol} x{o.qty} @ limit {o.limit_price}  "
+              f"target=PDH({o.target_underlying})  trailSL={o.trailing_stop_pct*100:.2f}%")
+    # 1-7 DTE CALL overlay: target = underlying PDH, 0.75% trailing stop on underlying
+    opt = propose_option_entries(res, equity=equity, open_symbols=set(), cfg=cfg)
+    print("-" * 78)
+    print(f"PROPOSED 1-7DTE CALL ENTRIES (dry-run, NOT submitted): {len(opt)}")
+    for o in opt:
+        print(f"  BUY {o.occ_symbol} x{o.qty}c @ limit {o.limit_price}  "
+              f"(strike {o.strike}, {o.dte}DTE, prem~{o.est_premium})")
+        print(f"      target=PDH({o.target_underlying}) -> est prem {o.est_target_premium} "
+              f"(~{o.est_target_multiple}x)   trailSL {o.trailing_stop_pct*100:.2f}% on underlying")
     print("=" * 78)
     return res
 
