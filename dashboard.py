@@ -520,7 +520,8 @@ def page(title, body, active=""):
     def navlink(href, label, key):
         on = " on" if key == active else ""
         return f'<a class="navlink{on}" href="{PREFIX}{href}">{label}</a>'
-    nav = (navlink("/", "Overview", "home") + navlink("/monthly", "Monthly", "monthly")
+    nav = (navlink("/", "Overview", "home") + navlink("/positions", "Positions", "positions")
+           + navlink("/monthly", "Monthly", "monthly")
            + navlink("/journal", "Journal", "journal") + navlink("/logs", "Logs", "logs")
            + navlink("/backtest", "Strategy", "backtest") + navlink("/chart", "Chart", "chart"))
     return Response(f"""<!doctype html><html><head><meta charset=utf-8>
@@ -855,6 +856,124 @@ def verify():
 @app.route(PREFIX + "/health")
 def health():
     return "ok"
+
+
+# ── Open-position mini-charts: Databento intraday candles (additive, fail-safe) ────────────────
+def _db_api_key():
+    k = os.environ.get("DATABENTO_API") or os.environ.get("DATABENTO_API_KEY")
+    if k:
+        return k.strip()
+    try:
+        for line in (ROOT / ".env").read_text().splitlines():
+            if line.startswith(("DATABENTO_API=", "DATABENTO_API_KEY=")):
+                return line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _occ_to_databento(sym):
+    """Compact OCC (WGS260710C00056000) -> Databento padded raw_symbol (WGS   260710C00056000); None if equity."""
+    s = (sym or "").strip().upper()
+    if len(s) < 15:
+        return None
+    tail = s[-15:]
+    if not (tail[6] in ("C", "P") and tail[:6].isdigit() and tail[7:].isdigit()):
+        return None
+    return f"{s[:-15]:<6}{tail}"
+
+
+def _db_candles(symbol, ttl=300):
+    """Recent 1-min OHLC bars [{time,open,high,low,close}] from Databento (equity DBEQ.BASIC, or
+    OPRA for an option leg). Cached per symbol. Fail-safe → [] on any error/missing dep."""
+    ck = f"cd_{symbol}"
+    now = time.time()
+    if _CACHE.get(ck) is not None and now - _CACHE.get(ck + "_t", 0) < ttl:
+        return _CACHE[ck]
+    out = []
+    try:
+        import databento as db
+        c = db.Historical(_db_api_key())
+        _now = datetime.now(timezone.utc)
+        start = (_now - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M")   # last ~2-3 sessions
+        end = _now.strftime("%Y-%m-%dT%H:%M")
+        occ = _occ_to_databento(symbol)
+        if occ:
+            df = c.timeseries.get_range(dataset="OPRA.PILLAR", schema="ohlcv-1m", symbols=occ,
+                                        stype_in="raw_symbol", start=start, end=end).to_df()
+        else:
+            df = c.timeseries.get_range(dataset="DBEQ.BASIC", schema="ohlcv-1m", symbols=symbol,
+                                        stype_in="raw_symbol", start=start, end=end).to_df()
+        for ts, r in df.iterrows():
+            o = float(r["open"])
+            if o > 0:
+                out.append({"time": int(ts.timestamp()), "open": o, "high": float(r["high"]),
+                            "low": float(r["low"]), "close": float(r["close"])})
+    except Exception as e:
+        import logging
+        logging.getLogger("dashboard").warning("db_candles %s: %s", symbol, e)
+    _CACHE[ck], _CACHE[ck + "_t"] = out, now
+    return out
+
+
+@app.route(PREFIX + "/candles")
+@need_auth
+def candles():
+    sym = (request.args.get("symbol") or "").strip().upper()
+    if not sym:
+        return jsonify({"s": "error", "candles": []})
+    return jsonify({"s": "ok", "symbol": sym, "candles": _db_candles(sym)})
+
+
+@app.route(PREFIX + "/positions")
+@need_auth
+def positions_charts():
+    pos = get_positions()
+    fresh = positions_html(pos).split("</h2>")[0]  # reuse the freshness banner snippet
+    if not pos:
+        body = '<h1>Open positions</h1><div class="card"><span class="muted">Flat — no open positions.</span></div>'
+        return page("Positions", body, "positions")
+    syms, cards = [], []
+    for p in pos:
+        sym = str(getattr(p, "symbol", "") or "")
+        if not sym:
+            continue
+        syms.append(sym)
+        qty = getattr(p, "qty", "")
+        mv = float(getattr(p, "market_value", 0) or 0)
+        upl = getattr(p, "unrealized_pl", None)
+        upl_s = f" · {_pnl(float(upl))}" if upl not in (None, "") else ""
+        cards.append(
+            f'<div class="card" style="padding:10px">'
+            f'<div class=k>{sym}</div>'
+            f'<div class=sub>qty {qty} · mv {_money(mv)}{upl_s}</div>'
+            f'<div id="ch_{sym}" style="height:200px;margin-top:6px"></div></div>')
+    grid = ('<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">'
+            + "".join(cards) + "</div>")
+    js = (
+        '<script src="https://unpkg.com/lightweight-charts@5/dist/lightweight-charts.standalone.production.js"></script>'
+        '<script>(function(){'
+        f'var P="{PREFIX}";var syms={json.dumps(syms)};'
+        'var LWC=window.LightweightCharts;'
+        'if(!(LWC&&LWC.createChart&&LWC.CandlestickSeries))return;'
+        'syms.forEach(function(sym){'
+        ' var el=document.getElementById("ch_"+sym);if(!el)return;'
+        ' var chart=LWC.createChart(el,{height:200,width:el.clientWidth,'
+        '   layout:{background:{type:"solid",color:"transparent"},textColor:"#8b949e",attributionLogo:false},'
+        '   grid:{vertLines:{visible:false},horzLines:{color:"rgba(255,255,255,0.05)"}},'
+        '   rightPriceScale:{borderVisible:false},timeScale:{borderVisible:false,timeVisible:true,secondsVisible:false},'
+        '   handleScroll:false,handleScale:false});'
+        ' var s=chart.addSeries(LWC.CandlestickSeries,{upColor:"#3fb950",downColor:"#f85149",'
+        '   borderVisible:false,wickUpColor:"#3fb950",wickDownColor:"#f85149"});'
+        ' fetch(P+"/candles?symbol="+encodeURIComponent(sym),{credentials:"same-origin"})'
+        '  .then(function(r){return r.json();})'
+        '  .then(function(d){if(d.candles&&d.candles.length){s.setData(d.candles);chart.timeScale().fitContent();}'
+        '    else{el.innerHTML="<span class=\\"muted\\" style=\\"font-size:12px\\">no intraday data</span>";}})'
+        '  .catch(function(){el.innerHTML="<span class=\\"muted\\" style=\\"font-size:12px\\">chart error</span>";});'
+        ' new ResizeObserver(function(){chart.resize(el.clientWidth,200);}).observe(el);'
+        '});})();</script>')
+    body = f"<h1>Open positions <span class=muted style=font-size:13px>· {len(syms)} · intraday 1-min</span></h1>{fresh}</h2>{grid}{js}"
+    return page("Positions", body, "positions")
 
 
 if __name__ == "__main__":
