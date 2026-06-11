@@ -165,13 +165,15 @@ class SafetyTests(unittest.TestCase):
                        "submit_order", "DataFeed.SIP"):
             self.assertNotIn(needle, text, f"enrichment must not contain {needle!r}")
 
-    def test_default_feed_is_not_sip(self):
-        # The enrichment relies on rl_alpaca_backfill.fetch_bars, which defaults to IEX.
+    def test_default_feed_is_sip(self):
+        # SIP-everywhere policy: fetch_bars now DEFAULTS to SIP (Algo Trader Plus entitlement);
+        # an unentitled account opts out with ALPACA_DATA_FEED=iex (IEX still available).
         import rl_alpaca_backfill as bf
         import inspect
         src = inspect.getsource(bf.fetch_bars)
-        self.assertIn("DataFeed.IEX", src)
-        self.assertIn('"iex"', src.lower())   # default branch is iex
+        self.assertIn("DataFeed.SIP", src)
+        self.assertIn('"sip"', src.lower())   # default branch is sip
+        self.assertIn("DataFeed.IEX", src)    # IEX opt-out still wired
 
 
 if __name__ == "__main__":
