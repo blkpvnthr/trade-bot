@@ -85,10 +85,12 @@ class CsvJsonParsingTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual((rows[0].symbol, rows[0].volume, rows[0].vol_5m), ("ABC", 4_000_000, 250_000))
 
-    def test_sorts_by_vol_5m_desc(self):
+    def test_sorts_by_rel_vol_5m_desc(self):
+        # rel_vol_5m = vol_5m / (avg_volume/78): RVRS~31.7, EXTD~15.6, AAOI~10.6 — so AAOI
+        # drops to last despite the 2nd-highest RAW 5m volume (its avg volume is large).
         with tempfile.TemporaryDirectory() as tmp:
             rows = load_universe(csv_path=_write(tmp, "u.csv", _TV_CSV))
-        self.assertEqual([r.symbol for r in rows], ["RVRS", "AAOI", "EXTD"])   # 610K,420K,180K
+        self.assertEqual([r.symbol for r in rows], ["RVRS", "EXTD", "AAOI"])
 
     def test_skips_malformed_rows_without_crashing(self):
         bad = _TV_CSV + 'NASDAQ:MISS,,3.2M,-2.10%,-5.00%,Strong Buy,Strong Buy,1.9,300K,1.2M\n'

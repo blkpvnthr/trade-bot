@@ -31,7 +31,7 @@ from typing import Any, Callable, Optional
 
 from intraday_reversal_engine import (
     ReversalInput, previous_day_high, vwap_series, rsi_series, ema_series, atr_from_daily,
-    _safe_len, _finite, _env_bool, _env_int,
+    _safe_len, _finite, _env_bool, _env_int, rel_vol_5m_of,
 )
 
 logger = logging.getLogger("intraday_reversal_enrichment")
@@ -173,14 +173,14 @@ def enrich_input(inp: ReversalInput, bars, daily_history=None, orb_minutes: int 
 
 
 def _vol5_key(i: ReversalInput) -> float:
-    return -(_finite(i.vol_5m) if i.vol_5m is not None else _finite(i.volume))
+    return -_finite(rel_vol_5m_of(i))   # 5-minute RELATIVE volume desc
 
 
 def enrich_universe(rows: list[ReversalInput], bar_provider: BarProvider,
                     max_symbols: int = 50, orb_minutes: int = 15,
                     bars_per_min: float = 1.0) -> list[ReversalInput]:
     """Attach bars (via the injected provider) to each row and derive signals. Pure given
-    a pure provider — no orders, no broker. Returns the rows sorted by 5-min volume desc.
+    a pure provider — no orders, no broker. Returns rows sorted by 5-min RELATIVE volume desc.
     Rows beyond ``max_symbols`` are passed through un-enriched (logged)."""
     enriched = 0
     for inp in rows[:max(0, max_symbols)]:

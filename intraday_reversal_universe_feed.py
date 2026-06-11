@@ -30,7 +30,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-from intraday_reversal_engine import ReversalInput, _finite
+from intraday_reversal_engine import ReversalInput, _finite, rel_vol_5m_of
 
 logger = logging.getLogger("intraday_reversal_universe_feed")
 
@@ -210,13 +210,13 @@ def _json_rows(path_or_text: str, is_path: bool) -> list[dict]:
 
 
 def _vol5_key(i: ReversalInput) -> float:
-    return -(_finite(i.vol_5m) if i.vol_5m is not None else _finite(i.volume))
+    return -_finite(rel_vol_5m_of(i))   # 5-minute RELATIVE volume desc
 
 
 def load_universe(csv_path: Optional[str] = None, json_path: Optional[str] = None,
                   inline: Optional[str] = None) -> list[ReversalInput]:
     """Load + normalize a screener export into ReversalInput objects, sorted by
-    5-minute volume desc. Pure: no trade decisions, no orders, no broker. The
+    5-minute RELATIVE volume desc. Pure: no trade decisions, no orders, no broker. The
     engine's strict gates still run downstream. Returns [] when no source exists."""
     csv_path = csv_path if csv_path is not None else os.getenv("INTRADAY_REVERSAL_UNIVERSE_CSV", "")
     json_path = json_path if json_path is not None else os.getenv("INTRADAY_REVERSAL_UNIVERSE_JSON", "")
@@ -254,9 +254,8 @@ def load_universe(csv_path: Optional[str] = None, json_path: Optional[str] = Non
     if missing_by_sym:
         logger.info("universe feed: rows missing required fields: %s",
                     dict(list(missing_by_sym.items())[:20]))
-    logger.info("universe feed: top 10 by vol_5m: %s",
-                [(i.symbol, i.vol_5m if i.vol_5m is not None else f"(day:{int(i.volume)})")
-                 for i in inputs[:10]])
+    logger.info("universe feed: top 10 by rel_vol_5m: %s",
+                [(i.symbol, round(rel_vol_5m_of(i), 2)) for i in inputs[:10]])
     return inputs
 
 

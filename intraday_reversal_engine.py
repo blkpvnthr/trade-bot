@@ -225,7 +225,8 @@ class ScoredCandidate:
     prev_day_high: Optional[float] = None         # PDH target (carried from input)
     option_chain: Optional[list] = None           # carried for the options overlay
     price_now: float = 0.0
-    vol_5m: Optional[float] = None                # last-5-minute volume (universe sort key)
+    vol_5m: Optional[float] = None                # last-5-minute volume
+    rel_vol_5m: Optional[float] = None            # 5-minute relative volume (universe sort key)
 
 
 @dataclass
@@ -654,7 +655,7 @@ def score_candidate(inp: ReversalInput, cfg: Optional[EngineConfig] = None) -> S
                                    "orb_reclaim", "above_ema20_5m", "recovering", "extended_atr",
                                    "near_low_atr", "toward_pdh", "pdh_distance_atr")},
         prev_day_high=previous_day_high(inp), option_chain=inp.option_chain,
-        price_now=_finite(inp.price), vol_5m=m.get("vol_5m"))
+        price_now=_finite(inp.price), vol_5m=m.get("vol_5m"), rel_vol_5m=m.get("rel_vol_5m"))
 
 
 # ---------------------------------------------------------------------------
@@ -688,26 +689,29 @@ class ScanResult:
             "eligible_for_entry": len(self.eligible),
             "min_score": self.cfg.min_score,
             "rejected_by": dict(sorted(self.rejected_by.items(), key=lambda kv: -kv[1])),
-            "sorted_by": "vol_5m_desc_then_score",
+            "sorted_by": "rel_vol_5m_desc_then_score",
             "top_candidates": [
-                {"symbol": c.symbol, "vol_5m": c.vol_5m, "volume": c.volume, "score": c.score,
-                 "eligible": c.eligible, "blocked_by": c.blocked_by,
-                 "reasons": c.reasons, "score_components": c.score_components}
+                {"symbol": c.symbol, "rel_vol_5m": c.rel_vol_5m, "vol_5m": c.vol_5m,
+                 "volume": c.volume, "score": c.score, "eligible": c.eligible,
+                 "blocked_by": c.blocked_by, "reasons": c.reasons,
+                 "score_components": c.score_components}
                 for c in self.candidates[:top]
             ],
         }
 
 
 def _sort_key(c: ScoredCandidate) -> tuple[float, float]:
-    """Universe sort: 5-MINUTE VOLUME desc, then SCORE desc. Falls back to day
-    volume when a candidate has no 5m volume (so ordering stays deterministic)."""
-    v5 = c.vol_5m if c.vol_5m is not None else c.volume
-    return (-_finite(v5), -c.score)
+    """Universe sort: 5-MINUTE RELATIVE VOLUME desc, then SCORE desc. Falls back to raw
+    5m volume / day volume when rel_vol_5m is unavailable (ordering stays deterministic)."""
+    rv = c.rel_vol_5m
+    if rv is None:
+        rv = c.vol_5m if c.vol_5m is not None else c.volume
+    return (-_finite(rv), -c.score)
 
 
 def scan(rows: list[ReversalInput], cfg: Optional[EngineConfig] = None) -> ScanResult:
     """Score a universe. Pure: no Alpaca, no orders. Candidates that clear the
-    universe filter are sorted by 5-MINUTE VOLUME DESC, then SCORE DESC."""
+    universe filter are sorted by 5-MINUTE RELATIVE VOLUME DESC, then SCORE DESC."""
     cfg = cfg or EngineConfig()
     scored = [score_candidate(r, cfg) for r in rows]
     rejected: dict[str, int] = {}
@@ -1138,11 +1142,12 @@ def run_demo(cfg: Optional[EngineConfig] = None) -> ScanResult:
           f"passed_setup={f['passed_setup']}  eligible={f['eligible_for_entry']}")
     print(f"rejected_by={f['rejected_by']}")
     print("-" * 78)
-    print(f"(universe sorted by 5-min volume desc, then score)")
-    print(f"{'SYMBOL':<8}{'5MIN VOL':>11}{'DAY VOL':>12}{'SCORE':>7}{'ELIG':>6}  REASONS")
+    print(f"(universe sorted by 5-min RELATIVE volume desc, then score)")
+    print(f"{'SYMBOL':<8}{'RVOL5M':>8}{'5MIN VOL':>11}{'SCORE':>7}{'ELIG':>6}  REASONS")
     for c in res.candidates:
         v5 = int(c.vol_5m) if c.vol_5m is not None else 0
-        print(f"{c.symbol:<8}{v5:>11,}{int(c.volume):>12,}{c.score:>7.0f}"
+        rv = f"{c.rel_vol_5m:.2f}" if c.rel_vol_5m is not None else "-"
+        print(f"{c.symbol:<8}{rv:>8}{v5:>11,}{c.score:>7.0f}"
               f"{('Y' if c.eligible else '-'):>6}  {', '.join(c.reasons[:4])}")
     # proposed share entries (dry-run sizing on a demo account; still NO orders placed)
     equity = 100_000.0
@@ -1206,7 +1211,8 @@ def run_scan(cfg: EngineConfig, universe: Optional[str], funnel_out: str,
           f"universe={f['passed_universe']} setup={f['passed_setup']} eligible={f['eligible_for_entry']}")
     for c in res.candidates:
         tag = "*toward_PDH" if c.metrics.get("toward_pdh") else ""
-        print(f"  {c.symbol:<8} 5mVol={int(c.vol_5m or 0):>9,} score={c.score:>4.0f} "
+        rv = f"{c.rel_vol_5m:.2f}" if c.rel_vol_5m is not None else "-"
+        print(f"  {c.symbol:<8} relVol5m={rv:>6} 5mVol={int(c.vol_5m or 0):>9,} score={c.score:>4.0f} "
               f"PDH={c.prev_day_high} {('ELIGIBLE' if c.eligible else c.blocked_by or '')} {tag}")
     orders = propose_for_engine(res, equity=equity, open_symbols=set(), cfg=cfg)
     print(f"[intraday-reversal] proposed {len(orders)} entries "
