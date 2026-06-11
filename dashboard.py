@@ -460,7 +460,7 @@ font:14px/1.55 ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation 
 -webkit-text-size-adjust:100%}
 a{color:#15b4ff;text-decoration:none;border-bottom:1px dotted #2f3650}
 a:hover{border-bottom-color:#15b4ff}
-.wrap{max-width:820px;margin:0 auto;padding:16px}
+.wrap{max-width:1040px;margin:0 auto;padding:16px}
 .nav{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
 .nav a{background:#08080f;border:1px solid #2a2a3a;border-radius:6px;padding:7px 12px;font-weight:600;
 text-transform:uppercase;letter-spacing:.05em;font-size:12px;color:#b2aee6}
@@ -469,7 +469,8 @@ text-transform:uppercase;letter-spacing:.05em;font-size:12px;color:#b2aee6}
 h1{font-size:16px;margin:4px 0 14px;letter-spacing:.04em;font-weight:700;color:#cdccf0}
 h1::before{content:"> ";color:#15b4ff}
 h2{font-size:12px;color:#8aa0ff;margin:20px 0 8px;font-weight:600;text-transform:uppercase;letter-spacing:.08em}
-.cards{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.cards{display:grid;grid-template-columns:1fr;gap:10px}
+@media(min-width:620px){.cards{grid-template-columns:repeat(3,minmax(0,1fr))}}
 .card{background:#08080f;border:1px solid #23232e;border-radius:10px;padding:14px}
 .card .k{color:#8786b5;font-size:11px;text-transform:uppercase;letter-spacing:.08em}
 .card .v{font-size:22px;font-weight:700;margin-top:6px;color:#d3e8ff}
