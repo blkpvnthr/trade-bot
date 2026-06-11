@@ -92,11 +92,10 @@ class EngineConfig:
         default_factory=lambda: _env_int("INTRADAY_REVERSAL_MAX_NEW_ENTRIES_PER_DAY", 2))
     max_open_positions: int = field(
         default_factory=lambda: _env_int("INTRADAY_REVERSAL_MAX_OPEN_POSITIONS", 2))
-    # universe thresholds (scanner). Gates: price>5, vol>1M, rel_vol_5m>1 (+ chg>0,
-    # perf_1w<0, analyst/os strong buy). 3M volume is a SCORE bonus, not a gate.
+    # universe thresholds (scanner). Red-to-reclaim gates: price>5, vol>3M, chg<0
+    # (RED today), perf_1w<0, analyst/os strong buy. avg_volume>1M is a +5 bonus, not a gate.
     min_price: float = 5.0
-    min_volume: float = field(default_factory=lambda: _env_float("INTRADAY_REVERSAL_MIN_VOLUME", 1_000_000.0))
-    min_rel_vol_5m: float = field(default_factory=lambda: _env_float("INTRADAY_REVERSAL_MIN_REL_VOL_5M", 1.0))
+    min_volume: float = field(default_factory=lambda: _env_float("INTRADAY_REVERSAL_MIN_VOLUME", 3_000_000.0))
     volume_bonus_threshold: float = 3_000_000.0   # +10 score above this
     pref_avg_volume: float = 1_000_000.0          # +5 score above this
     # sizing fallback
@@ -559,14 +558,12 @@ def universe_block(inp: ReversalInput, cfg: EngineConfig) -> Optional[str]:
         return "untradable_or_halted"
     if _finite(inp.price) <= cfg.min_price:
         return "price_below_5"
-    if _finite(inp.volume) <= cfg.min_volume:    # vol > 1M
-        return "volume_below_1m"
-    if _finite(inp.chg_pct) <= 0:                # require GREEN today (reversal already underway)
-        return "chg_not_positive"
-    if _finite(inp.perf_1w) >= 0:                # but WEAK over the last week
+    if _finite(inp.volume) <= cfg.min_volume:    # vol > 3M
+        return "volume_below_3m"
+    if _finite(inp.chg_pct) >= 0:                # require RED today (down into the reclaim)
+        return "chg_not_negative"
+    if _finite(inp.perf_1w) >= 0:                # and WEAK over the last week
         return "perf_1w_not_negative"
-    if rel_vol_5m_of(inp) <= cfg.min_rel_vol_5m:  # 5-min relative volume > 1 (active right now)
-        return "rel_vol_5m_below_1"
     if str(inp.analyst_rating or "").strip().lower() != STRONG_BUY:
         return "analyst_not_strong_buy"
     if str(inp.os_rating or "").strip().lower() != STRONG_BUY:
@@ -598,8 +595,8 @@ def score_candidate(inp: ReversalInput, cfg: Optional[EngineConfig] = None) -> S
         add("perf_1w_negative", 15, "1w weak")
     if _finite(inp.perf_1w) < -5:
         add("perf_1w_lt_-5", 10, "1w very weak (<-5%)")
-    if _finite(inp.chg_pct) > 0:
-        add("green_today", 10, "green today (reversing weekly weakness)")
+    if _finite(inp.chg_pct) < 0 and m.get("recovering"):
+        add("red_but_recovering", 10, "red today, reclaiming off the lows")
     # liquidity
     if _finite(inp.volume) > cfg.volume_bonus_threshold:
         add("volume_gt_3m", 10, "volume > 3M")
@@ -975,6 +972,13 @@ def collect_reversal_opportunities(universe: Optional[list] = None,
             rows = _rows_from_json(path) if path and Path(path).exists() else []
     if not rows:
         return []
+    # Optional intraday-bar enrichment (gated OFF by default): attach bars + derive the
+    # reclaim triggers a screener export can't carry. Fail-safe; no orders/broker-trading.
+    try:
+        import intraday_reversal_enrichment as _enr
+        rows = _enr.maybe_enrich(rows)
+    except Exception as exc:
+        logger.debug("bar enrichment skipped: %s", exc)
     res = scan(rows, cfg)
     return [to_trade_opportunity(c, cfg) for c in res.eligible]
 
@@ -1074,9 +1078,9 @@ def log_funnel(scan_result: ScanResult) -> None:
 def _demo_rows() -> list[ReversalInput]:
     """Synthetic universe spanning eligible, sub-score, and rejected cases."""
     return [
-        # Strong reversal: weak 1w, GREEN today off the lows, high 5m RVOL, full reclaim stack.
+        # Strong reversal: weak 1w, RED today but reclaiming off the lows, high 5m RVOL, full stack.
         ReversalInput(symbol="RVRS", price=42.10, volume=8_200_000, avg_volume=3_100_000,
-                      chg_pct=+1.8, perf_1w=-7.4, analyst_rating="strong buy", os_rating="strong buy",
+                      chg_pct=-1.8, perf_1w=-7.4, analyst_rating="strong buy", os_rating="strong buy",
                       rvol=2.6, vwap_reclaim=True, rsi_rising=True, rsi_cross_40=True,
                       close_gt_open=True, sweep_reclaim=True, orb_reclaim=True, above_ema20_5m=True,
                       recovering=True, extended_atr=0.6, atr=0.9, prev_day_high=44.50,
@@ -1090,7 +1094,7 @@ def _demo_rows() -> list[ReversalInput]:
                            "ask": 1.92, "dte": 7, "open_interest": 4200, "volume": 300}]),
         # Decent but milder: moderate RVOL, VWAP reclaim only.
         ReversalInput(symbol="MILD", price=18.55, volume=5_400_000, avg_volume=1_500_000,
-                      chg_pct=+0.9, perf_1w=-3.1, analyst_rating="strong buy", os_rating="strong buy",
+                      chg_pct=-0.9, perf_1w=-3.1, analyst_rating="strong buy", os_rating="strong buy",
                       rvol=1.7, vwap_reclaim=True, rsi_rising=True, rsi_cross_40=False,
                       close_gt_open=True, sweep_reclaim=False, orb_reclaim=False, above_ema20_5m=True,
                       recovering=True, extended_atr=0.4, atr=0.4, prev_day_high=19.40,
@@ -1102,21 +1106,21 @@ def _demo_rows() -> list[ReversalInput]:
                            "ask": 0.46, "dte": 7, "open_interest": 900, "volume": 100}]),
         # Over-extended: triggers but penalized hard, likely below min score.
         ReversalInput(symbol="EXTD", price=120.0, volume=4_100_000, avg_volume=900_000,
-                      chg_pct=+0.4, perf_1w=-1.2, analyst_rating="strong buy", os_rating="strong buy",
+                      chg_pct=-0.4, perf_1w=-1.2, analyst_rating="strong buy", os_rating="strong buy",
                       rvol=1.6, vwap_reclaim=True, rsi_rising=True, rsi_cross_40=False,
                       close_gt_open=True, sweep_reclaim=False, orb_reclaim=False, above_ema20_5m=False,
                       recovering=False, extended_atr=4.5, atr=2.0, vol_5m=180_000),
-        # Rejected universe: RED today (must be green).
-        ReversalInput(symbol="REDT", price=33.0, volume=6_000_000, avg_volume=2_000_000,
-                      chg_pct=-0.8, perf_1w=-2.0, analyst_rating="strong buy", os_rating="strong buy",
+        # Rejected universe: GREEN today (must be red into the reclaim).
+        ReversalInput(symbol="GREN", price=33.0, volume=6_000_000, avg_volume=2_000_000,
+                      chg_pct=+0.8, perf_1w=-2.0, analyst_rating="strong buy", os_rating="strong buy",
                       vol_5m=200_000),
-        # Rejected universe: 5-min relative volume <= 1 (not active right now).
-        ReversalInput(symbol="QUIT", price=27.0, volume=2_000_000, avg_volume=5_000_000,
-                      chg_pct=+0.3, perf_1w=-2.0, analyst_rating="strong buy", os_rating="strong buy",
-                      vol_5m=30_000),
+        # Rejected universe: volume <= 3M (too thin).
+        ReversalInput(symbol="THIN", price=27.0, volume=2_000_000, avg_volume=1_500_000,
+                      chg_pct=-0.6, perf_1w=-2.0, analyst_rating="strong buy", os_rating="strong buy",
+                      vol_5m=120_000),
         # Rejected universe: not strong buy.
         ReversalInput(symbol="HOLD", price=9.0, volume=9_000_000, avg_volume=2_000_000,
-                      chg_pct=+0.5, perf_1w=-4.0, analyst_rating="buy", os_rating="strong buy",
+                      chg_pct=-0.5, perf_1w=-4.0, analyst_rating="buy", os_rating="strong buy",
                       vol_5m=300_000),
     ]
 

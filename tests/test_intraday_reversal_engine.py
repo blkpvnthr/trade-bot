@@ -31,11 +31,11 @@ CFG = EngineConfig(enabled=True, paper_only=True, min_score=75.0,
 
 
 def _base(**kw) -> ReversalInput:
-    """A clean candidate that clears the universe filter (green today, weak 1w, vol>1M,
-    rel_vol_5m>1, price>5, analyst+os strong buy) and scores ~100."""
+    """A clean candidate that clears the red-to-reclaim universe filter (red today, weak 1w,
+    vol>3M, price>5, analyst+os strong buy) and scores ~100."""
     d = dict(symbol="TST", price=20.0, volume=4_000_000, avg_volume=1_500_000,
-             chg_pct=+1.0, perf_1w=-3.0, analyst_rating="strong buy", os_rating="strong buy",
-             rvol=1.6, rel_vol_5m=1.5, vwap_reclaim=True, rsi_rising=True, rsi_cross_40=False,
+             chg_pct=-1.0, perf_1w=-3.0, analyst_rating="strong buy", os_rating="strong buy",
+             rvol=1.6, vwap_reclaim=True, rsi_rising=True, rsi_cross_40=False,
              close_gt_open=True, sweep_reclaim=False, orb_reclaim=False, above_ema20_5m=True,
              recovering=True, extended_atr=0.5, atr=0.4)
     d.update(kw)
@@ -46,10 +46,9 @@ class UniverseGateTests(unittest.TestCase):
     def test_passes_full_universe_filter(self):
         c = score_candidate(_base(), CFG)
         self.assertTrue(c.passed_universe)
-        self.assertNotIn(c.blocked_by, ("price_below_5", "volume_below_1m", "chg_not_positive",
-                                        "perf_1w_not_negative", "rel_vol_5m_below_1",
-                                        "analyst_not_strong_buy", "os_not_strong_buy",
-                                        "untradable_or_halted"))
+        self.assertNotIn(c.blocked_by, ("price_below_5", "volume_below_3m", "chg_not_negative",
+                                        "perf_1w_not_negative", "analyst_not_strong_buy",
+                                        "os_not_strong_buy", "untradable_or_halted"))
         self.assertGreater(c.score, 0)
 
     def test_rejects_price_le_5(self):
@@ -57,19 +56,14 @@ class UniverseGateTests(unittest.TestCase):
         self.assertFalse(c.passed_universe)
         self.assertEqual(c.blocked_by, "price_below_5")
 
-    def test_rejects_volume_le_1m(self):
-        c = score_candidate(_base(volume=1_000_000), CFG)
+    def test_rejects_volume_le_3m(self):
+        c = score_candidate(_base(volume=3_000_000), CFG)
         self.assertFalse(c.passed_universe)
-        self.assertEqual(c.blocked_by, "volume_below_1m")
+        self.assertEqual(c.blocked_by, "volume_below_3m")
 
-    def test_rejects_chg_le_0_not_green(self):
-        self.assertEqual(score_candidate(_base(chg_pct=0.0), CFG).blocked_by, "chg_not_positive")
-        self.assertEqual(score_candidate(_base(chg_pct=-1.5), CFG).blocked_by, "chg_not_positive")
-
-    def test_rejects_rel_vol_5m_le_1(self):
-        c = score_candidate(_base(rel_vol_5m=0.9), CFG)
-        self.assertFalse(c.passed_universe)
-        self.assertEqual(c.blocked_by, "rel_vol_5m_below_1")
+    def test_rejects_chg_ge_0_not_red(self):
+        self.assertEqual(score_candidate(_base(chg_pct=0.0), CFG).blocked_by, "chg_not_negative")
+        self.assertEqual(score_candidate(_base(chg_pct=1.5), CFG).blocked_by, "chg_not_negative")
 
     def test_rejects_perf_1w_ge_0(self):
         c = score_candidate(_base(perf_1w=0.0), CFG)
@@ -189,14 +183,14 @@ class SortingAndFunnelTests(unittest.TestCase):
         self.assertEqual([c.symbol for c in res.candidates], ["HIGHV", "LOWV"])
 
     def test_funnel_has_required_fields(self):
-        res = scan([_base(vol_5m=300_000), _base(symbol="X", chg_pct=-0.5)], CFG)
+        res = scan([_base(vol_5m=300_000), _base(symbol="X", chg_pct=+0.5)], CFG)
         f = res.funnel()
         for k in ("scanned", "passed_universe", "passed_setup", "eligible_for_entry",
                   "rejected_by", "sorted_by", "top_candidates"):
             self.assertIn(k, f)
         self.assertEqual(f["scanned"], 2)
         self.assertEqual(f["sorted_by"], "vol_5m_desc_then_score")
-        self.assertIn("chg_not_positive", f["rejected_by"])
+        self.assertIn("chg_not_negative", f["rejected_by"])
         self.assertIn("score_components", f["top_candidates"][0])
         self.assertIn("vol_5m", f["top_candidates"][0])
 
