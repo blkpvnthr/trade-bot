@@ -176,9 +176,17 @@ def build_buffett_universe(extra_symbols: list[str] | None = None,
     symbol still runs the full Buffett pipeline downstream.
     """
     size = size or UNIVERSE_SIZE
+    extras = [s.strip().upper() for s in (extra_symbols or []) if s and s.strip()]
+    if os.getenv("BUFFETT_WATCHLIST_EXCLUSIVE", "false").lower() in {"1", "true"}:
+        # EXCLUSIVE: scan ONLY the configured BUFFETT_WATCHLIST (+ explicit caller extras), deduped.
+        # Suppresses the static-quality seed / ownership / Form-4 expansion for a curated single-
+        # session universe. Every downstream ML / valuation / liquidity / risk filter is unchanged —
+        # this only swaps the candidate set. Set BUFFETT_WATCHLIST_EXCLUSIVE=false to restore merge.
+        syms = list(dict.fromkeys(_watchlist() + extras))
+        logger.info("BAL universe EXCLUSIVE watchlist (%d): %s", len(syms), ",".join(syms))
+        return syms[:size]
     syms = list(dict.fromkeys(
-        STATIC_QUALITY + _ownership_symbols() + _watchlist() + _sec_form4_discovered_symbols() +
-        [s.strip().upper() for s in (extra_symbols or []) if s and s.strip()]
+        STATIC_QUALITY + _ownership_symbols() + _watchlist() + _sec_form4_discovered_symbols() + extras
     ))
     return syms[:size]
 

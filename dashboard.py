@@ -201,6 +201,66 @@ def equity_svg(series, w=720, h=170):
             f'vector-effect="non-scaling-stroke"/></svg>')
 
 
+def equity_hybrid_series(ph, current=None):
+    """Merge the clean DAILY portfolio-history curve (all days strictly before today) with
+    today's INTRADAY per-cycle equity from run.log (the $100k paper window is already filtered
+    out in udf_datafeed._equity_points). Returns [(unix_ts, equity)] ascending & unique.
+    Fail-safe: on any error, falls back to the plain daily series."""
+    try:
+        now = datetime.now(ET)
+        cutoff = int(now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        out = {int(dt.timestamp()): float(v)
+               for dt, v in equity_series(ph, current=None) if dt.date() < now.date()}
+        import udf_datafeed as _udf
+        for t, v in _udf._equity_points():
+            if t >= cutoff:
+                out[int(t)] = float(v)                  # today's intraday detail
+        if current and current > 0:
+            out[int(now.timestamp())] = float(current)  # pin the freshest live value as the last point
+        merged = sorted(out.items())
+        if len(merged) >= 2:
+            return merged
+    except Exception:
+        pass
+    return [(int(dt.timestamp()), float(v)) for dt, v in equity_series(ph, current=current)]
+
+
+def equity_lwc(series, svg_fallback, h=170):
+    """Render the account-equity curve with TradingView Lightweight Charts (open-source, CDN).
+    Progressive enhancement: emits the existing SVG first, then upgrades it to an interactive
+    chart if the library loads (so non-JS / failed-CDN still shows the sparkline).
+    series = [(unix_ts, value)]."""
+    import json as _json
+    if len(series) < 2:
+        return svg_fallback
+    up = series[-1][1] >= series[0][1]
+    line_c = "#3fb950" if up else "#f85149"
+    top = "rgba(63,185,80,0.25)" if up else "rgba(248,81,73,0.25)"
+    bot = "rgba(63,185,80,0.02)" if up else "rgba(248,81,73,0.02)"
+    data = _json.dumps([{"time": int(t), "value": round(float(v), 2)} for t, v in series])
+    return (
+        f'<div id="eqc" style="height:{h}px">{svg_fallback}</div>'
+        '<script src="https://unpkg.com/lightweight-charts@5/dist/lightweight-charts.standalone.production.js"></script>'
+        '<script>(function(){'
+        f'var data={data};'
+        'var LWC=window.LightweightCharts;'
+        'if(!(LWC&&LWC.createChart&&LWC.AreaSeries&&data.length>1))return;'
+        'var el=document.getElementById("eqc");if(!el)return;el.innerHTML="";'
+        f'var chart=LWC.createChart(el,{{height:{h},width:el.clientWidth,'
+        'layout:{background:{type:"solid",color:"transparent"},textColor:"#8b949e",attributionLogo:false},'
+        'grid:{vertLines:{visible:false},horzLines:{color:"rgba(255,255,255,0.05)"}},'
+        'rightPriceScale:{borderVisible:false},'
+        'timeScale:{borderVisible:false,timeVisible:true,secondsVisible:false},'
+        'handleScroll:false,handleScale:false,'
+        'localization:{priceFormatter:function(p){return "$"+p.toFixed(0);}}});'
+        f'var s=chart.addSeries(LWC.AreaSeries,{{lineColor:"{line_c}",lineWidth:2,'
+        f'topColor:"{top}",bottomColor:"{bot}",priceLineVisible:false,lastValueVisible:true}});'
+        's.setData(data);chart.timeScale().fitContent();'
+        f'new ResizeObserver(function(){{chart.resize(el.clientWidth,{h});}}).observe(el);'
+        '})();</script>'
+    )
+
+
 def daily_from_trips(trips):
     days = defaultdict(lambda: {"pnl": 0.0, "n": 0, "wins": 0, "gw": 0.0, "gl": 0.0, "vol": 0.0,
                                 "best": None, "worst": None})
@@ -517,19 +577,19 @@ def home():
     m_w = sum(d["wins"] for k, d in days.items() if k.startswith(ym))
     m_gw = sum(d["gw"] for k, d in days.items() if k.startswith(ym))
     m_gl = sum(d["gl"] for k, d in days.items() if k.startswith(ym))
-    series = equity_series(ph, current=acct["equity"])
-    chart = equity_svg(series)
+    series = equity_series(ph, current=acct["equity"])      # daily (SVG fallback)
+    hybrid = equity_hybrid_series(ph, current=acct["equity"])  # daily + today's intraday
+    chart = equity_lwc(hybrid, equity_svg(series))
     rng_lbl = ""
-    if series:
-        vals = [v for _, v in series]
+    if hybrid:
+        vals = [v for _, v in hybrid]
         rng_lbl = (f"high {_money(max(vals))} · low {_money(min(vals))} · "
-                   f"{series[0][0]:%b %d} → now")
+                   f"{datetime.fromtimestamp(hybrid[0][0], ET):%b %d} → now")
     cards = f"""
     <div class=cards>
       <div class=card><div class=k>Account equity</div><div class=v>{_money(acct['equity'])}</div><div class=sub>cash {_money(acct['cash'])}</div></div>
       <div class=card><div class=k>Today account P&L</div><div class=v>{_pnl(acct['day_pnl'])}</div><div class=sub>{_pct(acct['day_pnl_pct'])} vs prior close</div></div>
       <div class=card><div class=k>Today realized</div><div class=v>{_pnl(td['pnl'])}</div><div class=sub>{td['n']} trades · {(td['wins']/td['n']*100 if td['n'] else 0):.0f}% win</div></div>
-      <div class=card><div class=k>Month realized</div><div class=v>{_pnl(m_pnl)}</div><div class=sub>{m_n} trades · {(m_w/m_n*100 if m_n else 0):.0f}% win · PF {_pf_str(_pf(m_gw,m_gl))}</div></div>
     </div>
     <div class=card style="margin-top:10px">
       <div class=k>Account equity</div>
@@ -615,7 +675,6 @@ def monthly(ym):
     <h1>{ym} <span class=muted style=font-size:13px>· <a href="{PREFIX}/monthly/{prev}">‹ {prev}</a> · <a href="{PREFIX}/monthly/{nxt}">{nxt} ›</a></span></h1>
     <div class=cards>
       <div class=card><div class=k>Account P&L (mo)</div><div class=v>{_pnl(m_acct)}</div></div>
-      <div class=card><div class=k>Realized P&L (mo)</div><div class=v>{_pnl(t_pnl)}</div></div>
       <div class=card><div class=k>Trades · Win%</div><div class=v>{t_n} · {(t_w/t_n*100 if t_n else 0):.0f}%</div><div class=sub>PF {_pf_str(_pf(t_gw,t_gl))} · vol {_money(t_vol)}</div></div>
       <div class=card><div class=k>Green / Red days</div><div class=v><span class=pos>{green}</span> / <span class=neg>{red}</span></div><div class=sub>best {_pnl(best)} · worst {_pnl(worst)}</div></div>
     </div>

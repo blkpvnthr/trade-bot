@@ -31,8 +31,8 @@ EXEC_DIR = ROOT / "logs" / "execution"
 
 RUN_LOG = ROOT / "logs" / "run.log"
 import re as _re
-_EQ_RE = _re.compile(r"^(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}.*Account cycle=\d+: equity=\$([\d.]+)")
-_ORD_RE = _re.compile(r"^(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}.*ORDER (buy|sell) ([A-Z0-9.]+)")
+_EQ_RE = _re.compile(r"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}).*Account cycle=\d+: equity=\$([\d.]+)")
+_ORD_RE = _re.compile(r"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}).*ORDER (buy|sell) ([A-Z0-9.]+)")
 _LCACHE = {"eq": None, "eq_t": 0.0, "mk": None, "mk_t": 0.0}
 
 udf_bp = Blueprint("udf", __name__)
@@ -63,7 +63,7 @@ def _symbol_info(sym: str) -> dict:
     is_eq = sym == EQUITY_SYMBOL
     return {
         "name": sym, "ticker": sym,
-        "description": "QuantumQuant strategy equity" if is_eq else sym,
+        "description": "QuantumQuant account equity" if is_eq else sym,
         "type": "index" if is_eq else "stock",
         "session": "24x7" if is_eq else "0930-1600", "timezone": "America/New_York",
         "exchange": "QuantumQuant" if is_eq else "", "listed_exchange": "",
@@ -92,7 +92,7 @@ def search():
     limit = int(request.args.get("limit") or 30)
     cands = [EQUITY_SYMBOL] + _cached_symbols()
     out = [{"symbol": s, "full_name": s,
-            "description": ("Strategy equity" if s == EQUITY_SYMBOL else s),
+            "description": ("Account equity" if s == EQUITY_SYMBOL else s),
             "exchange": "QuantumQuant" if s == EQUITY_SYMBOL else "",
             "ticker": s, "type": "index" if s == EQUITY_SYMBOL else "stock"}
            for s in cands if q in s][:limit]
@@ -105,7 +105,8 @@ def history():
     frm = int(float(request.args.get("from") or 0))
     to = int(float(request.args.get("to") or time.time()))
     try:
-        bars = _equity_bars() if sym == EQUITY_SYMBOL else _cached_bars(sym)
+        res = request.args.get("resolution") or "1D"
+        bars = _equity_bars(res) if sym == EQUITY_SYMBOL else _cached_bars(sym)
         if not bars:
             return jsonify({"s": "no_data"})
         win = [b for b in bars if frm <= b[0] <= to]
@@ -142,31 +143,57 @@ def _cached_bars(sym: str):
         return []
 
 
-def _equity_bars():
-    """Daily strategy-equity OHLC parsed from run.log Account-cycle lines (the reliable source). Fail-safe."""
+def _equity_points():
+    """All (unix_ts, equity) account-equity readings from run.log Account-cycle lines
+    (full timestamp — the reliable source). Cached 60s. Fail-safe → []."""
     import datetime
     now = time.time()
     if _LCACHE["eq"] is not None and now - _LCACHE["eq_t"] < 60:
         return _LCACHE["eq"]
-    days = {}   # day_unix -> [open, high, low, close]
+    pts = []
     try:
         with open(RUN_LOG, errors="replace") as fh:
             for line in fh:
                 m = _EQ_RE.match(line)
                 if not m:
                     continue
-                d = int(datetime.datetime.strptime(m.group(1), "%Y-%m-%d")
+                # Drop uninitialized / paper-account snapshots (status=n/a). After a restart the
+                # bot can momentarily log a fresh paper account (equity=$100000, status=n/a) before
+                # the live account loads; those readings would otherwise spike the equity curve.
+                if "status=n/a" in line:
+                    continue
+                t = int(datetime.datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M:%S")
                         .replace(tzinfo=datetime.timezone.utc).timestamp())
-                eq = float(m.group(2))
-                if d not in days:
-                    days[d] = [eq, eq, eq, eq]
-                else:
-                    days[d][1] = max(days[d][1], eq); days[d][2] = min(days[d][2], eq); days[d][3] = eq
+                pts.append((t, float(m.group(3))))
     except Exception as e:
-        logger.debug("equity_bars: %s", e)
-    bars = [(d, v[0], v[1], v[2], v[3], 0) for d, v in sorted(days.items())]
-    _LCACHE["eq"], _LCACHE["eq_t"] = bars, now
-    return bars
+        logger.debug("equity_points: %s", e)
+    pts.sort()
+    _LCACHE["eq"], _LCACHE["eq_t"] = pts, now
+    return pts
+
+
+def _equity_bars(resolution: str = "1D"):
+    """Account-equity bars from run.log. Intraday resolution → one bar per cycle reading
+    (the full equity curve); daily/weekly/monthly → OHLC aggregated per UTC day. Fail-safe → []."""
+    import datetime
+    pts = _equity_points()
+    if not pts:
+        return []
+    intraday = str(resolution).upper() not in ("1D", "1W", "1M", "D", "W", "M")
+    if intraday:
+        seen = {}   # collapse duplicate timestamps, keep last reading
+        for t, eq in pts:
+            seen[t] = eq
+        return [(t, seen[t], seen[t], seen[t], seen[t], 0) for t in sorted(seen)]
+    days = {}   # day_unix -> [open, high, low, close]
+    for t, eq in pts:
+        d = int(datetime.datetime.fromtimestamp(t, datetime.timezone.utc)
+                .replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        if d not in days:
+            days[d] = [eq, eq, eq, eq]
+        else:
+            days[d][1] = max(days[d][1], eq); days[d][2] = min(days[d][2], eq); days[d][3] = eq
+    return [(d, v[0], v[1], v[2], v[3], 0) for d, v in sorted(days.items())]
 
 
 @udf_bp.route("/marks")
@@ -198,10 +225,10 @@ def _trade_marks():
                 m = _ORD_RE.match(line)
                 if not m:
                     continue
-                d = int(datetime.datetime.strptime(m.group(1), "%Y-%m-%d")
+                t = int(datetime.datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M:%S")
                         .replace(tzinfo=datetime.timezone.utc).timestamp())
-                side, sym = m.group(2), m.group(3)
-                out.append({"id": f"ord_{i}", "time": d,
+                side, sym = m.group(3), m.group(4)
+                out.append({"id": f"ord_{i}", "time": t,
                             "color": "#26a69a" if side == "buy" else "#ef5350",
                             "text": f"{side.upper()} {sym}", "label": side[0].upper()})
     except Exception as e:

@@ -64,7 +64,22 @@ except Exception:
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 SOURCE_LIVE = "yliveticker"
+SOURCE_ALPACA = "alpaca"
 SOURCE_FALLBACK = "yfinance"
+# Sources that represent genuine LIVE data (vs the yfinance fallback). Liveness checks must test
+# MEMBERSHIP here, never equality with a single constant — both yliveticker and alpaca are live.
+LIVE_SOURCES = {SOURCE_LIVE, SOURCE_ALPACA}
+
+# Realtime feed source: "alpaca" (Alpaca REST batch snapshots, default) | "yfinance" (fallback).
+# yliveticker (Yahoo websocket) was REMOVED — it opened a second, noisy socket (spurious
+# on_close arg-count ERRORs at every reconnect) and duplicated data Alpaca already serves.
+# The Alpaca path POLLS get_stock_snapshot for ALL symbols in one request every ALPACA_POLL_SECONDS
+# — no streaming cap, every symbol covered each poll (no rotation gaps), and snapshots carry
+# prev-close + day bar so change% / RVOL populate. It uses REST (not a websocket), so it never
+# collides with the system's single shared StockDataStream connection (alpaca_stream_router).
+# Any Alpaca failure falls back to the yfinance/Alpaca premarket logic (apply_fallback_quotes).
+FEED_SOURCE = os.getenv("PREMARKET_FEED_SOURCE", "alpaca").strip().lower()
+ALPACA_POLL_SECONDS = float(os.getenv("ALPACA_POLL_SECONDS", "2"))
 
 # Per-symbol quote fields exposed in every snapshot entry.
 QUOTE_FIELDS: List[str] = [
@@ -78,17 +93,13 @@ QUOTE_FIELDS: List[str] = [
     "overnight_trend", "overnight_session_strength",
 ]
 
-# Optional yliveticker package — probed once at import (never fatal).
-try:  # pragma: no cover - exercised via YLIVETICKER_AVAILABLE in tests
-    import yliveticker as _ylt  # type: ignore
-    YLIVETICKER_AVAILABLE = True
-except Exception:
-    _ylt = None
-    YLIVETICKER_AVAILABLE = False
-    logger.warning(
-        "yliveticker package unavailable — premarket live feed will fall back to "
-        "yfinance/Alpaca premarket logic (install `yliveticker` to enable streaming)."
-    )
+# yliveticker (Yahoo websocket) was REMOVED in favor of the Alpaca REST snapshot backend
+# (PREMARKET_FEED_SOURCE=alpaca, the default). The package is no longer imported or run, which
+# eliminates its spurious `on_close() takes 2 positional arguments but 4 were given` ERRORs at
+# every premarket reconnect. YLIVETICKER_AVAILABLE is pinned False so existing references
+# (diagnostic payload, run.py startup log) remain valid.
+_ylt = None
+YLIVETICKER_AVAILABLE = False
 
 
 def _now_iso() -> str:
@@ -231,21 +242,33 @@ class PremarketLiveFeed:
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def start(self) -> None:
-        """Start the live stream in a daemon thread. Fail-safe — never raises."""
+        """Start the live feed in a daemon thread. Fail-safe — never raises.
+
+        Primary source is the Alpaca REST snapshot poll (PREMARKET_FEED_SOURCE=alpaca, the
+        default; honors ALPACA_DATA_FEED=sip|iex). Any other source value, or a start failure,
+        drops to the yfinance/Alpaca fallback (apply_fallback_quotes). yliveticker is no longer
+        supported. The poll uses REST, so it never opens a second websocket connection (Alpaca
+        caps accounts at one — the shared StockDataStream is owned by alpaca_stream_router).
+        """
         if not self.symbols:
             self.feed_status = "no_symbols"
             logger.debug("PremarketLiveFeed: no symbols to subscribe")
             return
-        if not YLIVETICKER_AVAILABLE:
-            self._mark_fallback("yliveticker_unavailable")
+        # Read at RUNTIME (not import) so it sees env loaded after this module is imported.
+        source = os.getenv("PREMARKET_FEED_SOURCE", FEED_SOURCE).strip().lower()
+        if source != "alpaca":
+            self._mark_fallback(f"unsupported_source:{source}")
             return
         try:
             self._stop_event.clear()
-            self._thread = threading.Thread(target=self._run_stream, name="premarket-live-feed",
-                                            daemon=True)
+            self._thread = threading.Thread(target=self._run_alpaca_poll,
+                                            name="premarket-alpaca-feed", daemon=True)
             self._thread.start()
             self.feed_status = "running"
-            logger.info("PremarketLiveFeed started: %d symbols", len(self.symbols))
+            _poll_s = os.getenv("ALPACA_POLL_SECONDS", str(ALPACA_POLL_SECONDS))
+            _feed = os.getenv("ALPACA_DATA_FEED", "iex").lower()
+            logger.info("PremarketLiveFeed source=alpaca feed=%s mode=REST batch snapshots "
+                        "poll_seconds=%s (%d symbols)", _feed, _poll_s, len(self.symbols))
         except Exception as e:
             self.error = str(e)[:300]
             self.error_count += 1
@@ -278,44 +301,13 @@ class PremarketLiveFeed:
         self.fallback_source = SOURCE_FALLBACK
         logger.warning("PremarketLiveFeed falling back to %s (%s)", SOURCE_FALLBACK, reason)
 
-    def _run_stream(self) -> None:
-        """Blocking websocket loop. yliveticker reconnects internally. Daemon thread."""
-        while not self._stop_event.is_set() and not self.shutdown_requested:
-            try:
-                # Real yliveticker API: YLiveTicker(on_ticker, ticker_names, reconnect,
-                # ping_interval, ping_timeout). It BLOCKS with internal reconnect; ws is
-                # captured from the first tick. on_message is frozen once shutdown is set.
-                _ylt.YLiveTicker(
-                    on_ticker=self._on_ticker, ticker_names=list(self.symbols),
-                    reconnect=int(self._reconnect_delay),
-                )
-            except Exception as e:
-                self.error = str(e)[:300]
-                self.error_count += 1
-                self.feed_status = "failed"
-                logger.warning("PremarketLiveFeed stream error: %s", e)
-            if self._stop_event.is_set() or self.shutdown_requested:
-                break
-            # YLiveTicker returned (socket closed) — back off, then reconnect.
-            self.reconnect_count += 1
-            self._stop_event.wait(self._reconnect_delay)
-
-    def _on_ticker(self, ws: Any, msg: Dict[str, Any]) -> None:
-        # Capture ws so stop() can close it; if shutting down, close immediately and drop.
-        self._ws = ws
-        if self._stop_event.is_set() or self.shutdown_requested:
-            try:
-                ws.close()
-            except Exception:
-                pass
-            return
-        if self.feed_status not in ("running",):
-            self.feed_status = "running"
-        self.on_message(msg)
-
     # ── message parsing ──────────────────────────────────────────────────────
     def on_message(self, message: Dict[str, Any]) -> None:
-        """Parse one yliveticker tick dict and update the symbol's quote state."""
+        """Parse one tick dict and update the symbol's quote state.
+
+        Retained for the test suite and as a generic dict-tick parser (the historical
+        yliveticker shape: {id, price, previousClose, dayVolume, ...}). The live Alpaca
+        backend uses _apply_alpaca_snapshots, not this method."""
         try:
             if self._stop_event.is_set() or self.shutdown_requested:
                 return   # frozen after stop() — never mutate state post-shutdown
@@ -391,6 +383,97 @@ class PremarketLiveFeed:
             self.error = str(e)[:300]
             self.error_count += 1
             logger.debug("PremarketLiveFeed.on_message failed: %s", e)
+
+    # ── Alpaca REST snapshot backend (opt-in: PREMARKET_FEED_SOURCE=alpaca) ─────────────────────
+    def _apply_alpaca_snapshots(self, snaps: Any) -> None:
+        """Map a batch of Alpaca snapshots → shared quote state for every symbol. Never raises.
+        Snapshot carries latest_trade (price), latest_quote (bid/ask), daily_bar (hi/lo/vol) and
+        previous_daily_bar (prev close → change%)."""
+        now = _now_iso(); ts = _now_ts()
+        for sym, snap in (snaps or {}).items():
+            if snap is None:
+                continue
+            sym = str(sym).upper()
+            try:
+                lt = getattr(snap, "latest_trade", None); lq = getattr(snap, "latest_quote", None)
+                db = getattr(snap, "daily_bar", None); pdb = getattr(snap, "previous_daily_bar", None)
+                with self._lock:
+                    st = self.state.get(sym) or self._new_state(sym)
+                    px = _f(getattr(lt, "price", None)) if lt else None
+                    bid = _f(getattr(lq, "bid_price", None)) if lq else None
+                    ask = _f(getattr(lq, "ask_price", None)) if lq else None
+                    prev = _f(getattr(pdb, "close", None)) if pdb else None
+                    if px is not None and px > 0:
+                        st["price"] = px
+                    if bid is not None and bid > 0:
+                        st["bid"] = bid
+                    if ask is not None and ask > 0:
+                        st["ask"] = ask
+                    if st["bid"] is not None and st["ask"] is not None:
+                        st["bid_ask_spread"] = round(st["ask"] - st["bid"], 6)
+                        if st.get("price") is None:
+                            st["price"] = round((st["bid"] + st["ask"]) / 2.0, 6)
+                    if prev is not None and prev > 0:
+                        st["previous_close"] = prev
+                    if db is not None:
+                        dh = _f(getattr(db, "high", None)); dl = _f(getattr(db, "low", None))
+                        dv = _i(getattr(db, "volume", None))
+                        if dh is not None:
+                            st["premarket_high"] = dh if st["premarket_high"] is None else max(st["premarket_high"], dh)
+                        if dl is not None:
+                            st["premarket_low"] = dl if st["premarket_low"] is None else min(st["premarket_low"], dl)
+                        if dv is not None:
+                            st["premarket_volume"] = dv
+                    if st.get("price") is not None and st.get("previous_close"):
+                        st["premarket_change"] = round(st["price"] - st["previous_close"], 6)
+                        st["premarket_change_pct"] = round(st["premarket_change"] / st["previous_close"] * 100.0, 6)
+                    st["updated_at"] = now; st["_updated_ts"] = ts
+                    st["source"] = SOURCE_ALPACA; st["stale"] = False; st["error"] = None
+                    self.state[sym] = st; self.symbols_updated.add(sym)
+                    self.last_message_at = now; self.fallback_active = False
+            except Exception as e:
+                logger.debug("alpaca snapshot apply %s failed: %s", sym, e)
+
+    def _run_alpaca_poll(self) -> None:
+        """Daemon-thread entry: poll Alpaca REST snapshots for ALL symbols in one request every
+        ALPACA_POLL_SECONDS (no streaming cap, no rotation — every symbol covered each poll).
+        Falls back to the yfinance/Alpaca premarket logic on repeated failure or missing
+        SDK/creds. Never raises."""
+        try:
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockSnapshotRequest
+            from alpaca.data.enums import DataFeed
+        except Exception as e:
+            logger.warning("alpaca data SDK unavailable (%s) — using yfinance/Alpaca fallback", e)
+            self._mark_fallback("alpaca_sdk_unavailable")
+            return
+        key = os.getenv("APCA_API_KEY_ID", ""); secret = os.getenv("APCA_API_SECRET_KEY", "")
+        if not key or not secret:
+            logger.warning("APCA creds missing for Alpaca feed — using yfinance/Alpaca fallback")
+            self._mark_fallback("alpaca_creds_missing")
+            return
+        client = StockHistoricalDataClient(key, secret)
+        feed = DataFeed.SIP if os.getenv("ALPACA_DATA_FEED", "iex").lower() == "sip" else DataFeed.IEX
+        poll = float(os.getenv("ALPACA_POLL_SECONDS", str(ALPACA_POLL_SECONDS)) or 2)
+        fails = 0
+        while not self._stop_event.is_set() and not self.shutdown_requested:
+            syms = list(dict.fromkeys(self.symbols))
+            if syms:
+                try:
+                    snaps = client.get_stock_snapshot(
+                        StockSnapshotRequest(symbol_or_symbols=syms, feed=feed))
+                    self._apply_alpaca_snapshots(snaps)
+                    fails = 0
+                    if self.feed_status not in ("running",):
+                        self.feed_status = "running"
+                except Exception as e:
+                    fails += 1
+                    self.error = str(e)[:300]; self.error_count += 1
+                    logger.debug("alpaca snapshot poll failed (%d): %s", fails, e)
+                    if fails >= 5:
+                        logger.warning("alpaca poll failing repeatedly — using yfinance/Alpaca fallback")
+                        self._mark_fallback("alpaca_poll_failed"); return
+            self._stop_event.wait(poll)
 
     def apply_fallback_quotes(self, quotes_by_symbol: Dict[str, Dict[str, Any]],
                               source: str = SOURCE_FALLBACK) -> None:
@@ -619,12 +702,15 @@ class PremarketLiveFeed:
         source = SOURCE_LIVE
         if quotes:
             srcs = {q.get("source") for q in quotes.values()}
-            source = SOURCE_LIVE if SOURCE_LIVE in srcs else (next(iter(srcs)) if srcs else SOURCE_LIVE)
+            live_present = srcs & LIVE_SOURCES          # prefer any LIVE source (alpaca|yliveticker)
+            source = (next(iter(live_present)) if live_present
+                      else (next(iter(srcs)) if srcs else SOURCE_LIVE))
         elif self.fallback_used:
             source = self.fallback_source or SOURCE_FALLBACK
         return {
             "generated_at": _now_iso(),
             "source": source,
+            "is_live": source in LIVE_SOURCES,          # explicit liveness flag for consumers
             "symbols": list(self.symbols),
             "quotes": quotes,
             "stale_symbols": stale_symbols,
