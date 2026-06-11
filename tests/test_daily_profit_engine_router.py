@@ -1,10 +1,15 @@
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from daily_profit_engine import DailyOpportunityRouter, RouterConfig, TradeOpportunity
+
+# route() gates on the wall-clock entry-window cutoff (default 15:30 ET). Pin a
+# pre-cutoff time so approval tests are deterministic regardless of when they run.
+_BEFORE_CUTOFF = datetime(2026, 6, 11, 10, 0, tzinfo=ZoneInfo("America/New_York"))
 
 
 def _opp(symbol, **kwargs):
@@ -35,7 +40,8 @@ def test_ranking_prefers_edge_over_quota_filling():
     strong = _opp("STRONG", probability=0.90, expected_r=3.0, score=90, liquidity_score=0.9)
     mid = _opp("MID", probability=0.75, expected_r=2.0, score=75, liquidity_score=0.7)
 
-    result = router.route([weak, strong, mid], market_context={"overall_market_bias": "bullish"})
+    result = router.route([weak, strong, mid], market_context={"overall_market_bias": "bullish"},
+                          now_et=_BEFORE_CUTOFF)
 
     assert [o.symbol for o in result.approved] == ["STRONG", "MID"]
     assert any(r.symbol == "WEAK" and r.blocked_by == "opportunity_rank" for r in result.rejected)
@@ -46,6 +52,7 @@ def test_daily_cap_blocks_buys_but_not_sell_permission():
     result = router.route(
         [_opp("A"), _opp("B", probability=0.80, expected_r=2.5)],
         market_context={"overall_market_bias": "bullish"},
+        now_et=_BEFORE_CUTOFF,
     )
 
     assert len(result.approved) == 1
