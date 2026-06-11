@@ -11,9 +11,12 @@ import run
 
 
 class MaxAffordableQtyTests(unittest.TestCase):
-    def _risk(self, equity=100_000.0, stock_exposure=0.0, max_order_dollars=0.0):
+    def _risk(self, equity=100_000.0, stock_exposure=0.0, max_order_dollars=0.0, cash=None):
         r = run.RiskManager.__new__(run.RiskManager)
         r.equity = equity
+        # max_affordable_qty also reserves the free-cash buffer (cash - CASH_BUFFER_PCT*equity);
+        # default cash=equity so that term is non-binding and these tests isolate the other caps.
+        r.cash = equity if cash is None else cash
         r.stock_exposure = stock_exposure
         r.options_exposure = 0.0
         r.max_order_dollars = max_order_dollars
@@ -36,6 +39,15 @@ class MaxAffordableQtyTests(unittest.TestCase):
         r = self._risk(equity=100_000.0, stock_exposure=0.0, max_order_dollars=1_000.0)
         self.assertEqual(r.max_affordable_qty("buy", price=40.0), 25)
 
+    def test_free_cash_buffer_is_binding_when_tighter(self):
+        # Plenty of exposure room, but low free cash: room = cash - CASH_BUFFER_PCT*equity.
+        # Pin cash so the free-cash room is exactly $1000 regardless of the configured buffer pct;
+        # px=40 → 25 shares.
+        equity = 100_000.0
+        cash = run.CASH_BUFFER_PCT * equity + 1_000.0   # free-cash room = $1000
+        r = self._risk(equity=equity, stock_exposure=0.0, cash=cash)
+        self.assertEqual(r.max_affordable_qty("buy", price=40.0), 25)
+
     def test_sells_are_not_trimmed(self):
         r = self._risk()
         self.assertIsNone(r.max_affordable_qty("sell", price=40.0))
@@ -48,6 +60,7 @@ class MaxAffordableQtyTests(unittest.TestCase):
         # Full gate: trim qty to fit, then gate() must allow it (cap respected).
         r = run.RiskManager.__new__(run.RiskManager)
         r.equity = 100_000.0
+        r.cash = 100_000.0
         r.starting_equity = 100_000.0
         r.stock_exposure = 76_000.0
         r.options_exposure = 0.0
