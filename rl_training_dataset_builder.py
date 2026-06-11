@@ -201,6 +201,14 @@ def build_all(out_dir: Path = None) -> Dict[str, Any]:
     Includes both live Research-Lab events and replayed Alpaca-backfill events (Phase 1),
     so the offline historical replay enlarges the RL training set."""
     events = rc.load_research_events() + rc.load_backfill_events()
+    # PIT-safe Alpaca-news enrichment: inject the 10 NEWS_FEATURES per event so they aren't all-zero.
+    # Only when RL_NEWS_FEATURES=1 (the AV/no-news path is unchanged); fail-safe (events keep neutral).
+    if os.getenv("RL_NEWS_FEATURES", "0") == "1":
+        try:
+            from enrich_events_with_news import enrich_events
+            logger.info("news enrichment: %s", enrich_events(events))
+        except Exception as _e:
+            logger.warning("news enrichment skipped: %s", str(_e)[:160])
     builders = {
         "alpha_entry_dataset": build_alpha_entry_dataset,
         "alpha_exit_dataset": build_alpha_exit_dataset,
