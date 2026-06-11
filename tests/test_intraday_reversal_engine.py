@@ -160,21 +160,31 @@ class TriggerAndEmissionTests(unittest.TestCase):
 
 
 class SortingAndFunnelTests(unittest.TestCase):
-    def test_sorted_by_volume_desc_then_score(self):
-        rows = [_base(symbol="LOWV", volume=3_500_000),
-                _base(symbol="HIGHV", volume=9_000_000)]
+    def test_sorted_by_5min_volume_desc(self):
+        # 5-min volume drives the order even when DAY volume disagrees: B has lower
+        # day volume but higher 5-min volume, so it ranks first.
+        rows = [_base(symbol="A", volume=9_000_000, vol_5m=100_000),
+                _base(symbol="B", volume=3_500_000, vol_5m=500_000)]
+        res = scan(rows, CFG)
+        self.assertEqual([c.symbol for c in res.candidates], ["B", "A"])
+
+    def test_sort_falls_back_to_day_volume_when_no_5min(self):
+        rows = [_base(symbol="LOWV", volume=3_500_000, vol_5m=None),
+                _base(symbol="HIGHV", volume=9_000_000, vol_5m=None)]
         res = scan(rows, CFG)
         self.assertEqual([c.symbol for c in res.candidates], ["HIGHV", "LOWV"])
 
     def test_funnel_has_required_fields(self):
-        res = scan([_base(), _base(symbol="X", chg_pct=0.5)], CFG)
+        res = scan([_base(vol_5m=300_000), _base(symbol="X", chg_pct=0.5)], CFG)
         f = res.funnel()
         for k in ("scanned", "passed_universe", "passed_setup", "eligible_for_entry",
-                  "rejected_by", "top_candidates"):
+                  "rejected_by", "sorted_by", "top_candidates"):
             self.assertIn(k, f)
         self.assertEqual(f["scanned"], 2)
+        self.assertEqual(f["sorted_by"], "vol_5m_desc_then_score")
         self.assertIn("chg_not_negative", f["rejected_by"])
         self.assertIn("score_components", f["top_candidates"][0])
+        self.assertIn("vol_5m", f["top_candidates"][0])
 
 
 class PaperGateTests(unittest.TestCase):

@@ -152,6 +152,7 @@ class ReversalInput:
     daily_history: Any = None # daily OHLCV (for ATR)
     # optional precomputed / override metrics
     rvol: Optional[float] = None
+    vol_5m: Optional[float] = None   # last-5-minute volume (universe sort key); else last 5 bars
     vwap_reclaim: Optional[bool] = None
     rsi_rising: Optional[bool] = None
     rsi_cross_40: Optional[bool] = None
@@ -185,6 +186,7 @@ class ScoredCandidate:
     prev_day_high: Optional[float] = None         # PDH target (carried from input)
     option_chain: Optional[list] = None           # carried for the options overlay
     price_now: float = 0.0
+    vol_5m: Optional[float] = None                # last-5-minute volume (universe sort key)
 
 
 @dataclass
@@ -311,6 +313,18 @@ def derive_metrics(inp: ReversalInput, cfg: EngineConfig) -> dict[str, Any]:
     # RVOL: explicit, else volume / avg_volume.
     m["rvol"] = (inp.rvol if inp.rvol is not None
                  else (inp.volume / inp.avg_volume if inp.avg_volume > 0 else 0.0))
+
+    # 5-minute volume (universe sort key): explicit, else the sum of the last 5
+    # one-minute bars; None when neither is available (sort falls back to day volume).
+    if inp.vol_5m is not None:
+        m["vol_5m"] = _finite(inp.vol_5m)
+    elif bars is not None and _safe_len(bars) >= 1:
+        try:
+            m["vol_5m"] = float(bars["volume"].tail(5).sum())
+        except Exception:
+            m["vol_5m"] = None
+    else:
+        m["vol_5m"] = None
 
     # ATR: explicit, else daily ATR, else intraday mean range, else price proxy.
     atr = inp.atr
@@ -559,11 +573,11 @@ def score_candidate(inp: ReversalInput, cfg: Optional[EngineConfig] = None) -> S
         symbol=inp.symbol, score=score, volume=_finite(inp.volume), price=_finite(inp.price),
         passed_universe=True, passed_setup=passed_setup, eligible=eligible, blocked_by=blocked_by,
         reasons=reasons, score_components=comp,
-        metrics={k: m[k] for k in ("rvol", "atr", "vwap_reclaim", "rsi_rising", "rsi_cross_40",
-                                   "close_gt_open", "sweep_reclaim", "orb_reclaim",
+        metrics={k: m[k] for k in ("rvol", "vol_5m", "atr", "vwap_reclaim", "rsi_rising",
+                                   "rsi_cross_40", "close_gt_open", "sweep_reclaim", "orb_reclaim",
                                    "above_ema20_5m", "recovering", "extended_atr", "near_low_atr")},
         prev_day_high=previous_day_high(inp), option_chain=inp.option_chain,
-        price_now=_finite(inp.price))
+        price_now=_finite(inp.price), vol_5m=m.get("vol_5m"))
 
 
 # ---------------------------------------------------------------------------
@@ -597,8 +611,9 @@ class ScanResult:
             "eligible_for_entry": len(self.eligible),
             "min_score": self.cfg.min_score,
             "rejected_by": dict(sorted(self.rejected_by.items(), key=lambda kv: -kv[1])),
+            "sorted_by": "vol_5m_desc_then_score",
             "top_candidates": [
-                {"symbol": c.symbol, "volume": c.volume, "score": c.score,
+                {"symbol": c.symbol, "vol_5m": c.vol_5m, "volume": c.volume, "score": c.score,
                  "eligible": c.eligible, "blocked_by": c.blocked_by,
                  "reasons": c.reasons, "score_components": c.score_components}
                 for c in self.candidates[:top]
@@ -606,9 +621,16 @@ class ScanResult:
         }
 
 
+def _sort_key(c: ScoredCandidate) -> tuple[float, float]:
+    """Universe sort: 5-MINUTE VOLUME desc, then SCORE desc. Falls back to day
+    volume when a candidate has no 5m volume (so ordering stays deterministic)."""
+    v5 = c.vol_5m if c.vol_5m is not None else c.volume
+    return (-_finite(v5), -c.score)
+
+
 def scan(rows: list[ReversalInput], cfg: Optional[EngineConfig] = None) -> ScanResult:
     """Score a universe. Pure: no Alpaca, no orders. Candidates that clear the
-    universe filter are sorted by VOLUME DESC, then SCORE DESC (spec)."""
+    universe filter are sorted by 5-MINUTE VOLUME DESC, then SCORE DESC."""
     cfg = cfg or EngineConfig()
     scored = [score_candidate(r, cfg) for r in rows]
     rejected: dict[str, int] = {}
@@ -620,7 +642,7 @@ def scan(rows: list[ReversalInput], cfg: Optional[EngineConfig] = None) -> ScanR
             passed.append(c)
             if c.blocked_by:   # passed universe but not eligible (no trigger / below score)
                 rejected[c.blocked_by] = rejected.get(c.blocked_by, 0) + 1
-    passed.sort(key=lambda c: (-c.volume, -c.score))
+    passed.sort(key=_sort_key)
     return ScanResult(scanned=len(rows), candidates=passed, rejected_by=rejected, cfg=cfg)
 
 
@@ -844,6 +866,7 @@ def _demo_rows() -> list[ReversalInput]:
                       rvol=2.6, vwap_reclaim=True, rsi_rising=True, rsi_cross_40=True,
                       close_gt_open=True, sweep_reclaim=True, orb_reclaim=True, above_ema20_5m=True,
                       recovering=True, extended_atr=0.6, atr=0.9, prev_day_high=44.50,
+                      vol_5m=420_000,
                       option_chain=[
                           {"expiry": "2026-06-12", "strike": 42.0, "type": "call", "bid": 1.10,
                            "ask": 1.20, "dte": 1, "open_interest": 2500, "volume": 800},
@@ -857,6 +880,7 @@ def _demo_rows() -> list[ReversalInput]:
                       rvol=1.7, vwap_reclaim=True, rsi_rising=True, rsi_cross_40=False,
                       close_gt_open=True, sweep_reclaim=False, orb_reclaim=False, above_ema20_5m=True,
                       recovering=True, extended_atr=0.4, atr=0.4, prev_day_high=19.40,
+                      vol_5m=610_000,
                       option_chain=[
                           {"expiry": "2026-06-13", "strike": 18.5, "type": "call", "bid": 0.55,
                            "ask": 0.62, "dte": 2, "open_interest": 1200, "volume": 150},
@@ -867,7 +891,7 @@ def _demo_rows() -> list[ReversalInput]:
                       chg_pct=-0.4, perf_1w=-1.2, analyst_rating="strong buy", os_rating="strong buy",
                       rvol=1.6, vwap_reclaim=True, rsi_rising=True, rsi_cross_40=False,
                       close_gt_open=True, sweep_reclaim=False, orb_reclaim=False, above_ema20_5m=False,
-                      recovering=False, extended_atr=4.5, atr=2.0),
+                      recovering=False, extended_atr=4.5, atr=2.0, vol_5m=180_000),
         # Rejected universe: green today.
         ReversalInput(symbol="GREN", price=33.0, volume=6_000_000, avg_volume=2_000_000,
                       chg_pct=+1.1, perf_1w=-2.0, analyst_rating="strong buy", os_rating="strong buy"),
@@ -890,10 +914,12 @@ def run_demo(cfg: Optional[EngineConfig] = None) -> ScanResult:
           f"passed_setup={f['passed_setup']}  eligible={f['eligible_for_entry']}")
     print(f"rejected_by={f['rejected_by']}")
     print("-" * 78)
-    print(f"{'SYMBOL':<8}{'VOLUME':>12}{'SCORE':>8}{'ELIG':>6}  REASONS")
+    print(f"(universe sorted by 5-min volume desc, then score)")
+    print(f"{'SYMBOL':<8}{'5MIN VOL':>11}{'DAY VOL':>12}{'SCORE':>7}{'ELIG':>6}  REASONS")
     for c in res.candidates:
-        print(f"{c.symbol:<8}{int(c.volume):>12,}{c.score:>8.0f}{('Y' if c.eligible else '-'):>6}  "
-              f"{', '.join(c.reasons[:5])}")
+        v5 = int(c.vol_5m) if c.vol_5m is not None else 0
+        print(f"{c.symbol:<8}{v5:>11,}{int(c.volume):>12,}{c.score:>7.0f}"
+              f"{('Y' if c.eligible else '-'):>6}  {', '.join(c.reasons[:4])}")
     # proposed share entries (dry-run sizing on a demo account; still NO orders placed)
     equity = 100_000.0
     orders = propose_entries(res, equity=equity, open_symbols=set(), cfg=cfg)
