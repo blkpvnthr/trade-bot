@@ -8,11 +8,23 @@ import math
 import sys
 import types
 import unittest
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import alpha_call_engine as ace
+
+
+class _PreCutoffDateTime(datetime):
+    """Pin alpha_call_engine's clock pre-cutoff so the EOD forced-close path does not
+    pre-empt the exit-ladder/hard-stop assertions when the suite runs after 15:45 ET."""
+    @classmethod
+    def now(cls, tz=None):
+        if tz is not None:
+            return datetime(2026, 6, 11, 10, 0, 0, tzinfo=tz)
+        return cls(2026, 6, 11, 10, 0, 0)
 from alpha_call_engine import (
     AlphaCallConfig, AlphaCallEngine, ActiveCall,
     compute_volatility_diagnostics, overnight_hold_score, price_call_contract,
@@ -103,7 +115,8 @@ class AlphaUpgradeTests(unittest.TestCase):
                           partial_value=800.0 * (1 + self.CFG.partial_profit_pct), peak_value=800.0)
         eng._active["XYZ"] = call
         positions = [{"symbol": "XYZ250601C00100000", "qty": 2, "unrealized_plpc": -0.50}]
-        exits = eng._check_active_positions(positions, waterfall_callback=None, market_context={})
+        with patch.object(ace, "datetime", _PreCutoffDateTime):
+            exits = eng._check_active_positions(positions, waterfall_callback=None, market_context={})
         self.assertTrue(any(o["source"] == "alpha_call_hard_stop" for o in exits),
                         "hard-stop ladder must fire without any Black-Scholes inputs")
         # Solving IV from an impossible market price returns the graceful BS reject,
