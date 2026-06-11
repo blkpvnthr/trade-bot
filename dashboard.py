@@ -416,6 +416,10 @@ def _pf_str(pf):
 
 # ── auth ──────────────────────────────────────────────────────────────────────
 def _authed():
+    # Local/paper open-access escape hatch: when DASH_OPEN_ACCESS is set the dashboard
+    # skips login entirely. Default OFF so the live/droplet deployments keep their auth.
+    if os.environ.get("DASH_OPEN_ACCESS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
     if session.get("auth"):
         return True
     if DASH_TOKEN and (request.args.get("token") == DASH_TOKEN
