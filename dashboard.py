@@ -533,6 +533,9 @@ tr.main td{border-bottom:none}
 .lbl{color:#9b85d6;text-transform:uppercase;font-size:9px;border:1px solid #3a3550;border-radius:4px;
 padding:1px 4px;margin-right:4px;letter-spacing:.05em}.lbl.x{color:#15b4ff;border-color:#2f4a66}
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tradingview-widget-container{position:relative;width:100%;max-width:100%;overflow:hidden;border-radius:6px}
+.tradingview-widget-container__widget{width:100%;height:100%}
+.tradingview-widget-container iframe{width:100%!important;max-width:100%!important;height:100%!important;border:0;display:block}
 .sub{color:#6a6a88;font-size:12px;margin-top:2px}
 .logbox{background:#000;border:1px solid #23232e;border-radius:8px;padding:10px;height:72vh;overflow:auto;
 font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word;color:#9391d4}
@@ -714,8 +717,6 @@ def home():
       <div class=card><div class=k>Account equity</div><div class=v>{_money(acct['equity'])}</div><div class=sub>cash {_money(acct['cash'])}</div></div>
       <div class=card><div class=k>Today account P&L</div><div class=v>{_pnl(acct['day_pnl'])}</div><div class=sub>{_pct(acct['day_pnl_pct'])} vs prior close</div></div>
       <div class=card><div class=k>Today realized</div><div class=v>{_pnl(td['pnl'])}</div><div class=sub>{td['n']} trades · {(td['wins']/td['n']*100 if td['n'] else 0):.0f}% win</div></div>
-    </div>
-    <div class=cards style="margin-top:10px">
       <div class=card><div class=k>Month · Automated</div><div class=v>{_pnl(auto_pnl)}</div><div class=sub>{auto_n} bot round-trips (qqbot-*)</div></div>
       <div class=card><div class=k>Month · Manual</div><div class=v>{_pnl(man_pnl)}</div><div class=sub>{man_n} discretionary round-trips</div></div>
       <div class=card><div class=k>Month · Net realized</div><div class=v>{_pnl(m_pnl)}</div><div class=sub>automated + manual</div></div>
@@ -1068,46 +1069,34 @@ def positions_charts():
     if not pos:
         body = '<h1>Open positions</h1><div class="card"><span class="muted">Flat — no open positions.</span></div>'
         return page("Positions", body, "positions")
-    syms, cards = [], []
+    cards = []
     for p in pos:
         sym = str(getattr(p, "symbol", "") or "")
         if not sym:
             continue
-        syms.append(sym)
         qty = getattr(p, "qty", "")
         mv = float(getattr(p, "market_value", 0) or 0)
         upl = getattr(p, "unrealized_pl", None)
         upl_s = f" · {_pnl(float(upl))}" if upl not in (None, "") else ""
+        if _occ(sym):
+            tv_sym = sym[:-15]; tag = ' <span class="muted">opt</span>'
+        else:
+            tv_sym = sym; tag = ""
+        cfg = json.dumps({"symbol": tv_sym, "width": "100%", "height": "100%", "locale": "en",
+                          "dateRange": "1D", "colorTheme": "dark", "isTransparent": True,
+                          "autosize": True, "chartOnly": False})
         cards.append(
-            f'<div class="card" style="padding:10px">'
-            f'<div class=k>{sym}</div>'
+            '<div class="card" style="padding:10px">'
+            f'<div class=k>{sym}{tag}</div>'
             f'<div class=sub>qty {qty} · mv {_money(mv)}{upl_s}</div>'
-            f'<div id="ch_{sym}" style="height:200px;margin-top:6px"></div></div>')
+            '<div class="tradingview-widget-container" style="height:260px;margin-top:6px">'
+            '<div class="tradingview-widget-container__widget" style="height:100%;width:100%"></div>'
+            '<script type="text/javascript" async '
+            'src="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js">'
+            f'{cfg}</script></div></div>')
     grid = ('<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">'
             + "".join(cards) + "</div>")
-    js = (
-        '<script src="https://unpkg.com/lightweight-charts@5/dist/lightweight-charts.standalone.production.js"></script>'
-        '<script>(function(){'
-        f'var P="{PREFIX}";var syms={json.dumps(syms)};'
-        'var LWC=window.LightweightCharts;'
-        'if(!(LWC&&LWC.createChart&&LWC.CandlestickSeries))return;'
-        'syms.forEach(function(sym){'
-        ' var el=document.getElementById("ch_"+sym);if(!el)return;'
-        ' var chart=LWC.createChart(el,{height:200,width:el.clientWidth,'
-        '   layout:{background:{type:"solid",color:"transparent"},textColor:"#8b949e",attributionLogo:false},'
-        '   grid:{vertLines:{visible:false},horzLines:{color:"rgba(255,255,255,0.05)"}},'
-        '   rightPriceScale:{borderVisible:false},timeScale:{borderVisible:false,timeVisible:true,secondsVisible:false},'
-        '   handleScroll:false,handleScale:false});'
-        ' var s=chart.addSeries(LWC.CandlestickSeries,{upColor:"#3fb950",downColor:"#f85149",'
-        '   borderVisible:false,wickUpColor:"#3fb950",wickDownColor:"#f85149"});'
-        ' fetch(P+"/candles?symbol="+encodeURIComponent(sym),{credentials:"same-origin"})'
-        '  .then(function(r){return r.json();})'
-        '  .then(function(d){if(d.candles&&d.candles.length){s.setData(d.candles);chart.timeScale().fitContent();}'
-        '    else{el.innerHTML="<span class=\\"muted\\" style=\\"font-size:12px\\">no intraday data</span>";}})'
-        '  .catch(function(){el.innerHTML="<span class=\\"muted\\" style=\\"font-size:12px\\">chart error</span>";});'
-        ' new ResizeObserver(function(){chart.resize(el.clientWidth,200);}).observe(el);'
-        '});})();</script>')
-    body = f"<h1>Open positions <span class=muted style=font-size:13px>· {len(syms)} · intraday 1-min</span></h1>{fresh}</h2>{grid}{js}"
+    body = f"<h1>Open positions <span class=muted style=font-size:13px>· {len(pos)} · TradingView</span></h1>{fresh}</h2>{grid}"
     return page("Positions", body, "positions")
 
 
