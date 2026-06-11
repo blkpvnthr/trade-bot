@@ -181,3 +181,6 @@ reports/
 *.db
 *.mov
 tradingview-mcp/
+
+# instance-2 runtime logs
+logs-instance2/

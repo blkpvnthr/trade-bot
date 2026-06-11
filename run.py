@@ -69,7 +69,18 @@ ET = ZoneInfo("America/New_York")
 # Load .env before any module-level env reads so creds/config are populated.
 try:
     from dotenv import load_dotenv
-    load_dotenv(PROJECT_ROOT / ".env")
+    # Instance-isolation: load EXACTLY ONE env file -- the dedicated file named in
+    # ENV_FILE. No parent/shared .env, no layered defaults, no fallback dotenv: this
+    # instance reads ONLY its own .env (e.g. .env.nonl0cal2). When ENV_FILE is unset
+    # we fall back to the classic single PROJECT_ROOT/.env for non-instance use.
+    _env_file = os.environ.get("ENV_FILE", "").strip()
+    if _env_file:
+        _ep = Path(_env_file)
+        if not _ep.is_absolute():
+            _ep = PROJECT_ROOT / _env_file
+        load_dotenv(_ep, override=True)
+    else:
+        load_dotenv(PROJECT_ROOT / ".env")
 except Exception:
     pass
 
@@ -5524,6 +5535,15 @@ def main():
     logging.getLogger("peewee").setLevel(logging.WARNING)
 
     logger.info("QuantumQuant  mode=%s  paper_only=%s  data_tag=%s", MODE, ALPACA_PAPER_ONLY, DATA_TAG)
+
+    # --- env-isolation proof: this instance loads ONLY its dedicated ENV_FILE ---
+    # Logged AFTER all module-level imports (incl. trade.py) so it reflects the
+    # final os.environ. OPENAI_API_KEY exists ONLY in the full .env; INSTANCE_LABEL
+    # exists ONLY in .env.nonl0cal2. A clean instance => OPENAI ABSENT, LABEL PRESENT.
+    logger.info("ENV-ISOLATION loaded_env_file=%s", os.environ.get("ENV_FILE", "<unset:PROJECT_ROOT/.env>"))
+    logger.info("ENV-ISOLATION OPENAI_API_KEY(only in .env)=%s  INSTANCE_LABEL(only in .env.nonl0cal2)=%s",
+                "PRESENT(LEAK!)" if os.environ.get("OPENAI_API_KEY") else "ABSENT(ok)",
+                os.environ.get("INSTANCE_LABEL", "ABSENT(unexpected)"))
 
     if MODE == "train":
         run_training()

@@ -110,7 +110,7 @@ def get_ph(ttl=300):
         return _CACHE["ph"]
     import requests
     try:
-        r = requests.get("https://api.alpaca.markets/v2/account/portfolio/history",
+        r = requests.get((os.environ.get("DASH_ALPACA_BASE") or ("https://paper-api.alpaca.markets" if _paper_mode() else "https://api.alpaca.markets")) + "/v2/account/portfolio/history",
                          params={"period": "1A", "timeframe": "1D", "extended_hours": "false"},
                          headers={"APCA-API-KEY-ID": os.environ["APCA_API_KEY_ID"],
                                   "APCA-API-SECRET-KEY": os.environ["APCA_API_SECRET_KEY"],
@@ -401,11 +401,11 @@ def login_page(err=""):
     prov = dash_auth.providers()
     btns = ""
     if prov["google"]:
-        btns += (f'<a class="btn" href="{PREFIX}/auth/google" style="display:block;background:#fff;'
-                 'color:#202124;width:100%;margin-bottom:8px">Continue with Google</a>')
+        btns += (f'<a class="btn" href="{PREFIX}/auth/google" style="display:block;'
+                 'width:100%;margin-bottom:8px">Continue with Google</a>')
     if prov["github"]:
-        btns += (f'<a class="btn" href="{PREFIX}/auth/github" style="display:block;background:#24292f;'
-                 'color:#fff;width:100%;margin-bottom:8px">Continue with GitHub</a>')
+        btns += (f'<a class="btn" href="{PREFIX}/auth/github" style="display:block;'
+                 'width:100%;margin-bottom:8px">Continue with GitHub</a>')
     sep = '<div class="sub muted" style="margin:10px 0">or sign in with email</div>' if btns else ""
     return Response(f"""<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><title>Sign in · QuantumQuant</title>
@@ -417,7 +417,7 @@ def login_page(err=""):
 style="width:100%;margin-bottom:8px">
 <input class=minput type=password name=password placeholder=Password autocomplete=current-password
 style="width:100%;margin-bottom:12px">
-<button class="btn" style="background:#1f6feb;width:100%">Sign in</button></form>
+<button class="btn" style="width:100%">Sign in</button></form>
 </div></div></body></html>""", mimetype="text/html")
 
 
@@ -454,46 +454,61 @@ dash_auth.register_auth_routes(app, PREFIX)   # Google + GitHub OAuth callbacks 
 
 # ── shared HTML chrome ────────────────────────────────────────────────────────
 CSS = """
-*{box-sizing:border-box}body{margin:0;background:#0d1117;color:#e6edf3;
-font:15px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;-webkit-text-size-adjust:100%}
-a{color:#58a6ff;text-decoration:none}.wrap{max-width:760px;margin:0 auto;padding:14px}
-.nav{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
-.nav a{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px 12px;font-weight:600}
-.nav a.on{background:#1f6feb;border-color:#1f6feb;color:#fff}
-h1{font-size:18px;margin:4px 0 12px}h2{font-size:15px;color:#8b949e;margin:18px 0 8px;font-weight:600}
+*{box-sizing:border-box}
+body{margin:0;background:#000;color:#9d9bd0;
+font:14px/1.55 ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+-webkit-text-size-adjust:100%}
+a{color:#15b4ff;text-decoration:none;border-bottom:1px dotted #2f3650}
+a:hover{border-bottom-color:#15b4ff}
+.wrap{max-width:820px;margin:0 auto;padding:16px}
+.nav{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.nav a{background:#08080f;border:1px solid #2a2a3a;border-radius:6px;padding:7px 12px;font-weight:600;
+text-transform:uppercase;letter-spacing:.05em;font-size:12px;color:#b2aee6}
+.nav a.on{background:#15b4ff;border-color:#15b4ff;color:#000}
+.nav a:hover{background:#15151f;border-color:#3a3a52}
+h1{font-size:16px;margin:4px 0 14px;letter-spacing:.04em;font-weight:700;color:#cdccf0}
+h1::before{content:"> ";color:#15b4ff}
+h2{font-size:12px;color:#8aa0ff;margin:20px 0 8px;font-weight:600;text-transform:uppercase;letter-spacing:.08em}
 .cards{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:14px}
-.card .k{color:#8b949e;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
-.card .v{font-size:22px;font-weight:700;margin-top:4px}
-.pos{color:#3fb950}.neg{color:#f85149}.muted{color:#6e7681}
+.card{background:#08080f;border:1px solid #23232e;border-radius:10px;padding:14px}
+.card .k{color:#8786b5;font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+.card .v{font-size:22px;font-weight:700;margin-top:6px;color:#d3e8ff}
+.pos{color:#89ffdc;font-weight:700}.neg{color:#db9da7;font-weight:700}.muted{color:#5a5a78}
 table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
-th,td{padding:8px 6px;text-align:right;border-bottom:1px solid #21262d;white-space:nowrap}
-th:first-child,td:first-child{text-align:left}thead th{color:#8b949e;font-weight:600;position:sticky;top:0;background:#0d1117}
-tr.tot td{font-weight:700;border-top:2px solid #30363d;background:#161b22}
-tr.detail td{text-align:left;color:#9da7b1;font-size:11px;white-space:normal;word-break:break-word;
-padding:2px 6px 9px;border-bottom:1px solid #21262d}
+th,td{padding:7px 6px;text-align:right;border-bottom:1px solid #1b1b26;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+thead th{color:#8aa0ff;font-weight:600;position:sticky;top:0;background:#000;text-transform:uppercase;
+font-size:11px;letter-spacing:.05em}
+tr.tot td{font-weight:700;border-top:1px solid #2f2f44;background:#08080f;color:#cdccf0}
+tr.detail td{text-align:left;color:#8786b5;font-size:11px;white-space:normal;word-break:break-word;
+padding:2px 6px 9px;border-bottom:1px solid #1b1b26}
 tr.main td{border-bottom:none}
-.lbl{color:#6e7681;text-transform:uppercase;font-size:9px;border:1px solid #30363d;border-radius:4px;
-padding:1px 4px;margin-right:4px;letter-spacing:.03em}.lbl.x{color:#d29922;border-color:#5a4a1a}
+.lbl{color:#9b85d6;text-transform:uppercase;font-size:9px;border:1px solid #3a3550;border-radius:4px;
+padding:1px 4px;margin-right:4px;letter-spacing:.05em}.lbl.x{color:#15b4ff;border-color:#2f4a66}
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
-.sub{color:#6e7681;font-size:12px;margin-top:2px}
-.logbox{background:#010409;border:1px solid #30363d;border-radius:10px;padding:10px;
-height:72vh;overflow:auto;font:12px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;
-white-space:pre-wrap;word-break:break-word;color:#c9d1d9}
-tr.tap{cursor:pointer}tr.tap:active td{background:#1c2330}
-.modalbg{display:none;position:fixed;inset:0;background:rgba(1,4,9,.7);z-index:50;
+.sub{color:#6a6a88;font-size:12px;margin-top:2px}
+.logbox{background:#000;border:1px solid #23232e;border-radius:8px;padding:10px;height:72vh;overflow:auto;
+font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word;color:#9391d4}
+tr.tap{cursor:pointer}tr.tap:active td{background:#15151f}
+.modalbg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:50;
 align-items:flex-end;justify-content:center}
-.modal{background:#161b22;border:1px solid #30363d;border-radius:16px 16px 0 0;padding:18px;
-width:100%;max-width:760px;animation:up .15s ease-out}
+.modal{background:#08080f;border:1px solid #2a2a3a;border-radius:14px 14px 0 0;padding:18px;width:100%;
+max-width:760px;animation:up .15s ease-out}
 @keyframes up{from{transform:translateY(40px)}to{transform:none}}
-.mhead{display:flex;justify-content:space-between;align-items:center;font-size:18px;font-weight:700;margin-bottom:14px}
-.mclose{color:#8b949e;font-size:22px}.mrow{display:flex;align-items:center;gap:10px;margin-bottom:10px}
-.mrow span{color:#8b949e;width:42px}
-.minput{flex:1;background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:13px;color:#e6edf3;font-size:18px}
+.mhead{display:flex;justify-content:space-between;align-items:center;font-size:16px;font-weight:700;
+margin-bottom:14px;color:#cdccf0}
+.mclose{color:#8aa0ff;font-size:22px}.mrow{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.mrow span{color:#8786b5;width:42px}
+.minput{flex:1;background:#000;border:1px solid #2a2a3a;border-radius:8px;padding:13px;color:#cdccf0;
+font-size:15px;font-family:inherit}
+.minput:focus{outline:none;border-color:#15b4ff}
 .mbtns{display:flex;gap:10px;margin-top:8px}
-.btn{flex:1;padding:15px;border:none;border-radius:12px;font-size:16px;font-weight:700;color:#fff}
-.btn.buy{background:#238636}.btn.sell{background:#da3633}
-.mresult{min-height:22px;font-size:14px;margin:6px 0}.hint{color:#6e7681;font-size:11px}
+.btn{flex:1;padding:13px;border:1px solid #3a3550;border-radius:8px;font-size:14px;font-weight:700;
+color:#d8dcdf;background:#121416;font-family:inherit;text-transform:uppercase;letter-spacing:.04em;cursor:pointer}
+.btn:hover{background:#15b4ff;color:#000;border-color:#15b4ff}
+.btn.buy{background:#89ffdc;color:#000;border-color:#89ffdc}.btn.buy:hover{background:#a6ffe6}
+.btn.sell{background:#db9da7;color:#000;border-color:#db9da7}.btn.sell:hover{background:#e8b3bb}
+.mresult{min-height:22px;font-size:13px;margin:6px 0}.hint{color:#6a6a88;font-size:11px}
 """
 
 MODAL = """
