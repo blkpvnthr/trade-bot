@@ -72,9 +72,21 @@ def _nocache(resp):
     return resp
 
 
+def _paper_mode() -> bool:
+    """Resolve paper/live exactly as run.py does, from the SAME env aliases (default paper).
+    Keeps the dashboard's P&L (round-trips from this client) on the same account as the
+    equity card (the snapshot file run.py writes), so the two can't silently diverge."""
+    for name in ("ALPACA_PAPER_ONLY", "APCA_PAPER_ONLY", "APCA_PAPER", "ALPACA_PAPER"):
+        v = os.environ.get(name)
+        if v not in (None, ""):
+            return str(v).strip().lower() in {"1", "true", "yes", "y", "on", "paper"}
+    return True
+
+
 def _client():
     from alpaca.trading.client import TradingClient
-    return TradingClient(os.environ["APCA_API_KEY_ID"], os.environ["APCA_API_SECRET_KEY"], paper=False)
+    return TradingClient(os.environ["APCA_API_KEY_ID"], os.environ["APCA_API_SECRET_KEY"],
+                         paper=_paper_mode())
 
 
 def get_trips(ttl=60):
