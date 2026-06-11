@@ -169,6 +169,52 @@ def get_positions(ttl=30):
     return [SimpleNamespace(**p) for p in _read_snapshot().get("positions", [])]
 
 
+def get_open_orders(ttl=20):
+    """Working (open/accepted) orders from Alpaca, cached + fail-safe (never 500s the page).
+    Uses the same paper/live client as the rest of the dashboard via _paper_mode()."""
+    now = time.time()
+    if _CACHE.get("orders") is not None and now - _CACHE.get("orders_t", 0) < ttl:
+        return _CACHE["orders"]
+    try:
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+        od = _client().get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=200))
+        _CACHE["orders"], _CACHE["orders_t"] = od, now
+    except Exception as e:
+        import logging as _lg
+        _lg.getLogger("dashboard").warning("get_open_orders failed, keeping last-known: %s", str(e)[:120])
+        od = _CACHE.get("orders") or []
+    return od
+
+
+def orders_html(orders):
+    if not orders:
+        return '<h2>Active orders</h2><div class="card"><span class="muted">No working orders.</span></div>'
+    rows = ""
+    for o in sorted(orders, key=lambda x: str(getattr(x, "submitted_at", "")), reverse=True):
+        sym = getattr(o, "symbol", "") or ""
+        side = str(getattr(o, "side", "")).split(".")[-1].upper()
+        q = getattr(o, "qty", None)
+        notional = getattr(o, "notional", None)
+        qty_s = (f"{float(q):g}" if q not in (None, "") else (f"${float(notional):,.0f}" if notional else "—"))
+        otype = str(getattr(o, "order_type", None) or getattr(o, "type", "")).split(".")[-1].lower()
+        tif = str(getattr(o, "time_in_force", "")).split(".")[-1].upper()
+        lim = getattr(o, "limit_price", None)
+        stop = getattr(o, "stop_price", None)
+        px = (f"${float(lim):,.2f}" if lim else (f"stop ${float(stop):,.2f}" if stop else "mkt"))
+        fq = getattr(o, "filled_qty", None)
+        fill = f" · {float(fq):g} filled" if fq and float(fq) > 0 else ""
+        status = str(getattr(o, "status", "")).split(".")[-1].lower()
+        side_cls = "pos" if side == "BUY" else "neg"
+        rows += (f"<tr><td>{_fmt_sym(sym)}</td><td><span class={side_cls}>{side}</span></td>"
+                 f"<td>{qty_s}</td><td>{otype}</td><td>{px}</td><td>{tif}</td>"
+                 f"<td><span class=lbl>{status}</span>{fill}</td></tr>")
+    return ('<h2>Active orders <span class=muted style="font-size:13px">· ' + str(len(orders)) + '</span></h2>'
+            '<div class=scroll><table><thead><tr><th>Symbol</th><th>Side</th><th>Qty</th>'
+            '<th>Type</th><th>Price</th><th>TIF</th><th>Status</th></tr></thead><tbody>'
+            + rows + '</tbody></table></div>')
+
+
 def _fmt_sym(sym):
     """OCC option symbols -> readable 'AAPL 312.5C 06/08'; equities unchanged."""
     if not _occ(sym):
@@ -195,7 +241,7 @@ def equity_series(ph, current=None):
     return out
 
 
-def equity_svg(series, w=720, h=170):
+def equity_svg(series, w=720, h=280):
     if len(series) < 2:
         return '<div class="sub">building equity history…</div>'
     vals = [v for _, v in series]
@@ -238,7 +284,7 @@ def equity_hybrid_series(ph, current=None):
     return [(int(dt.timestamp()), float(v)) for dt, v in equity_series(ph, current=current)]
 
 
-def equity_lwc(series, svg_fallback, h=170):
+def equity_lwc(series, svg_fallback, h=280):
     """Render the account-equity curve with TradingView Lightweight Charts (open-source, CDN).
     Progressive enhancement: emits the existing SVG first, then upgrades it to an interactive
     chart if the library loads (so non-JS / failed-CDN still shows the sparkline).
@@ -469,7 +515,7 @@ text-transform:uppercase;letter-spacing:.05em;font-size:12px;color:#b2aee6}
 h1{font-size:16px;margin:4px 0 14px;letter-spacing:.04em;font-weight:700;color:#cdccf0}
 h1::before{content:"> ";color:#15b4ff}
 h2{font-size:12px;color:#8aa0ff;margin:20px 0 8px;font-weight:600;text-transform:uppercase;letter-spacing:.08em}
-.cards{display:grid;grid-template-columns:1fr;gap:10px}
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 @media(min-width:620px){.cards{grid-template-columns:repeat(3,minmax(0,1fr))}}
 .card{background:#08080f;border:1px solid #23232e;border-radius:10px;padding:14px}
 .card .k{color:#8786b5;font-size:11px;text-transform:uppercase;letter-spacing:.08em}
@@ -680,6 +726,7 @@ def home():
       <div class=sub>{rng_lbl}</div>
     </div>
     {positions_html(get_positions())}
+    {orders_html(get_open_orders())}
     <h2>This month by day → <a href="{PREFIX}/monthly/{ym}">open {ym}</a></h2>
     """
     return page("Overview", cards, "home")
