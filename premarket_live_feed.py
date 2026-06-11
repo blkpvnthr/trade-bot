@@ -133,6 +133,12 @@ def _i(x: Any) -> Optional[int]:
         return None
 
 
+def _looks_like_authz_error(exc: Exception) -> bool:
+    """Detect entitlement/auth failures that should downgrade SIP -> IEX, not kill the feed."""
+    msg = str(exc or "").lower()
+    return any(token in msg for token in ("401", "403", "unauthorized", "forbidden", "not permitted"))
+
+
 def compute_premarket_rank_score(quote: Dict[str, Any],
                                  market_state: Optional[dict] = None,
                                  sector_strength: Optional[float] = None) -> float:
@@ -453,15 +459,37 @@ class PremarketLiveFeed:
             self._mark_fallback("alpaca_creds_missing")
             return
         client = StockHistoricalDataClient(key, secret)
-        feed = DataFeed.SIP if os.getenv("ALPACA_DATA_FEED", "sip").lower() == "sip" else DataFeed.IEX
+        configured_feed = DataFeed.SIP if os.getenv("ALPACA_DATA_FEED", "sip").lower() == "sip" else DataFeed.IEX
         poll = float(os.getenv("ALPACA_POLL_SECONDS", str(ALPACA_POLL_SECONDS)) or 2)
         fails = 0
         while not self._stop_event.is_set() and not self.shutdown_requested:
             syms = list(dict.fromkeys(self.symbols))
             if syms:
                 try:
-                    snaps = client.get_stock_snapshot(
-                        StockSnapshotRequest(symbol_or_symbols=syms, feed=feed))
+                    feeds_to_try = [configured_feed]
+                    if configured_feed == DataFeed.SIP:
+                        feeds_to_try.append(DataFeed.IEX)
+                    last_exc = None
+                    snaps = None
+                    for idx, feed in enumerate(feeds_to_try):
+                        try:
+                            snaps = client.get_stock_snapshot(
+                                StockSnapshotRequest(symbol_or_symbols=syms, feed=feed))
+                            if idx > 0:
+                                logger.warning(
+                                    "alpaca snapshot feed downgraded from %s to %s after auth/entitlement failure",
+                                    getattr(configured_feed, "value", configured_feed),
+                                    getattr(feed, "value", feed),
+                                )
+                            break
+                        except Exception as e:
+                            last_exc = e
+                            if feed == DataFeed.SIP and _looks_like_authz_error(e):
+                                logger.warning("alpaca snapshot SIP unavailable (%s) — retrying with IEX", e)
+                                continue
+                            raise
+                    if snaps is None and last_exc is not None:
+                        raise last_exc
                     self._apply_alpaca_snapshots(snaps)
                     fails = 0
                     if self.feed_status not in ("running",):

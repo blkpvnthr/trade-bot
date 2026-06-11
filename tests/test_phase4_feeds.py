@@ -30,10 +30,19 @@ def _intraday(n=12, start="2026-05-29 01:00"):
 
 class FeedManagerTests(unittest.TestCase):
     def test_no_sip_in_supported_feeds(self):
-        self.assertNotIn("sip", afm.SUPPORTED_FEEDS)
+        # SIP is now entitlement-gated (Algo Trader Plus). Two postures, one invariant:
+        #   - delayed-SIP is forbidden and never supported in ANY mode (hard invariant);
+        #   - plain SIP is forbidden+excluded ONLY when the entitlement is OFF.
         self.assertNotIn("delayed_sip", afm.SUPPORTED_FEEDS)
-        for f in ("sip", "delayed_sip", "v2/sip", "v2/delayed_sip"):
+        for f in ("delayed_sip", "v2/delayed_sip"):
             self.assertIn(f, afm.FORBIDDEN_FEEDS)
+        if afm.SIP_ENABLED:
+            self.assertIn("sip", afm.SUPPORTED_FEEDS)
+            self.assertNotIn("sip", afm.FORBIDDEN_FEEDS)
+        else:
+            self.assertNotIn("sip", afm.SUPPORTED_FEEDS)
+            for f in ("sip", "v2/sip"):
+                self.assertIn(f, afm.FORBIDDEN_FEEDS)
 
     def test_forbidden_feed_fetch_refused(self):
         m = afm.AlpacaFeedManager()
@@ -55,7 +64,9 @@ class FeedManagerTests(unittest.TestCase):
         finally:
             afm._creds = orig
 
-    def test_detect_with_mocked_fetch_picks_iex(self):
+    def test_detect_with_mocked_fetch_picks_top_priority_feed(self):
+        # With creds + a working fetch, the manager selects the highest-priority AVAILABLE feed
+        # (never fallback). When the SIP entitlement is ON, RTH prefers 'sip'; when OFF, 'iex'.
         m = afm.AlpacaFeedManager()
         afm._creds_orig = afm._creds
         afm._creds = lambda: ("k", "s")
@@ -63,8 +74,9 @@ class FeedManagerTests(unittest.TestCase):
         try:
             det = m.detect_feeds(force=True)
             self.assertTrue(det["iex"]["feed_available"])
-            self.assertEqual(m.active_feed("rth"), "iex")
-            self.assertIn(m.active_feed("premarket"), ("overnight", "iex"))
+            expected_rth = "sip" if afm.SIP_ENABLED else "iex"
+            self.assertEqual(m.active_feed("rth"), expected_rth)
+            self.assertIn(m.active_feed("premarket"), ("overnight", "sip", "iex"))
         finally:
             afm._creds = afm._creds_orig
 

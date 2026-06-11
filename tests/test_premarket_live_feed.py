@@ -7,8 +7,10 @@ All tests are offline — no websocket is opened and no network is touched.
 """
 
 import inspect
+import os
 import sys
 import time
+import types
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -32,41 +34,58 @@ class FeedInitTests(unittest.TestCase):
         self.assertEqual(feed.get_snapshot()["quotes"], {})
         self.assertIsNone(feed.get_symbol_state("AAPL"))
 
-    def test_missing_yliveticker_triggers_fallback(self):
-        """2. With yliveticker unavailable, start() takes the fallback path (no raise)."""
-        saved = plf.YLIVETICKER_AVAILABLE
+    def test_unsupported_source_triggers_fallback(self):
+        """2. With an unsupported feed source (e.g. legacy yliveticker), start() takes the
+        fallback path — no raise, no socket. (yliveticker is removed; Alpaca REST is primary.)"""
+        saved = os.environ.get("PREMARKET_FEED_SOURCE")
         try:
-            plf.YLIVETICKER_AVAILABLE = False
+            os.environ["PREMARKET_FEED_SOURCE"] = "legacy_yliveticker"
             feed = plf.PremarketLiveFeed(["AAPL"], output_dir=None)
             feed.start()   # must not raise, must not open a socket
             self.assertEqual(feed.feed_status, "fallback")
-            self.assertTrue(feed.fallback_used)
+            self.assertTrue(feed.fallback_active)
             self.assertEqual(feed.fallback_source, plf.SOURCE_FALLBACK)
         finally:
-            plf.YLIVETICKER_AVAILABLE = saved
+            if saved is None:
+                os.environ.pop("PREMARKET_FEED_SOURCE", None)
+            else:
+                os.environ["PREMARKET_FEED_SOURCE"] = saved
 
     def test_feed_failure_does_not_stop(self):
-        """10. A streaming failure is contained — start() never raises; feed stays usable."""
-        saved_avail, saved_ylt = plf.YLIVETICKER_AVAILABLE, plf._ylt
+        """10. A streaming failure is contained — start() never raises; the Alpaca poll error is
+        counted and the feed stays usable. Network-free: the snapshot client is patched to raise."""
+        from unittest.mock import patch
+        saved_src = os.environ.get("PREMARKET_FEED_SOURCE")
+        saved_poll = os.environ.get("ALPACA_POLL_SECONDS")
+        os.environ["PREMARKET_FEED_SOURCE"] = "alpaca"
+        os.environ["ALPACA_POLL_SECONDS"] = "0.05"
+        os.environ.setdefault("APCA_API_KEY_ID", "k")
+        os.environ.setdefault("APCA_API_SECRET_KEY", "s")
 
-        class _BoomYlt:
-            @staticmethod
-            def YLiveTicker(**kwargs):
-                raise RuntimeError("simulated stream failure")
+        class _BoomClient:
+            def __init__(self, *a, **k):
+                pass
+
+            def get_stock_snapshot(self, *a, **k):
+                raise RuntimeError("simulated snapshot failure")
 
         try:
-            plf.YLIVETICKER_AVAILABLE = True
-            plf._ylt = _BoomYlt()
-            feed = plf.PremarketLiveFeed(["AAPL"], output_dir=None)
-            feed._reconnect_delay = 0.05
-            feed.start()          # spawns the daemon thread; must not raise
-            time.sleep(0.2)       # let the thread attempt + fail
-            feed.stop()
-            self.assertGreaterEqual(feed.error_count, 1)
-            self.assertIsInstance(feed.get_snapshot(), dict)   # still usable
+            with patch("alpaca.data.historical.StockHistoricalDataClient", _BoomClient):
+                feed = plf.PremarketLiveFeed(["AAPL"], output_dir=None)
+                feed.start()          # spawns the daemon poll thread; must not raise
+                for _ in range(50):   # bounded wait for the first poll to fail
+                    if feed.error_count >= 1:
+                        break
+                    time.sleep(0.02)
+                feed.stop()
+                self.assertGreaterEqual(feed.error_count, 1)
+                self.assertIsInstance(feed.get_snapshot(), dict)   # still usable
         finally:
-            plf.YLIVETICKER_AVAILABLE = saved_avail
-            plf._ylt = saved_ylt
+            for k, v in (("PREMARKET_FEED_SOURCE", saved_src), ("ALPACA_POLL_SECONDS", saved_poll)):
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
 
 class MessageParsingTests(unittest.TestCase):
@@ -228,6 +247,81 @@ class IntegrationTests(unittest.TestCase):
                 path.unlink()
             except Exception:
                 pass
+
+
+class AlpacaPollFeedFallbackTests(unittest.TestCase):
+    def test_sip_401_downgrades_to_iex_and_keeps_feed_running(self):
+        saved_env = dict(os.environ)
+        saved_modules = {name: sys.modules.get(name) for name in (
+            "alpaca",
+            "alpaca.data",
+            "alpaca.data.enums",
+            "alpaca.data.historical",
+            "alpaca.data.requests",
+        )}
+
+        class _DataFeed:
+            SIP = "sip"
+            IEX = "iex"
+
+        class _StockSnapshotRequest:
+            def __init__(self, symbol_or_symbols, feed):
+                self.symbol_or_symbols = symbol_or_symbols
+                self.feed = feed
+
+        class _FakeClient:
+            calls = []
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_stock_snapshot(self, request):
+                self.calls.append(request.feed)
+                if request.feed == _DataFeed.SIP:
+                    raise RuntimeError("401 Authorization Required")
+                return {
+                    "AAPL": types.SimpleNamespace(
+                        latest_trade=types.SimpleNamespace(price=101.25),
+                        latest_quote=types.SimpleNamespace(bid_price=101.2, ask_price=101.3),
+                        daily_bar=types.SimpleNamespace(high=101.5, low=100.9, volume=12345),
+                        previous_daily_bar=types.SimpleNamespace(close=100.0),
+                    )
+                }
+
+        try:
+            os.environ["APCA_API_KEY_ID"] = "key"
+            os.environ["APCA_API_SECRET_KEY"] = "secret"
+            os.environ["ALPACA_DATA_FEED"] = "sip"
+            alpaca_mod = types.ModuleType("alpaca")
+            data_mod = types.ModuleType("alpaca.data")
+            enums_mod = types.ModuleType("alpaca.data.enums")
+            historical_mod = types.ModuleType("alpaca.data.historical")
+            requests_mod = types.ModuleType("alpaca.data.requests")
+            enums_mod.DataFeed = _DataFeed
+            historical_mod.StockHistoricalDataClient = _FakeClient
+            requests_mod.StockSnapshotRequest = _StockSnapshotRequest
+            sys.modules["alpaca"] = alpaca_mod
+            sys.modules["alpaca.data"] = data_mod
+            sys.modules["alpaca.data.enums"] = enums_mod
+            sys.modules["alpaca.data.historical"] = historical_mod
+            sys.modules["alpaca.data.requests"] = requests_mod
+
+            feed = plf.PremarketLiveFeed(["AAPL"], output_dir=None)
+            feed._stop_event.wait = lambda _timeout: feed._stop_event.set()
+            feed._run_alpaca_poll()
+
+            self.assertEqual(_FakeClient.calls, [_DataFeed.SIP, _DataFeed.IEX])
+            self.assertEqual(feed.feed_status, "running")
+            self.assertFalse(feed.fallback_active)
+            self.assertEqual(feed.get_symbol_state("AAPL")["source"], plf.SOURCE_ALPACA)
+        finally:
+            os.environ.clear()
+            os.environ.update(saved_env)
+            for name, module in saved_modules.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
 
 
 if __name__ == "__main__":

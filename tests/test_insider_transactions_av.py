@@ -244,6 +244,7 @@ class TestRoutineOptionSells(unittest.TestCase):
 class TestInvalidAPIResponse(unittest.TestCase):
     def test_get_insider_trend_no_api_key(self):
         cfg = AVInsiderConfig()
+        cfg.enabled = True   # isolate the no-api-key path from the ambient ENABLE_AV_INSIDER flag
         cfg.api_key = ""
         result = get_insider_trend("AAPL", config=cfg)
         self.assertEqual(result["insider_trend_score"], 0.0)
@@ -306,6 +307,7 @@ class TestCacheHit(unittest.TestCase):
     def test_cache_prevents_second_api_call(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = AVInsiderConfig()
+            cfg.enabled = True   # exercise the fetch/cache path regardless of ambient ENABLE_AV_INSIDER
             cfg.api_key = "test_key"
             cfg.cache_dir = tmpdir
             cfg.rate_limit_seconds = 0.0

@@ -166,12 +166,19 @@ class SECForm4DiscoveryTests(unittest.TestCase):
 
     # 7 ─────────────────────────────────────────────────────────────────────────
     def test_sec_candidates_added_to_buffett_universe(self):
+        import os
         INSIDER_BUY_CANDIDATES_PATH.write_text(json.dumps({
             "generated_at": "x", "source": "SEC_EDGAR_FORM4", "count": 1,
             "candidates": {"ZZTESTSEC": {"symbol": "ZZTESTSEC", "insider_buy_score": 90.0,
                                          "insider_buy_amount": 150_000_000, "insider_count": 2,
                                          "insider_roles": ["CEO"], "sec_filing_urls": ["u"]}},
         }), encoding="utf-8")
+        # Form-4 expansion only applies in MERGE mode. The ambient production .env sets
+        # BUFFETT_WATCHLIST_EXCLUSIVE=true (and any test that reloads `run` re-loads it via
+        # load_dotenv(override=True), leaking it into os.environ), which suppresses the SEC
+        # expansion. Force merge mode so this test exercises the expansion path it is about.
+        saved_excl = os.environ.get("BUFFETT_WATCHLIST_EXCLUSIVE")
+        os.environ["BUFFETT_WATCHLIST_EXCLUSIVE"] = "false"
         try:
             import importlib
             import buffett_accumulation_screener as bscr
@@ -180,6 +187,10 @@ class SECForm4DiscoveryTests(unittest.TestCase):
             self.assertIn("ZZTESTSEC", sec.discovered_symbols())
         finally:
             INSIDER_BUY_CANDIDATES_PATH.unlink(missing_ok=True)
+            if saved_excl is None:
+                os.environ.pop("BUFFETT_WATCHLIST_EXCLUSIVE", None)
+            else:
+                os.environ["BUFFETT_WATCHLIST_EXCLUSIVE"] = saved_excl
 
     # 9 ─────────────────────────────────────────────────────────────────────────
     def test_weak_company_with_insider_buy_is_rejected(self):

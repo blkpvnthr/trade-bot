@@ -124,7 +124,15 @@ class OOPSEngineIntegrationTests(unittest.TestCase):
         class _WF:
             def consume_alpha(self, amt): return amt
 
-        with patch.object(run, "is_market_open", return_value=True):
+        # Isolate from two ambient-.env effects that block before the gateway, neither of which
+        # this routing test is about:
+        #   - the futures/index regime layer makes a live proxy call returning PANIC (throttle=0)
+        #     offline; None == enhancement unavailable → no throttle, pure routing path;
+        #   - MAX_ORDER_DOLLARS=120 would reject a single ~$410 option contract by the order-size
+        #     cap (gate() re-reads this module override every call, so it must be patched here).
+        with patch.object(run, "is_market_open", return_value=True), \
+             patch.object(run, "_regime_ctx", return_value=None), \
+             patch.object(run, "MAX_ORDER_DOLLARS_OVERRIDE", "1000000"):
             placed = run.run_alpha_entries(eng, gw, _WF(), risk, symbols=["AAPL"],
                                            bars_by_symbol={}, chains_by_symbol={}, market_context={})
         self.assertEqual(placed, 1)

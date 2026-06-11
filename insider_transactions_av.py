@@ -156,7 +156,12 @@ class AVInsiderConfig:
     )
     request_timeout: int = field(default_factory=lambda: _env_int("AV_INSIDER_REQUEST_TIMEOUT", 8))
     scale_usd: float = field(default_factory=lambda: _env_float("AV_INSIDER_SCALE_USD", 1_000_000.0))
-    sell_discount: float = field(default_factory=lambda: _env_float("AV_INSIDER_SELL_DISCOUNT", 0.70))
+    # Weight applied to ROUTINE option-exercise sells only (not discretionary open-market sells,
+    # which always count at full weight). Routine/planned exercise-and-sell activity is largely
+    # compensation-driven and mechanical, so it carries little bearish signal — discounted to 0.30
+    # so a routine-only book reads "mildly negative / near-neutral" rather than strongly bearish.
+    # (Calibration 2026-06-11: was 0.70, which scored a routine-only $1.2M book at -0.69.)
+    sell_discount: float = field(default_factory=lambda: _env_float("AV_INSIDER_SELL_DISCOUNT", 0.30))
 
     def cache_path(self, symbol: str) -> Path:
         safe_symbol = "".join(ch for ch in symbol.upper().strip() if ch.isalnum() or ch in {".", "-"})

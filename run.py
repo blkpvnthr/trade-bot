@@ -380,10 +380,16 @@ SKIPPED_TRADES_PATH = PROJECT_ROOT / "logs" / "execution" / DATA_TAG / f"{DATA_T
 # (signals-fired vs executed, by engine + reason) against the backtest. See signal_fidelity_report.py.
 ACCEPTED_TRADES_PATH = PROJECT_ROOT / "logs" / "execution" / DATA_TAG / f"{DATA_TAG}_accepted_trades.jsonl"
 SCREENER_FUNNEL_PATH = DAILY_OUTPUTS / "screener_funnel_report.json"
-# Guard: suppress file writes when called from pytest
+# Guard: suppress file writes when called from pytest or unittest.
 # NOTE: evaluated at call-time (not import-time) so that PYTEST_CURRENT_TEST is seen correctly.
 def _in_test() -> bool:
-    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in os.path.basename(os.environ.get("_", ""))
+    import sys as _sys
+    return (
+        "PYTEST_CURRENT_TEST" in os.environ
+        or "pytest" in os.path.basename(os.environ.get("_", ""))
+        or "unittest" in _sys.modules          # python -m unittest or direct test runner
+        or any("unittest" in a or "pytest" in a for a in _sys.argv[:2] if a)
+    )
 
 
 def _acquire_single_instance_lock() -> None:
@@ -916,6 +922,8 @@ class AlpacaGateway:
         self._opt_data  = None       # OptionHistoricalDataClient
         self._mode      = "sim"
         self._available = False
+        self._auth_fail_count: int = 0   # consecutive get_account failures
+        self._last_reconnect_ts: float = 0.0
         self._init_client()
 
     # ── init ──────────────────────────────────────────────────────────────────
@@ -976,6 +984,44 @@ class AlpacaGateway:
     @property
     def available(self) -> bool:
         return self._available
+
+    def _reconnect(self) -> None:
+        """Re-initialise the TradingClient after persistent auth failures.
+
+        Called automatically after _auth_fail_count consecutive 'unauthorized'
+        responses.  Creates a brand-new SDK client (fresh session/connection
+        pool) which typically resolves stale-session 401s that occur hours into
+        a long-running process.  Rate-limited to at most once every 5 minutes.
+        """
+        import time as _time
+        now = _time.monotonic()
+        if now - self._last_reconnect_ts < 300:   # debounce: max once per 5 min
+            return
+        self._last_reconnect_ts = now
+        logger.warning(
+            "AlpacaGateway: %d consecutive auth failures — re-initialising client",
+            self._auth_fail_count,
+        )
+        old_mode = self._mode
+        try:
+            from alpaca.trading.client import TradingClient
+            self._client    = TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=ALPACA_PAPER_ONLY)
+            self._mode      = "alpaca_py"
+            self._available = True
+            self._auth_fail_count = 0
+            logger.info("AlpacaGateway reconnected (paper=%s)", ALPACA_PAPER_ONLY)
+        except ImportError:
+            try:
+                import alpaca_trade_api as tradeapi
+                self._client    = tradeapi.REST(ALPACA_KEY, ALPACA_SECRET, ALPACA_URL)
+                self._mode      = "alpaca_trade_api"
+                self._available = True
+                self._auth_fail_count = 0
+                logger.info("AlpacaGateway reconnected via alpaca_trade_api")
+            except ImportError:
+                logger.error("AlpacaGateway reconnect failed: neither alpaca-py nor alpaca_trade_api available")
+        except Exception as exc:
+            logger.error("AlpacaGateway reconnect failed: %s", exc)
 
     # ── account / positions ─────────────────────────────────────────────────
     def get_account(self) -> Dict:
@@ -1059,6 +1105,13 @@ class AlpacaGateway:
             return snapshot
         except Exception as e:
             logger.error("get_account error: %s", e)
+            # Auto-reconnect on persistent 'unauthorized' errors (stale session/connection-pool)
+            if "unauthorized" in str(e).lower():
+                self._auth_fail_count += 1
+                if self._auth_fail_count >= 5:
+                    self._reconnect()
+            else:
+                self._auth_fail_count = 0   # reset on non-auth errors
             return {}
 
     def get_positions_raw(self) -> List[Any]:
@@ -1353,7 +1406,14 @@ class AlpacaGateway:
         Returns the broker response (or {"sim": True}) on success, None if blocked.
         """
         qty = int(qty)
-        if qty <= 0:
+        # A fractional/notional BUY deploys an exact dollar amount with no share count, so qty is
+        # legitimately 0 here — it is sized from `notional` in _submit_notional_buy below. Every
+        # other path requires qty>0. (Bug fix 2026-06-11: the old unconditional `qty<=0` guard
+        # rejected ALL notional buys before they could reach the fractional handler.)
+        _notional_buy = bool(ENABLE_FRACTIONAL_ORDERS and notional and notional > 0
+                             and side == "buy" and order_type == "market"
+                             and not limit_price and not is_option_symbol(symbol))
+        if qty <= 0 and not _notional_buy:
             return None
         # Protected symbols (owned by another bot on this live account) are never traded by this
         # engine — hard backstop independent of position/universe filtering.
@@ -1381,9 +1441,9 @@ class AlpacaGateway:
                 qty = allow
 
         # ── Fractional / notional BUY: deploy an exact dollar amount (fractional shares) ──────
-        if (ENABLE_FRACTIONAL_ORDERS and notional and notional > 0 and not opt
-                and side == "buy" and order_type == "market" and not limit_price):
-            return self._submit_notional_buy(symbol, float(notional), reason)
+        if _notional_buy:
+            return self._submit_notional_buy(symbol, float(notional), reason,
+                                             reference_price=float(reference_price or limit_price or 0.0))
 
         # Notional reference price: explicit limit → caller-supplied reference → live
         # market lookup. Must be > 0 for BUYs (exits never depend on notional).
@@ -1480,17 +1540,29 @@ class AlpacaGateway:
                                      time_in_force=TimeInForce.DAY, client_order_id=coid)
         return self._client.submit_order(req)
 
-    def _submit_notional_buy(self, symbol: str, notional: float, reason: str = "") -> Optional[Dict]:
+    def _submit_notional_buy(self, symbol: str, notional: float, reason: str = "",
+                             reference_price: float = 0.0) -> Optional[Dict]:
         """Fractional BUY of an exact dollar `notional` (fractionable equities only). Same throttle,
-        size-to-fit and RiskManager gating as a qty order, but no whole-share rounding."""
-        ref_price = self._resolve_reference_price(symbol)
+        size-to-fit and RiskManager gating as a qty order, but no whole-share rounding.
+
+        `reference_price` (caller-supplied, e.g. the BAL-evaluated price) is preferred for the
+        exposure/gate math and effective-qty estimate, mirroring the qty path; a live lookup is
+        only the fallback when the caller has none. This keeps a planned buy from being skipped
+        when live price resolution momentarily fails."""
+        ref_price = float(reference_price or 0.0)
+        if ref_price <= 0:
+            ref_price = self._resolve_reference_price(symbol)
         if ref_price <= 0:
             log_skip(symbol, "rejected_by_data_unavailable:no_reference_price", side="buy", source=reason)
             return None
-        _trend_blk = _ema_buy_blocked(symbol, ref_price)
-        if _trend_blk:
-            log_skip(symbol, _trend_blk, side="buy", source=reason or "broker")
-            return None
+        # 9-EMA execution gate, matching the qty path: only applied when connected to the broker
+        # (self._available). Sim/paper-offline flows skip the live-data trend gate, exactly as the
+        # whole-share submit_market_order path does.
+        if self._available:
+            _trend_blk = _ema_buy_blocked(symbol, ref_price)
+            if _trend_blk:
+                log_skip(symbol, _trend_blk, side="buy", source=reason or "broker")
+                return None
         sa = _self_assessment_buy_multiplier() if self._available else 1.0
         if sa < 1.0:
             notional *= sa
@@ -2929,16 +3001,30 @@ def run_bal_entries(bal, gateway: AlpacaGateway, waterfall, risk: RiskManager,
         return 0
     # FIX 2026-06-09: Block BAL entries when broker auth has not succeeded.
     # risk.account_status is set to "" at init and only updated on a successful
-    # account sync.  If it is still empty the system is running on the $100k
-    # STARTING_EQUITY fallback, meaning every order would also fail auth at Alpaca.
-    # Blocking here prevents phantom-account order noise in logs/journals.
+    # account sync.  If it is still empty the system is running on the STARTING_EQUITY
+    # fallback, meaning every order would also fail auth at Alpaca.
+    # FIX 2026-06-11: If auth has been failing for an extended period (>=60 consecutive
+    # failures ≈ 60 minutes) AND we are in confirmed paper mode, log a critical alert
+    # but do not permanently block — the reconnect mechanism may restore auth at any
+    # time.  The order submission path still gates on gateway.available so orders will
+    # not reach a broken broker.
+    _auth_fails = getattr(gateway, "_auth_fail_count", 0)
     if not risk.account_status and getattr(gateway, "available", True):
-        logger.warning(
-            "BAL entries blocked: broker account_status='%s' (auth not confirmed) — "
-            "equity=%.0f may be STARTING_EQUITY fallback; will retry next cycle",
-            risk.account_status, risk.equity,
-        )
-        return 0
+        if _auth_fails >= 60 and ALPACA_PAPER_ONLY:
+            logger.critical(
+                "BAL entries: auth has failed %d times in paper mode — "
+                "reconnect is being attempted; orders will self-gate at submission",
+                _auth_fails,
+            )
+            # Allow through — submission layer will catch the 401 and not fill
+        else:
+            logger.warning(
+                "BAL entries blocked: broker account_status='%s' (auth not confirmed, "
+                "fail_count=%d) — equity=%.0f may be STARTING_EQUITY fallback; "
+                "will retry next cycle",
+                risk.account_status, _auth_fails, risk.equity,
+            )
+            return 0
     # FIX 2026-06-10: Warn when buffett_dca_signals.json is from a prior date so the operator
     # knows scores are stale before the first BAL entry attempt of the day.  Runs every cycle
     # (including when capital is 0) so the alert fires regardless of capital state.
@@ -4958,7 +5044,12 @@ def run_two_engine_trading():
 
             now = time.time()
             if now - last_account_log >= ACCOUNT_STATS_LOG_SEC:
-                log_account_stats(gateway, risk, label=f"Account cycle={cycle_count}")
+                # Surface persistent auth failures prominently in the cycle line
+                _auth_fails = getattr(gateway, "_auth_fail_count", 0)
+                _cycle_label = f"V2 Account cycle={cycle_count}"
+                if _auth_fails >= 5:
+                    _cycle_label += f" [AUTH_FAIL×{_auth_fails}]"
+                log_account_stats(gateway, risk, label=_cycle_label)
                 last_account_log = now
 
             if not is_market_open():
@@ -4977,16 +5068,27 @@ def run_two_engine_trading():
                             import subprocess as _sp
                             _planner_script = Path(__file__).parent / "premarket_trade_planner.py"
                             if _planner_script.exists():
+                                # Capture stderr to a log file so silent failures are visible
+                                _planner_err_log = open(
+                                    LOG_DIR / f"premarket_planner_{DATA_TAG}.log", "a"
+                                )
                                 _planner_proc = _sp.Popen(
                                     [sys.executable, str(_planner_script)],
-                                    stdout=_sp.DEVNULL,
-                                    stderr=_sp.DEVNULL,
+                                    stdout=_planner_err_log,
+                                    stderr=_sp.STDOUT,
                                 )
                                 logger.info(
-                                    "premarket_trade_planner spawned (pid=%d) — "
+                                    "premarket_trade_planner spawned (pid=%d) stderr→%s — "
                                     "will write plan+structure_map at market open",
                                     _planner_proc.pid,
+                                    _planner_err_log.name,
                                 )
+                                # Flush all log handlers so this message is durable
+                                for _h in logging.getLogger().handlers:
+                                    try:
+                                        _h.flush()
+                                    except Exception:
+                                        pass
                             else:
                                 logger.warning(
                                     "premarket_trade_planner.py not found — "
@@ -5044,41 +5146,51 @@ def run_two_engine_trading():
             if not _zero_plan_recovery_spawned:
                 try:
                     _zp_plan_path = SYSTEM_DATA_DIR / f"{DATA_TAG}_premarket_trade_plan.json"
-                    if _zp_plan_path.exists():
+                    _zp_needs_recovery = False
+                    _zp_reason = ""
+                    if not _zp_plan_path.exists():
+                        # Plan file was never generated (e.g. spawn failed silently)
+                        _zp_needs_recovery = True
+                        _zp_reason = "plan file missing entirely"
+                    else:
                         import json as _json
                         _zp_data = _json.loads(_zp_plan_path.read_text())
                         _zp_valid = _zp_data.get("valid_plan_count", -1)
                         if _zp_valid == 0:
-                            logger.warning(
-                                "ZERO-PLAN RECOVERY: premarket_plan has 0 valid setups — "
-                                "re-spawning premarket_trade_planner.py at market open "
-                                "(likely caused by DNS/data failure during session startup)"
-                            )
-                            import subprocess as _sp_zp
-                            _zp_script = Path(__file__).parent / "premarket_trade_planner.py"
-                            if _zp_script.exists():
-                                _zp_env = {**os.environ, "PREMARKET_WAIT_FOR_MARKET_OPEN": "0"}
-                                _zp_log = open(
-                                    SYSTEM_DATA_DIR / f"{DATA_TAG}_planner_recovery.log", "a"
-                                )
-                                _sp_zp.Popen(
-                                    [sys.executable, str(_zp_script)],
-                                    env=_zp_env,
-                                    stdout=_zp_log,
-                                    stderr=_sp_zp.STDOUT,
-                                )
-                                logger.info(
-                                    "Zero-plan planner recovery spawned — "
-                                    "plan+structure_map will be refreshed in background"
-                                )
-                            else:
-                                logger.warning(
-                                    "ZERO-PLAN RECOVERY: premarket_trade_planner.py not found"
-                                )
+                            _zp_needs_recovery = True
+                            _zp_reason = "plan has 0 valid setups"
                         else:
                             logger.debug(
                                 "Zero-plan check: plan has %d valid setups — no recovery needed",
                                 _zp_valid,
+                            )
+                    if _zp_needs_recovery:
+                        logger.warning(
+                            "ZERO-PLAN RECOVERY: %s — "
+                            "re-spawning premarket_trade_planner.py at market open "
+                            "(likely caused by spawn failure or DNS/data issue during startup)",
+                            _zp_reason,
+                        )
+                        import subprocess as _sp_zp
+                        _zp_script = Path(__file__).parent / "premarket_trade_planner.py"
+                        if _zp_script.exists():
+                            _zp_env = {**os.environ, "PREMARKET_WAIT_FOR_MARKET_OPEN": "0"}
+                            _zp_log = open(
+                                SYSTEM_DATA_DIR / f"{DATA_TAG}_planner_recovery.log", "a"
+                            )
+                            _sp_zp.Popen(
+                                [sys.executable, str(_zp_script)],
+                                env=_zp_env,
+                                stdout=_zp_log,
+                                stderr=_sp_zp.STDOUT,
+                            )
+                            logger.info(
+                                "Zero-plan planner recovery spawned — "
+                                "plan+structure_map will be refreshed in background"
+                            )
+                        else:
+                            logger.warning(
+                                "ZERO-PLAN RECOVERY: premarket_trade_planner.py not found"
                             )
                 except Exception as _zp_e:
                     logger.debug("Zero-plan resilience check failed: %s", _zp_e)
@@ -5522,11 +5634,19 @@ def main():
     os.makedirs("data",    exist_ok=True)
     _acquire_single_instance_lock()
 
+    # Rotating file handler: 10 MB per file, keep 5 backups.  Prevents the log
+    # from growing unbounded across multi-day runs and avoids FileHandler silent
+    # failures when the file becomes very large.
+    from logging.handlers import RotatingFileHandler as _RotFH
+    _log_path = "logs/run.log"
+    _file_handler = _RotFH(_log_path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+    _file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+    _stream_handler = logging.StreamHandler(sys.stdout)
+    _stream_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout),
-                  logging.FileHandler("logs/run.log", mode="a")],
+        handlers=[_stream_handler, _file_handler],
     )
     # Suppress yfinance's verbose HTTP error bodies (e.g. full Yahoo Finance "Will be
     # right back" HTML) which pollute the log when Yahoo Finance is down.  Keep ERROR

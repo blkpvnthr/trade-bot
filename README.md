@@ -20,10 +20,13 @@ watch -n 5 'curl -s "https://paper-api.alpaca.markets/v2/orders?status=all&limit
 curl https://tv.quantumquant.trade/
 ```
 ```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now trade-bot-news-stream
+```
+```bash
 python run_optimizer_agent.py --days 1 --write-env-patch
 ```
 ```bash
-tail -n 120 /root/trade-bot/logs/run.log
+tail -n 120 /root/trade-bot-instance2/logs/run.log
 ```
 ```bash
 sudo systemctl restart trade-bot
