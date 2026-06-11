@@ -33,6 +33,19 @@ ET = ZoneInfo("America/New_York")
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_TAG = datetime.now(ET).strftime("%Y%m%d")
 
+
+def _load_env() -> None:
+    """Load the instance env file (BOT_ENV_FILE, default .env) so APCA creds are available when
+    run as a standalone systemd service. os.environ wins (setdefault) — forgiving parser."""
+    f = Path(os.getenv("BOT_ENV_FILE", str(PROJECT_ROOT / ".env")))
+    if not f.exists():
+        return
+    for line in f.read_text(errors="replace").splitlines():
+        s = line.strip()
+        if "=" in s and not s.startswith("#"):
+            k, v = s.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
 FEATURE_STORE = DEFAULT_FEATURE_STORE
 FEATURE_STORE.mkdir(parents=True, exist_ok=True)
 
@@ -152,6 +165,7 @@ def _handle_stop(signum: int, frame: Any) -> None:
 
 
 def main() -> None:
+    _load_env()   # pull APCA creds from the instance env file when run as a service
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
     print(f"[news-stream] starting | finbert={finbert_scorer.is_available()} store={FEATURE_STORE}", flush=True)
