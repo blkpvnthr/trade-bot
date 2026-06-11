@@ -60,7 +60,8 @@ def fetch_fills(client, days=120):
             if o.filled_at and o.filled_qty and float(o.filled_qty) > 0 and o.filled_avg_price:
                 fills.append({"symbol": str(o.symbol), "side": str(o.side).split(".")[-1].lower(),
                               "qty": float(o.filled_qty), "price": float(o.filled_avg_price),
-                              "time": o.filled_at})
+                              "time": o.filled_at,
+                              "coid": str(getattr(o, "client_order_id", "") or "")})
         until = batch[-1].submitted_at
         if len(batch) < 500:
             break
@@ -69,16 +70,23 @@ def fetch_fills(client, days=120):
 
 
 def round_trips(fills):
-    """FIFO-match opens vs closes per symbol; each trip carries entry_px, exit_px, pnl, ret, hold_h."""
+    """FIFO-match opens vs closes per symbol; each trip carries entry_px, exit_px, pnl, ret, hold_h.
+
+    Provenance: each trip is tagged origin/engine/coid from the lot that OPENED it (via
+    trade_provenance), so the bot closing a manually-opened position stays in the manual bucket.
+    Fills without a coid (legacy data) classify as manual/unattributed — backward compatible.
+    """
+    from trade_provenance import classify_origin, engine_from_coid, strategy_from_engine
     books = defaultdict(deque)
     trips = []
     for f in fills:
         sym = f["symbol"]
         signed = f["qty"] if f["side"] == "buy" else -f["qty"]
+        coid = f.get("coid", "")
         book = books[sym]
         pos = sum(l["qty"] for l in book)
         if pos == 0 or (pos > 0) == (signed > 0):
-            book.append({"qty": signed, "price": f["price"], "time": f["time"]})
+            book.append({"qty": signed, "price": f["price"], "time": f["time"], "coid": coid})
             continue
         remaining = signed
         mult = 100.0 if _occ(sym) else 1.0
@@ -88,16 +96,20 @@ def round_trips(fills):
             long_side = lot["qty"] > 0
             pnl = (f["price"] - lot["price"]) * match * mult * (1 if long_side else -1)
             basis = lot["price"] * match * mult
+            lot_coid = lot.get("coid", "")
+            engine = engine_from_coid(lot_coid)
             trips.append({"symbol": sym, "qty": match, "entry_px": lot["price"], "exit_px": f["price"],
                           "entry_time": lot["time"], "exit_time": f["time"], "pnl": pnl,
                           "ret": (pnl / basis) if basis else 0.0,
-                          "hold_h": (f["time"] - lot["time"]).total_seconds() / 3600.0})
+                          "hold_h": (f["time"] - lot["time"]).total_seconds() / 3600.0,
+                          "origin": classify_origin(lot_coid), "engine": engine,
+                          "strategy_id": strategy_from_engine(engine), "coid": lot_coid})
             lot["qty"] -= match if long_side else -match
             remaining += match if not long_side else -match
             if abs(lot["qty"]) < 1e-9:
                 book.popleft()
         if remaining != 0:
-            book.append({"qty": remaining, "price": f["price"], "time": f["time"]})
+            book.append({"qty": remaining, "price": f["price"], "time": f["time"], "coid": coid})
     return trips
 
 

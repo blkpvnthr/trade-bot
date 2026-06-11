@@ -36,8 +36,20 @@ _ORD_RE = _re.compile(r"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}).*ORDER (buy|sel
 _LCACHE = {"eq": None, "eq_t": 0.0, "mk": None, "mk_t": 0.0}
 
 udf_bp = Blueprint("udf", __name__)
-EQUITY_SYMBOL = "QQEQUITY"
+EQUITY_SYMBOL = "QQEQUITY"        # total account equity (all origins)
+STRAT_SYMBOL = "QQSTRAT"          # automated-only cumulative realized P&L (bot trades)
+STRAT_CURVE = ROOT / "system-data" / "strat_curve.json"
 _RES = ["1", "5", "15", "30", "60", "1D", "1W", "1M"]
+
+
+def _is_strategy_sym(sym: str) -> bool:
+    return sym in (EQUITY_SYMBOL, STRAT_SYMBOL)
+
+
+_SYM_DESC = {
+    EQUITY_SYMBOL: "QuantumQuant account equity (all origins)",
+    STRAT_SYMBOL: "QuantumQuant automated realized P&L (bot trades only)",
+}
 
 
 @udf_bp.route("/config")
@@ -60,16 +72,16 @@ def srv_time():
 
 def _symbol_info(sym: str) -> dict:
     sym = (sym or "").upper().split(":")[-1]
-    is_eq = sym == EQUITY_SYMBOL
+    is_strat = _is_strategy_sym(sym)
     return {
         "name": sym, "ticker": sym,
-        "description": "QuantumQuant account equity" if is_eq else sym,
-        "type": "index" if is_eq else "stock",
-        "session": "24x7" if is_eq else "0930-1600", "timezone": "America/New_York",
-        "exchange": "QuantumQuant" if is_eq else "", "listed_exchange": "",
+        "description": _SYM_DESC.get(sym, sym),
+        "type": "index" if is_strat else "stock",
+        "session": "24x7" if is_strat else "0930-1600", "timezone": "America/New_York",
+        "exchange": "QuantumQuant" if is_strat else "", "listed_exchange": "",
         "minmov": 1, "pricescale": 100, "has_intraday": True, "has_daily": True,
         "has_weekly_and_monthly": True, "supported_resolutions": _RES,
-        "volume_precision": 0, "data_status": "streaming" if is_eq else "endofday",
+        "volume_precision": 0, "data_status": "streaming" if is_strat else "endofday",
         "currency_code": "USD",
     }
 
@@ -90,11 +102,11 @@ def _cached_symbols():
 def search():
     q = (request.args.get("query") or "").upper()
     limit = int(request.args.get("limit") or 30)
-    cands = [EQUITY_SYMBOL] + _cached_symbols()
+    cands = [EQUITY_SYMBOL, STRAT_SYMBOL] + _cached_symbols()
     out = [{"symbol": s, "full_name": s,
-            "description": ("Account equity" if s == EQUITY_SYMBOL else s),
-            "exchange": "QuantumQuant" if s == EQUITY_SYMBOL else "",
-            "ticker": s, "type": "index" if s == EQUITY_SYMBOL else "stock"}
+            "description": _SYM_DESC.get(s, s),
+            "exchange": "QuantumQuant" if _is_strategy_sym(s) else "",
+            "ticker": s, "type": "index" if _is_strategy_sym(s) else "stock"}
            for s in cands if q in s][:limit]
     return jsonify(out)
 
@@ -106,7 +118,12 @@ def history():
     to = int(float(request.args.get("to") or time.time()))
     try:
         res = request.args.get("resolution") or "1D"
-        bars = _equity_bars(res) if sym == EQUITY_SYMBOL else _cached_bars(sym)
+        if sym == EQUITY_SYMBOL:
+            bars = _equity_bars(res)
+        elif sym == STRAT_SYMBOL:
+            bars = _strat_bars()
+        else:
+            bars = _cached_bars(sym)
         if not bars:
             return jsonify({"s": "no_data"})
         win = [b for b in bars if frm <= b[0] <= to]
@@ -216,6 +233,25 @@ def _equity_bars(resolution: str = "1D"):
         else:
             days[d][1] = max(days[d][1], eq); days[d][2] = min(days[d][2], eq); days[d][3] = eq
     return [(d, v[0], v[1], v[2], v[3], 0) for d, v in sorted(days.items())]
+
+
+def _strat_bars():
+    """Automated-only cumulative realized-P&L bars from system-data/strat_curve.json (written by
+    dashboard.build_strat_curve from origin-tagged round-trips). Each point → a flat OHLC bar.
+    Broker-free (reads a cache file). Fail-safe → []."""
+    try:
+        import json
+        if not STRAT_CURVE.exists():
+            return []
+        pts = json.loads(STRAT_CURVE.read_text() or "[]")
+        out = []
+        for ts, val in pts:
+            t = int(ts); v = float(val)
+            out.append((t, v, v, v, v, 0))
+        return sorted(out)
+    except Exception as e:
+        logger.debug("strat_bars: %s", e)
+        return []
 
 
 @udf_bp.route("/marks")

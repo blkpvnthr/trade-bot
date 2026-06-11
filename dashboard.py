@@ -47,6 +47,7 @@ def _load_env():
 
 _load_env()
 from order_emailer import fetch_fills, round_trips, _occ   # reuse FIFO matcher
+from trade_provenance import ORIGIN_PRODUCTION, ORIGIN_MANUAL   # automated vs manual split
 
 LOG_FILE = ROOT / "logs" / "run.log"
 app = Flask(__name__)
@@ -547,10 +548,34 @@ except Exception as _e:
     _lg.getLogger("dashboard").warning("UDF datafeed blueprint not registered: %s", _e)
 
 
+STRAT_CURVE_PATH = ROOT / "system-data" / "strat_curve.json"
+
+
+def build_strat_curve():
+    """Write system-data/strat_curve.json — cumulative realized P&L of AUTOMATED round-trips only,
+    as [[unix_ts, cum_pnl], ...]. Read-only w.r.t. trading; consumed by udf_datafeed as the QQSTRAT
+    series so the chart can show bot performance decontaminated from manual trades. Fail-safe."""
+    try:
+        auto = [t for t in get_trips() if t.get("origin") == ORIGIN_PRODUCTION]
+        auto.sort(key=lambda t: t["exit_time"])
+        cum, pts = 0.0, []
+        for t in auto:
+            cum += t["pnl"]
+            pts.append([int(t["exit_time"].timestamp()), round(cum, 2)])
+        STRAT_CURVE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        STRAT_CURVE_PATH.write_text(json.dumps(pts))
+        return pts
+    except Exception as e:
+        import logging as _lg
+        _lg.getLogger("dashboard").warning("build_strat_curve failed: %s", str(e)[:120])
+        return []
+
+
 @app.route(PREFIX + "/chart")
 @need_auth
 def chart_page():
     try:
+        build_strat_curve()   # refresh the QQSTRAT cache so udf serves a fresh automated curve
         return Response((ROOT / "tv_chart.html").read_text(encoding="utf-8"), mimetype="text/html")
     except Exception as e:
         return Response(f"chart page error: {e}", mimetype="text/plain")
@@ -578,6 +603,19 @@ def home():
     m_w = sum(d["wins"] for k, d in days.items() if k.startswith(ym))
     m_gw = sum(d["gw"] for k, d in days.items() if k.startswith(ym))
     m_gl = sum(d["gl"] for k, d in days.items() if k.startswith(ym))
+    # Month-to-date realized P&L split by provenance (origin tagged on each round-trip).
+    # Automated = bot orders (qqbot-* client_order_id); Manual = discretionary / Alpaca-app fills.
+    def _mtd_by_origin(origin=None):
+        s, n = 0.0, 0
+        for t in trips:
+            if not t["exit_time"].astimezone(ET).date().isoformat().startswith(ym):
+                continue
+            if origin is not None and t.get("origin") != origin:
+                continue
+            s += t["pnl"]; n += 1
+        return s, n
+    auto_pnl, auto_n = _mtd_by_origin(ORIGIN_PRODUCTION)
+    man_pnl, man_n = _mtd_by_origin(ORIGIN_MANUAL)
     series = equity_series(ph, current=acct["equity"])      # daily (SVG fallback)
     hybrid = equity_hybrid_series(ph, current=acct["equity"])  # daily + today's intraday
     chart = equity_lwc(hybrid, equity_svg(series))
@@ -592,6 +630,11 @@ def home():
       <div class=card><div class=k>Today account P&L</div><div class=v>{_pnl(acct['day_pnl'])}</div><div class=sub>{_pct(acct['day_pnl_pct'])} vs prior close</div></div>
       <div class=card><div class=k>Today realized</div><div class=v>{_pnl(td['pnl'])}</div><div class=sub>{td['n']} trades · {(td['wins']/td['n']*100 if td['n'] else 0):.0f}% win</div></div>
       <div class=card><div class=k>Month realized</div><div class=v>{_pnl(m_pnl)}</div><div class=sub>{m_n} trades · {(m_w/m_n*100 if m_n else 0):.0f}% win · PF {_pf_str(_pf(m_gw,m_gl))}</div></div>
+    </div>
+    <div class=cards style="margin-top:10px">
+      <div class=card><div class=k>Month · Automated</div><div class=v>{_pnl(auto_pnl)}</div><div class=sub>{auto_n} bot round-trips (qqbot-*)</div></div>
+      <div class=card><div class=k>Month · Manual</div><div class=v>{_pnl(man_pnl)}</div><div class=sub>{man_n} discretionary round-trips</div></div>
+      <div class=card><div class=k>Month · Net realized</div><div class=v>{_pnl(m_pnl)}</div><div class=sub>automated + manual</div></div>
     </div>
     <div class=card style="margin-top:10px">
       <div class=k>Account equity</div>
@@ -715,15 +758,21 @@ def journal():
     for t in trips:
         sym = t["symbol"]
         er, xr = trip_logic(idx, t)
+        is_auto = t.get("origin") == ORIGIN_PRODUCTION
+        badge = (f"<span style='font-size:11px;padding:1px 6px;border-radius:4px;"
+                 f"background:{'#0d3a24' if is_auto else '#3a1d0d'};"
+                 f"color:{'#3fb950' if is_auto else '#f0883e'}'>"
+                 f"{'Auto' if is_auto else 'Manual'}</span>")
         rows += (f"<tr class=main><td>{t['exit_time'].astimezone(ET):%m-%d %H:%M}</td><td>{sym}</td>"
+                 f"<td>{badge}</td>"
                  f"<td>{t['qty']:g}</td><td>${t['entry_px']:,.2f}</td><td>${t['exit_px']:,.2f}</td>"
                  f"<td>{_pnl(t['pnl'])}</td><td>{_pct(t['ret'])}</td><td>{t['hold_h']:.1f}h</td></tr>")
-        rows += (f"<tr class=detail><td colspan=8>"
+        rows += (f"<tr class=detail><td colspan=9>"
                  f"<span class=lbl>entry</span>{_esc(er)} "
                  f"<span class='lbl x'>exit</span>{_esc(xr)}</td></tr>")
     table = (f"<h1>Round-trips <span class=muted style=font-size:13px>· last {len(trips)} · with strategy logic</span></h1>"
-             f"<div class=scroll><table><thead><tr><th>Closed</th><th>Sym</th><th>Qty</th><th>Entry</th>"
-             f"<th>Exit</th><th>P&L</th><th>Ret</th><th>Held</th></tr></thead><tbody>{rows or '<tr><td colspan=8 class=muted>none</td></tr>'}</tbody></table></div>")
+             f"<div class=scroll><table><thead><tr><th>Closed</th><th>Sym</th><th>Origin</th><th>Qty</th><th>Entry</th>"
+             f"<th>Exit</th><th>P&L</th><th>Ret</th><th>Held</th></tr></thead><tbody>{rows or '<tr><td colspan=9 class=muted>none</td></tr>'}</tbody></table></div>")
     return page("Journal", table, "journal")
 
 

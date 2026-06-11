@@ -16,8 +16,11 @@
 <body>
 <div class="bar">
   <a href="/dash/">← Dashboard</a>
-  <b>QuantumQuant · <span id="symLabel">QQEQUITY</span> — Account Equity + insider marks + SMA(50)</b>
-  <span class="leg">
+  <b>QuantumQuant · <span id="symLabel">QQEQUITY</span> — <span id="symDesc">Account Equity + insider marks + SMA(50)</span></b>
+  <span class="leg" style="gap:10px">
+    <a href="?symbol=QQEQUITY" style="color:#58a6ff">Total</a>
+    <a href="?symbol=QQSTRAT" style="color:#58a6ff">Automated only</a>
+    <span style="color:#30363d">|</span>
     <i><span class="sw" style="background:#58a6ff"></span>Equity</i>
     <i><span class="sw" style="background:#f0b90b"></span>SMA(50)</i>
     <i><span class="sw" style="background:#26a69a"></span>Buy</i>
@@ -40,6 +43,9 @@
   var UDF = "/dash/udf";
   var SYM = (new URLSearchParams(location.search).get("symbol") || "QQEQUITY").toUpperCase();
   document.getElementById("symLabel").textContent = SYM;
+  document.getElementById("symDesc").textContent = (SYM === "QQSTRAT")
+    ? "Automated realized P&L (bot trades only) + SMA(50)"
+    : "Total account equity (all origins) + insider marks + SMA(50)";
 
   function showMsg(html, isErr) {
     document.getElementById("tv").style.display = "none";
