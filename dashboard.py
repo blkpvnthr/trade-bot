@@ -149,6 +149,8 @@ def _read_snapshot():
 
 
 def snapshot_age_sec():
+    if os.environ.get("DASH_LIVE_ACCOUNT", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return 0
     try:
         return max(0, int(time.time() - SNAP_PATH.stat().st_mtime))
     except Exception:
@@ -156,6 +158,21 @@ def snapshot_age_sec():
 
 
 def get_account_snapshot(ttl=30):
+    # DASH_LIVE_ACCOUNT: fetch the real account from the broker instead of a (possibly
+    # stale) snapshot file. For local/paper dev instances with no bot writing snapshots.
+    if os.environ.get("DASH_LIVE_ACCOUNT", "").strip().lower() in {"1", "true", "yes", "on"}:
+        now = time.time()
+        if _CACHE.get("acct") is not None and now - _CACHE.get("acct_t", 0) < ttl:
+            return _CACHE["acct"]
+        try:
+            ac = _client().get_account()
+            eq = float(ac.equity); le = float(ac.last_equity or eq)
+            out = {"equity": eq, "last_equity": le, "cash": float(ac.cash or 0),
+                   "day_pnl": eq - le, "day_pnl_pct": ((eq - le) / le if le else 0.0)}
+            _CACHE["acct"], _CACHE["acct_t"] = out, now
+            return out
+        except Exception:
+            pass
     a = _read_snapshot().get("account", {})
     eq = float(a.get("equity", 0) or 0)
     le = float(a.get("last_equity", eq) or eq)
@@ -166,6 +183,20 @@ def get_account_snapshot(ttl=30):
 
 def get_positions(ttl=30):
     from types import SimpleNamespace
+    if os.environ.get("DASH_LIVE_ACCOUNT", "").strip().lower() in {"1", "true", "yes", "on"}:
+        now = time.time()
+        if _CACHE.get("pos") is not None and now - _CACHE.get("pos_t", 0) < ttl:
+            return _CACHE["pos"]
+        try:
+            out = [SimpleNamespace(symbol=p.symbol, qty=p.qty, market_value=p.market_value,
+                                   avg_entry_price=p.avg_entry_price, current_price=p.current_price,
+                                   unrealized_pl=p.unrealized_pl, unrealized_plpc=p.unrealized_plpc,
+                                   side=str(p.side).split(".")[-1])
+                   for p in _client().get_all_positions()]
+            _CACHE["pos"], _CACHE["pos_t"] = out, now
+            return out
+        except Exception:
+            pass
     return [SimpleNamespace(**p) for p in _read_snapshot().get("positions", [])]
 
 
