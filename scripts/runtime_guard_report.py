@@ -75,6 +75,149 @@ def _safe_int(value: Any) -> int | None:
         return None
 
 
+def _resolve_paper_runtime(env_values: dict[str, Any]) -> dict[str, Any]:
+    alias_order = (
+        "ALPACA_PAPER_ONLY",
+        "APCA_PAPER_ONLY",
+        "APCA_PAPER",
+        "ALPACA_PAPER",
+    )
+    raw_apca_paper = env_values.get("APCA_PAPER")
+    for key in alias_order:
+        raw_value = env_values.get(key)
+        if raw_value is None:
+            continue
+        normalized = str(raw_value).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return {
+                "apca_paper": raw_apca_paper,
+                "paper_only_confirmed": True,
+                "paper_mode_source": key,
+            }
+        if normalized in {"0", "false", "no", "off"}:
+            return {
+                "apca_paper": raw_apca_paper,
+                "paper_only_confirmed": False,
+                "paper_mode_source": key,
+            }
+    return {
+        "apca_paper": raw_apca_paper,
+        "paper_only_confirmed": True,
+        "paper_mode_source": "run.py_default",
+    }
+
+
+SNAPSHOT_PATH = PROJECT_ROOT / "system-data" / "dashboard_snapshot.json"
+
+# ── Runtime-config observability ─────────────────────────────────────────────
+# TRACKED policy note (the live value lives in gitignored .env, so document the split here):
+# CASH_BUFFER_PCT has a deliberate divergence between code default and live deployment.
+#   • Code default (run.py:345): 0.45 — conservative/institutional free-cash reserve.
+#   • Live small-account override (.env, 2026-06-09 "Capital unlock fixes"): 0.08 — keeps a
+#     ~$6k account from going inert. At 45% the reserve consumes nearly all equity and BAL/DCA
+#     never trades; 8% leaves ~$120 spendable. This is an INTENTIONAL accommodation, not a
+#     forgotten config. Revisit if/when the account grows large enough for 45% to be affordable.
+CASH_BUFFER_POLICY_NOTE = (
+    "Code default 0.45 = conservative/institutional cash reserve; live small-account override "
+    "0.08 (.env 2026-06-09) avoids making a ~$6k account inert. Intentional, not a forgotten config."
+)
+
+# Documented config keys with their run.py code defaults, for effective-value reporting.
+# (env_key, code_default, kind, label)
+_CONFIG_KEYS: tuple[tuple[str, Any, str, str], ...] = (
+    ("CASH_BUFFER_PCT", 0.45, "float", "free-cash reserve as fraction of equity"),
+    ("MAX_STOCK_EXPOSURE_PCT", 0.80, "float", "gross stock exposure cap"),
+    ("MAX_OPTIONS_EXPOSURE_PCT", 0.15, "float", "gross options exposure cap"),
+    ("DYNAMIC_MAX_ORDER_PCT", 0.03, "float", "per-order notional cap as fraction of equity"),
+    ("DYNAMIC_MAX_POSITIONS", 50, "int", "max concurrent positions"),
+    ("PDT_EQUITY_FLOOR", 25000.0, "float", "PDT equity floor"),
+    ("ENABLE_OWNERSHIP_GUARD", "true", "bool", "bot-vs-manual client_order_id tagging"),
+    ("BOT_COID_PREFIX", "qqbot", "str", "bot client_order_id prefix"),
+)
+# Override-only keys (no code-literal default; unset → falls back to dynamic/derived logic).
+_OVERRIDE_KEYS: tuple[tuple[str, str], ...] = (
+    ("MAX_ORDER_DOLLARS", "per-order $ cap override (else dynamic = DYNAMIC_MAX_ORDER_PCT*equity)"),
+    ("MAX_POSITIONS", "max-positions override (else DYNAMIC_MAX_POSITIONS)"),
+    ("EQUITY_FLOOR", "hard equity floor override"),
+    ("DAILY_LOSS_LIMIT", "max daily loss override"),
+)
+
+
+def _effective(env_values: dict[str, Any], key: str, default: Any) -> tuple[Any, str]:
+    """Value run.py would actually see: os.environ wins, then .env, then code default."""
+    if key in os.environ:
+        return os.environ[key], "os.environ"
+    if env_values.get(key) not in (None, ""):
+        return env_values.get(key), ".env"
+    return default, "code_default"
+
+
+def _coerce(value: Any, kind: str) -> Any:
+    if kind == "float":
+        return _safe_float(value)
+    if kind == "int":
+        return _safe_int(value)
+    if kind == "bool":
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    return str(value)
+
+
+def _runtime_config(env_values: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Effective risk/exec configuration + derived dollar figures at current equity.
+
+    Observability only — distinguishes code bug / stale test / unexpected runtime config /
+    intentional deployment setting at a glance. Reads config and a read-only snapshot; never
+    imports run.py (avoids its heavy import side effects) and changes nothing.
+    """
+    account = snapshot.get("account", {}) if isinstance(snapshot, dict) else {}
+
+    cfg: dict[str, Any] = {}
+    for key, default, kind, label in _CONFIG_KEYS:
+        raw, source = _effective(env_values, key, default)
+        cfg[key] = {"value": _coerce(raw, kind), "source": source,
+                    "is_override": source != "code_default", "label": label}
+    for key, label in _OVERRIDE_KEYS:
+        raw, source = _effective(env_values, key, None)
+        is_set = raw not in (None, "")
+        cfg[key] = {"value": _coerce(raw, "float") if is_set else None,
+                    "source": source if is_set else "unset", "is_override": is_set, "label": label}
+
+    equity = _safe_float(account.get("equity"))
+    cash = _safe_float(account.get("cash"))
+    buf_pct = cfg["CASH_BUFFER_PCT"]["value"]
+    order_pct = cfg["DYNAMIC_MAX_ORDER_PCT"]["value"]
+    order_override = cfg["MAX_ORDER_DOLLARS"]["value"]
+
+    cash_buffer_dollars = (buf_pct * equity) if (buf_pct is not None and equity is not None) else None
+    deployable = (max(0.0, cash - cash_buffer_dollars)
+                  if (cash is not None and cash_buffer_dollars is not None) else None)
+    max_order_est = order_override if order_override else (
+        (order_pct * equity) if (order_pct is not None and equity is not None) else None)
+
+    # Snapshot freshness — derived $ figures are only as trustworthy as the snapshot they come from.
+    snap_ts = _parse_ts(snapshot.get("updated_at_utc"))
+    snap_age_min = ((datetime.now(timezone.utc) - snap_ts).total_seconds() / 60.0) if snap_ts else None
+
+    return {
+        "live_mode": snapshot.get("live"),
+        "snapshot_updated_at_utc": snapshot.get("updated_at_utc"),
+        "snapshot_age_minutes": round(snap_age_min, 1) if snap_age_min is not None else None,
+        "snapshot_source": snapshot.get("source"),
+        "current_equity": equity,
+        "current_cash": cash,
+        "pdt_flagged": account.get("pdt"),
+        "account_status": account.get("status"),
+        "config": cfg,
+        "derived_at_current_equity": {
+            "cash_buffer_dollars": round(cash_buffer_dollars, 2) if cash_buffer_dollars is not None else None,
+            "deployable_cash_estimate": round(deployable, 2) if deployable is not None else None,
+            "max_order_dollars_estimate": round(max_order_est, 2) if max_order_est is not None else None,
+        },
+        "cash_buffer_policy_note": CASH_BUFFER_POLICY_NOTE,
+        "cash_buffer_diverges_from_code_default": (buf_pct is not None and abs(buf_pct - 0.45) > 1e-9),
+    }
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -503,7 +646,8 @@ def build_report(date_tag: str) -> dict[str, Any]:
     paths.daily_out_dir.mkdir(parents=True, exist_ok=True)
 
     env_values = dotenv_values(ENV_PATH) if ENV_PATH.exists() else {}
-    paper_only = str(env_values.get("APCA_PAPER", "")).lower() == "true"
+    paper_runtime = _resolve_paper_runtime(env_values)
+    runtime_config = _runtime_config(env_values, _load_json(SNAPSHOT_PATH))
     journal_rows, journal_summary = _load_executor_journal(paths.journal_path)
     skip_rows, skip_summary = _load_skips(paths.skipped_path)
     order_plan_rows, best_plan_by_symbol = _load_order_plan_rows(paths.log_dir, date_tag)
@@ -531,10 +675,8 @@ def build_report(date_tag: str) -> dict[str, Any]:
     report = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "date_tag": date_tag,
-        "paper_runtime": {
-            "apca_paper": env_values.get("APCA_PAPER"),
-            "paper_only_confirmed": paper_only,
-        },
+        "paper_runtime": paper_runtime,
+        "runtime_config": runtime_config,
         "runtime_status": {
             "journal_path": str(paths.journal_path),
             "journal_exists": paths.journal_path.exists(),
