@@ -20,7 +20,9 @@ from intraday_reversal_engine import (
     select_call, estimate_option_target_premium, size_option, propose_option_entries,
     propose_for_engine, previous_day_high, _occ_symbol,
     is_active_window, manage_eod, next_day_exit_decision, ManagedPosition,
+    to_trade_opportunity, collect_reversal_opportunities,
 )
+from daily_profit_engine import DailyOpportunityRouter, RouterConfig
 
 _ET = ZoneInfo("America/New_York")
 
@@ -386,6 +388,46 @@ class NextDayExitTests(unittest.TestCase):
     def test_hold_when_near_high_and_below_pdh(self):
         d = next_day_exit_decision(price=43.98, running_high=44.0, prev_day_high=44.5, cfg=CFG)
         self.assertFalse(d.sell)
+
+
+class V2CandidateSourceTests(unittest.TestCase):
+    _IN_WINDOW = datetime(2026, 6, 11, 14, 0, tzinfo=_ET)   # in reversal window + before 15:30 router cutoff
+
+    def test_to_trade_opportunity_maps_fields(self):
+        c = score_candidate(_base(symbol="OPP", price=42.0, prev_day_high=44.1, atr=0.9), CFG)
+        self.assertTrue(c.eligible)
+        opp = to_trade_opportunity(c, CFG)
+        self.assertEqual((opp.symbol, opp.asset_class, opp.side, opp.setup_type),
+                         ("OPP", "equity", "buy", "INTRADAY_REVERSAL"))
+        self.assertEqual(opp.strategy_id, "intraday_reversal")
+        self.assertEqual(opp.reference_price, 42.0)
+        self.assertEqual(opp.metadata["prev_day_high"], 44.1)
+        self.assertAlmostEqual(opp.metadata["trailing_stop_pct"], 0.0075)
+        # expected_r = (PDH-price)/price / trail = (2.1/42)/0.0075 = 6.67 -> capped at 5.0
+        self.assertEqual(opp.expected_r, 5.0)
+        self.assertLessEqual(opp.score, 100.0)
+
+    def test_collect_disabled_returns_empty(self):
+        cfg = EngineConfig(enabled=False)
+        self.assertEqual(collect_reversal_opportunities([_base()], cfg, now_et=self._IN_WINDOW), [])
+
+    def test_collect_outside_window_returns_empty(self):
+        cfg = EngineConfig(enabled=True)
+        noon = datetime(2026, 6, 11, 12, 0, tzinfo=_ET)
+        self.assertEqual(collect_reversal_opportunities([_base()], cfg, now_et=noon), [])
+
+    def test_collect_maps_eligible_and_router_approves(self):
+        cfg = EngineConfig(enabled=True)
+        rows = [_base(symbol="RVRS", price=42.0, prev_day_high=44.5, atr=0.9, vol_5m=420_000),
+                _base(symbol="MILD", price=18.5, prev_day_high=19.4, atr=0.4, vol_5m=610_000)]
+        opps = collect_reversal_opportunities(rows, cfg, now_et=self._IN_WINDOW)
+        self.assertEqual({o.symbol for o in opps}, {"RVRS", "MILD"})
+        self.assertTrue(all(o.strategy_id == "intraday_reversal" for o in opps))
+        # The mapped opportunities must be acceptable to the real v2 router.
+        res = DailyOpportunityRouter(RouterConfig()).route(
+            opps, market_context={"overall_market_bias": "bullish"}, now_et=self._IN_WINDOW)
+        self.assertTrue(set(o.symbol for o in res.approved) <= {"RVRS", "MILD"})
+        self.assertGreater(len(res.approved), 0)
 
 
 class BarDerivationTests(unittest.TestCase):

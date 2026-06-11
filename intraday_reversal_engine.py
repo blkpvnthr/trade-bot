@@ -326,6 +326,11 @@ def _finite(x, d=0.0):
         return d
 
 
+def _clamp(x, lo=0.0, hi=1.0):
+    x = _finite(x, lo)
+    return lo if x < lo else hi if x > hi else x
+
+
 def _vol_5m_of(inp: "ReversalInput") -> Optional[float]:
     if inp.vol_5m is not None:
         return _finite(inp.vol_5m)
@@ -909,6 +914,62 @@ def propose_for_engine(scan_result: ScanResult, equity: float, open_symbols: set
     if cfg.options_enabled:
         return propose_option_entries(scan_result, equity, open_symbols, cfg, opened_today)
     return propose_entries(scan_result, equity, open_symbols, cfg, sizer, opened_today)
+
+
+# ---------------------------------------------------------------------------
+# v2 router candidate source — map eligible candidates to TradeOpportunity
+# ---------------------------------------------------------------------------
+def to_trade_opportunity(c: ScoredCandidate, cfg: Optional[EngineConfig] = None):
+    """Map an eligible ScoredCandidate to a daily_profit_engine.TradeOpportunity (the v2
+    router's candidate type). expected_r is the REAL reward/risk of the trade: the move to
+    the PDH target over the trailing-stop distance. Pure; lazy import keeps this module
+    standalone for anyone who doesn't use the router."""
+    from daily_profit_engine import TradeOpportunity   # sibling, pure
+    cfg = cfg or EngineConfig()
+    price = _finite(c.price_now or c.price)
+    pdh = _finite(c.prev_day_high)
+    trail = cfg.trailing_stop_pct or 0.0075
+    reward = (pdh - price) / price if (pdh > 0 and price > 0) else 0.0
+    expected_r = round(min(5.0, reward / trail), 2) if (trail > 0 and reward > 0) else 1.0
+    rel5 = _finite(c.metrics.get("rel_vol_5m"), 1.0)
+    prob = _clamp(0.50 + (c.score - cfg.min_score) / 200.0, 0.50, 0.90)
+    return TradeOpportunity(
+        symbol=c.symbol, asset_class="equity", side="buy",
+        strategy_id="intraday_reversal", setup_type="INTRADAY_REVERSAL",
+        score=min(100.0, c.score), probability=prob, expected_r=expected_r,
+        liquidity_score=_clamp(rel5 / 3.0), regime_alignment=0.70,
+        risk_score=_clamp(_finite(c.metrics.get("extended_atr"), 0.0) / 4.0),
+        freshness_score=1.0, qty=1, reference_price=price,
+        reason=f"intraday_reversal:score={c.score:.0f}:toward_pdh={bool(c.metrics.get('toward_pdh'))}",
+        overnight_candidate=False,   # entered as intraday-tactical; the EOD pass decides carry
+        metadata={"tactical": True, "strategy": "intraday_reversal",
+                  "toward_pdh": bool(c.metrics.get("toward_pdh")),
+                  "prev_day_high": pdh, "trailing_stop_pct": trail,
+                  "pdh_distance_atr": c.metrics.get("pdh_distance_atr"),
+                  "rel_vol_5m": rel5})
+
+
+def collect_reversal_opportunities(universe: Optional[list] = None,
+                                   cfg: Optional[EngineConfig] = None,
+                                   now_et=None, market_context: Optional[dict] = None) -> list:
+    """v2 candidate-source entry point: scan the reversal universe and return eligible
+    candidates as TradeOpportunity objects for the DailyOpportunityRouter. Returns [] when
+    the engine is disabled, outside the after-1:30 PM ET window, or no universe is
+    available. ``universe`` is a list of ReversalInput (else read from
+    INTRADAY_REVERSAL_UNIVERSE_JSON). Pure — never places orders."""
+    cfg = cfg or EngineConfig()
+    if not cfg.enabled:
+        return []
+    if not is_active_window(now_et or datetime.now(ET), cfg):
+        return []
+    rows = universe
+    if rows is None:
+        path = os.getenv("INTRADAY_REVERSAL_UNIVERSE_JSON", "")
+        rows = _rows_from_json(path) if path and Path(path).exists() else []
+    if not rows:
+        return []
+    res = scan(rows, cfg)
+    return [to_trade_opportunity(c, cfg) for c in res.eligible]
 
 
 # ---------------------------------------------------------------------------

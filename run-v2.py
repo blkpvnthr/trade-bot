@@ -193,6 +193,17 @@ def run_v2_cycle(
         stale_state = bool(collected.get("stale_state"))
         feed_timeout = bool(collected.get("feed_timeout"))
         missing_data = bool(collected.get("missing_data"))
+        # Optional intraday-reversal candidate source (isolated; gated OFF by default via
+        # INTRADAY_REVERSAL_ENABLED, only after 1:30 PM ET, reads its own universe feed).
+        # Extends the candidate pool; the router/risk/exec gates still apply unchanged.
+        try:
+            import intraday_reversal_engine as _ire
+            _rev = _ire.collect_reversal_opportunities(market_context=market_context)
+            if _rev:
+                opportunities = list(opportunities) + list(_rev)
+                logger.info("v2: +%d intraday-reversal candidates", len(_rev))
+        except Exception as exc:
+            logger.debug("intraday reversal candidate source skipped: %s", exc)
 
     router = DailyOpportunityRouter(RouterConfig())
     result = router.route(
