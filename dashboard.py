@@ -641,7 +641,6 @@ def home():
       <div class=card><div class=k>Account equity</div><div class=v>{_money(acct['equity'])}</div><div class=sub>cash {_money(acct['cash'])}</div></div>
       <div class=card><div class=k>Today account P&L</div><div class=v>{_pnl(acct['day_pnl'])}</div><div class=sub>{_pct(acct['day_pnl_pct'])} vs prior close</div></div>
       <div class=card><div class=k>Today realized</div><div class=v>{_pnl(td['pnl'])}</div><div class=sub>{td['n']} trades · {(td['wins']/td['n']*100 if td['n'] else 0):.0f}% win</div></div>
-      <div class=card><div class=k>Month realized</div><div class=v>{_pnl(m_pnl)}</div><div class=sub>{m_n} trades · {(m_w/m_n*100 if m_n else 0):.0f}% win · PF {_pf_str(_pf(m_gw,m_gl))}</div></div>
     </div>
     <div class=cards style="margin-top:10px">
       <div class=card><div class=k>Month · Automated</div><div class=v>{_pnl(auto_pnl)}</div><div class=sub>{auto_n} bot round-trips (qqbot-*)</div></div>
@@ -732,7 +731,6 @@ def monthly(ym):
     <h1>{ym} <span class=muted style=font-size:13px>· <a href="{PREFIX}/monthly/{prev}">‹ {prev}</a> · <a href="{PREFIX}/monthly/{nxt}">{nxt} ›</a></span></h1>
     <div class=cards>
       <div class=card><div class=k>Account P&L (mo)</div><div class=v>{_pnl(m_acct)}</div></div>
-      <div class=card><div class=k>Realized P&L (mo)</div><div class=v>{_pnl(t_pnl)}</div></div>
       <div class=card><div class=k>Trades · Win%</div><div class=v>{t_n} · {(t_w/t_n*100 if t_n else 0):.0f}%</div><div class=sub>PF {_pf_str(_pf(t_gw,t_gl))} · vol {_money(t_vol)}</div></div>
       <div class=card><div class=k>Green / Red days</div><div class=v><span class=pos>{green}</span> / <span class=neg>{red}</span></div><div class=sub>best {_pnl(best)} · worst {_pnl(worst)}</div></div>
     </div>
