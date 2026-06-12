@@ -130,6 +130,18 @@ class EngineConfig:
         default_factory=lambda: _env_float("INTRADAY_REVERSAL_PCR_CONTRA_BEAR_MAX", 0.20))
     min_vol_oi_call_share: float = field(   # require fresh vol/OI skewed >=this to calls (0 = off)
         default_factory=lambda: _env_float("INTRADAY_REVERSAL_MIN_VOL_OI_CALL_SHARE", 0.0))
+    # Fundamental gate (in addition to the technical/analyst gates). Default OFF; fail-open on
+    # missing data. Thresholds default lenient so enabling only enforces non-declining revenue.
+    fundamental_gate_enabled: bool = field(
+        default_factory=lambda: _env_bool("INTRADAY_REVERSAL_FUNDAMENTAL_GATE", False))
+    min_revenue_growth: float = field(
+        default_factory=lambda: _env_float("INTRADAY_REVERSAL_MIN_REVENUE_GROWTH", 0.0))
+    require_positive_net_margin: bool = field(
+        default_factory=lambda: _env_bool("INTRADAY_REVERSAL_REQUIRE_POSITIVE_MARGIN", False))
+    max_debt_to_equity: float = field(      # 0 = off
+        default_factory=lambda: _env_float("INTRADAY_REVERSAL_MAX_DEBT_TO_EQUITY", 0.0))
+    max_pe_ratio: float = field(            # 0 = off
+        default_factory=lambda: _env_float("INTRADAY_REVERSAL_MAX_PE_RATIO", 0.0))
     # Trailing stop on the UNDERLYING (high-water-mark trail). Recorded on every proposed
     # entry; the existing exit engine is responsible for executing it. Target = PDH (above);
     # trailing stop = this % below the post-entry peak (below).
@@ -217,6 +229,7 @@ class ReversalInput:
     atr: Optional[float] = None
     # Options overlay inputs
     prev_day_high: Optional[float] = None  # PDH (target). If None, derived from daily_history.
+    fundamentals: Optional[dict] = None    # {revenue_growth_yoy, net_margin, debt_to_equity, pe_ratio, ...}
     option_chain: Optional[list] = None    # list of dicts: {symbol?, expiry, strike, type,
     #   bid, ask, mid?, dte?, open_interest, volume} — calls used for the 1-7 DTE overlay.
 
@@ -581,6 +594,15 @@ def universe_block(inp: ReversalInput, cfg: EngineConfig) -> Optional[str]:
         return "analyst_not_strong_buy"
     if str(inp.os_rating or "").strip().lower() != STRONG_BUY:
         return "os_not_strong_buy"
+    # Fundamental gate IN ADDITION to the technical/analyst gates (optional, fail-open).
+    if cfg.fundamental_gate_enabled:
+        try:
+            import intraday_reversal_fundamentals as _fund
+            ok, why = _fund.fundamentals_ok(inp.fundamentals, cfg)
+            if not ok:
+                return f"fundamental:{why}"
+        except Exception:
+            pass
     return None
 
 
@@ -1007,6 +1029,12 @@ def collect_reversal_opportunities(universe: Optional[list] = None,
         rows = _enr.maybe_enrich(rows)
     except Exception as exc:
         logger.debug("bar enrichment skipped: %s", exc)
+    # Optional fundamental enrichment (gated): attach fundamentals so the gate can apply.
+    try:
+        import intraday_reversal_fundamentals as _fund
+        rows = _fund.maybe_enrich_fundamentals(rows, cfg)
+    except Exception as exc:
+        logger.debug("fundamental enrichment skipped: %s", exc)
     res = scan(rows, cfg)
     return [to_trade_opportunity(c, cfg) for c in res.eligible]
 
