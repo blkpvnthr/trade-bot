@@ -114,8 +114,24 @@ def run_symbol(symbol: str, df: pd.DataFrame, dec_t: time, cfg: EngineConfig,
         ret, reason = simulate_trade(post, next_post, price_t, pdh, cfg.trailing_stop_pct,
                                      cfg.next_day_high_trail_pct, carry_overnight)
         trades.append({"symbol": symbol, "date": str(d), "score": c.score, "ret": ret,
-                       "exit": reason, "chg": chg, "perf_1w": perf_1w})
+                       "exit": reason, "chg": chg, "perf_1w": perf_1w,
+                       "rel_vol_5m": c.rel_vol_5m})
     return trades
+
+
+def cap_top_n_per_day(trades: list[dict], n: Optional[int]) -> list[dict]:
+    """Keep only the top-N most-relatively-active (rel_vol_5m desc) eligible names per day,
+    mirroring the live universe sort + per-day entry cap. None == uncapped."""
+    if not n:
+        return trades
+    by_day: dict[str, list[dict]] = {}
+    for t in trades:
+        by_day.setdefault(t["date"], []).append(t)
+    out: list[dict] = []
+    for ts in by_day.values():
+        ts.sort(key=lambda t: -(t.get("rel_vol_5m") or 0.0))
+        out.extend(ts[:n])
+    return out
 
 
 _ORB_MIN = 15
@@ -140,16 +156,18 @@ def evaluate(trades: list[dict]) -> dict[str, Any]:
 
 
 def render_report(base: dict, sweep: Optional[list], n_symbols: int, n_days: int,
-                  cfg: EngineConfig, decision_et: str, carry: bool) -> str:
+                  avg_elig: float, cfg: EngineConfig, decision_et: str, carry: bool,
+                  top_n: Optional[int]) -> str:
     L = ["# Intraday reversal engine backtest\n",
          f"- Generated: {datetime.now(ET).isoformat()}",
-         f"- Universe: {n_symbols} cached symbols | symbol-days scanned: {n_days}",
+         f"- Universe: {n_symbols} cached symbols | {n_days} trading days | "
+         f"avg {avg_elig} eligible/day",
          f"- Scan @ {decision_et} ET | target = Previous Day High | trail {cfg.trailing_stop_pct*100:.2f}%"
-         f" | overnight carry: {carry}",
-         "- Gates from bars: price>5, vol>3M, chg<0 (RED today), perf_1w<0. Analyst/OS "
+         f" | overnight carry: {carry} | **rel-vol top-N/day: {top_n if top_n else 'uncapped'}**",
+         "- Gates from bars: price>5, vol>3M, chg>0 (GREEN today), perf_1w<0. Analyst/OS "
          "'strong buy' NEUTRALIZED (no historical ratings in cache) — this tests the price "
          "setup + PDH-target management, not the fundamental overlay.\n",
-         "## Realized trade performance (entry -> PDH target / trail / overnight)\n",
+         "## Realized trade performance (rel-vol top-N names per day)\n",
          "| metric | value |", "|---|---|"]
     for k in ("n", "hit_rate", "avg_ret_bps", "median_bps", "profit_factor", "t_stat",
               "avg_win_bps", "avg_loss_bps", "pct_hit_pdh"):
@@ -160,14 +178,15 @@ def render_report(base: dict, sweep: Optional[list], n_symbols: int, n_days: int
              "flat-or-down at the close; *_d2 / next_day_trail = overnight carry sold into the "
              "next day's high.\n")
     if sweep:
-        L.append("## Config sensitivity\n")
-        L.append("| min_score | trail % | n | avg bps | PF | hit-rate | % hit PDH |")
+        L.append("## rel-vol top-N-per-day sensitivity\n")
+        L.append("Keep only the N most-relatively-active (rel_vol_5m desc) eligible names each day.\n")
+        L.append("| top_N/day | n | avg bps | PF | t-stat | hit-rate | % hit PDH |")
         L.append("|---|---|---|---|---|---|---|")
         for s in sweep:
             e = s["eval"]
-            L.append(f"| {s['min_score']} | {s['trail']*100:.2f} | {e.get('n')} | "
-                     f"{e.get('avg_ret_bps')} | {e.get('profit_factor')} | {e.get('hit_rate')} | "
-                     f"{e.get('pct_hit_pdh')} |")
+            L.append(f"| {s['top_n'] if s['top_n'] else 'uncapped'} | {e.get('n')} | "
+                     f"{e.get('avg_ret_bps')} | {e.get('profit_factor')} | {e.get('t_stat')} | "
+                     f"{e.get('hit_rate')} | {e.get('pct_hit_pdh')} |")
         L.append("")
     L.append("## Caveats\n")
     L.append("- Gross returns (no slippage/fees/borrow); trailing stops fill AT the level, not "
@@ -185,6 +204,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--orb-minutes", type=int, default=15)
     p.add_argument("--max-symbols", type=int, default=None)
     p.add_argument("--no-overnight", action="store_true", help="disable the overnight carry")
+    p.add_argument("--top-n", type=int, default=3,
+                   help="keep only the top-N most-relatively-active names per day (0 = uncapped)")
     p.add_argument("--config-sweep", action="store_true")
     p.add_argument("--out-dir", default="backtest_outputs")
     args = p.parse_args(argv)
@@ -205,37 +226,34 @@ def main(argv: Optional[list[str]] = None) -> int:
     all_trades: list[dict] = []
     for sym, df in bars.items():
         all_trades.extend(run_symbol(sym, df, dec_t, base_cfg, carry))
-    base_eval = evaluate(all_trades)
+    per_day: dict[str, int] = {}
+    for t in all_trades:
+        per_day[t["date"]] = per_day.get(t["date"], 0) + 1
+    avg_elig = round(len(all_trades) / max(1, len(per_day)), 2)
 
-    sweep = None
-    if args.config_sweep:
-        print("[3/3] config sweep ...")
-        sweep = []
-        for ms in (60, 70, 75, 80):
-            for tr in (0.005, 0.0075, 0.01):
-                cfg = replace(base_cfg, min_score=ms, trailing_stop_pct=tr)
-                tr_trades: list[dict] = []
-                for sym, df in bars.items():
-                    tr_trades.extend(run_symbol(sym, df, dec_t, cfg, carry))
-                sweep.append({"min_score": ms, "trail": tr, "eval": evaluate(tr_trades)})
-    else:
-        print("[3/3] (skip sweep; pass --config-sweep)")
+    top_n = args.top_n or None
+    base_eval = evaluate(cap_top_n_per_day(all_trades, top_n))
+
+    print("[3/3] rel-vol top-N-per-day sweep ...")
+    sweep = [{"top_n": n, "eval": evaluate(cap_top_n_per_day(all_trades, n))}
+             for n in (1, 2, 3, 5, 10, None)]
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    n_days = sum(1 for _ in all_trades)
     payload = {"config": {"min_score": base_cfg.min_score, "trail": base_cfg.trailing_stop_pct,
                           "decision_et": args.decision_et, "orb_minutes": args.orb_minutes,
-                          "overnight": carry},
-               "n_symbols": len(bars), "evaluation": base_eval, "sweep": sweep,
-               "n_trades": len(all_trades)}
+                          "overnight": carry, "top_n": top_n},
+               "n_symbols": len(bars), "n_trading_days": len(per_day),
+               "avg_eligible_per_day": avg_elig, "uncapped_trades": len(all_trades),
+               "evaluation": base_eval, "rel_vol_top_n_sweep": sweep}
     (out_dir / "reversal_backtest.json").write_text(json.dumps(payload, indent=2, default=str))
     (out_dir / "reversal_backtest.md").write_text(
-        render_report(base_eval, sweep, len(bars), len(all_trades), base_cfg, args.decision_et, carry),
-        encoding="utf-8")
+        render_report(base_eval, sweep, len(bars), len(per_day), avg_elig, base_cfg,
+                      args.decision_et, carry, top_n), encoding="utf-8")
 
     print("\n" + "=" * 70)
     e = base_eval
+    print(f"rel-vol top-N={top_n}  (avg {avg_elig} eligible/day over {len(per_day)} days)")
     print(f"trades={e.get('n')}  hit={e.get('hit_rate')}  avg={e.get('avg_ret_bps')}bps  "
           f"PF={e.get('profit_factor')}  t={e.get('t_stat')}  %hitPDH={e.get('pct_hit_pdh')}")
     print(f"exits: {e.get('exit_reasons')}")
