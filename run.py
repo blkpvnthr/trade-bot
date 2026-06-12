@@ -215,6 +215,10 @@ INSIDER_COPY_MAX_NAMES          = int(os.environ.get("INSIDER_COPY_MAX_NAMES", 5
 # valid signal indefinitely. Scoped to insider buys ONLY — every other engine still honors the
 # gate. Hard risk caps (daily-loss, drawdown, cash-buffer, PDT, kill-switch) are UNAFFECTED.
 INSIDER_COPY_BYPASS_TREND_GATE  = os.environ.get("INSIDER_COPY_BYPASS_TREND_GATE", "false").lower() in {"1", "true", "yes"}
+# BAL DCA entries skip the 9-EMA/200-SMA execution gate when true (mirrors the insider bypass) so
+# the gates-off accumulation study can buy dips below the 200-SMA. Hard risk caps (daily-loss,
+# drawdown, cash-buffer, exposure/concentration, RiskManager.gate, ownership guard) are UNAFFECTED.
+BAL_BYPASS_TREND_GATE           = os.environ.get("BAL_BYPASS_TREND_GATE", "false").lower() in {"1", "true", "yes"}
 ALPHA_PENDING_SUBMISSION_TTL_MIN = float(os.environ.get("ALPHA_PENDING_SUBMISSION_TTL_MIN", "30"))
 
 # ── Option safety-exit (alpha-independent backstop) ───────────────────────────
@@ -1445,7 +1449,8 @@ class AlpacaGateway:
         # ── Fractional / notional BUY: deploy an exact dollar amount (fractional shares) ──────
         if _notional_buy:
             return self._submit_notional_buy(symbol, float(notional), reason,
-                                             reference_price=float(reference_price or limit_price or 0.0))
+                                             reference_price=float(reference_price or limit_price or 0.0),
+                                             bypass_trend_gate=bypass_trend_gate)
 
         # Notional reference price: explicit limit → caller-supplied reference → live
         # market lookup. Must be > 0 for BUYs (exits never depend on notional).
@@ -1543,7 +1548,7 @@ class AlpacaGateway:
         return self._client.submit_order(req)
 
     def _submit_notional_buy(self, symbol: str, notional: float, reason: str = "",
-                             reference_price: float = 0.0) -> Optional[Dict]:
+                             reference_price: float = 0.0, bypass_trend_gate: bool = False) -> Optional[Dict]:
         """Fractional BUY of an exact dollar `notional` (fractionable equities only). Same throttle,
         size-to-fit and RiskManager gating as a qty order, but no whole-share rounding.
 
@@ -1560,7 +1565,7 @@ class AlpacaGateway:
         # 9-EMA execution gate, matching the qty path: only applied when connected to the broker
         # (self._available). Sim/paper-offline flows skip the live-data trend gate, exactly as the
         # whole-share submit_market_order path does.
-        if self._available:
+        if self._available and not bypass_trend_gate:
             _trend_blk = _ema_buy_blocked(symbol, ref_price)
             if _trend_blk:
                 log_skip(symbol, _trend_blk, side="buy", source=reason or "broker")
@@ -3131,11 +3136,13 @@ def run_bal_entries(bal, gateway: AlpacaGateway, waterfall, risk: RiskManager,
             resp = gateway.submit_market_order(o["symbol"], "buy", 0,
                                                reason=o.get("reason", "buffett_accumulation"),
                                                reference_price=float(o.get("price", 0.0) or 0.0),
-                                               notional=float(o["target_notional"]))
+                                               notional=float(o["target_notional"]),
+                                               bypass_trend_gate=BAL_BYPASS_TREND_GATE)
         else:
             resp = gateway.submit_market_order(o["symbol"], "buy", int(o["qty"]),
                                                reason=o.get("reason", "buffett_accumulation"),
-                                               reference_price=float(o.get("price", 0.0) or 0.0))
+                                               reference_price=float(o.get("price", 0.0) or 0.0),
+                                               bypass_trend_gate=BAL_BYPASS_TREND_GATE)
         if resp is not None:
             placed += 1
             _research("record_bal_order_safe", o, market_context)   # evidence: tranche/conviction
