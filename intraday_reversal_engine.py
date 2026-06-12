@@ -118,6 +118,18 @@ class EngineConfig:
     option_risk_pct: float = field(                     # premium-at-risk per trade (long call max loss = premium)
         default_factory=lambda: _env_float("INTRADAY_REVERSAL_OPTION_RISK_PCT", 0.005))
     option_marketable_buffer: float = 0.02              # buy this far over mid when no ask
+    # Option-sentiment buy-gate (AV historical put/call ratio + vol/OI call-share). Default
+    # OFF; fail-open on missing data. Contrarian-aware PCR thresholds.
+    option_sentiment_enabled: bool = field(
+        default_factory=lambda: _env_bool("INTRADAY_REVERSAL_OPTION_SENTIMENT", False))
+    pcr_bull_max: float = field(default_factory=lambda: _env_float("INTRADAY_REVERSAL_PCR_BULL_MAX", 0.60))
+    pcr_bear_min: float = field(default_factory=lambda: _env_float("INTRADAY_REVERSAL_PCR_BEAR_MIN", 1.00))
+    pcr_contra_bull_min: float = field(
+        default_factory=lambda: _env_float("INTRADAY_REVERSAL_PCR_CONTRA_BULL_MIN", 1.50))
+    pcr_contra_bear_max: float = field(
+        default_factory=lambda: _env_float("INTRADAY_REVERSAL_PCR_CONTRA_BEAR_MAX", 0.20))
+    min_vol_oi_call_share: float = field(   # require fresh vol/OI skewed >=this to calls (0 = off)
+        default_factory=lambda: _env_float("INTRADAY_REVERSAL_MIN_VOL_OI_CALL_SHARE", 0.0))
     # Trailing stop on the UNDERLYING (high-water-mark trail). Recorded on every proposed
     # entry; the existing exit engine is responsible for executing it. Target = PDH (above);
     # trailing stop = this % below the post-entry peak (below).
@@ -856,18 +868,24 @@ def size_option(equity: float, premium: float, cfg: EngineConfig) -> int:
 
 
 def propose_option_entries(scan_result: ScanResult, equity: float, open_symbols: set[str],
-                           cfg: Optional[EngineConfig] = None,
-                           opened_today: int = 0) -> list[OptionEntryOrder]:
+                           cfg: Optional[EngineConfig] = None, opened_today: int = 0,
+                           sentiment_fn: Optional[Callable[[str], Any]] = None) -> list[OptionEntryOrder]:
     """For each eligible candidate, buy a 1-7 DTE CALL with a price target at the
     underlying's Previous Day High and a 0.75% trailing stop on the underlying.
     Honors the same engine gates as the share path (min score, engine max-open / per-day,
-    never average into a held underlying). Returns intended orders only — the caller
+    never average into a held underlying). When option-sentiment is enabled, also confirm
+    with the AV put/call + vol/OI gate (fail-open). Returns intended orders only — the caller
     routes the OCC symbol through run.AlpacaGateway.submit_market_order (limit), where all
     existing safety gates still apply."""
     cfg = cfg or scan_result.cfg
     open_symbols = {str(s).upper() for s in (open_symbols or set())}
     orders: list[OptionEntryOrder] = []
     opened = int(opened_today)
+    _sent_ok = None
+    if cfg.option_sentiment_enabled:
+        import intraday_reversal_option_sentiment as _sent
+        _fn = sentiment_fn or _sent.fetch_option_sentiment
+        _sent_ok = lambda sym: _sent.option_sentiment_ok(_fn(sym), cfg)  # noqa: E731
     for c in scan_result.eligible:
         if opened >= cfg.max_new_entries_per_day:
             break
@@ -880,6 +898,12 @@ def propose_option_entries(scan_result: ScanResult, equity: float, open_symbols:
         pdh = c.prev_day_high
         if pdh is None or pdh <= c.price_now:                # target must be above current price
             continue
+        if _sent_ok is not None:                             # option-positioning confirmation gate
+            ok, why = _sent_ok(c.symbol)
+            if not ok:
+                logger.info("intraday_reversal: skip %s call — option sentiment block (%s)",
+                            c.symbol, why)
+                continue
         contract, why = select_call(c.price_now, c.option_chain, cfg)
         if contract is None:
             continue
