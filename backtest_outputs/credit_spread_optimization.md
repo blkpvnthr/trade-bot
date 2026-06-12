@@ -1,0 +1,55 @@
+# Bull-Put Credit-Spread Optimization (real chains, liquid mega-caps)
+
+One lever at a time, no stacking until Study 5. Real AV chains (puts), enter CREDIT / exit DEBIT + $0.65/contract/side, momentum entries, 10-day hold. Return on capital-at-risk. Compare vs baseline **+6.2% median / 62% win (current bull-put baseline)**. ⚠️ = n<30 (low sample).
+
+## Study 1 — short-put delta sweep (width fixed $5)
+
+| Variant | n | Mean | Median | Win% | Sharpe | MaxDD | AvgCredit | AvgMaxLoss | PF |
+|---|---|---|---|---|---|---|---|---|---|
+| δ0.30 | 259 | -10.5% | **+1.1%** | 51% | -0.274 | -100% | $156 | $627 | 0.41 |
+| δ0.25 | 244 | -6.8% | **+2.0%** | 54% | -0.218 | -99% | $120 | $569 | 0.48 |
+| δ0.20 | 242 | -6.5% | **+2.2%** | 54% | -0.234 | -98% | $93 | $656 | 0.41 |
+| δ0.16 | 233 | -5.8% | **+2.3%** | 60% | -0.250 | -96% | $75 | $787 | 0.38 |
+| δ0.10 | 198 | -3.5% | **+1.7%** | 59% | -0.219 | -80% | $38 | $657 | 0.37 |
+
+→ best short delta (median, n≥30): **δ0.16**
+
+## Study 2 — long-leg width sweep (short δ0.16)
+
+| Variant | n | Mean | Median | Win% | Sharpe | MaxDD | AvgCredit | AvgMaxLoss | PF |
+|---|---|---|---|---|---|---|---|---|---|
+| $1 wide | 226 | -7.5% | **+0.4%** | 53% | -0.331 | -98% | $65 | $694 | 0.27 |
+| $2.5 wide | 227 | -5.6% | **+1.7%** | 58% | -0.269 | -95% | $70 | $732 | 0.38 |
+| $5 wide | 233 | -5.8% | **+2.3%** | 60% | -0.250 | -96% | $75 | $787 | 0.38 |
+| $10 wide | 237 | -3.5% | **+3.3%** | 67% | -0.180 | -88% | $108 | $1112 | 0.53 |
+
+→ best width (median, n≥30): **$10 wide**
+
+## Study 3 — stop-loss sweep (δ0.16, $10 wide)
+
+| Variant | n | Mean | Median | Win% | Sharpe | MaxDD | AvgCredit | AvgMaxLoss | PF |
+|---|---|---|---|---|---|---|---|---|---|
+| no stop | 237 | -3.5% | **+3.3%** | 67% | -0.180 | -88% | $108 | $1112 | 0.53 |
+| 1.5x credit | 237 | -3.4% | **+3.2%** | 65% | -0.203 | -87% | $108 | $1112 | 0.53 |
+| 2.0x credit | 237 | -3.4% | **+3.2%** | 65% | -0.203 | -87% | $108 | $1112 | 0.53 |
+| 2.5x credit | 237 | -3.3% | **+3.2%** | 65% | -0.197 | -86% | $108 | $1112 | 0.54 |
+| short-strike breach | 237 | -3.4% | **+3.3%** | 67% | -0.192 | -86% | $108 | $1112 | 0.54 |
+
+→ best stop (median+MaxDD, n≥30): **short-strike breach**
+
+## Study 4 — trend filter (δ0.16, $10 wide)
+
+| Variant | n | Mean | Median | Win% | Sharpe | MaxDD | AvgCredit | AvgMaxLoss | PF |
+|---|---|---|---|---|---|---|---|---|---|
+| no filter | 237 | -3.5% | **+3.3%** | 67% | -0.180 | -88% | $108 | $1112 | 0.53 |
+| close>SMA200 | 201 | -3.2% | **+3.1%** | 65% | -0.182 | -81% | $110 | $1151 | 0.54 |
+| close>SMA200 & SMA50>SMA200 | 165 | -3.9% | **+2.9%** | 63% | -0.214 | -81% | $114 | $1202 | 0.48 |
+
+## Study 5 — simplest combined rule (no over-fitting)
+
+| Variant | n | Mean | Median | Win% | Sharpe | MaxDD | AvgCredit | AvgMaxLoss | PF |
+|---|---|---|---|---|---|---|---|---|---|
+| δ0.16 $10w short-strike breach | 237 | -3.4% | **+3.3%** | 67% | -0.192 | -86% | $108 | $1112 | 0.54 |
+| δ0.16 $10w short-strike breach + SMA200 | 201 | -3.3% | **+3.1%** | 65% | -0.192 | -82% | $110 | $1151 | 0.53 |
+
+_Key target: positive MEDIAN + controlled MaxDD + large-enough n (NOT max mean). Baseline +6.2% median / 62% win (current bull-put baseline)._

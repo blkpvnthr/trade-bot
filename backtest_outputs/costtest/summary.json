@@ -1,0 +1,39 @@
+{
+  "run_tag": "costtest",
+  "window": "2026-05-12..2026-06-04",
+  "symbols": [
+    "ASX",
+    "MU",
+    "NBIX",
+    "NOK",
+    "VICR",
+    "LRCX",
+    "DELL"
+  ],
+  "start_equity": 100000.0,
+  "final_equity": 105750.02,
+  "total_realized_pnl": 5750.02,
+  "return_pct": 5.75,
+  "trading_days": 17,
+  "avg_realized_pnl_per_day": 338.24,
+  "entries_filled": 9,
+  "exits_filled": 12,
+  "wins": 8,
+  "losses": 4,
+  "win_rate_pct": 66.7,
+  "avg_win": 1146.79,
+  "avg_loss": -856.07,
+  "max_drawdown_pct": 3.521,
+  "open_positions_remaining": 0,
+  "costs_enabled": true,
+  "fees_paid": 800.08,
+  "commission_per_contract": 0.65,
+  "slippage_pct": 0.0075,
+  "assumptions": [
+    "Underlying: REAL Alpaca historical 1-minute bars (RTH).",
+    "Option prices: synthesized via engine's black_scholes_call; IV = 20d trailing realized vol.",
+    "Fills: entries at modeled ask (2.4% spread), exits at modeled mid \u2014 orders ALWAYS fill.",
+    "No real NBBO/L2 liquidity, no commissions, no early assignment, no IV smile/skew.",
+    "Engine risk + exit logic run unchanged; CLAUDE.md backstops gate new entries."
+  ]
+}

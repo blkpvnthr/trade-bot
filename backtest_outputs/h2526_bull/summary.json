@@ -1,0 +1,44 @@
+{
+  "run_tag": "h2526_bull",
+  "mode": "FIXED",
+  "universe": [
+    "NVDA",
+    "QQQ",
+    "GOOGL",
+    "SPY",
+    "TSLA",
+    "IWM"
+  ],
+  "start_equity": 100000.0,
+  "final_equity": 104784.25,
+  "total_pnl": 4784.25,
+  "return_pct": 4.78,
+  "closed_trades": 106,
+  "win_rate": 70.8,
+  "expectancy": 45.1,
+  "avg_win": 173.1,
+  "avg_loss": -264.5,
+  "worst": -979.0,
+  "max_drawdown_pct": 3.62,
+  "pnl_per_calendar_day": 13.0,
+  "exit_mix": {
+    "stop_loss": 3,
+    "take_profit": 43,
+    "time_stop": 60
+  },
+  "by_kind": {
+    "put": {
+      "n": 106,
+      "pnl": 4784.0
+    }
+  },
+  "params": {
+    "risk_budget": 2000.0,
+    "exposure_pct": 0.35,
+    "tp_frac": 0.5,
+    "sl_mult": 2.0,
+    "time_stop_dte": 21,
+    "max_positions": 6,
+    "regime_mode": "off"
+  }
+}

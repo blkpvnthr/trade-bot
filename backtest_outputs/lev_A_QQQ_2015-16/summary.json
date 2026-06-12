@@ -1,0 +1,29 @@
+{
+  "run_tag": "lev_A_QQQ_2015-16",
+  "universe": [
+    "TQQQ",
+    "SOXL",
+    "NVDL"
+  ],
+  "window": "2015-01-01..2016-12-31",
+  "start_equity": 100000.0,
+  "final_equity": 147023.29,
+  "total_pnl": 47023.29,
+  "return_pct": 47.02,
+  "closed_trades": 16,
+  "win_rate": 25.0,
+  "max_drawdown_pct": 34.88,
+  "by_kind": {
+    "shares": {
+      "n": 16,
+      "pnl": 47023.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": 19.5,
+    "sharpe": 0.74,
+    "sortino": 0.88,
+    "ulcer": 21.13,
+    "worst_month_pct": -11.8
+  }
+}

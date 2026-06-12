@@ -1,0 +1,11 @@
+# Liquidity-Sweep Trend+Delta as Options Entry Signal (len=12, mult=2.0)
+
+Signal on the UNDERLYING; option = ATM call δ0.45-0.65, spread≤10%, real AV chains, ASK in / BID out + $0.65/side. Liquid mega-caps. **Judge by median + win + n.**
+
+| Arm | n | Mean | Median | Sharpe | Win% | MaxDD |
+|---|---|---|---|---|---|---|
+| **baseline** | 326 | +9.1% | **-16.5%** | +0.081 | 41% | -98% |
+| **buySignal** | 164 | +3.8% | **-16.4%** | +0.042 | 43% | -93% |
+| **buySignal+sellExit** | 164 | +21.0% | **-76.9%** | +0.104 | 32% | -100% |
+
+_buySignal fires at trend-change crossovers (selective). If it lifts median+win over baseline at trustworthy n, it's the entry signal; sellExit tests whether trend-reversal exit beats fixed hold._

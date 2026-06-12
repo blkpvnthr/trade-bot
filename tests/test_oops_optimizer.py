@@ -7,6 +7,7 @@ falls back to Black-Scholes selection when simulation data is missing.
 import sys
 import types
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +16,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 import oops_option_optimizer as oops
 import alpha_call_engine as ace
+
+
+class _PreCutoffDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        base = cls(2026, 6, 11, 10, 0, 0)
+        if tz is not None:
+            return datetime(2026, 6, 11, 10, 0, 0, tzinfo=tz)
+        return base
 
 
 def _contract(strike, mid, spread=0.03, oi=800, vol=60, iv=0.5, theta=0.02, sym=None):
@@ -131,8 +141,10 @@ class OOPSEngineIntegrationTests(unittest.TestCase):
         #   - MAX_ORDER_DOLLARS=120 would reject a single ~$410 option contract by the order-size
         #     cap (gate() re-reads this module override every call, so it must be patched here).
         with patch.object(run, "is_market_open", return_value=True), \
+             patch.object(run, "datetime", _PreCutoffDateTime), \
              patch.object(run, "_regime_ctx", return_value=None), \
-             patch.object(run, "MAX_ORDER_DOLLARS_OVERRIDE", "1000000"):
+             patch.object(run, "MAX_ORDER_DOLLARS_OVERRIDE", "1000000"), \
+             patch.dict(run._ALPHA_PENDING_SUBMISSIONS, {}, clear=True):
             placed = run.run_alpha_entries(eng, gw, _WF(), risk, symbols=["AAPL"],
                                            bars_by_symbol={}, chains_by_symbol={}, market_context={})
         self.assertEqual(placed, 1)
@@ -176,21 +188,75 @@ class OOPSEngineIntegrationTests(unittest.TestCase):
         self.assertEqual(placed, 0)
         self.assertEqual(risk.open_positions, {})
 
+    def test_alpha_pending_submission_guard_blocks_duplicate_resubmits(self):
+        import run
+        risk = run.RiskManager(equity=100_000.0)
+
+        class _Gateway:
+            def __init__(self):
+                self.calls = 0
+
+            def submit_market_order(self, symbol, side, qty, reason="", limit_price=None, order_type="market"):
+                self.calls += 1
+                return {"sim": True, "symbol": symbol, "side": side, "qty": qty}
+
+        class _Engine:
+            def __init__(self, signal):
+                self.signal = signal
+                self.registered = 0
+
+            def evaluate_universe(self, **kwargs):
+                return [self.signal]
+
+            def register_filled(self, sig):
+                self.registered += 1
+                raise RuntimeError("simulated fill registration failure")
+
+        ready = ace.CallSignal(symbol="AAPL", setup_type="ORB", setup_score=88, grade="A+")
+        ready.contract_symbol = "AAPL260116C00150000"; ready.contracts = 1
+        ready.mid = 4.0; ready.ask = 4.1; ready.premium_cost = 410.0; ready.status = "ready"
+
+        gw = _Gateway()
+        eng = _Engine(ready)
+
+        class _WF:
+            def consume_alpha(self, amt): return amt
+
+        with patch.object(run, "is_market_open", return_value=True), \
+             patch.object(run, "datetime", _PreCutoffDateTime), \
+             patch.object(run, "_regime_ctx", return_value=None), \
+             patch.object(run, "MAX_ORDER_DOLLARS_OVERRIDE", "1000000"), \
+             patch.dict(run._ALPHA_PENDING_SUBMISSIONS, {}, clear=True):
+            first = run.run_alpha_entries(
+                eng, gw, _WF(), risk,
+                symbols=["AAPL"], bars_by_symbol={}, chains_by_symbol={}, market_context={}
+            )
+            second = run.run_alpha_entries(
+                eng, gw, _WF(), risk,
+                symbols=["AAPL"], bars_by_symbol={}, chains_by_symbol={}, market_context={}
+            )
+
+        self.assertEqual(first, 1)
+        self.assertEqual(second, 0)
+        self.assertEqual(gw.calls, 1)
+        self.assertEqual(eng.registered, 1)
+
     # 9 ─────────────────────────────────────────────────────────────────────────
     def test_oops_exit_cannot_override_hard_stop(self):
         eng = ace.AlphaCallEngine(broker=types.SimpleNamespace(), config=ace.AlphaCallConfig())
         eng._active = {}
         cfg = eng.config
         call = ace.ActiveCall(
-            symbol="XYZ", contract_symbol="XYZ260601C00100000", expiry="2026-06-01",
+            symbol="XYZ", contract_symbol="XYZ260701C00100000", expiry="2026-07-01",
             strike=100.0, contracts_held=2, contracts_original=2, entry_mid=4.0,
             entry_cost=800.0, hard_stop_value=800.0 * (1 - cfg.stop_loss_pct),
             r_target_value=800.0 * (1 + cfg.r_target),
             partial_value=800.0 * (1 + cfg.partial_profit_pct), peak_value=800.0)
         eng._active["XYZ"] = call
         # Deep loss → hard stop must fire first; OOPS exit assessment never runs.
-        positions = [{"symbol": "XYZ260601C00100000", "qty": 2, "unrealized_plpc": -0.50}]
-        exits = eng._check_active_positions(positions, waterfall_callback=None, market_context={})
+        positions = [{"symbol": "XYZ260701C00100000", "qty": 2, "unrealized_plpc": -0.50}]
+        with patch.object(ace, "datetime", _PreCutoffDateTime):
+            exits = eng._check_active_positions(positions, waterfall_callback=None, market_context={})
         sources = [o["source"] for o in exits]
         self.assertIn("alpha_call_hard_stop", sources)
         self.assertNotIn("alpha_call_oops_exit", sources)

@@ -1,0 +1,28 @@
+{
+  "run_tag": "lev2_D_SOXL_SOXS_25-26",
+  "universe": [
+    "SOXL",
+    "SOXS"
+  ],
+  "window": "2025-06-02..2026-04-27",
+  "start_equity": 100000.0,
+  "final_equity": 190746.19,
+  "total_pnl": 90746.19,
+  "return_pct": 90.75,
+  "closed_trades": 6,
+  "win_rate": 50.0,
+  "max_drawdown_pct": 31.31,
+  "by_kind": {
+    "shares": {
+      "n": 6,
+      "pnl": 90746.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": 89.3,
+    "sharpe": 1.29,
+    "sortino": 1.41,
+    "ulcer": 14.8,
+    "worst_month_pct": -22.0
+  }
+}

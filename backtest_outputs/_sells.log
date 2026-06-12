@@ -1,0 +1,36 @@
+Collecting Form-4 sell-cluster events...
+  5,658 sell-cluster trades
+# Form-4 SELLS — Information-Signal Gauntlet
+
+5,658 >$1M sell-cluster trades (PIT-clean), 3d hold, 1% cost. Prior: insider sells are noisy (diversification/tax/10b5-1). Predictive check: post-sell forward return.
+
+Post-sell forward 3d return: mean -0.15%, median -0.11%, win 49% (if << +ve baseline → sells predict underperformance)
+
+### Form-4 SELL → SHORT (all)
+
+OOS 2024+: n=1,486 mean -1.31% median -1.18% win 36% PF 0.47 MaxDD -87%
+
+| Year | n | Mean | Win% | PF |
+|---|---|---|---|---|
+| 2021 ⚠ | 1,869 | -0.82% | 41% | 0.67 |
+| 2022 ⚠ | 1,108 | +0.13% | 50% | 1.05 |
+| 2023 ⚠ | 1,190 | -1.24% | 39% | 0.51 |
+| 2024 ⚠ | 1,485 | -1.32% | 36% | 0.47 |
+
+MC: P(profit)=1%, median=-65.87% | corr vs insider-buy: -0.42
+**VERDICT: FAIL** (PF≥2 ✗, every-year ✗, MC ✗, DD ✗)
+
+### Form-4 SELL → SHORT (high-vol subset)
+
+OOS 2024+: n=98 mean -2.64% median -1.29% win 42% PF 0.45 MaxDD -26%
+
+| Year | n | Mean | Win% | PF |
+|---|---|---|---|---|
+| 2021 ⚠ | 104 | +0.62% | 55% | 1.18 |
+| 2022 ⚠ | 138 | -0.91% | 47% | 0.79 |
+| 2023 ⚠ | 56 | -1.17% | 52% | 0.68 |
+| 2024 ⚠ | 98 | -2.64% | 42% | 0.45 |
+
+MC: P(profit)=0%, median=-89.77% | corr vs insider-buy: -0.51
+**VERDICT: FAIL** (PF≥2 ✗, every-year ✗, MC ✗, DD ✗)
+

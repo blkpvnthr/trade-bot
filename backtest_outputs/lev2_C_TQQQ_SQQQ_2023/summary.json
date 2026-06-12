@@ -1,0 +1,28 @@
+{
+  "run_tag": "lev2_C_TQQQ_SQQQ_2023",
+  "universe": [
+    "TQQQ",
+    "SQQQ"
+  ],
+  "window": "2023-01-01..2024-01-01",
+  "start_equity": 100000.0,
+  "final_equity": 117860.84,
+  "total_pnl": 17860.84,
+  "return_pct": 17.86,
+  "closed_trades": 4,
+  "win_rate": 50.0,
+  "max_drawdown_pct": 17.88,
+  "by_kind": {
+    "shares": {
+      "n": 4,
+      "pnl": 17861.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": 15.2,
+    "sharpe": 0.9,
+    "sortino": 1.07,
+    "ulcer": 7.84,
+    "worst_month_pct": -8.3
+  }
+}

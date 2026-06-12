@@ -63,7 +63,13 @@ BAL_EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
 # Guard: suppress event file writes when running under pytest
 # NOTE: evaluated at call-time (not import-time) so that PYTEST_CURRENT_TEST is seen correctly.
 def _in_test() -> bool:
-    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in os.path.basename(os.environ.get("_", ""))
+    import sys as _sys
+    return (
+        "PYTEST_CURRENT_TEST" in os.environ
+        or "pytest" in os.path.basename(os.environ.get("_", ""))
+        or "unittest" in _sys.modules
+        or any("unittest" in a or "pytest" in a for a in _sys.argv[:2] if a)
+    )
 
 
 # ── configuration ─────────────────────────────────────────────────────────────
@@ -423,7 +429,13 @@ def get_fundamentals(symbol: str, config: BALConfig) -> FundamentalData:
     cached_age_h = None
     if path.exists():
         cached_fd, cached_age_h = _read_cached_fundamentals(path)
-        if cached_fd is not None and cached_age_h is not None and cached_age_h < config.fundamental_cache_hours:
+        if (
+            cached_fd is not None
+            and cached_age_h is not None
+            and cached_age_h < config.fundamental_cache_hours
+            and float(cached_fd.current_price or 0.0) > 0.0  # reject zero-data cache (network-failure write)
+            and not cached_fd.fetch_error
+        ):
             return cached_fd
     fd = _fetch_fundamentals(symbol)
     if (

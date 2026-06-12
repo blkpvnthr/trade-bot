@@ -1,0 +1,48 @@
+{
+  "run_tag": "exp_0.25_2023",
+  "mode": "FIXED",
+  "universe": [
+    "QQQ",
+    "SPY",
+    "IWM"
+  ],
+  "window": "2023-01-01..2024-01-01",
+  "start_equity": 100000.0,
+  "final_equity": 102663.22,
+  "total_pnl": 2663.22,
+  "return_pct": 2.66,
+  "closed_trades": 28,
+  "win_rate": 39.3,
+  "expectancy": 95.1,
+  "worst": -297.2,
+  "max_drawdown_pct": 1.35,
+  "pnl_per_day": 6.3,
+  "by_kind": {
+    "long_call": {
+      "n": 27,
+      "pnl": 2521.0
+    },
+    "long_put": {
+      "n": 1,
+      "pnl": 142.0
+    }
+  },
+  "exit_mix": {
+    "time_stop": 4,
+    "ema20_2close": 23,
+    "vol_reversal": 1
+  },
+  "regime_entry_days": {
+    "bull": 45,
+    "bear": 3,
+    "cash": 5
+  },
+  "size_mult": 0.25,
+  "metrics": {
+    "cagr_pct": 2.3,
+    "sharpe": 1.03,
+    "sortino": 1.38,
+    "ulcer": 0.66,
+    "worst_month_pct": -0.5
+  }
+}

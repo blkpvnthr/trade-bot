@@ -459,6 +459,11 @@ class PremarketLiveFeed:
             self._mark_fallback("alpaca_creds_missing")
             return
         client = StockHistoricalDataClient(key, secret)
+        # Apply a 30-second socket-level timeout so a stalled SSL read cannot hang the
+        # poll thread indefinitely (which previously triggered the watchdog and crashed
+        # the main process via an unhandled _CycleStalled during recovery sleep).
+        import socket as _socket
+        _ALPACA_SNAPSHOT_TIMEOUT_S = float(os.getenv("ALPACA_SNAPSHOT_TIMEOUT_S", "30"))
         configured_feed = DataFeed.SIP if os.getenv("ALPACA_DATA_FEED", "sip").lower() == "sip" else DataFeed.IEX
         poll = float(os.getenv("ALPACA_POLL_SECONDS", str(ALPACA_POLL_SECONDS)) or 2)
         fails = 0
@@ -471,29 +476,36 @@ class PremarketLiveFeed:
                         feeds_to_try.append(DataFeed.IEX)
                     last_exc = None
                     snaps = None
-                    for idx, feed in enumerate(feeds_to_try):
-                        try:
-                            snaps = client.get_stock_snapshot(
-                                StockSnapshotRequest(symbol_or_symbols=syms, feed=feed))
-                            if idx > 0:
-                                logger.warning(
-                                    "alpaca snapshot feed downgraded from %s to %s after auth/entitlement failure",
-                                    getattr(configured_feed, "value", configured_feed),
-                                    getattr(feed, "value", feed),
-                                )
-                            break
-                        except Exception as e:
-                            last_exc = e
-                            if feed == DataFeed.SIP and _looks_like_authz_error(e):
-                                logger.warning("alpaca snapshot SIP unavailable (%s) — retrying with IEX", e)
-                                continue
-                            raise
-                    if snaps is None and last_exc is not None:
-                        raise last_exc
-                    self._apply_alpaca_snapshots(snaps)
-                    fails = 0
-                    if self.feed_status not in ("running",):
-                        self.feed_status = "running"
+                    # Apply socket timeout to prevent SSL hangs (which previously triggered
+                    # the watchdog and crashed the process via _CycleStalled cascade).
+                    _prev_timeout = _socket.getdefaulttimeout()
+                    _socket.setdefaulttimeout(_ALPACA_SNAPSHOT_TIMEOUT_S)
+                    try:
+                        for idx, feed in enumerate(feeds_to_try):
+                            try:
+                                snaps = client.get_stock_snapshot(
+                                    StockSnapshotRequest(symbol_or_symbols=syms, feed=feed))
+                                if idx > 0:
+                                    logger.warning(
+                                        "alpaca snapshot feed downgraded from %s to %s after auth/entitlement failure",
+                                        getattr(configured_feed, "value", configured_feed),
+                                        getattr(feed, "value", feed),
+                                    )
+                                break
+                            except Exception as e:
+                                last_exc = e
+                                if feed == DataFeed.SIP and _looks_like_authz_error(e):
+                                    logger.warning("alpaca snapshot SIP unavailable (%s) — retrying with IEX", e)
+                                    continue
+                                raise
+                        if snaps is None and last_exc is not None:
+                            raise last_exc
+                        self._apply_alpaca_snapshots(snaps)
+                        fails = 0
+                        if self.feed_status not in ("running",):
+                            self.feed_status = "running"
+                    finally:
+                        _socket.setdefaulttimeout(_prev_timeout)
                 except Exception as e:
                     fails += 1
                     self.error = str(e)[:300]; self.error_count += 1

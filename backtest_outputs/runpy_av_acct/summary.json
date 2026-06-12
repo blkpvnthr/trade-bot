@@ -1,0 +1,41 @@
+{
+  "run_tag": "runpy_av_acct",
+  "window": "2026-05-12..2026-06-04",
+  "symbols": [
+    "SPY",
+    "QQQ",
+    "NVDA",
+    "AAPL",
+    "MSFT",
+    "AMD",
+    "META",
+    "AMZN"
+  ],
+  "start_equity": 6260.63,
+  "final_equity": 6046.29,
+  "total_realized_pnl": -214.34,
+  "return_pct": -3.424,
+  "trading_days": 17,
+  "avg_realized_pnl_per_day": -12.61,
+  "entries_filled": 19,
+  "exits_filled": 19,
+  "wins": 9,
+  "losses": 10,
+  "win_rate_pct": 47.4,
+  "avg_win": 26.74,
+  "avg_loss": -45.5,
+  "max_drawdown_pct": 10.115,
+  "open_positions_remaining": 0,
+  "costs_enabled": true,
+  "fees_paid": 433.33,
+  "commission_per_contract": 0.65,
+  "slippage_pct": 0.0075,
+  "chain_source": "alpha_vantage_historical",
+  "assumptions": [
+    "Underlying: REAL Alpaca historical 1-minute bars (RTH).",
+    "Option chains: REAL Alpha Vantage HISTORICAL_OPTIONS (greeks+IV) as-of each date.",
+    "Fills: entries at modeled ask (2.4% spread), exits at modeled mid \u2014 orders ALWAYS fill.",
+    "No real NBBO/L2 liquidity, no commissions, no early assignment, no IV smile/skew.",
+    "Engine risk + exit logic run unchanged; CLAUDE.md backstops gate new entries."
+  ]
+}

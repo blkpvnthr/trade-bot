@@ -62,6 +62,7 @@ from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 _RUN_LOCK_HANDLE = None
+_ALPHA_PENDING_SUBMISSIONS: dict[str, datetime] = {}
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 ET = ZoneInfo("America/New_York")
@@ -214,6 +215,7 @@ INSIDER_COPY_MAX_NAMES          = int(os.environ.get("INSIDER_COPY_MAX_NAMES", 5
 # valid signal indefinitely. Scoped to insider buys ONLY — every other engine still honors the
 # gate. Hard risk caps (daily-loss, drawdown, cash-buffer, PDT, kill-switch) are UNAFFECTED.
 INSIDER_COPY_BYPASS_TREND_GATE  = os.environ.get("INSIDER_COPY_BYPASS_TREND_GATE", "false").lower() in {"1", "true", "yes"}
+ALPHA_PENDING_SUBMISSION_TTL_MIN = float(os.environ.get("ALPHA_PENDING_SUBMISSION_TTL_MIN", "30"))
 
 # ── Option safety-exit (alpha-independent backstop) ───────────────────────────
 # The normal option-exit path (run_alpha_exits) only runs when the Alpha engine is
@@ -2540,6 +2542,25 @@ def run_alpha_entries(engine, gateway: AlpacaGateway, waterfall, risk: RiskManag
         import traceback as _etb
         logger.error("alpha evaluate_universe failed: %s\n%s", e, _etb.format_exc())
         return 0
+
+    def _alpha_pending_key(sig) -> str:
+        return str(getattr(sig, "contract_symbol", "") or getattr(sig, "symbol", "") or "").upper()
+
+    def _alpha_pending_is_fresh(key: str) -> bool:
+        if not key:
+            return False
+        now_utc = datetime.now(timezone.utc)
+        ttl = timedelta(minutes=max(0.0, ALPHA_PENDING_SUBMISSION_TTL_MIN))
+        stale = [
+            pending_key
+            for pending_key, seen_at in list(_ALPHA_PENDING_SUBMISSIONS.items())
+            if now_utc - seen_at > ttl
+        ]
+        for pending_key in stale:
+            _ALPHA_PENDING_SUBMISSIONS.pop(pending_key, None)
+        seen_at = _ALPHA_PENDING_SUBMISSIONS.get(key)
+        return bool(seen_at and now_utc - seen_at <= ttl)
+
     placed = 0
     for sig in signals:
         if sig.status != "ready":
@@ -2548,6 +2569,17 @@ def run_alpha_entries(engine, gateway: AlpacaGateway, waterfall, risk: RiskManag
                          grade=sig.grade, score=sig.setup_score)
                 _research("record_alpha_signal_safe", getattr(sig, "__dict__", {}), market_context, False)
             continue
+        _pending_key = _alpha_pending_key(sig)
+        if _alpha_pending_is_fresh(_pending_key):
+            log_skip(
+                sig.contract_symbol or sig.symbol,
+                "rejected_duplicate_pending_submission",
+                engine="alpha",
+                grade=sig.grade,
+                score=sig.setup_score,
+            )
+            _research("record_alpha_signal_safe", getattr(sig, "__dict__", {}), market_context, False)
+            continue
         limit_px = sig.ask or sig.mid
         _qty = max(1, int(round(sig.contracts * _throttle)))   # req #2: regime throttle on options allocation
         resp = gateway.submit_market_order(sig.contract_symbol, "buy", _qty,
@@ -2555,6 +2587,7 @@ def run_alpha_entries(engine, gateway: AlpacaGateway, waterfall, risk: RiskManag
                                            limit_price=limit_px, order_type="limit")
         if resp is not None:
             placed += 1
+            _ALPHA_PENDING_SUBMISSIONS[_pending_key] = datetime.now(timezone.utc)
             _research("record_alpha_signal_safe", getattr(sig, "__dict__", {}), market_context, True)
             try:
                 engine.register_filled(sig)
@@ -4739,6 +4772,19 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
     if bal is not None and new_buys_allowed:
         try:
             bcands = buffett_res.get("candidates", [])
+            # FIX 2026-06-12: If the screener returned 0 candidates (e.g., all watchlist stocks
+            # scored below BUFFETT_MIN_SCREENER_SCORE), fall back to the raw BUFFETT_WATCHLIST env
+            # var so evaluate_dca() always runs with the configured universe. Without this,
+            # a too-strict screener silently blocks all BAL entries for the day.
+            if not bcands:
+                _wl_raw = os.getenv("BUFFETT_WATCHLIST", "")
+                _wl_syms = [s.strip().upper() for s in _wl_raw.split(",") if s.strip()]
+                if _wl_syms:
+                    logger.warning(
+                        "BAL screener returned 0 candidates — falling back to BUFFETT_WATCHLIST "
+                        "(%d symbols) for DCA evaluation. Lower BUFFETT_MIN_SCREENER_SCORE or "
+                        "check screener thresholds.", len(_wl_syms))
+                    bcands = _wl_syms
             bal_bars = fetch_1m_bars(gateway, bcands) if bcands else {}
             bal_ctx = build_bars_ctx(bal_bars)
             # Feed the Buffett candidates' bars into the shared indicator state, then
@@ -5026,8 +5072,8 @@ def run_two_engine_trading():
     last_context_build = 0.0
     last_account_log = time.time()
     cycle_count = 0
-    _premarket_planner_spawned = False  # spawn once per session
-    _zero_plan_recovery_spawned = False  # re-spawn once if plan has 0 valid setups at open
+    _premarket_planner_spawned_date: str = ""  # date (YYYYMMDD ET) planner was last spawned
+    _zero_plan_recovery_spawned_date: str = ""  # date (YYYYMMDD ET) recovery was last attempted
 
     logger.info("Entering two-engine loop (Ctrl-C to stop) …")
     import threading as _threading
@@ -5063,14 +5109,17 @@ def run_two_engine_trading():
                     # YYYYMMDD_premarket_trade_plan.json and YYYYMMDD_intraday_structure_map.json
                     # so they are available for the first trading cycle. Fail-safe: any
                     # launch error is logged and never blocks the premarket phase.
-                    if not _premarket_planner_spawned:
+                    # Date-aware spawn guard: reset each trading day so the planner
+                    # always runs even when the process survives midnight.
+                    _today_et_tag = datetime.now(ET).strftime("%Y%m%d")
+                    if _premarket_planner_spawned_date != _today_et_tag:
                         try:
                             import subprocess as _sp
                             _planner_script = Path(__file__).parent / "premarket_trade_planner.py"
                             if _planner_script.exists():
-                                # Capture stderr to a log file so silent failures are visible
+                                # Capture stderr to a per-day log for diagnostics
                                 _planner_err_log = open(
-                                    LOG_DIR / f"premarket_planner_{DATA_TAG}.log", "a"
+                                    LOG_DIR / f"premarket_planner_{_today_et_tag}.log", "a"
                                 )
                                 _planner_proc = _sp.Popen(
                                     [sys.executable, str(_planner_script)],
@@ -5078,9 +5127,10 @@ def run_two_engine_trading():
                                     stderr=_sp.STDOUT,
                                 )
                                 logger.info(
-                                    "premarket_trade_planner spawned (pid=%d) stderr→%s — "
+                                    "premarket_trade_planner spawned (pid=%d) date=%s stderr→%s — "
                                     "will write plan+structure_map at market open",
                                     _planner_proc.pid,
+                                    _today_et_tag,
                                     _planner_err_log.name,
                                 )
                                 # Flush all log handlers so this message is durable
@@ -5096,7 +5146,7 @@ def run_two_engine_trading():
                                 )
                         except Exception as _e:
                             logger.warning("premarket_trade_planner spawn failed: %s", _e)
-                        _premarket_planner_spawned = True
+                        _premarket_planner_spawned_date = _today_et_tag
                     try:
                         run_premarket_phase(gateway, bal, market_context)
                     except Exception as e:
@@ -5105,7 +5155,11 @@ def run_two_engine_trading():
                     continue
 
                 logger.debug("Market closed — sleeping 60s")
-                time.sleep(60)
+                try:
+                    time.sleep(60)
+                except _CycleStalled:
+                    _LOOP_HEARTBEAT[0] = time.time()
+                    logger.warning("Watchdog fired during market-closed sleep — resuming loop")
                 continue
 
             # Market just opened — freeze premarket high/low by stopping the live feed;
@@ -5143,7 +5197,8 @@ def run_two_engine_trading():
             # immediately at market open so the session isn't wasted. Only done once
             # per session (guard: _zero_plan_recovery_spawned). Hard risk caps are
             # unaffected — this only ensures the plan artifact is populated.
-            if not _zero_plan_recovery_spawned:
+            _today_et_zp = datetime.now(ET).strftime("%Y%m%d")
+            if _zero_plan_recovery_spawned_date != _today_et_zp:
                 try:
                     _zp_plan_path = SYSTEM_DATA_DIR / f"{DATA_TAG}_premarket_trade_plan.json"
                     _zp_needs_recovery = False
@@ -5195,7 +5250,7 @@ def run_two_engine_trading():
                 except Exception as _zp_e:
                     logger.debug("Zero-plan resilience check failed: %s", _zp_e)
                 finally:
-                    _zero_plan_recovery_spawned = True  # run check once only
+                    _zero_plan_recovery_spawned_date = _today_et_zp  # run once per trading day
             # ── end zero-plan resilience ─────────────────────────────────────────
 
             if (time.time() - last_context_build) > CONTEXT_REFRESH_MIN * 60 or not market_context:
@@ -5213,7 +5268,15 @@ def run_two_engine_trading():
             # the heartbeat and continue with a fresh cycle instead of staying frozen.
             logger.critical("Two-engine cycle aborted by watchdog (stall) — continuing next cycle")
             _LOOP_HEARTBEAT[0] = time.time()
+            # Cancel any pending SIGALRM so the recovery sleep cannot itself raise a
+            # second _CycleStalled (which would escape this handler and crash the process).
+            try:
+                import signal as _sig_mod
+                _sig_mod.alarm(0)
+            except Exception:
+                pass
             time.sleep(max(5.0, BAR_INTERVAL_SEC))
+            _LOOP_HEARTBEAT[0] = time.time()  # reset again after sleep
         except Exception:
             # Run forever: transient broker/data/engine errors are logged, then the loop
             # continues after a normal sleep instead of killing the process.
@@ -5437,6 +5500,8 @@ class BrokerPosition:
 def write_event(event: str, payload: Optional[dict] = None) -> None:
     """Best-effort execution-event journal line. Patched in tests."""
     import traceback as _tb
+    if _in_test():
+        return
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         path = LOG_DIR / f"{DATA_TAG}_execution_events.jsonl"
@@ -5473,6 +5538,8 @@ def log_executed_order(**kwargs) -> None:
     Patched in tests.
     """
     import traceback as _tb
+    if _in_test():
+        return
     # Sanitize kwargs — convert any non-primitive values to strings so json.dumps
     # never fails.  UUID, Pydantic models, and Alpaca response objects have all
     # caused silent serialization failures here in the past.

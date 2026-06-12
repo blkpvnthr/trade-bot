@@ -1,0 +1,35 @@
+{
+  "run_tag": "dvet_2024",
+  "mode": "FIXED",
+  "universe": [
+    "QQQ",
+    "SPY",
+    "IWM"
+  ],
+  "window": "2024-01-01..2025-01-01",
+  "start_equity": 100000.0,
+  "final_equity": 101855.2,
+  "total_pnl": 1855.2,
+  "return_pct": 1.86,
+  "closed_trades": 111,
+  "win_rate": 31.5,
+  "expectancy": 16.7,
+  "worst": -1255.3,
+  "max_drawdown_pct": 12.44,
+  "pnl_per_day": 4.4,
+  "by_kind": {
+    "long_call": {
+      "n": 111,
+      "pnl": 1855.0
+    }
+  },
+  "exit_mix": {
+    "below_5ema": 98,
+    "vol_reversal": 13
+  },
+  "regime_entry_days": {
+    "bull": 52,
+    "bear": 0,
+    "cash": 1
+  }
+}

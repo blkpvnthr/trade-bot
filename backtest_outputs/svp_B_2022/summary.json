@@ -1,0 +1,33 @@
+{
+  "run_tag": "svp_B_2022",
+  "universe": [
+    "QQQ",
+    "SPY",
+    "IWM"
+  ],
+  "window": "2022-01-03..2023-01-03",
+  "start_equity": 100000.0,
+  "final_equity": 97271.39,
+  "total_pnl": -2728.61,
+  "return_pct": -2.73,
+  "closed_trades": 42,
+  "win_rate": 28.6,
+  "max_drawdown_pct": 13.17,
+  "by_kind": {
+    "long_put": {
+      "n": 39,
+      "pnl": 3859.0
+    },
+    "shares": {
+      "n": 3,
+      "pnl": -6588.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": -2.4,
+    "sharpe": -0.06,
+    "sortino": -0.08,
+    "ulcer": 7.46,
+    "worst_month_pct": -8.0
+  }
+}

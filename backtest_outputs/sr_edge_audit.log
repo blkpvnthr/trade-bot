@@ -1,0 +1,22 @@
+[1/5] fetching 365d of 1m bars for ['QQQ', 'SPY', 'IWM', 'AAPL', 'NVDA', 'AMD', 'MSFT', 'TSLA'] ...
+  [data] QQQ: 101997 1m bars
+  [data] SPY: 100681 1m bars
+  [data] IWM: 98578 1m bars
+  [data] AAPL: 97765 1m bars
+  [data] NVDA: 101032 1m bars
+  [data] AMD: 96234 1m bars
+  [data] MSFT: 94678 1m bars
+  [data] TSLA: 98361 1m bars
+[2/5] building causal SR dataset (RR=3.0, cost=0.0005) ...
+      593014 SR signals over 8 symbols -> /Users/blkpvnthr/Desktop/trader/data/rl_training/sr_setup_dataset.parquet
+[3/5] leakage check (univariate + temporal-CV baselines) ...
+[4/5] OOS edge check vs random-entry control ...
+[5/5] writing report ...
+
+================================================================
+LEAKAGE: CLEAN   EDGE: NO EDGE (clean but no OOS edge over control)
+  setups OOS : n=177910 exp=-0.0465R PF=0.797 win=0.4515
+  random ctrl: n=52688 exp=-0.0395R PF=0.85 win=0.4525
+  report -> /Users/blkpvnthr/Desktop/trader/docs/sr_edge_audit.md
+================================================================
+SR_AUDIT_DONE

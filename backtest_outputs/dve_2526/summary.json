@@ -1,0 +1,39 @@
+{
+  "run_tag": "dve_2526",
+  "mode": "FIXED",
+  "universe": [
+    "QQQ",
+    "SPY",
+    "IWM"
+  ],
+  "window": "2025-06-02..2026-04-27",
+  "start_equity": 100000.0,
+  "final_equity": 110617.63,
+  "total_pnl": 10617.63,
+  "return_pct": 10.62,
+  "closed_trades": 36,
+  "win_rate": 47.2,
+  "expectancy": 294.9,
+  "worst": -1931.0,
+  "max_drawdown_pct": 13.79,
+  "pnl_per_day": 28.9,
+  "by_kind": {
+    "long_put": {
+      "n": 2,
+      "pnl": -3814.0
+    },
+    "long_call": {
+      "n": 34,
+      "pnl": 14432.0
+    }
+  },
+  "exit_mix": {
+    "vol_reversal": 4,
+    "time_stop": 32
+  },
+  "regime_entry_days": {
+    "bull": 44,
+    "bear": 1,
+    "cash": 3
+  }
+}

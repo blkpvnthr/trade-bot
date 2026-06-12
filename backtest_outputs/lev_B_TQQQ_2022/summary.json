@@ -1,0 +1,29 @@
+{
+  "run_tag": "lev_B_TQQQ_2022",
+  "universe": [
+    "TQQQ",
+    "SOXL",
+    "NVDL"
+  ],
+  "window": "2022-01-03..2023-01-03",
+  "start_equity": 100000.0,
+  "final_equity": 85200.75,
+  "total_pnl": -14799.25,
+  "return_pct": -14.8,
+  "closed_trades": 2,
+  "win_rate": 0.0,
+  "max_drawdown_pct": 14.8,
+  "by_kind": {
+    "shares": {
+      "n": 2,
+      "pnl": -14799.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": -12.9,
+    "sharpe": -1.21,
+    "sortino": -0.48,
+    "ulcer": 14.62,
+    "worst_month_pct": -14.8
+  }
+}

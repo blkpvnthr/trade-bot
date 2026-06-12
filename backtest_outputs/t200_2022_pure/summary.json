@@ -1,0 +1,48 @@
+{
+  "run_tag": "t200_2022_pure",
+  "mode": "FIXED",
+  "universe": [
+    "NVDA",
+    "QQQ",
+    "GOOGL",
+    "SPY",
+    "TSLA",
+    "IWM"
+  ],
+  "start_equity": 100000.0,
+  "final_equity": 97770.58,
+  "total_pnl": -2229.42,
+  "return_pct": -2.23,
+  "closed_trades": 100,
+  "win_rate": 67.0,
+  "expectancy": -22.3,
+  "avg_win": 138.6,
+  "avg_loss": -349.0,
+  "worst": -979.4,
+  "max_drawdown_pct": 5.16,
+  "pnl_per_calendar_day": -5.4,
+  "exit_mix": {
+    "time_stop": 36,
+    "take_profit": 59,
+    "stop_loss": 5
+  },
+  "by_kind": {
+    "call": {
+      "n": 91,
+      "pnl": 3660.0
+    },
+    "put": {
+      "n": 9,
+      "pnl": -5889.0
+    }
+  },
+  "params": {
+    "risk_budget": 2000.0,
+    "exposure_pct": 0.35,
+    "tp_frac": 0.5,
+    "sl_mult": 2.0,
+    "time_stop_dte": 21,
+    "max_positions": 6,
+    "regime_mode": "trend200"
+  }
+}

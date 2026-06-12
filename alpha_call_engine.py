@@ -61,7 +61,13 @@ ALPHA_EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
 # contaminate production execution journals.
 # NOTE: evaluated at call-time (not import-time) so that PYTEST_CURRENT_TEST is seen correctly.
 def _in_test() -> bool:
-    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in os.path.basename(os.environ.get("_", ""))
+    import sys as _sys
+    return (
+        "PYTEST_CURRENT_TEST" in os.environ
+        or "pytest" in os.path.basename(os.environ.get("_", ""))
+        or "unittest" in _sys.modules
+        or any("unittest" in a or "pytest" in a for a in _sys.argv[:2] if a)
+    )
 
 
 # ── configuration ─────────────────────────────────────────────────────────────

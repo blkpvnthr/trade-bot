@@ -1,0 +1,33 @@
+{
+  "run_tag": "trval_201516",
+  "universe": [
+    "QQQ",
+    "SPY",
+    "IWM"
+  ],
+  "window": "2015-01-01..2016-12-31",
+  "start_equity": 100000.0,
+  "final_equity": 105442.85,
+  "total_pnl": 5442.85,
+  "return_pct": 5.44,
+  "closed_trades": 40,
+  "win_rate": 27.5,
+  "max_drawdown_pct": 17.21,
+  "by_kind": {
+    "long_put": {
+      "n": 16,
+      "pnl": -5075.0
+    },
+    "shares": {
+      "n": 24,
+      "pnl": 10518.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": 2.5,
+    "sharpe": 0.27,
+    "sortino": 0.35,
+    "ulcer": 10.6,
+    "worst_month_pct": -6.2
+  }
+}

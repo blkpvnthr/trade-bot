@@ -1,0 +1,45 @@
+{
+  "params": {
+    "delta": 0.8,
+    "dte": 35,
+    "holds": "10",
+    "cadence": 10,
+    "iv_mult": 1.2,
+    "extrinsic_spread": 0.25
+  },
+  "universe": [
+    "TCNNF",
+    "TDUP",
+    "KT",
+    "OLLI",
+    "EXLS",
+    "VOYA",
+    "ZGN",
+    "FRO",
+    "SITE",
+    "FAF",
+    "BNL",
+    "ONB",
+    "EPRT",
+    "CTRE"
+  ],
+  "covered": [
+    "TDUP",
+    "KT",
+    "OLLI",
+    "EXLS",
+    "VOYA",
+    "ZGN",
+    "FRO",
+    "SITE",
+    "FAF",
+    "BNL",
+    "ONB",
+    "EPRT",
+    "CTRE"
+  ],
+  "holds": [
+    10
+  ],
+  "rows": 1813
+}

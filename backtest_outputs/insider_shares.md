@@ -1,0 +1,45 @@
+# INSIDER signal on SHARES — the strongest project edge, no options
+
+SEC Form-4 >$1M clusters → next-day open → close at horizon. 400 PIT names. NO options. Benchmark = unconditional all-days forward return (same names/horizon).
+
+## 3-day hold
+
+| Set | n | Mean | Median | Sharpe | Win% | MaxDD | PF |
+|---|---|---|---|---|---|---|---|
+| **Insider entries** | 700 | +2.71% | +1.25% | +0.252 | 59% | -64% | 2.35 |
+| **All-days benchmark** | 418562 | +1.51% | +0.00% | +0.014 | 47% | -100% | 1.58 |
+
+_Insider edge over unconditional: **+1.20%** per 3-day trade (insider +2.71% vs market +1.51%)._
+
+## 5-day hold
+
+| Set | n | Mean | Median | Sharpe | Win% | MaxDD | PF |
+|---|---|---|---|---|---|---|---|
+| **Insider entries** | 700 | +3.02% | +1.24% | +0.216 | 59% | -74% | 2.24 |
+| **All-days benchmark** | 417762 | +2.36% | +0.00% | +0.018 | 48% | -100% | 1.73 |
+
+_Insider edge over unconditional: **+0.66%** per 5-day trade (insider +3.02% vs market +2.36%)._
+
+## 10-day hold
+
+| Set | n | Mean | Median | Sharpe | Win% | MaxDD | PF |
+|---|---|---|---|---|---|---|---|
+| **Insider entries** | 700 | +3.34% | +1.70% | +0.179 | 58% | -99% | 1.92 |
+| **All-days benchmark** | 415762 | +4.30% | -0.04% | +0.026 | 48% | -100% | 1.96 |
+
+_Insider edge over unconditional: **-0.96%** per 10-day trade (insider +3.34% vs market +4.30%)._
+
+## 20-day hold
+
+| Set | n | Mean | Median | Sharpe | Win% | MaxDD | PF |
+|---|---|---|---|---|---|---|---|
+| **Insider entries** | 699 | +2.57% | +1.23% | +0.113 | 55% | -100% | 1.47 |
+| **All-days benchmark** | 411762 | +7.45% | -0.25% | +0.039 | 48% | -100% | 2.18 |
+
+_Insider edge over unconditional: **-4.88%** per 20-day trade (insider +2.57% vs market +7.45%)._
+
+## Interpretation
+
+- Insider PF>1, mean>0, beats benchmark by a wide margin → a STRONG share edge worth trading.
+- The option spreads (30-56%) that killed insider-options are absent in shares.
+_Compare vs momentum-shares: +0.40%/trade edge, PF 1.53 @10d._

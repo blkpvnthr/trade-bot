@@ -1,0 +1,42 @@
+CIK→ticker map: 8,009
+  2021/QTR1: 747 new SC 13D
+  2021/QTR2: 623 new SC 13D
+  2021/QTR3: 936 new SC 13D
+  2021/QTR4: 795 new SC 13D
+  2022/QTR1: 637 new SC 13D
+  2022/QTR2: 528 new SC 13D
+  2022/QTR3: 647 new SC 13D
+  2022/QTR4: 507 new SC 13D
+  2023/QTR1: 586 new SC 13D
+  2023/QTR2: 619 new SC 13D
+  2023/QTR3: 604 new SC 13D
+  2023/QTR4: 692 new SC 13D
+  2024/QTR1: 608 new SC 13D
+  2024/QTR2: 520 new SC 13D
+  2024/QTR3: 459 new SC 13D
+  2024/QTR4: 445 new SC 13D
+
+9,953 unique SC 13D filings. Resolving subject tickers...
+  ...0/9953 (0 tickers so far)
+  ...500/9953 (137 tickers so far)
+  ...1000/9953 (264 tickers so far)
+  ...1500/9953 (370 tickers so far)
+  ...2000/9953 (475 tickers so far)
+  ...2500/9953 (565 tickers so far)
+  ...3000/9953 (625 tickers so far)
+  ...3500/9953 (727 tickers so far)
+  ...4000/9953 (825 tickers so far)
+  ...4500/9953 (921 tickers so far)
+  ...5000/9953 (999 tickers so far)
+  ...5500/9953 (1088 tickers so far)
+  ...6000/9953 (1156 tickers so far)
+  ...6500/9953 (1247 tickers so far)
+  ...7000/9953 (1331 tickers so far)
+  ...7500/9953 (1427 tickers so far)
+  ...8000/9953 (1505 tickers so far)
+  ...8500/9953 (1591 tickers so far)
+  ...9000/9953 (1693 tickers so far)
+  ...9500/9953 (1788 tickers so far)
+
+resolved: 3372 direct + 6581 header-fetched | unmapped 3642
+1,876 subject tickers, 6,311 13D events → /Users/blkpvnthr/Desktop/trader/data/cache/pit_13d_events.json

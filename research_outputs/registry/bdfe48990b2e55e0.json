@@ -1,0 +1,37 @@
+{
+  "name": "insider_sizing_and_gate",
+  "description": "Insider sleeve: vol-gate vs full-book; flat vs conviction-bucket sizing.",
+  "config": {
+    "hold": 5,
+    "min_adv": 1000000,
+    "vol_pctile": 80,
+    "fill_bps": 5.0
+  },
+  "search_space": {
+    "gate": [
+      "volgate",
+      "fullbook"
+    ],
+    "sizing": [
+      "flat",
+      "buckets"
+    ]
+  },
+  "promotion_criteria": {
+    "min_trades": 30,
+    "min_sharpe_improvement": 0.0,
+    "max_p_value": 0.1,
+    "min_year_trades": 8,
+    "max_year_loss": -0.01,
+    "burn_in_days": 60,
+    "max_drawdown": -0.4
+  },
+  "data_paths": [
+    "/Users/blkpvnthr/Desktop/trader/data/cache/pit_insider_events.json",
+    "/Users/blkpvnthr/Desktop/trader/data/cache/alpaca_bars"
+  ],
+  "git_commit": "c6a6f50094b56570c20f4c82260965fa075ee678",
+  "data_snapshot": "5ee44fe606d8c35e",
+  "created_utc": "2026-06-11T05:10:53.382812+00:00",
+  "spec_hash": "bdfe48990b2e55e0"
+}

@@ -1,0 +1,22 @@
+====================================================================================================
+WALK-FORWARD MONTE CARLO  (run.py strategy via backtest_alpha_replay)
+  universe : tickers4.txt  (26 names)
+  config   : --risk-dollars 500 --exposure-pct 0.15 --costs
+  MC       : daily-PnL bootstrap, 2000 trials/window, target $450/day, seed 12345
+====================================================================================================
+                window   label | days  act$/d | MC$/d med     p5    p95  P(>0)  P(>=t)  DDmed%  DDp95%
+------------------------------------------------------------------------------------------------------
+2026-01-20..2026-02-12   oos-4 |   18     -26 |       -26    -65     14    14%      0%   10.04   18.82
+2026-02-17..2026-03-12   oos-3 | SKIPPED (no output produced)
+2026-03-16..2026-04-09   oos-2 |   18      23 |        22    -55    103    68%      0%    8.24   19.55
+2026-04-13..2026-05-08   oos-1 |   20     -31 |       -29    -60     -7     0%      0%    8.96   18.41
+2026-05-12..2026-06-04  latest |   17     -30 |       -29    -61     -5     0%      0%    7.52   15.92
+------------------------------------------------------------------------------------------------------
+     POOLED (all days)     all |   73     -16 |       -17    -40      8    13%      0%   25.36   47.00
+
+  Coverage: 4/5 windows ran, 1 skipped.
+  Pooled observed: 73 trading days, mean $-16.2/day, total $-1183
+  Bootstrap $/day 90% CI: [$-40, $8]  | P(profitable day-avg)=13%  P(>=$450/day)=0%
+  2026-02-17..2026-03-12 (oos-3): SKIPPED — no output produced
+
+WFMC_DONE

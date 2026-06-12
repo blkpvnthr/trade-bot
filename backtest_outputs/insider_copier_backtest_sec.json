@@ -1,0 +1,153 @@
+{
+  "generated_at": "2026-06-07T17:56:36.279008Z",
+  "params": {
+    "min_value": 1000000.0,
+    "window_days": 2,
+    "filing_lag_days": 2,
+    "horizons": [
+      5,
+      10,
+      21
+    ],
+    "copy_dollars": 1500.0,
+    "max_names": 5,
+    "source": "sec"
+  },
+  "universe_size": 35,
+  "symbols_with_signals": [
+    "COE",
+    "DOMO"
+  ],
+  "unique_signals_per_symbol": {
+    "COE": 1,
+    "DOMO": 1
+  },
+  "total_unique_signals": 2,
+  "results_by_horizon": {
+    "5": {
+      "raw": {
+        "n": 2,
+        "win_rate": 0.5,
+        "mean_ret": 0.17825,
+        "median_ret": 0.17825,
+        "stdev": 0.24675,
+        "best": 0.425,
+        "worst": -0.0685,
+        "t_stat": 1.022
+      },
+      "market_excess": {
+        "n": 1,
+        "win_rate": 1.0,
+        "mean_ret": 0.40244,
+        "median_ret": 0.40244,
+        "stdev": 0.0,
+        "best": 0.40244,
+        "worst": 0.40244,
+        "t_stat": 0.0
+      },
+      "mean_dollar_per_trade@1500": 267.38,
+      "signals_per_calendar_day": 0.0513,
+      "implied_dollar_per_day@maxnames5": 13.71
+    },
+    "10": {
+      "raw": {
+        "n": 1,
+        "win_rate": 1.0,
+        "mean_ret": 0.25357,
+        "median_ret": 0.25357,
+        "stdev": 0.0,
+        "best": 0.25357,
+        "worst": 0.25357,
+        "t_stat": 0.0
+      },
+      "market_excess": {
+        "n": 1,
+        "win_rate": 1.0,
+        "mean_ret": 0.23045,
+        "median_ret": 0.23045,
+        "stdev": 0.0,
+        "best": 0.23045,
+        "worst": 0.23045,
+        "t_stat": 0.0
+      },
+      "mean_dollar_per_trade@1500": 380.36,
+      "signals_per_calendar_day": 0.0,
+      "implied_dollar_per_day@maxnames5": 0.0
+    },
+    "21": {
+      "raw": {
+        "n": 1,
+        "win_rate": 1.0,
+        "mean_ret": 0.22143,
+        "median_ret": 0.22143,
+        "stdev": 0.0,
+        "best": 0.22143,
+        "worst": 0.22143,
+        "t_stat": 0.0
+      },
+      "market_excess": {
+        "n": 1,
+        "win_rate": 1.0,
+        "mean_ret": 0.14581,
+        "median_ret": 0.14581,
+        "stdev": 0.0,
+        "best": 0.14581,
+        "worst": 0.14581,
+        "t_stat": 0.0
+      },
+      "mean_dollar_per_trade@1500": 332.14,
+      "signals_per_calendar_day": 0.0,
+      "implied_dollar_per_day@maxnames5": 0.0
+    }
+  },
+  "trades": [
+    {
+      "symbol": "COE",
+      "horizon": 5,
+      "signal_date": "2026-05-22",
+      "entry_date": "2026-05-26",
+      "exit_date": "2026-06-02",
+      "entry_px": 27.3,
+      "exit_px": 25.43,
+      "ret": -0.06849816849816859,
+      "mkt_ret": null,
+      "excess_ret": null
+    },
+    {
+      "symbol": "DOMO",
+      "horizon": 5,
+      "signal_date": "2026-04-13",
+      "entry_date": "2026-04-15",
+      "exit_date": "2026-04-22",
+      "entry_px": 2.8,
+      "exit_px": 3.99,
+      "ret": 0.42500000000000027,
+      "mkt_ret": 0.022558985492660222,
+      "excess_ret": 0.40244101450734004
+    },
+    {
+      "symbol": "DOMO",
+      "horizon": 10,
+      "signal_date": "2026-04-13",
+      "entry_date": "2026-04-15",
+      "exit_date": "2026-04-29",
+      "entry_px": 2.8,
+      "exit_px": 3.51,
+      "ret": 0.25357142857142856,
+      "mkt_ret": 0.023119725093816212,
+      "excess_ret": 0.23045170347761235
+    },
+    {
+      "symbol": "DOMO",
+      "horizon": 21,
+      "signal_date": "2026-04-13",
+      "entry_date": "2026-04-15",
+      "exit_date": "2026-05-14",
+      "entry_px": 2.8,
+      "exit_px": 3.42,
+      "ret": 0.22142857142857153,
+      "mkt_ret": 0.07561357852511108,
+      "excess_ret": 0.14581499290346045
+    }
+  ]
+}

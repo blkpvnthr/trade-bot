@@ -1,0 +1,23 @@
+{
+  "params": {
+    "rtargets": "4",
+    "stop_pct": 0.28,
+    "max_hold": 25,
+    "breakout": 20,
+    "trend": 50,
+    "relvol": 1.5,
+    "dte": 35,
+    "atm_delta": 0.5,
+    "itm_delta": 0.8,
+    "iv_mult": 1.2,
+    "spread": 0.03,
+    "partial_pct": 0.5,
+    "partial_size": 0.5,
+    "trail_activate": 3.0,
+    "trail_offset": 0.8
+  },
+  "rtargets": [
+    4.0
+  ],
+  "rows": 259
+}

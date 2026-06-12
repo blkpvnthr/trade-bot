@@ -1,0 +1,29 @@
+{
+  "run_tag": "lev2_A_QQQ_2015-16",
+  "universe": [
+    "QQQ",
+    "SPY",
+    "IWM"
+  ],
+  "window": "2015-01-01..2016-12-31",
+  "start_equity": 100000.0,
+  "final_equity": 110518.06,
+  "total_pnl": 10518.06,
+  "return_pct": 10.52,
+  "closed_trades": 24,
+  "win_rate": 33.3,
+  "max_drawdown_pct": 12.44,
+  "by_kind": {
+    "shares": {
+      "n": 24,
+      "pnl": 10518.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": 4.7,
+    "sharpe": 0.5,
+    "sortino": 0.59,
+    "ulcer": 7.72,
+    "worst_month_pct": -6.0
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "params": {
+    "breakout": 20,
+    "trend": 50,
+    "relvol": 1.5,
+    "holds": "3,10",
+    "dte": 35,
+    "atm_delta": 0.5,
+    "itm_delta": 0.8,
+    "iv_mult": 1.1,
+    "spread": 0.1
+  },
+  "covered": [
+    "SPY",
+    "QQQ",
+    "IWM",
+    "NVDA",
+    "TSLA",
+    "AMD",
+    "AAPL",
+    "MSFT",
+    "META",
+    "AMZN",
+    "GOOGL",
+    "AVGO",
+    "NFLX",
+    "COIN",
+    "MSTR",
+    "PLTR",
+    "SMCI"
+  ],
+  "holds": [
+    3,
+    10
+  ],
+  "rows": 695
+}
