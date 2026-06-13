@@ -1399,7 +1399,8 @@ class AlpacaGateway:
     def submit_market_order(self, symbol: str, side: str, qty: int,
                             reason: str = "", limit_price: float = 0.0,
                             order_type: str = "market", reference_price: float = 0.0,
-                            notional: float = 0.0, bypass_trend_gate: bool = False) -> Optional[Dict]:
+                            notional: float = 0.0, bypass_trend_gate: bool = False,
+                            allow_momentum: bool = False) -> Optional[Dict]:
         """
         Risk-gated order submission for equities AND options (OCC symbols).
         Options are always routed as DAY limit orders (market options orders are
@@ -1450,7 +1451,8 @@ class AlpacaGateway:
         if _notional_buy:
             return self._submit_notional_buy(symbol, float(notional), reason,
                                              reference_price=float(reference_price or limit_price or 0.0),
-                                             bypass_trend_gate=bypass_trend_gate)
+                                             bypass_trend_gate=bypass_trend_gate,
+                                             allow_momentum=allow_momentum)
 
         # Notional reference price: explicit limit → caller-supplied reference → live
         # market lookup. Must be > 0 for BUYs (exits never depend on notional).
@@ -1466,7 +1468,7 @@ class AlpacaGateway:
         # bypass_trend_gate lets event-driven insider copies skip this timing filter (see
         # INSIDER_COPY_BYPASS_TREND_GATE) — risk caps below still apply.
         if side == "buy" and not bypass_trend_gate and self._available:
-            _trend_blk = _ema_buy_blocked(symbol, ref_price)
+            _trend_blk = _ema_buy_blocked(symbol, ref_price, allow_momentum=allow_momentum)
             if _trend_blk:
                 log_skip(symbol, _trend_blk, side=side, qty=qty, source=reason or "broker")
                 return None
@@ -1548,7 +1550,8 @@ class AlpacaGateway:
         return self._client.submit_order(req)
 
     def _submit_notional_buy(self, symbol: str, notional: float, reason: str = "",
-                             reference_price: float = 0.0, bypass_trend_gate: bool = False) -> Optional[Dict]:
+                             reference_price: float = 0.0, bypass_trend_gate: bool = False,
+                             allow_momentum: bool = False) -> Optional[Dict]:
         """Fractional BUY of an exact dollar `notional` (fractionable equities only). Same throttle,
         size-to-fit and RiskManager gating as a qty order, but no whole-share rounding.
 
@@ -1566,7 +1569,7 @@ class AlpacaGateway:
         # (self._available). Sim/paper-offline flows skip the live-data trend gate, exactly as the
         # whole-share submit_market_order path does.
         if self._available and not bypass_trend_gate:
-            _trend_blk = _ema_buy_blocked(symbol, ref_price)
+            _trend_blk = _ema_buy_blocked(symbol, ref_price, allow_momentum=allow_momentum)
             if _trend_blk:
                 log_skip(symbol, _trend_blk, side="buy", source=reason or "broker")
                 return None
@@ -1770,6 +1773,30 @@ def load_candidate_universe() -> List[str]:
                 logger.warning("Failed to read %s: %s", candidate, e)
     logger.warning("No candidate universe found — using default watchlist")
     return ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"]
+
+
+def _ensure_trading_universe(timeout: int = 150) -> None:
+    """Generate the trading universe the premarket planner needs.
+
+    Runs llm_sentiment_universe_selector.py (TradingView institutional builder →
+    {DATA_TAG}_latest_llm_sentiment_universe.json + {DATA_TAG}_locked_trading_universe.txt).
+    Without these files the planner writes a disabled/NO_TRADE plan and all
+    structure-based new buys are suppressed. Blocking + fully fail-safe: any error or
+    timeout is logged and never propagates to the caller.
+    """
+    try:
+        import subprocess as _sp
+        _sel = Path(__file__).parent / "llm_sentiment_universe_selector.py"
+        if not _sel.exists():
+            logger.warning("universe selector not found (%s) — planner will have no universe", _sel)
+            return
+        _t0 = time.time()
+        _r = _sp.run([sys.executable, str(_sel)], stdout=_sp.DEVNULL,
+                     stderr=_sp.DEVNULL, timeout=timeout)
+        logger.info("universe selector completed rc=%d in %.1fs — planner universe refreshed",
+                    _r.returncode, time.time() - _t0)
+    except Exception as _e:
+        logger.warning("universe selector run failed/timeout (planner may have no/stale universe): %s", _e)
 
 
 def fetch_1m_bars(gateway: AlpacaGateway, symbols: List[str]) -> Dict[str, "Any"]:
@@ -2944,11 +2971,16 @@ def run_regime_exit(gateway: AlpacaGateway, equity_positions: Dict[str, Any]) ->
     return n
 
 
-def _ema_buy_blocked(symbol: str, price: float) -> str:
+def _ema_buy_blocked(symbol: str, price: float, allow_momentum: bool = False) -> str:
     """Crossover BUY gate. Returns '' if a buy is ALLOWED, else a reason. First the broader-market
     regime must be RISK-ON (majority of SPY/QQQ/IWM trending up — not chop/reversal); then per name:
        • price crossed UP through the 200-SMA, OR
-       • price crossed DOWN through the 9-EMA WHILE above the 200-SMA.
+       • price crossed DOWN through the 9-EMA WHILE above the 200-SMA, OR
+       • (allow_momentum only) price > 9-EMA > 200-SMA — a clean uptrend continuation/breakout.
+    The dip/cross conditions buy WEAKNESS (pullbacks); allow_momentum additionally admits
+    tactical intraday entries (VWAP-reclaim/ORB) that buy STRENGTH, which never coincide with a
+    fresh daily cross. It is OPT-IN per call (default off) and still requires a RISK-ON regime and
+    price ABOVE the 200-SMA — the downtrend block and regime block are NOT relaxed.
     Below the 200-SMA is always blocked. Equities only; fail-open if MA data is missing."""
     if is_option_symbol(symbol) or price <= 0:
         return ""
@@ -2967,6 +2999,12 @@ def _ema_buy_blocked(symbol: str, price: float) -> str:
     cross_up_sma200 = sma200 > 0 and prev < sma200 <= price
     cross_down_ema9 = ema9 > 0 and prev > ema9 >= price
     if cross_up_sma200 or (cross_down_ema9 and price > sma200):
+        return ""
+    # Tactical continuation/breakout (opt-in): clean uptrend alignment above both MAs. Regime is
+    # already confirmed RISK-ON above and price is already confirmed >= 200-SMA, so this only
+    # admits strength-buying entries the dip/cross logic structurally cannot — it does NOT relax
+    # either downside-protection block.
+    if allow_momentum and ema9 > 0 and sma200 > 0 and price > ema9 > sma200:
         return ""
     return f"rejected_no_trend_crossover:px={price:.2f} ema9={ema9:.2f} sma200={sma200:.2f}"
 
@@ -5122,6 +5160,7 @@ def run_two_engine_trading():
                     if _premarket_planner_spawned_date != _today_et_tag:
                         try:
                             import subprocess as _sp
+                            _ensure_trading_universe()
                             _planner_script = Path(__file__).parent / "premarket_trade_planner.py"
                             if _planner_script.exists():
                                 # Capture stderr to a per-day log for diagnostics
@@ -5234,6 +5273,7 @@ def run_two_engine_trading():
                             _zp_reason,
                         )
                         import subprocess as _sp_zp
+                        _ensure_trading_universe()
                         _zp_script = Path(__file__).parent / "premarket_trade_planner.py"
                         if _zp_script.exists():
                             _zp_env = {**os.environ, "PREMARKET_WAIT_FOR_MARKET_OPEN": "0"}
