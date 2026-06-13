@@ -1709,8 +1709,17 @@ def _ensure_trading_universe(timeout: int = 150) -> None:
             logger.warning("universe selector not found (%s) — planner will have no universe", _sel)
             return
         _t0 = time.time()
-        _r = _sp.run([sys.executable, str(_sel)], stdout=_sp.DEVNULL,
-                     stderr=_sp.DEVNULL, timeout=timeout)
+        # Capture the selector's output and re-emit it through the logger so the full
+        # universe-build detail (TradingView screen → locked/LLM universe, selected names)
+        # lands in logs/run.log and is visible on the dashboard /dash/logs view.
+        _r = _sp.run([sys.executable, str(_sel)], capture_output=True, text=True, timeout=timeout)
+        for _ln in (_r.stdout or "").splitlines():
+            if _ln.strip():
+                logger.info("[universe-selector] %s", _ln.rstrip())
+        if _r.returncode != 0:
+            for _ln in (_r.stderr or "").splitlines()[-20:]:
+                if _ln.strip():
+                    logger.warning("[universe-selector:err] %s", _ln.rstrip())
         logger.info("universe selector completed rc=%d in %.1fs — planner universe refreshed",
                     _r.returncode, time.time() - _t0)
     except Exception as _e:
@@ -5064,8 +5073,8 @@ def run_two_engine_trading():
     last_context_build = 0.0
     last_account_log = time.time()
     cycle_count = 0
-    _premarket_planner_spawned = False  # spawn once per session
-    _zero_plan_recovery_spawned = False  # re-spawn once if plan has 0 valid setups at open
+    _premarket_planner_spawned_date = ""  # ET date tag of last planner spawn — refreshes the universe/plan DAILY (not once-per-session) so continuous runs stay fresh
+    _zero_plan_recovery_date = ""  # ET date tag of last zero-plan recovery check — re-arms daily
 
     logger.info("Entering two-engine loop (Ctrl-C to stop) …")
     import threading as _threading
@@ -5096,21 +5105,25 @@ def run_two_engine_trading():
                     # YYYYMMDD_premarket_trade_plan.json and YYYYMMDD_intraday_structure_map.json
                     # so they are available for the first trading cycle. Fail-safe: any
                     # launch error is logged and never blocks the premarket phase.
-                    if not _premarket_planner_spawned:
+                    _today_et_tag = datetime.now(ET).strftime("%Y%m%d")
+                    if _premarket_planner_spawned_date != _today_et_tag:
                         try:
                             import subprocess as _sp
                             _ensure_trading_universe()
                             _planner_script = Path(__file__).parent / "premarket_trade_planner.py"
                             if _planner_script.exists():
+                                # Route the planner's stdout/stderr into logs/run.log so its
+                                # plan/structure-map output is visible on the dashboard /dash/logs.
+                                _planner_log = open(Path(__file__).parent / "logs" / "run.log", "a")
                                 _planner_proc = _sp.Popen(
                                     [sys.executable, str(_planner_script)],
-                                    stdout=_sp.DEVNULL,
-                                    stderr=_sp.DEVNULL,
+                                    stdout=_planner_log,
+                                    stderr=_sp.STDOUT,
                                 )
                                 logger.info(
-                                    "premarket_trade_planner spawned (pid=%d) — "
+                                    "premarket_trade_planner spawned (pid=%d) date=%s — "
                                     "will write plan+structure_map at market open",
-                                    _planner_proc.pid,
+                                    _planner_proc.pid, _today_et_tag,
                                 )
                             else:
                                 logger.warning(
@@ -5119,7 +5132,7 @@ def run_two_engine_trading():
                                 )
                         except Exception as _e:
                             logger.warning("premarket_trade_planner spawn failed: %s", _e)
-                        _premarket_planner_spawned = True
+                        _premarket_planner_spawned_date = _today_et_tag
                     try:
                         run_premarket_phase(gateway, bal, market_context)
                     except Exception as e:
@@ -5164,9 +5177,10 @@ def run_two_engine_trading():
             # If the premarket plan file has 0 valid setups (e.g. DNS failure during
             # session startup caused planner to run with 0 bars), re-spawn the planner
             # immediately at market open so the session isn't wasted. Only done once
-            # per session (guard: _zero_plan_recovery_spawned). Hard risk caps are
+            # per DAY (guard: _zero_plan_recovery_date, re-arms daily). Hard risk caps are
             # unaffected — this only ensures the plan artifact is populated.
-            if not _zero_plan_recovery_spawned:
+            _zp_today_tag = datetime.now(ET).strftime("%Y%m%d")
+            if _zero_plan_recovery_date != _zp_today_tag:
                 try:
                     _zp_plan_path = SYSTEM_DATA_DIR / f"{DATA_TAG}_premarket_trade_plan.json"
                     if _zp_plan_path.exists():
@@ -5202,14 +5216,16 @@ def run_two_engine_trading():
                                     "ZERO-PLAN RECOVERY: premarket_trade_planner.py not found"
                                 )
                         else:
-                            logger.debug(
-                                "Zero-plan check: plan has %d valid setups — no recovery needed",
-                                _zp_valid,
+                            # Surface the planner RESULT on logs/run.log → dashboard /dash/logs.
+                            logger.info(
+                                "premarket plan ready: status=%s mode=%s valid_plan_count=%d valid_symbols=%s",
+                                _zp_data.get("planner_status"), _zp_data.get("execution_mode"),
+                                _zp_valid, ",".join(map(str, (_zp_data.get("valid_symbols") or [])[:20])),
                             )
                 except Exception as _zp_e:
                     logger.debug("Zero-plan resilience check failed: %s", _zp_e)
                 finally:
-                    _zero_plan_recovery_spawned = True  # run check once only
+                    _zero_plan_recovery_date = _zp_today_tag  # run check once per day (re-arms daily)
             # ── end zero-plan resilience ─────────────────────────────────────────
 
             if (time.time() - last_context_build) > CONTEXT_REFRESH_MIN * 60 or not market_context:
