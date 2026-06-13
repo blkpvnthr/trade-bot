@@ -184,3 +184,6 @@ tradingview-mcp/
 
 # instance-2 runtime logs
 logs-instance2/
+
+# TJL runtime position state (never commit)
+tjl_open_positions.json

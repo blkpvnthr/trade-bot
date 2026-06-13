@@ -4695,6 +4695,14 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
             gateway, risk, option_positions, alpha, insider_state_keys=_insider_keys)
     except Exception as e:
         logger.error("Option safety-exit failed (rest of cycle unaffected): %s", e)
+    # TJL EXIT PASS — stop-loss / take-profit / EOD-flatten for TJL-opened positions ONLY
+    # (scoped via tjl_open_positions.json so it never touches other engines' positions).
+    # Unconditional exit pass; never regime-gated. Self-gates on TJL_ENABLED; fail-safe.
+    try:
+        import tjl_engine
+        summary["tjl_exits"] = tjl_engine.run_tjl_exits(gateway, equity_positions)
+    except Exception as e:
+        logger.error("TJL exits failed (rest of cycle unaffected): %s", e)
 
     # 3. SCREENERS — separate, independent universes. Buffett fully isolated. ────────
     dynamic = load_candidate_universe()          # TradingView institutional dynamic discovery
@@ -4857,6 +4865,20 @@ def run_two_engine_cycle(risk: RiskManager, gateway: AlpacaGateway, waterfall,
             summary["sma_watch_buys"] = run_sma_watch_buys(gateway, risk, equity_positions)
         except Exception as e:
             logger.error("Insider trade copier failed (rest of cycle unaffected): %s", e)
+
+    # 4b-TJL. TREND JOIN LONG — deterministic long-only momentum-into-trend entries.
+    # tjl_signal.py is the SOURCE OF TRUTH (no LLM). Routed through the same risk gate as
+    # every entry (allow_momentum=True so the dip-buy 9-EMA gate doesn't kill the crossover;
+    # regime + below-200SMA blocks still apply). Self-gates on TJL_ENABLED; fail-safe.
+    if not _entries_blocked:
+        try:
+            import tjl_engine
+            if tjl_engine.T.TJLConfig.from_env().enabled:
+                _tjl_bars = fetch_1m_bars(gateway, dynamic[:tjl_engine.TJL_MAX_SCAN]) if dynamic else {}
+                summary["tjl_entries"] = tjl_engine.run_tjl_entries(
+                    gateway, risk, dynamic, _tjl_bars, market_context, equity_positions)
+        except Exception as e:
+            logger.error("TJL entries failed (rest of cycle unaffected): %s", e)
 
     # 4c. TRUMP-FAMILY INSIDER TRACKER — maintain the Trump-affiliated basket watchlist and
     # copy any genuine open-market PURCHASE (code P) by the tracked CIKs. Runs even when entries
