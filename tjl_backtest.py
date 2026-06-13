@@ -157,9 +157,11 @@ def backtest(symbol: str, cfg: T.TJLConfig, days: int) -> Tuple[List[Trade], dic
         if in_pos:
             stop = entry_px * (1 - cfg.stop_pct)
             tp = entry_px * (1 + cfg.tp_pct)
-            # last RTH 5m bar of the day → EOD flatten
-            nxt = entry_bars[i + 1] if i + 1 < len(entry_bars) else None
-            eod = cfg.eod_flat and (nxt is None or nxt.t.astimezone(ET).date() != t_et.date())
+            # EOD flatten = Pine isRTH[1] and not isRTH: fire on the FIRST non-RTH bar
+            # after being in RTH (NOT the end of the extended calendar day).
+            prev = entry_bars[i - 1] if i > 0 else None
+            eod = (cfg.eod_flat and prev is not None
+                   and T.is_rth(prev.t) and not T.is_rth(b.t))
             if b.l <= stop:
                 trades.append(Trade(symbol, entry_t, entry_px, t, stop, T.STOP_LOSS)); in_pos = False
             elif b.h >= tp:
