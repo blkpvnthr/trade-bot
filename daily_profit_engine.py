@@ -262,9 +262,13 @@ class DailyOpportunityRouter:
                 self._reject(result.rejected, opp, "setup_not_validated", "past_entry_cutoff")
             return result
 
+        # Stage 1 — validation + overnight gating only (NO capacity caps yet). The
+        # caps are applied AFTER the rank sort (Stage 2) so they retain the
+        # highest-ranked candidates rather than whichever happened to arrive first in
+        # input order. (Previously the tactical/option caps were enforced inside this
+        # input-order loop, so a late-arriving higher-ranked candidate could be
+        # dropped for a worse earlier one.)
         valid: list[TradeOpportunity] = []
-        option_count = 0
-        tactical_count = int(open_intraday_tactical_positions or 0)
         for opp in candidates:
             ok, why = self._validated(opp, market_context)
             if not ok:
@@ -275,22 +279,32 @@ class DailyOpportunityRouter:
             if not overnight_ok:
                 self._reject(result.rejected, opp, overnight_reason, "overnight_not_allowed")
                 continue
+            valid.append(opp)
+
+        # Stage 2 — rank, then apply capacity caps best-first. open positions seed the
+        # tactical count; the global max_new_entries cap is checked first so a full book
+        # attributes to that lever, then per-asset option / intraday-tactical caps.
+        ranked = sorted(valid, key=self.rank_score, reverse=True)
+        option_count = 0
+        tactical_count = int(open_intraday_tactical_positions or 0)
+        for opp in ranked:
+            if len(result.approved) >= max(0, self.config.max_new_entries):
+                self._reject(result.rejected, opp, "daily_trade_cap", "max_new_entries")
+                continue
             if opp.asset_class == "option":
                 if option_count >= self.config.max_option_entries:
                     self._reject(result.rejected, opp, "daily_trade_cap", "max_option_entries")
                     continue
-                option_count += 1
             if opp.metadata.get("tactical", True):
                 if tactical_count >= self.config.max_intraday_tactical_open:
                     self._reject(result.rejected, opp, "daily_trade_cap", "max_intraday_tactical_open")
                     continue
+            # passed all caps — commit and consume the relevant budgets
+            if opp.asset_class == "option":
+                option_count += 1
+            if opp.metadata.get("tactical", True):
                 tactical_count += 1
-            valid.append(opp)
-
-        ranked = sorted(valid, key=self.rank_score, reverse=True)
-        result.approved = ranked[: max(0, self.config.max_new_entries)]
-        for opp in ranked[len(result.approved):]:
-            self._reject(result.rejected, opp, "daily_trade_cap", "max_new_entries")
+            result.approved.append(opp)
         return result
 
     def funnel_payload(self, result: RouteResult, *, actual_trades: int = 0,
