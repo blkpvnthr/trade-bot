@@ -113,8 +113,12 @@ class TestRthGuard(unittest.TestCase):
     def test_before_open(self):
         self.assertFalse(T.is_rth(_ny(2026, 6, 12, 9, 29)))
 
-    def test_close_edge_exclusive(self):
-        self.assertFalse(T.is_rth(_ny(2026, 6, 12, 16, 0)))
+    def test_close_bar_inclusive(self):
+        # TV time("0930-1600") includes the 16:00 bar (boundary-inclusive).
+        self.assertTrue(T.is_rth(_ny(2026, 6, 12, 16, 0)))
+
+    def test_after_close_exclusive(self):
+        self.assertFalse(T.is_rth(_ny(2026, 6, 12, 16, 5)))
 
     def test_weekend(self):
         self.assertFalse(T.is_rth(_ny(2026, 6, 13, 10, 0)))   # Saturday
@@ -141,15 +145,17 @@ class TestTakeProfit(unittest.TestCase):
 
 class TestEodFlatten(unittest.TestCase):
     def test_session_end_true(self):
-        self.assertTrue(T.is_session_end(_ny(2026, 6, 12, 15, 55), _ny(2026, 6, 12, 16, 0)))
+        # session ends at the 16:00 -> 16:05 transition (16:00 bar is still in-session)
+        self.assertTrue(T.is_session_end(_ny(2026, 6, 12, 16, 0), _ny(2026, 6, 12, 16, 5)))
+        self.assertFalse(T.is_session_end(_ny(2026, 6, 12, 15, 55), _ny(2026, 6, 12, 16, 0)))
 
     def test_session_end_false_midday(self):
         self.assertFalse(T.is_session_end(_ny(2026, 6, 12, 10, 0), _ny(2026, 6, 12, 10, 5)))
 
     def test_eod_exit_via_evaluate(self):
         sig = T.evaluate_exit(_CFG, price=100.0, avg_entry=100.0,
-                              prev_ts=_ny(2026, 6, 12, 15, 55),
-                              now_ts=_ny(2026, 6, 12, 16, 0), in_position=True)
+                              prev_ts=_ny(2026, 6, 12, 16, 0),
+                              now_ts=_ny(2026, 6, 12, 16, 5), in_position=True)
         self.assertTrue(sig.exit)
         self.assertEqual(sig.reason, T.EOD_FLAT)
 

@@ -251,12 +251,14 @@ def ema_crossover_up(entry_closes: Sequence[float], fast_len: int, slow_len: int
 
 
 def is_rth(ts: datetime) -> bool:
-    """RTH guard: weekday and 09:30 <= NY time < 16:00 (Pine session '0930-1600')."""
+    """RTH guard matching Pine time('0930-1600','America/New_York'): TV's session end is
+    boundary-INCLUSIVE, so the 16:00 bar IS in-session (EOD flatten then fires on the
+    16:05 bar). 16:05+ is out of session."""
     t = ts.astimezone(NY)
     if t.weekday() >= 5:
         return False
     mins = t.hour * 60 + t.minute
-    return (9 * 60 + 30) <= mins < (16 * 60)
+    return (9 * 60 + 30) <= mins <= (16 * 60)
 
 
 def hit_stop(price: float, avg_entry: float, stop_pct: float) -> bool:
