@@ -5459,8 +5459,9 @@ def _log_config(risk: Optional[RiskManager] = None) -> None:
     logger.info("BAL thresholds: min_score=%.0f aggressive=%.0f | Waterfall: bal=%.0f%% alpha=%.0f%% cash=%.0f%%",
                 BAL_MIN_SCORE_TO_BUY, BAL_AGGRESSIVE_SCORE,
                 OPTIONS_PROFIT_TO_BAL_PCT * 100, OPTIONS_PROFIT_TO_ALPHA_PCT * 100, OPTIONS_PROFIT_TO_CASH_PCT * 100)
-    logger.info("BAL composite DCA: enabled=%s (value=WHETHER, RSI=WHEN, tranches=HOW MUCH, RiskManager=ALLOWED)",
-                ENABLE_BAL_COMPOSITE_DCA)
+    if ENABLE_BAL_COMPOSITE_DCA:
+        logger.info("BAL composite DCA: enabled=%s (value=WHETHER, RSI=WHEN, tranches=HOW MUCH, RiskManager=ALLOWED)",
+                    ENABLE_BAL_COMPOSITE_DCA)
 
 
 # ---------------------------------------------------------------------------
