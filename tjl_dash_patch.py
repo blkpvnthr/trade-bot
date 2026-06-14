@@ -83,15 +83,81 @@ def _render_tjl_backtest():
 
 '''
 
+PORTFOLIO_RENDERER = r'''
+def _render_tjl_portfolio():
+    """Portfolio dollar-equity backtest (tjl_portfolio_swing/intraday.json): multi-series
+    equity curve + round-trip-slippage table. Empty-safe (returns '' if no artifact)."""
+    import json as _json
+    from html import escape as _esc
+    _bd = ROOT / "backtest_outputs"
+    def _load(n):
+        f = _bd / n
+        try:
+            return _json.loads(f.read_text()) if f.exists() else None
+        except Exception:
+            return None
+    sw = _load("tjl_portfolio_swing.json"); itr = _load("tjl_portfolio_intraday.json")
+    base = sw or itr
+    if not base:
+        return ""
+    e0 = base.get("start_equity", 100000)
+    series = []
+    if sw and sw.get("equity_curve"):   series.append(("swing+trail(PDH)", "#3fb950", sw["equity_curve"]))
+    if itr and itr.get("equity_curve"): series.append(("intraday", "#58a6ff", itr["equity_curve"]))
+    if base.get("spy_curve"):           series.append(("SPY B&H", "#8b949e", base["spy_curve"]))
+    allv = [p["v"] for _l, _c, cv in series for p in cv] + [e0]
+    vmin = min(allv); rng = (max(allv) - vmin) or 1.0
+    W = 900.0; H = 260.0; PD = 8.0
+    def _poly(cv):
+        return " ".join(str(round(PD + p["x"] * (W - 2 * PD), 1)) + "," +
+                        str(round(PD + (1 - (p["v"] - vmin) / rng) * (H - 2 * PD), 1)) for p in cv)
+    lines = "".join("<polyline points='" + _poly(cv) + "' fill='none' stroke='" + col +
+                    "' stroke-width='1.8'/>" for _l, col, cv in series if len(cv) >= 2)
+    zy = round(PD + (1 - (e0 - vmin) / rng) * (H - 2 * PD), 1)
+    svg = ("<svg viewBox='0 0 900 260' preserveAspectRatio='none' style='width:100%;height:280px;display:block'>"
+           "<line x1='" + str(PD) + "' y1='" + str(zy) + "' x2='" + str(W - PD) + "' y2='" + str(zy) +
+           "' stroke='#30363d' stroke-dasharray='4 4'/>" + lines + "</svg>")
+    legend = " &nbsp;&nbsp; ".join("<span style='color:" + col + "'>&#9632; " + _esc(lbl) + "</span>"
+                                   for lbl, col, _cv in series)
+    def _row(dct, name):
+        if not dct or not dct.get("table"):
+            return ""
+        t = dct["table"]
+        cells = "".join("<td>" + str(r.get("ret")) + "%</td>" for r in t)
+        return ("<tr><td style='text-align:left'>" + _esc(name) + "</td>" + cells +
+                "<td>" + str(t[0].get("sharpe", "-")) + "</td><td>" + str(t[0].get("maxdd", "-")) + "%</td></tr>")
+    spy = base.get("spy")
+    spyrow = (("<tr><td style='text-align:left'>SPY B&amp;H</td><td>" + str(spy["ret"]) +
+               "%</td><td>&mdash;</td><td>&mdash;</td><td>" + str(spy["sharpe"]) + "</td><td>" +
+               str(spy["maxdd"]) + "%</td></tr>") if spy else "")
+    table = ("<table><thead><tr><th style='text-align:left'>config</th><th>0bp</th><th>5bp</th><th>10bp</th>"
+             "<th>Sharpe</th><th>maxDD</th></tr></thead><tbody>" + _row(sw, "swing+trail(PDH)") +
+             _row(itr, "intraday") + spyrow + "</tbody></table>")
+    win = base.get("window", {})
+    hdr = ("<h1>Portfolio backtest &middot; what would my account have done?</h1>"
+           "<p style='color:#8786b5;margin-top:-6px'>$" + format(int(e0), ",") + " start &middot; " +
+           str(base.get("slots")) + " equal-weight slots &middot; compounding, marked-to-market daily &middot; " +
+           _esc(str(win.get("start", ""))) + " &rarr; " + _esc(str(win.get("end", ""))) + " &middot; " +
+           str(base.get("names")) + " names</p>")
+    cav = ("<p style='color:#8786b5;font-size:13px;margin-top:6px'>Total return at 0 / 5 / 10 bp round-trip "
+           "slippage. Equity marked-to-market daily (drawdown includes overnight swings). "
+           "<b>Universe is survivorship-curated</b> (current watchlist) &middot; IEX 5m fills &middot; not a live-P&amp;L claim.</p>")
+    return (hdr + "<div style='border:1px solid #21262d;border-radius:10px;background:#0d1117;padding:10px 12px;margin:8px 0'>"
+            "<div style='color:#c7c7e6;margin-bottom:4px'>Equity ($) &middot; " + legend + "</div>" + svg + "</div>" +
+            table + cav + "<hr style='border-color:#21262d;margin:24px 0'>")
+
+
+'''
+
 anchor = '@app.route(PREFIX + "/backtest")'
 old_ret = 'return page("Strategy", iframe, "backtest")'
-new_ret = 'return page("Strategy", _render_tjl_backtest() + iframe, "backtest")'
+new_ret = 'return page("Strategy", _render_tjl_portfolio() + _render_tjl_backtest() + iframe, "backtest")'
 
 if anchor not in src or old_ret not in src:
     print("ABORT: expected anchors not found (dashboard.py shape differs) — no change made")
     sys.exit(2)
 
-src = src.replace(anchor, RENDERER + anchor, 1)   # define renderer just before the route
+src = src.replace(anchor, RENDERER + PORTFOLIO_RENDERER + anchor, 1)   # both renderers before the route
 src = src.replace(old_ret, new_ret, 1)            # show TJL above the existing tearsheet
 open(P, "w", encoding="utf-8").write(src)
 print("patched OK")
