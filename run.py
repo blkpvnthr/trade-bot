@@ -2376,6 +2376,24 @@ def run_premarket_phase(gateway, bal, market_context) -> None:
             feed.write_rvol_report(out_dir=_premarket_dir())
     except Exception as e:
         logger.debug("premarket rvol report skipped: %s", e)
+    # INFO summary so premarket DATA COLLECTION is visible at the default (INFO) log level
+    # without enabling DEBUG. One line per premarket cycle (04:00-09:30 ET). Fail-safe.
+    try:
+        _syms = list(getattr(feed, "symbols", []) or []) if feed is not None else []
+        _status = getattr(feed, "feed_status", "active") if feed is not None else "no-feed"
+        _rvol = None
+        try:
+            _rv = getattr(feed, "rvol_top", None)
+            if callable(_rv):
+                _rvol = _rv()
+        except Exception:
+            _rvol = None
+        logger.info("PREMARKET collect: feed=%s watching %d symbols%s%s — awareness only (no trading)",
+                    _status, len(_syms),
+                    (" e.g. " + ", ".join(_syms[:10])) if _syms else "",
+                    (" | top RVOL: " + ", ".join(str(x) for x in (_rvol or [])[:5])) if _rvol else "")
+    except Exception as _e:
+        logger.debug("premarket summary marker failed: %s", _e)
 
 
 # ── MarketStateEngine — single shared market truth (advisory; never places orders) ─
