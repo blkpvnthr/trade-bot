@@ -46,28 +46,16 @@ def _render_tjl_backtest():
     ec = d.get("equity_curve", []); eqm = d.get("equity", {})
     eqchart = ""
     if len(ec) >= 2:
-        W = 900.0; H = 220.0; P = 8.0
         vs = [p["v"] for p in ec] + [0.0]
-        vmin = min(vs); rng = (max(vs) - vmin) or 1.0
-        coords = [(round(P + p["x"] * (W - 2 * P), 1),
-                   round(P + (1 - (p["v"] - vmin) / rng) * (H - 2 * P), 1)) for p in ec]
-        line = " ".join(str(x) + "," + str(y) for x, y in coords)
-        z = round(P + (1 - (0.0 - vmin) / rng) * (H - 2 * P), 1)
         col = "#3fb950" if ec[-1]["v"] >= 0 else "#f85149"
-        area = str(coords[0][0]) + "," + str(z) + " " + line + " " + str(coords[-1][0]) + "," + str(z)
-        svg = ("<svg viewBox='0 0 900 220' preserveAspectRatio='none' style='width:100%;height:230px;display:block'>"
-               "<polygon points='" + area + "' fill='" + col + "' opacity='0.12'/>"
-               "<line x1='" + str(P) + "' y1='" + str(z) + "' x2='" + str(W - P) + "' y2='" + str(z) +
-               "' stroke='#30363d' stroke-dasharray='4 4'/>"
-               "<polyline points='" + line + "' fill='none' stroke='" + col + "' stroke-width='1.6'/></svg>")
+        svg = _tjl_chart([(col, ec)], min(vs), max(vs), eqm.get("start_date", ""),
+                         eqm.get("end_date", ""), "pct", 0.0)
         eqchart = ("<div style='border:1px solid #21262d;border-radius:10px;background:#0d1117;padding:10px 12px;margin:8px 0 16px'>"
-                   "<div style='color:#c7c7e6;margin-bottom:4px'>Equity curve &middot; final " +
+                   "<div style='color:#c7c7e6;margin-bottom:4px'>Equity curve (%) &middot; final " +
                    str(eqm.get("final_pct")) + "% &middot; max DD &minus;" + str(eqm.get("max_drawdown_pct")) +
                    "% &middot; " + str(eqm.get("points", 0)) + " pts</div>" + svg +
-                   "<div style='display:flex;justify-content:space-between;color:#8786b5;font-size:12px;margin-top:4px'>"
-                   "<span>" + _esc(str(eqm.get("start_date", ""))) + "</span>"
-                   "<span>cumulative sum of per-trade returns (equal-weight, additive &mdash; not compounded)</span>"
-                   "<span>" + _esc(str(eqm.get("end_date", ""))) + "</span></div></div>")
+                   "<div style='color:#8786b5;font-size:12px;margin-top:2px'>cumulative sum of per-trade "
+                   "returns (equal-weight, additive &mdash; not compounded)</div></div>")
     header = "<h1>Strategy &middot; " + _esc(str(d.get("strategy", "TJL"))) + " backtest</h1>" + \
         "<p style='color:#8786b5;margin-top:-6px'>Long-only momentum-into-trend. trend=" + _esc(str(cfg.get("trend_tf"))) + \
         "/SMA" + str(cfg.get("trend_sma_len")) + ", momo=" + _esc(str(cfg.get("momo_tf"))) + " stoch " + _esc(str(cfg.get("stoch"))) + \
@@ -106,17 +94,9 @@ def _render_tjl_portfolio():
     if itr and itr.get("equity_curve"): series.append(("intraday", "#58a6ff", itr["equity_curve"]))
     if base.get("spy_curve"):           series.append(("SPY B&H", "#8b949e", base["spy_curve"]))
     allv = [p["v"] for _l, _c, cv in series for p in cv] + [e0]
-    vmin = min(allv); rng = (max(allv) - vmin) or 1.0
-    W = 900.0; H = 260.0; PD = 8.0
-    def _poly(cv):
-        return " ".join(str(round(PD + p["x"] * (W - 2 * PD), 1)) + "," +
-                        str(round(PD + (1 - (p["v"] - vmin) / rng) * (H - 2 * PD), 1)) for p in cv)
-    lines = "".join("<polyline points='" + _poly(cv) + "' fill='none' stroke='" + col +
-                    "' stroke-width='1.8'/>" for _l, col, cv in series if len(cv) >= 2)
-    zy = round(PD + (1 - (e0 - vmin) / rng) * (H - 2 * PD), 1)
-    svg = ("<svg viewBox='0 0 900 260' preserveAspectRatio='none' style='width:100%;height:280px;display:block'>"
-           "<line x1='" + str(PD) + "' y1='" + str(zy) + "' x2='" + str(W - PD) + "' y2='" + str(zy) +
-           "' stroke='#30363d' stroke-dasharray='4 4'/>" + lines + "</svg>")
+    _w = base.get("window", {})
+    svg = _tjl_chart([(col, cv) for _l, col, cv in series], min(allv), max(allv),
+                     _w.get("start", ""), _w.get("end", ""), "dollar", e0)
     legend = " &nbsp;&nbsp; ".join("<span style='color:" + col + "'>&#9632; " + _esc(lbl) + "</span>"
                                    for lbl, col, _cv in series)
     def _row(dct, name):
@@ -149,6 +129,55 @@ def _render_tjl_portfolio():
 
 '''
 
+CHART_HELPER = r'''
+def _tjl_chart(series, vmin, vmax, start_date, end_date, kind="dollar", baseline=None):
+    """Inline SVG line chart with a y-axis (price / %) and x-axis (dates). Uniform scaling
+    (no preserveAspectRatio='none') so axis labels stay crisp. series: [(color, [{x,v}])]."""
+    import datetime as _dt
+    L, R, TOP, BOT = 64.0, 950.0, 14.0, 262.0
+    rng = (vmax - vmin) or 1.0
+    def _X(x):
+        return L + x * (R - L)
+    def _Y(v):
+        return TOP + (1 - (v - vmin) / rng) * (BOT - TOP)
+    def _vf(v):
+        if kind == "pct":
+            return ("+" if v > 0 else "") + str(int(round(v))) + "%"
+        if abs(v) >= 1000:
+            return "$" + format(int(round(v / 1000.0)), ",") + "k"
+        return "$" + str(int(round(v)))
+    parts = []
+    for i in range(5):                                       # y gridlines + value labels
+        v = vmin + rng * i / 4.0
+        y = _Y(v)
+        parts.append("<line x1='%.1f' y1='%.1f' x2='%.1f' y2='%.1f' stroke='#21262d'/>" % (L, y, R, y))
+        parts.append("<text x='%.1f' y='%.1f' fill='#8786b5' font-size='12' text-anchor='end' "
+                     "dominant-baseline='middle'>%s</text>" % (L - 6, y, _vf(v)))
+    try:                                                     # x date ticks + labels
+        d0 = _dt.date.fromisoformat(str(start_date)[:10]); d1 = _dt.date.fromisoformat(str(end_date)[:10])
+        span = (d1 - d0).days or 1
+        for i in range(5):
+            f = i / 4.0; x = _X(f)
+            dd = d0 + _dt.timedelta(days=int(round(span * f)))
+            anc = "start" if i == 0 else ("end" if i == 4 else "middle")
+            parts.append("<line x1='%.1f' y1='%.1f' x2='%.1f' y2='%.1f' stroke='#161b22'/>" % (x, TOP, x, BOT))
+            parts.append("<text x='%.1f' y='%.1f' fill='#8786b5' font-size='12' text-anchor='%s'>%s</text>"
+                         % (x, BOT + 17, anc, dd.strftime("%b %d")))
+    except Exception:
+        pass
+    if baseline is not None:
+        by = _Y(baseline)
+        parts.append("<line x1='%.1f' y1='%.1f' x2='%.1f' y2='%.1f' stroke='#30363d' "
+                     "stroke-dasharray='4 4'/>" % (L, by, R, by))
+    for col, pts in series:
+        if len(pts) >= 2:
+            dpts = " ".join("%.1f,%.1f" % (_X(p["x"]), _Y(p["v"])) for p in pts)
+            parts.append("<polyline points='%s' fill='none' stroke='%s' stroke-width='1.8'/>" % (dpts, col))
+    return "<svg viewBox='0 0 960 286' style='width:100%;height:auto;display:block'>" + "".join(parts) + "</svg>"
+
+
+'''
+
 anchor = '@app.route(PREFIX + "/backtest")'
 old_ret = 'return page("Strategy", iframe, "backtest")'
 new_ret = 'return page("Strategy", _render_tjl_portfolio() + _render_tjl_backtest() + iframe, "backtest")'
@@ -157,7 +186,7 @@ if anchor not in src or old_ret not in src:
     print("ABORT: expected anchors not found (dashboard.py shape differs) — no change made")
     sys.exit(2)
 
-src = src.replace(anchor, RENDERER + PORTFOLIO_RENDERER + anchor, 1)   # both renderers before the route
+src = src.replace(anchor, CHART_HELPER + RENDERER + PORTFOLIO_RENDERER + anchor, 1)   # helper + renderers
 src = src.replace(old_ret, new_ret, 1)            # show TJL above the existing tearsheet
 open(P, "w", encoding="utf-8").write(src)
 print("patched OK")
