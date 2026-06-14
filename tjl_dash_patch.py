@@ -188,5 +188,24 @@ if anchor not in src or old_ret not in src:
 
 src = src.replace(anchor, CHART_HELPER + RENDERER + PORTFOLIO_RENDERER + anchor, 1)   # helper + renderers
 src = src.replace(old_ret, new_ret, 1)            # show TJL above the existing tearsheet
+
+# --- /dash/logs: add an "exec health" source sub-tab (renders exec_health_latest.txt) ---
+_h_tail = '    src = request.args.get("src", "run")'
+if _h_tail in src:
+    src = src.replace(_h_tail, _h_tail +
+        '\n    if src == "health":'
+        '\n        _hf = ROOT / "logs-instance2" / "exec_health_latest.txt"'
+        '\n        return Response(_hf.read_text() if _hf.exists() else '
+        '"(no exec health report yet — runs weekday mornings 10:25 ET)", mimetype="text/plain")', 1)
+_h_tab = '''<a href="#" id=src-webhook class=navlink onclick="SRC='webhook';mark();refresh();return false">webhook</a>'''
+if _h_tab in src:
+    src = src.replace(_h_tab, _h_tab +
+        '''\n      <a href="#" id=src-health class=navlink onclick="SRC='health';mark();refresh();return false">exec health</a>''', 1)
+_h_mark = "document.getElementById('src-webhook').className=(SRC=='webhook'?'navlink on':'navlink');}}"
+if _h_mark in src:
+    src = src.replace(_h_mark,
+        "document.getElementById('src-webhook').className=(SRC=='webhook'?'navlink on':'navlink');"
+        "\n      document.getElementById('src-health').className=(SRC=='health'?'navlink on':'navlink');}}", 1)
+
 open(P, "w", encoding="utf-8").write(src)
 print("patched OK")
