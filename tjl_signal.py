@@ -23,7 +23,14 @@ Pine → Python fidelity notes (the parts that actually matter):
 Blocked-entry reason codes (stable strings, used for logging/metrics):
   trend_not_up | momentum_not_ok | no_ema_cross | outside_rth | already_in_position
 Exit reason codes:
-  stop_loss | take_profit | eod_flat
+  stop_loss | take_profit | eod_flat | trail_stop
+
+Swing/trail extension (default OFF — identical to the intraday Pine when disabled):
+  * swing_mode: hold overnight (skip the EOD flatten) so a position can ride into a
+    next-session breakout. Adds overnight GAP risk — a % stop does not protect a gap.
+  * use_trail: replace the fixed take-profit with a high-water-mark trailing stop
+    (trail_gap_pct below the highest close since entry, ratcheting up, never down,
+    and never looser than the initial stop). Captures bigger runs than a fixed TP.
 """
 
 from __future__ import annotations
@@ -50,15 +57,16 @@ ENTER = "entry"
 STOP_LOSS = "stop_loss"
 TAKE_PROFIT = "take_profit"
 EOD_FLAT = "eod_flat"
+TRAIL_STOP = "trail_stop"
 
 __all__ = [
     "TJLConfig", "EntrySignal", "ExitSignal",
     "sma", "ema_series", "sma_series", "stoch_raw_series", "stoch_kd",
     "crossover_last", "trend_up", "momentum_ok", "ema_crossover_up",
     "is_rth", "hit_stop", "hit_take_profit", "is_session_end",
-    "evaluate_entry", "evaluate_exit",
+    "evaluate_entry", "evaluate_exit", "trailing_stop_level",
     "TREND_NOT_UP", "MOMENTUM_NOT_OK", "NO_EMA_CROSS", "OUTSIDE_RTH",
-    "ALREADY_IN_POSITION", "ENTER", "STOP_LOSS", "TAKE_PROFIT", "EOD_FLAT",
+    "ALREADY_IN_POSITION", "ENTER", "STOP_LOSS", "TAKE_PROFIT", "EOD_FLAT", "TRAIL_STOP",
 ]
 
 
@@ -104,6 +112,10 @@ class TJLConfig:
     stop_pct: float = 0.015     # fraction, NOT percent (Pine 1.5/100)
     tp_pct: float = 0.03        # fraction, NOT percent (Pine 3.0/100)
     eod_flat: bool = True
+    swing_mode: bool = False    # hold overnight (skip EOD flat) — adds gap risk
+    use_trail: bool = False     # trailing high-water stop replaces the fixed TP
+    trail_gap_pct: float = 0.03   # trail this fraction below the highest close since entry (swept optimum)
+    trail_require_pdh: bool = True  # only ARM the trail after a close above the prior-day high
 
     @property
     def trend_tf_min(self) -> int:
@@ -141,6 +153,10 @@ class TJLConfig:
             stop_pct=_f("TJL_STOP_PCT", 0.015),
             tp_pct=_f("TJL_TP_PCT", 0.03),
             eod_flat=_env_bool(env, "TJL_EOD_FLAT", True),
+            swing_mode=_env_bool(env, "TJL_SWING_MODE", False),
+            use_trail=_env_bool(env, "TJL_USE_TRAIL", False),
+            trail_gap_pct=_f("TJL_TRAIL_GAP_PCT", 0.03),
+            trail_require_pdh=_env_bool(env, "TJL_TRAIL_REQUIRE_PDH", True),
         )
 
 
@@ -324,17 +340,41 @@ def evaluate_entry(cfg: TJLConfig,
     return EntrySignal(True, ENTER)
 
 
+def trailing_stop_level(cfg: TJLConfig, avg_entry: float,
+                        high_water: Optional[float], armed: bool = True) -> float:
+    """Effective protective stop price. Starts at the fixed initial stop and, when
+    use_trail is on AND the trail is armed, ratchets UP to trail_gap_pct below the
+    highest close since entry (math.max → never moves down, never looser than the
+    initial stop). When the trail isn't armed yet, only the initial stop applies —
+    so with trail_require_pdh the position simply holds (floor only) until price
+    closes above the prior-day high."""
+    init_stop = avg_entry * (1.0 - cfg.stop_pct)
+    if cfg.use_trail and armed and high_water and high_water > 0:
+        return max(init_stop, high_water * (1.0 - cfg.trail_gap_pct))
+    return init_stop
+
+
 def evaluate_exit(cfg: TJLConfig, price: float, avg_entry: float,
-                  prev_ts: datetime, now_ts: datetime, in_position: bool) -> ExitSignal:
-    """Long-only exit decision: stop-loss, take-profit, or end-of-session flatten."""
+                  prev_ts: datetime, now_ts: datetime, in_position: bool,
+                  *, high_water: Optional[float] = None, trail_armed: bool = True) -> ExitSignal:
+    """Long-only exit decision: protective/trailing stop, take-profit, or end-of-session
+    flatten. With swing_mode + use_trail OFF (defaults) this is identical to the original
+    intraday Pine: fixed stop, fixed TP, EOD flat. With them ON: the trailing stop
+    replaces the fixed TP and the EOD flatten is suppressed so the position holds
+    overnight. Pass high_water = highest close since entry, and trail_armed = whether the
+    breakout (close > prior-day high) has occurred (caller latches it when
+    trail_require_pdh is set)."""
     if not in_position:
         return ExitSignal(False, "")
-    if hit_stop(price, avg_entry, cfg.stop_pct):
-        return ExitSignal(True, STOP_LOSS)
-    if hit_take_profit(price, avg_entry, cfg.tp_pct):
-        return ExitSignal(True, TAKE_PROFIT)
-    if cfg.eod_flat and is_session_end(prev_ts, now_ts):
-        return ExitSignal(True, EOD_FLAT)
+    if avg_entry > 0:
+        stop_level = trailing_stop_level(cfg, avg_entry, high_water, armed=trail_armed)
+        if float(price) <= stop_level:
+            trailing = stop_level > avg_entry * (1.0 - cfg.stop_pct)   # ratcheted above init
+            return ExitSignal(True, TRAIL_STOP if trailing else STOP_LOSS)
+    if not cfg.use_trail and hit_take_profit(price, avg_entry, cfg.tp_pct):
+        return ExitSignal(True, TAKE_PROFIT)               # fixed TP only when not trailing
+    if cfg.eod_flat and not cfg.swing_mode and is_session_end(prev_ts, now_ts):
+        return ExitSignal(True, EOD_FLAT)                  # suppressed while holding overnight
     return ExitSignal(False, "")
 
 

@@ -146,7 +146,19 @@ def backtest(symbol: str, cfg: T.TJLConfig, days: int) -> Tuple[List[Trade], dic
     in_pos = False
     entry_px = 0.0
     entry_t: Optional[datetime] = None
+    high_water: Optional[float] = None   # highest close since entry, drives the trailing stop
+    trail_armed = not cfg.trail_require_pdh   # PDH gate: armed only after a close > prior-day high
     lookahead_ok = True
+
+    # previous trading day's RTH high per ET date — the level a close must clear to ARM the trail
+    _day_high: dict = {}
+    for _b in entry_bars:
+        if T.is_rth(_b.t):
+            _dk = _b.t.astimezone(ET).date()
+            _day_high[_dk] = max(_day_high.get(_dk, _b.h), _b.h)
+    _days_sorted = sorted(_day_high)
+    prev_day_high = {d: _day_high[_days_sorted[j - 1]]
+                     for j, d in enumerate(_days_sorted) if j > 0}
 
     closes_seq: List[float] = []
     for i, b in enumerate(entry_bars):
@@ -155,19 +167,31 @@ def backtest(symbol: str, cfg: T.TJLConfig, days: int) -> Tuple[List[Trade], dic
         t_et = t.astimezone(ET)
 
         if in_pos:
-            stop = entry_px * (1 - cfg.stop_pct)
+            # protective/trailing stop from the high-water of CLOSES through the PRIOR
+            # bar (no intrabar lookahead); checked against this bar's low. Trailing
+            # replaces the fixed TP; EOD flatten is suppressed in swing mode.
+            stop = T.trailing_stop_level(cfg, entry_px, high_water, armed=trail_armed)
             tp = entry_px * (1 + cfg.tp_pct)
             # EOD flatten = Pine isRTH[1] and not isRTH: fire on the FIRST non-RTH bar
             # after being in RTH (NOT the end of the extended calendar day).
             prev = entry_bars[i - 1] if i > 0 else None
-            eod = (cfg.eod_flat and prev is not None
+            eod = (cfg.eod_flat and not cfg.swing_mode and prev is not None
                    and T.is_rth(prev.t) and not T.is_rth(b.t))
             if b.l <= stop:
-                trades.append(Trade(symbol, entry_t, entry_px, t, stop, T.STOP_LOSS)); in_pos = False
-            elif b.h >= tp:
+                reason = (T.TRAIL_STOP if (cfg.use_trail and stop > entry_px * (1 - cfg.stop_pct))
+                          else T.STOP_LOSS)
+                trades.append(Trade(symbol, entry_t, entry_px, t, stop, reason)); in_pos = False
+            elif (not cfg.use_trail) and b.h >= tp:
                 trades.append(Trade(symbol, entry_t, entry_px, t, tp, T.TAKE_PROFIT)); in_pos = False
             elif eod:
                 trades.append(Trade(symbol, entry_t, entry_px, t, b.c, T.EOD_FLAT)); in_pos = False
+            else:
+                high_water = b.c if high_water is None else max(high_water, b.c)  # ratchet
+                # arm the trail once a CLOSE clears the prior-day high (latched; next bar on)
+                if cfg.use_trail and cfg.trail_require_pdh and not trail_armed:
+                    pdh = prev_day_high.get(t_et.date())
+                    if pdh is not None and b.c > pdh:
+                        trail_armed = True
             continue
 
         # completed HTF bars only (assert non-repaint: every used bar started >= tf ago)
@@ -179,7 +203,8 @@ def backtest(symbol: str, cfg: T.TJLConfig, days: int) -> Tuple[List[Trade], dic
 
         sig = T.evaluate_entry(cfg, tc, mh, ml, mc, closes_seq, t, in_pos, log=False)
         if sig.enter:
-            in_pos, entry_px, entry_t = True, b.c, t
+            in_pos, entry_px, entry_t, high_water = True, b.c, t, b.c
+            trail_armed = not cfg.trail_require_pdh   # re-arm gate for the new trade
 
     wins = [tr for tr in trades if tr.ret_pct > 0]
     gross_win = sum(tr.ret_pct for tr in wins)
