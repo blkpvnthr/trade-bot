@@ -42,6 +42,32 @@ def _render_tjl_backtest():
         (_esc(", ".join(d.get("no_setups", []))) or "none") + \
         ((" &middot; dropped PF&lt;" + str(d.get("min_pf")) + ": " + _esc(", ".join(d.get("dropped_pf", []))))
          if d.get("dropped_pf") else "") + "</p>"
+    # inline SVG equity curve (no chart lib): cumulative sum of per-trade returns over time
+    ec = d.get("equity_curve", []); eqm = d.get("equity", {})
+    eqchart = ""
+    if len(ec) >= 2:
+        W = 900.0; H = 220.0; P = 8.0
+        vs = [p["v"] for p in ec] + [0.0]
+        vmin = min(vs); rng = (max(vs) - vmin) or 1.0
+        coords = [(round(P + p["x"] * (W - 2 * P), 1),
+                   round(P + (1 - (p["v"] - vmin) / rng) * (H - 2 * P), 1)) for p in ec]
+        line = " ".join(str(x) + "," + str(y) for x, y in coords)
+        z = round(P + (1 - (0.0 - vmin) / rng) * (H - 2 * P), 1)
+        col = "#3fb950" if ec[-1]["v"] >= 0 else "#f85149"
+        area = str(coords[0][0]) + "," + str(z) + " " + line + " " + str(coords[-1][0]) + "," + str(z)
+        svg = ("<svg viewBox='0 0 900 220' preserveAspectRatio='none' style='width:100%;height:230px;display:block'>"
+               "<polygon points='" + area + "' fill='" + col + "' opacity='0.12'/>"
+               "<line x1='" + str(P) + "' y1='" + str(z) + "' x2='" + str(W - P) + "' y2='" + str(z) +
+               "' stroke='#30363d' stroke-dasharray='4 4'/>"
+               "<polyline points='" + line + "' fill='none' stroke='" + col + "' stroke-width='1.6'/></svg>")
+        eqchart = ("<div style='border:1px solid #21262d;border-radius:10px;background:#0d1117;padding:10px 12px;margin:8px 0 16px'>"
+                   "<div style='color:#c7c7e6;margin-bottom:4px'>Equity curve &middot; final " +
+                   str(eqm.get("final_pct")) + "% &middot; max DD &minus;" + str(eqm.get("max_drawdown_pct")) +
+                   "% &middot; " + str(eqm.get("points", 0)) + " pts</div>" + svg +
+                   "<div style='display:flex;justify-content:space-between;color:#8786b5;font-size:12px;margin-top:4px'>"
+                   "<span>" + _esc(str(eqm.get("start_date", ""))) + "</span>"
+                   "<span>cumulative sum of per-trade returns (equal-weight, additive &mdash; not compounded)</span>"
+                   "<span>" + _esc(str(eqm.get("end_date", ""))) + "</span></div></div>")
     header = "<h1>Strategy &middot; " + _esc(str(d.get("strategy", "TJL"))) + " backtest</h1>" + \
         "<p style='color:#8786b5;margin-top:-6px'>Long-only momentum-into-trend. trend=" + _esc(str(cfg.get("trend_tf"))) + \
         "/SMA" + str(cfg.get("trend_sma_len")) + ", momo=" + _esc(str(cfg.get("momo_tf"))) + " stoch " + _esc(str(cfg.get("stoch"))) + \
@@ -50,7 +76,7 @@ def _render_tjl_backtest():
         ((" (trail " + str(cfg.get("trail_gap_pct")) + "%)") if cfg.get("use_trail") else "") + ". " + \
         str(d.get("days")) + "d &middot; data=" + _esc(str(d.get("data_source"))) + \
         " &middot; " + _esc(str(d.get("generated_at", ""))) + "</p>"
-    return header + "<div style='display:flex;flex-wrap:wrap;gap:10px;margin:10px 0'>" + cards + "</div>" + cov + table + \
+    return header + "<div style='display:flex;flex-wrap:wrap;gap:10px;margin:10px 0'>" + cards + "</div>" + cov + eqchart + table + \
         "<h2 style='margin-top:22px'>Caveats</h2><ul style='line-height:1.55;color:#c7c7e6'>" + cav + "</ul>" + \
         "<p style='margin-top:14px;color:#8786b5'><a href='" + PREFIX + "/backtest/raw'>legacy crossover tearsheet &#8599;</a></p>"
 

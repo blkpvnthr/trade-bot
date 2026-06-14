@@ -149,6 +149,14 @@ def fetch_htf_ohlc(symbol: str, tf_min: int, count: int,
         return [], [], []
 
 
+def _fetch_pdh(symbol: str, now_utc: Optional[datetime] = None) -> Optional[float]:
+    """Prior trading day's high — the level a price must clear to ARM the swing trail.
+    Uses the last COMPLETED daily bar (today's forming daily bar is excluded by
+    fetch_htf_ohlc's completed-bar filter, so this is non-repainting). None on failure."""
+    hi, _lo, _cl = fetch_htf_ohlc(symbol, 1440, 3, now_utc)
+    return hi[-1] if hi else None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Entry / exit passes (called from run_two_engine_cycle)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -217,7 +225,9 @@ def run_tjl_entries(gateway, risk, symbols: List[str], bars_1m: Dict[str, Any],
             if resp:
                 placed += 1
                 state[sym] = {"avg_entry": px, "qty": qty,
-                              "opened_at": now_ts.isoformat()}
+                              "opened_at": now_ts.isoformat(),
+                              "high_water": px,                      # ratcheted by exits for the trail
+                              "armed": (not cfg.trail_require_pdh)}  # PDH gate: arm later, in exits
                 _state_save(state)
                 _log_exec(symbol=sym, side="buy", qty=qty, price=px,
                           reason=reason, engine="tjl")
@@ -229,9 +239,13 @@ def run_tjl_entries(gateway, risk, symbols: List[str], bars_1m: Dict[str, Any],
 
 
 def run_tjl_exits(gateway, equity_positions: Dict[str, Any]) -> int:
-    """Exit TJL-opened positions on stop-loss, take-profit, or end-of-session flatten.
-    Scoped to names in tjl_open_positions.json so other engines/user positions are never
-    touched. Exits are NEVER regime-gated. Returns count of SELLs. Never raises."""
+    """Exit TJL-opened positions. With defaults (use_trail/swing_mode OFF) this is the
+    original intraday logic: stop-loss / take-profit / end-of-session flatten. With them
+    ON it mirrors the backtest: a high-water trailing stop (armed only after price clears
+    the prior-day high when trail_require_pdh) replaces the fixed TP, and the EOD flatten
+    is suppressed so the position holds overnight. Scoped to names in
+    tjl_open_positions.json so other engines/user positions are never touched. Exits are
+    NEVER regime-gated. Returns count of SELLs. Never raises."""
     cfg = T.TJLConfig.from_env()
     if not cfg.enabled:
         return 0
@@ -258,12 +272,30 @@ def run_tjl_exits(gateway, equity_positions: Dict[str, Any]) -> int:
             if qty <= 0 or price <= 0 or avg <= 0:
                 continue
 
+            st = state[sym]
+            hw = float(st.get("high_water", avg) or avg)
+            armed = bool(st.get("armed", not cfg.trail_require_pdh))
+            if cfg.use_trail:                       # ratchet high-water; arm on a clear of PDH
+                hw = max(hw, price)
+                if cfg.trail_require_pdh and not armed:
+                    pdh = _fetch_pdh(sym)
+                    if pdh is not None and price > pdh:
+                        armed = True
+                        logger.info("TJL %s trail ARMED (px %.2f > PDH %.2f)", sym, price, pdh)
+                if hw != st.get("high_water") or armed != st.get("armed"):
+                    st["high_water"], st["armed"] = hw, armed
+                    _state_save(state)
+
+            init_stop = avg * (1.0 - cfg.stop_pct)
+            stop_level = T.trailing_stop_level(cfg, avg, hw, armed=armed)
             reason = ""
-            if T.hit_stop(price, avg, cfg.stop_pct):
-                reason = f"tjl_stop:px={price:.2f}<entry={avg:.2f}-{cfg.stop_pct*100:.1f}%"
-            elif T.hit_take_profit(price, avg, cfg.tp_pct):
+            if price <= stop_level:
+                reason = (f"tjl_trail:px={price:.2f}<=trail={stop_level:.2f}"
+                          if (cfg.use_trail and stop_level > init_stop)
+                          else f"tjl_stop:px={price:.2f}<entry={avg:.2f}-{cfg.stop_pct*100:.1f}%")
+            elif (not cfg.use_trail) and T.hit_take_profit(price, avg, cfg.tp_pct):
                 reason = f"tjl_tp:px={price:.2f}>entry={avg:.2f}+{cfg.tp_pct*100:.1f}%"
-            elif cfg.eod_flat and after_close:
+            elif cfg.eod_flat and not cfg.swing_mode and after_close:
                 reason = f"tjl_eod_flat:px={price:.2f}"
             if not reason:
                 continue

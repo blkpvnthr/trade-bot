@@ -41,7 +41,7 @@ def main():
             pf = sd["profit_factor"]   # inf (all-win) OR 0-trade => None (renders ∞ / dropped)
             sd["profit_factor"] = (None if sd["trades"] == 0 or pf is None or pf == float("inf")
                                    else round(pf, 2))
-            results.append((sd, [tr.ret_pct for tr in trades], st.get("source")))
+            results.append((sd, [(tr.exit_t, tr.ret_pct) for tr in trades], st.get("source")))
         except Exception as e:  # one bad symbol never sinks the report
             results.append(({"symbol": sym, "source": "error", "entry_bars": 0, "trades": 0,
                              "wins": 0, "win_rate": 0.0, "total_ret_pct": 0.0,
@@ -61,7 +61,26 @@ def main():
     dropped_pf = [sd["symbol"] for sd, rets in viable if sd["trades"] > 0 and not _keep(sd)]
     traded = [sd for sd, rets in viable if _keep(sd)]
     per = traded
-    all_rets = [r for sd, rets in viable if _keep(sd) for r in rets]
+    all_rets = [r for sd, rets in viable if _keep(sd) for (_t, r) in rets]
+
+    # portfolio equity curve = cumulative SUM of per-trade returns across kept names,
+    # ordered by exit time (equal-weight / additive, NOT compounded; ends at total_ret_pct).
+    _tp = sorted((p for sd, rets in viable if _keep(sd) for p in rets), key=lambda x: x[0])
+    equity_curve = [{"x": 0.0, "v": 0.0}]
+    eq_final = eq_maxdd = 0.0
+    eq_start = eq_end = None
+    if _tp:
+        t0, t1 = _tp[0][0], _tp[-1][0]
+        span = (t1 - t0).total_seconds() or 1.0
+        cum = peak = 0.0
+        for tt, r in _tp:
+            cum += r
+            peak = max(peak, cum)
+            eq_maxdd = max(eq_maxdd, peak - cum)
+            equity_curve.append({"x": round((tt - t0).total_seconds() / span, 4), "v": round(cum, 2)})
+        eq_final = round(cum, 2)
+        eq_start = t0.astimezone(ET).date().isoformat()
+        eq_end = t1.astimezone(ET).date().isoformat()
 
     wins = sum(1 for r in all_rets if r > 0)
     gw = sum(r for r in all_rets if r > 0)
@@ -121,6 +140,9 @@ def main():
         "no_setups": no_setups,                   # viable data but 0 TJL signals in window
         "dropped_pf": dropped_pf,                 # traded but dropped by the PF floor (TJL_MIN_PF)
         "min_pf": min_pf,
+        "equity_curve": equity_curve,             # [{x:0..1 along time, v:cum sum of trade %}]
+        "equity": {"final_pct": eq_final, "max_drawdown_pct": round(eq_maxdd, 2),
+                   "start_date": eq_start, "end_date": eq_end, "points": len(equity_curve)},
         "aggregate": agg,
         "per_symbol": sorted(traded, key=lambda p: (
             -(p["profit_factor"] if p["profit_factor"] is not None else 1e9), -p["trades"])),
