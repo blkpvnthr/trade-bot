@@ -5131,7 +5131,16 @@ def run_two_engine_trading():
     # candidate universe is always fresh (network call stays off the trading cycle).
     _start_tv_screen_refresher()
 
-    if alpha is None and bal is None:
+    # TJL is a standalone deterministic engine (wired into run_two_engine_cycle) and can
+    # drive the loop alone with legacy alpha/bal off. Live is unaffected: TJL_ENABLED is
+    # false in production, so _tjl_enabled is False there and this guard is unchanged.
+    _tjl_enabled = False
+    try:
+        import tjl_engine as _tjl_eng
+        _tjl_enabled = _tjl_eng.T.TJLConfig.from_env().enabled
+    except Exception:
+        _tjl_enabled = False
+    if alpha is None and bal is None and not _tjl_enabled:
         logger.critical("No engines enabled — nothing to do. Exiting.")
         return
 
