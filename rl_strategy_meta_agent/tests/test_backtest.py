@@ -86,6 +86,33 @@ def test_oos_gate_flips_eligibility():
     assert "OOS" in res.rejection_reason or "out-of-sample" in res.rejection_reason
 
 
+def test_population_summary_counts():
+    from types import SimpleNamespace
+    from rl_meta.backtest import population_summary, StrategyResult
+
+    metas = [
+        StrategyMeta("a", "A", "h", "2023-01-01", "a.txt", declares_strategy=True),
+        StrategyMeta("b", "B", "h", "2023-01-01", "b.txt", declares_strategy=True),
+        StrategyMeta("regime", "Markov Regime", "h", "2023-01-01", "r.txt",
+                     declares_strategy=False),   # indicator/study, not a strategy
+    ]
+
+    def res(sid, eligible, rl):
+        r = StrategyResult(sid, sid, None, True, "1Day")
+        r.eligible, r.rl_eligible = eligible, rl
+        return r
+
+    results = [res("a", True, True), res("b", True, False), res("regime", False, False)]
+    report = SimpleNamespace(effective_breadth=1.4, n_strategies=2)
+
+    s = population_summary(metas, results, report)
+    assert s["discovered"] == 2            # the indicator file is NOT a strategy
+    assert s["non_strategy_files"] == 1
+    assert s["eligible"] == 2
+    assert s["rl_eligible"] == 1
+    assert s["effective_breadth"] == 1.4 and s["breadth_universe"] == 2
+
+
 def test_persist_writes_cells(tmp_path):
     bars = {"NVDA": wave_bars("NVDA")}
     results = run_backtests([sma_meta()], bars, "1Day")

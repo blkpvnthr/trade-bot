@@ -193,6 +193,22 @@ def run_backtests(metas: list, bars_by_symbol: dict, timeframe: str,
     return out
 
 
+def population_summary(metas: list, results: list, report) -> dict:
+    """Population-phase dashboard counts. `report` is an IndependenceReport
+    (duck-typed: .effective_breadth, .n_strategies). Indicator/study files
+    (declares_strategy=False) are NOT counted as discovered strategies."""
+    strategies = [m for m in metas if getattr(m, "declares_strategy", True)]
+    non_strategy = [m for m in metas if not getattr(m, "declares_strategy", True)]
+    return {
+        "discovered": len(strategies),
+        "non_strategy_files": len(non_strategy),
+        "eligible": sum(1 for r in results if r.eligible),
+        "rl_eligible": sum(1 for r in results if r.rl_eligible),
+        "effective_breadth": report.effective_breadth,
+        "breadth_universe": report.n_strategies,
+    }
+
+
 def persist(db, results: list, on_date: str | None = None):
     """Write per-symbol-per-split and AGGREGATE rows, tagged with the source."""
     on_date = on_date or date.today().isoformat()

@@ -204,6 +204,22 @@ Why a diagnostic and not yet an RL feature: it tells you, *as you populate*
 TJL v2. Wiring correlation into the allocator's reward is a deliberate later
 step (it would change the frozen RL surfaces).
 
+**Population dashboard.** `scripts/backtest_strategies.py` prints a headline you
+watch as the library grows:
+
+```
+=== Population ===
+Strategies discovered: 24   (+ 1 indicator/study file(s) excluded)
+Eligible (metrics):    11
+RL eligible:           6
+Effective breadth:     2.1 (of 24 with trade history)
+```
+
+"24 things built, ~2 independent edges" is exactly the signal you want during
+candidate generation. Indicator/study files (no `strategy()` declaration -- e.g.
+a Markov regime-probability indicator) are reported separately and never counted
+as strategies. (`backtest.population_summary()` is the pure helper behind it.)
+
 ## PineScript adapters (which patterns are executable) -- fallback
 
 Full PineScript is **not** executed. `rl_meta/adapters.py` recognises common
@@ -405,7 +421,7 @@ limits override the policy unconditionally.
 ```bash
 pip install -r requirements.txt
 cd rl_strategy_meta_agent
-python -m pytest                 # 109 tests
+python -m pytest                 # 111 tests
 ```
 Each module also has a self-check: `python -m rl_meta.<module>`.
 

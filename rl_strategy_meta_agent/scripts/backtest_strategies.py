@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rl_meta.registry import load_strategies, write_registry
 from rl_meta.data import load_universe_bars, read_universe, TIMEFRAMES
-from rl_meta.backtest import run_backtests, persist
+from rl_meta.backtest import run_backtests, persist, population_summary
 from rl_meta.ranking import rank_results
 from rl_meta.performance import PerformanceDB
 from rl_meta.adapters import annotate_executability
@@ -75,9 +75,23 @@ def main():
     write_registry(metas)
     persist(db, results, on_date=date.today().isoformat())
 
+    _population_dashboard(population_summary(metas, results, report))
     _scoreboard(results)
     _independence_section(report)
     print(f"\nperformance DB -> {db.path}")
+
+
+def _population_dashboard(s):
+    """Headline you watch as pinescripts/ grows: are you discovering edges or
+    just adding clones?"""
+    print("=== Population ===")
+    extra = (f"   (+ {s['non_strategy_files']} indicator/study file(s) excluded)"
+             if s["non_strategy_files"] else "")
+    print(f"Strategies discovered: {s['discovered']}{extra}")
+    print(f"Eligible (metrics):    {s['eligible']}")
+    print(f"RL eligible:           {s['rl_eligible']}")
+    print(f"Effective breadth:     {s['effective_breadth']} "
+          f"(of {s['breadth_universe']} with trade history)\n")
 
 
 _SRC_SHORT = {"tradingview_verified": "tv_verified",
