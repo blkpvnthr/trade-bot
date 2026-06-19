@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Multi-symbol, walk-forward backtest of every executable PineScript strategy.
+
+RESEARCH-ONLY. Reads cached/Alpaca bars, runs adapters, computes per-symbol +
+aggregate + per-split metrics, decides eligibility, writes the performance DB,
+and prints the scoreboard.
+
+    python scripts/backtest_strategies.py --timeframe 1Day --start 2018-01-01
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from datetime import date
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from rl_meta.registry import load_strategies, write_registry
+from rl_meta.data import load_universe_bars, read_universe, TIMEFRAMES
+from rl_meta.backtest import run_backtests, persist
+from rl_meta.ranking import rank_results
+from rl_meta.performance import PerformanceDB
+from rl_meta.adapters import annotate_executability
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--timeframe", default="1Day", choices=sorted(TIMEFRAMES))
+    ap.add_argument("--start", default="2018-01-01")
+    ap.add_argument("--end", default=None)
+    ap.add_argument("--symbols", nargs="*", default=None)
+    ap.add_argument("--refresh", action="store_true")
+    ap.add_argument("--offline", action="store_true",
+                    help="cache-only; never fetch (no credentials needed)")
+    args = ap.parse_args()
+
+    metas = load_strategies()
+    if not metas:
+        print("No PineScripts in pinescripts/. Add *.txt files and re-run.")
+        return
+
+    symbols = args.symbols or read_universe()
+    bars = load_universe_bars(symbols, args.timeframe, args.start, args.end,
+                              refresh=args.refresh, offline=args.offline)
+
+    db = PerformanceDB()
+    any_imports = any(db.imported_trades(m.strategy_id, args.timeframe,
+                                         m.version_hash) for m in metas)
+    if not bars and not any_imports:
+        print("No bars and no imported TradingView trades. Run "
+              "scripts/fetch_alpaca_bars.py (needs APCA creds) or "
+              "scripts/import_tradingview_trades.py first.")
+        return
+    print(f"Loaded bars for {len(bars)}/{len(symbols)} symbols @ {args.timeframe}; "
+          f"TradingView imports present: {any_imports}\n")
+
+    # db passed in -> any version-matched TradingView import makes the whole
+    # strategy tradingview_verified (adapter disabled, single source of truth).
+    results = run_backtests(metas, bars, args.timeframe, db=db, universe=symbols)
+
+    # Registry now carries executable/adapter_type/tested_*/evaluation_source.
+    for m in metas:
+        annotate_executability(m)
+    write_registry(metas)
+
+    persist(db, results, on_date=date.today().isoformat())
+
+    _scoreboard(results)
+    print(f"\nperformance DB -> {db.path}")
+
+
+_SRC_SHORT = {"tradingview_verified": "tv_verified",
+              "adapter_screening": "adapter", "parsed_but_not_executable": "not_exec"}
+
+
+def _scoreboard(results):
+    ranked = rank_results(results)
+    res_by_id = {r.strategy_id: r for r in results}
+    print("=== Aggregate strategy ranking (single-source; no TV/adapter mixing) ===")
+    print(f"{'#':>2}  {'strategy':<22} {'source':<12} {'tier':<6} {'trades':>6} "
+          f"{'win%':>6} {'PF':>6} {'oosN':>5} {'score':>6} {'conf':>5}  status")
+    print("-" * 112)
+    for r in ranked:
+        sr = res_by_id[r.strategy_id]
+        m = r.metrics
+        pf = "inf" if m.profit_factor == float("inf") else f"{m.profit_factor:.2f}"
+        oosN = sr.aggregate.get("oos").trade_count if sr.aggregate else 0
+        src = _SRC_SHORT.get(sr.evaluation_source, sr.evaluation_source)
+        if sr.rl_eligible:
+            flag = "RL-ELIGIBLE"
+        elif sr.eligible:
+            flag = "SCREEN-ONLY (not RL)"
+        else:
+            flag = f"REJECT({r.reason})"
+        # score = how good it looks; conf = how trustworthy the evidence is.
+        print(f"{r.rank:>2}  {r.strategy_name[:22]:<22} {src:<12} {r.tier:<6} "
+              f"{m.trade_count:>6} {m.win_rate*100:>5.1f}% {pf:>6} {oosN:>5} "
+              f"{r.composite_score:>6.3f} {sr.strategy_confidence:>5.1f}  {flag}")
+        if sr.evaluation_source == "tradingview_verified" and sr.missing_tv_symbols:
+            print(f"      missing_tv_validation: {', '.join(sr.missing_tv_symbols)}")
+
+    # Per-symbol breakdown for the top eligible strategy.
+    top = next((r for r in ranked if r.eligible), None)
+    if top:
+        sr = res_by_id[top.strategy_id]
+        print(f"\n=== Per-symbol metrics: {top.strategy_name} ===")
+        print(f"{'symbol':<8} {'trades':>6} {'win%':>6} {'PF':>6} {'expR$':>8} "
+              f"{'maxDD':>6} {'totRet%':>8}")
+        print("-" * 56)
+        for sym in sorted(sr.per_symbol):
+            m = sr.per_symbol[sym]["full"]
+            pf = "inf" if m.profit_factor == float("inf") else f"{m.profit_factor:.2f}"
+            print(f"{sym:<8} {m.trade_count:>6} {m.win_rate*100:>5.1f}% {pf:>6} "
+                  f"{m.expectancy:>8.1f} {m.max_drawdown*100:>5.1f}% "
+                  f"{m.total_return*100:>7.1f}%")
+
+
+if __name__ == "__main__":
+    main()
