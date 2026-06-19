@@ -1,0 +1,15 @@
+//@version=5
+// family: flow
+strategy("Unusual Volume Momentum", overlay=true, initial_capital=10000)
+
+// Volume surge CONFIRMED by price momentum (rate-of-change). Distinct from a
+// pure volume spike: requires the move to already be going its way.
+volMult = input.float(2.0, "Volume Multiple")
+mom = input.int(10, "Momentum Lookback")
+volBase = ta.highest(volume, 20)[1]
+roc = (close - close[mom]) / close[mom]
+
+if volume > volBase * volMult and roc > 0.03
+    strategy.entry("Long", strategy.long)
+if roc < 0
+    strategy.close("Long")

@@ -1,0 +1,19 @@
+//@version=5
+// family: mean_reversion
+strategy("RSI + VWAP Reclaim Confluence", overlay=true, initial_capital=10000)
+
+// Confluence entry: price reclaims VWAP AND RSI is reclaiming off oversold.
+// NOTE: distinct strategy logic, but the current rsi adapter approximates it as
+// plain RSI mean-reversion -> it will look like a clone of rsi_reversion until a
+// TradingView export captures the real confluence fills.
+length = input.int(14, "RSI Length")
+lower = input.int(30, "Oversold")
+upper = input.int(55, "Exit / Midline")
+r = ta.rsi(close, length)
+vwapVal = ta.vwap(hlc3)
+
+longCondition = ta.crossover(close, vwapVal) and r > lower and r < upper
+if longCondition
+    strategy.entry("Long", strategy.long)
+if r >= upper or ta.crossunder(close, vwapVal)
+    strategy.close("Long")
