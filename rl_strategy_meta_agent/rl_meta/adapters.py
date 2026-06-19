@@ -197,7 +197,8 @@ def annotate_executability(meta: StrategyMeta) -> StrategyMeta:
 def _demo():
     from .registry import load_strategies, PINE_DIR
     metas = load_strategies(PINE_DIR)
-    m = annotate_executability(metas[0])
+    sample = next(x for x in metas if x.strategy_id == "sample_strategy")
+    m = annotate_executability(sample)
     assert m.executable and m.adapter_type == "sma_crossover", m.adapter_type
     junk = StrategyMeta("j", "Mystery Oscillator", "h", "2023-01-01", "j.txt",
                         indicators=["adx"])

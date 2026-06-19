@@ -18,7 +18,7 @@ def make_bars(closes, start="2023-01-02"):
 
 
 def test_sample_strategy_is_executable():
-    meta = load_strategies(PINE_DIR)[0]
+    meta = next(m for m in load_strategies(PINE_DIR) if m.strategy_id == "sample_strategy")
     name, reason = detect_adapter(meta)
     assert name == "sma_crossover" and reason == ""
     annotate_executability(meta)

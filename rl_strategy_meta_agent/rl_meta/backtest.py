@@ -234,7 +234,7 @@ def persist(db, results: list, on_date: str | None = None):
 def _demo():
     from .registry import load_strategies, PINE_DIR
     from .signals import synthetic_bars
-    meta = load_strategies(PINE_DIR)[0]
+    meta = next(m for m in load_strategies(PINE_DIR) if m.strategy_id == "sample_strategy")
     bars = {"SYNTH_A": synthetic_bars(meta), "SYNTH_B": synthetic_bars(meta)}
     res = evaluate_strategy(meta, bars, "1Day")
     # Pooled aggregate trade_count == sum of per-symbol counts.

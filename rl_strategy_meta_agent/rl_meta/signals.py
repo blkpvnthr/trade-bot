@@ -161,7 +161,7 @@ def backtest_strategy(meta: StrategyMeta) -> list:
 
 def _demo():
     from .registry import load_strategies, PINE_DIR
-    meta = load_strategies(PINE_DIR)[0]
+    meta = next(m for m in load_strategies(PINE_DIR) if m.strategy_id == "sample_strategy")
     df = synthetic_bars(meta)
     t1 = backtest_executable(meta, df)
     t2 = backtest_executable(meta, df)
