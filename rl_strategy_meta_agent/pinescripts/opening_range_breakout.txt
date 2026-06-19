@@ -1,0 +1,21 @@
+//@version=5
+// family: breakout
+strategy("Opening Range Breakout", overlay=true, initial_capital=10000)
+
+// First N minutes define the opening range; go long on a break above its high.
+orMinutes = input.int(30, "Opening Range Minutes")
+session = time - timestamp(year, month, dayofmonth, 9, 30, 0) <= orMinutes * 60 * 1000
+
+var float orHigh = na
+var float orLow = na
+if session
+    orHigh := math.max(nz(orHigh, high), high)
+    orLow := math.min(nz(orLow, low), low)
+else
+    orHigh := orHigh
+    orLow := orLow
+
+if not session and close > orHigh
+    strategy.entry("Long", strategy.long)
+if not na(orLow) and close < orLow
+    strategy.close("Long")

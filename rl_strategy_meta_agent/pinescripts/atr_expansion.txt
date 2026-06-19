@@ -1,0 +1,13 @@
+//@version=5
+// family: volatility
+strategy("ATR Expansion Breakout", overlay=true, initial_capital=10000)
+
+// Trade only when range volatility is expanding to a new local high.
+atrLen = input.int(14, "ATR Length")
+a = ta.atr(atrLen)
+expanding = a > ta.highest(a, 20)[1]
+
+if expanding and close > high[1]
+    strategy.entry("Long", strategy.long)
+if close < low[1] - a
+    strategy.close("Long")

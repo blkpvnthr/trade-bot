@@ -1,0 +1,14 @@
+//@version=5
+// family: mean_reversion
+strategy("VWAP Reclaim Long", overlay=true, initial_capital=10000)
+
+// Mean-revert back to value: enter when price reclaims VWAP from below.
+vwapVal = ta.vwap(hlc3)
+
+longCondition = ta.crossover(close, vwapVal)
+exitCondition = ta.crossunder(close, vwapVal)
+
+if longCondition
+    strategy.entry("Long", strategy.long)
+if exitCondition
+    strategy.close("Long")

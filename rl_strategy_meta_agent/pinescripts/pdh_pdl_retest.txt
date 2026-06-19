@@ -1,0 +1,15 @@
+//@version=5
+// family: breakout
+strategy("PDH PDL Break Retest", overlay=true, initial_capital=10000)
+
+// Break above the previous-day high; exit on close below the previous-day low.
+pdh = request.security(syminfo.tickerid, "D", high[1])
+pdl = request.security(syminfo.tickerid, "D", low[1])
+
+breakUp = close > pdh and close[1] <= pdh
+failDown = close < pdl
+
+if breakUp
+    strategy.entry("Long", strategy.long)
+if failDown
+    strategy.close("Long")
