@@ -22,6 +22,7 @@ from rl_meta.backtest import run_backtests, persist
 from rl_meta.ranking import rank_results
 from rl_meta.performance import PerformanceDB
 from rl_meta.adapters import annotate_executability
+from rl_meta.correlation import report_from_results
 
 
 def main():
@@ -59,14 +60,23 @@ def main():
     # strategy tradingview_verified (adapter disabled, single source of truth).
     results = run_backtests(metas, bars, args.timeframe, db=db, universe=symbols)
 
-    # Registry now carries executable/adapter_type/tested_*/evaluation_source.
     for m in metas:
         annotate_executability(m)
-    write_registry(metas)
 
+    # Independence diagnostic (population-phase): are these distinct edges?
+    report = report_from_results(results, freq="monthly")
+    by_id = {m.strategy_id: m for m in metas}
+    for sid, row in report.per_strategy.items():
+        if sid in by_id:
+            by_id[sid].independence_score = row["independence_score"]
+            by_id[sid].avg_correlation = row["avg_correlation"]
+
+    # Registry carries executable/adapter_type/evaluation_source/family/independence.
+    write_registry(metas)
     persist(db, results, on_date=date.today().isoformat())
 
     _scoreboard(results)
+    _independence_section(report)
     print(f"\nperformance DB -> {db.path}")
 
 
@@ -114,6 +124,32 @@ def _scoreboard(results):
             print(f"{sym:<8} {m.trade_count:>6} {m.win_rate*100:>5.1f}% {pf:>6} "
                   f"{m.expectancy:>8.1f} {m.max_drawdown*100:>5.1f}% "
                   f"{m.total_return*100:>7.1f}%")
+
+
+def _independence_section(report):
+    """Portfolio-level diversity diagnostic: are these distinct edges or clones?"""
+    n = report.n_strategies
+    print(f"\n=== Strategy independence ({report.freq}, min_overlap="
+          f"{report.min_overlap}) ===")
+    if n == 0:
+        print("  no strategies with sufficient trade history")
+        return
+    print(f"Effective breadth: {report.effective_breadth} / {n} strategies "
+          f"(1 = one edge cloned, {n} = all independent)")
+    if report.insufficient:
+        print(f"  insufficient data (excluded): {', '.join(report.insufficient)}")
+
+    ranked = sorted(report.per_strategy.items(),
+                    key=lambda kv: kv[1]["independence_score"])
+    if len(ranked) > 1:
+        print("Lowest independence (most clone-like):")
+        for sid, row in ranked[:3]:
+            print(f"  {sid:<24} avg_corr={row['avg_correlation']:.2f} "
+                  f"family={row['family']}")
+        print("Highest independence (most distinct):")
+        for sid, row in reversed(ranked[-3:]):
+            print(f"  {sid:<24} avg_corr={row['avg_correlation']:.2f} "
+                  f"family={row['family']}")
 
 
 if __name__ == "__main__":

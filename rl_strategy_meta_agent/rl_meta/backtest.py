@@ -56,6 +56,8 @@ class StrategyResult:
     primary_source: str = "adapter"                    # 'tradingview' when TV-verified (back-compat)
     years_tested: float = 0.0                          # calendar span of pooled trades
     strategy_confidence: float = 0.0                   # 0..100 trustworthiness (confidence.py)
+    strategy_family: str = "unknown"                   # independence diagnostic (correlation.py)
+    pooled_trades: list = field(default_factory=list)  # single-source trades (for correlation)
 
 
 def _split_metric_set(trades: list) -> dict:
@@ -138,6 +140,7 @@ def evaluate_strategy(meta: StrategyMeta, bars_by_symbol: dict, timeframe: str,
         res.rejection_reason = "insufficient Alpaca data"
         return res
 
+    res.pooled_trades = pooled          # single-source; for the independence diagnostic
     res.aggregate = _split_metric_set(pooled)
     res.aggregate_full = res.aggregate["full"]
     res.aggregate_rolling = rolling_metrics(pooled)
@@ -185,6 +188,7 @@ def run_backtests(metas: list, bars_by_symbol: dict, timeframe: str,
         m.tv_validated_symbols = res.tv_symbols
         m.missing_tv_symbols = res.missing_tv_symbols
         m.strategy_confidence = res.strategy_confidence
+        res.strategy_family = m.strategy_family or "unknown"
         out.append(res)
     return out
 

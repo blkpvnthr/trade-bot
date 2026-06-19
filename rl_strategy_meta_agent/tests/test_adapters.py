@@ -25,6 +25,25 @@ def test_sample_strategy_is_executable():
     assert meta.executable and meta.adapter_type == "sma_crossover"
 
 
+def test_indicator_study_is_not_a_strategy():
+    # A regime-probability indicator: indicator() with MA smoothing but no
+    # strategy.entry/exit. Must be excluded even though it contains ta.sma.
+    from rl_meta.registry import parse_pine
+    src = ('indicator("Markov Regime Probability", overlay=false)\n'
+           'len = input.int(20, "lookback")\n'
+           'smooth = ta.sma(close, len)\n'
+           'bullProb = ... \nplot(bullProb)\n')
+    p = parse_pine(src)
+    assert p["declares_strategy"] is False
+    meta = StrategyMeta("markov_regime", "Markov Regime Probability", "h",
+                        "2023-01-01", "Markov-Regime.txt",
+                        indicators=p["indicators"], declares_strategy=False)
+    annotate_executability(meta)
+    assert not meta.executable
+    assert meta.status == Status.NOT_EXECUTABLE.value
+    assert "indicator" in meta.unsupported_reason
+
+
 def test_unsupported_is_rejected():
     junk = StrategyMeta("j", "Mystery ADX Thing", "h", "2023-01-01", "j.txt",
                         indicators=["adx", "stoch"])

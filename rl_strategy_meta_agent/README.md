@@ -169,6 +169,41 @@ verified. Examples: broad TV-verified ~92-100, thin one-symbol TV ~9-15, adapter
 <=30. It is exposed on the scoreboard (`conf` column), the registry
 (`strategy_confidence`), and the `backtests.confidence` DB column.
 
+## strategy_independence (a new edge, or a clone?)
+
+A third, **relational** axis (`rl_meta/correlation.py`). Quality and confidence
+judge a strategy in isolation; independence asks whether it is a genuinely new
+edge or a correlated clone of one you already have. Five strategies at 0.95
+correlation are still one edge. This is a **population-phase diagnostic** -- it
+does NOT change the RL observation space, reward, PPO model, or risk engine.
+
+**strategy_family** (coarse tag): explicit `// family: trend` comment override >
+`adapter_type` map > strategy-name keywords. Families: `trend`, `breakout`,
+`mean_reversion`, `flow`, `volatility`, `unknown`.
+
+**Correlation** is Pearson on **time-aligned return series**: each strategy's
+trades are turned into a dated fractional-return series (multiple trades in a
+period compound), and pairs are correlated on **overlapping periods only**, with
+the overlap count and a reliability flag stored. **Monthly aggregation is the
+default** because sparse trade data makes daily correlations noisy; daily is
+available. Below the minimum overlap (monthly 6, daily 30) a pair is marked
+unreliable and is **not** trusted -- for the breadth calc it is conservatively
+filled (same family 0.75, different family 0.25) rather than pretending a
+5-point correlation is real.
+
+**Effective breadth** = participation ratio of the correlation-matrix
+eigenvalues, `(Σλ)² / Σλ²`, clamped to `[1, N]`. It is the effective number of
+independent bets: 5 clones at 0.95 → ~1; 8 independent strategies → ~8. Per
+strategy: `independence_score = 1 - mean(|correlation to others|)`. The
+scoreboard prints `Effective breadth: X / N strategies` plus the
+lowest/highest-independence strategies; `strategy_family`, `independence_score`,
+and `avg_correlation` are written to the registry.
+
+Why a diagnostic and not yet an RL feature: it tells you, *as you populate*
+`pinescripts/`, whether each new strategy bought diversification or is just
+TJL v2. Wiring correlation into the allocator's reward is a deliberate later
+step (it would change the frozen RL surfaces).
+
 ## PineScript adapters (which patterns are executable) -- fallback
 
 Full PineScript is **not** executed. `rl_meta/adapters.py` recognises common
@@ -256,6 +291,8 @@ rl_strategy_meta_agent/
     registry.py                  # PineScript discovery + parser + registry I/O
     adapters.py                  # Pine-pattern -> Python strategy adapters (fallback)
     tv_import.py                 # TradingView List-of-Trades CSV parser (source of truth)
+    confidence.py                # strategy_confidence (trust score)
+    correlation.py               # family tags + independence diagnostic (population-phase)
     data.py                      # Alpaca Data API bars + CSV cache (DATA ONLY)
     signals.py                   # bar-driven execution engine (-> TradeRecords)
     splits.py                    # walk-forward train/validation/oos
@@ -271,6 +308,7 @@ rl_strategy_meta_agent/
     test_performance.py  test_risk.py  test_env.py  test_data.py
     test_adapters.py  test_splits.py  test_backtest.py  test_no_broker.py
     test_tv_import.py  test_source_separation.py  test_confidence.py
+    test_correlation.py
 ```
 
 ## How it works
@@ -367,7 +405,7 @@ limits override the policy unconditionally.
 ```bash
 pip install -r requirements.txt
 cd rl_strategy_meta_agent
-python -m pytest                 # 97 tests
+python -m pytest                 # 109 tests
 ```
 Each module also has a self-check: `python -m rl_meta.<module>`.
 

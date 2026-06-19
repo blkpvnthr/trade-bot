@@ -166,7 +166,17 @@ def detect_adapter(meta: StrategyMeta) -> tuple:
 
 
 def annotate_executability(meta: StrategyMeta) -> StrategyMeta:
-    """Set executable / adapter_type / unsupported_reason / status on a meta."""
+    """Set executable / adapter_type / unsupported_reason / status / family."""
+    from .correlation import family_for
+    # An indicator()/study (e.g. a regime-probability indicator) is not a
+    # tradeable strategy even if it uses moving averages -> never adapter-screen it.
+    if not meta.declares_strategy:
+        meta.executable = False
+        meta.adapter_type = None
+        meta.unsupported_reason = "indicator/study, not a tradeable strategy (no entries/exits)"
+        meta.status = Status.NOT_EXECUTABLE.value
+        meta.strategy_family = family_for(meta.strategy_name, None, meta.family_override)
+        return meta
     name, reason = detect_adapter(meta)
     if name is None:
         meta.executable = False
@@ -179,6 +189,8 @@ def annotate_executability(meta: StrategyMeta) -> StrategyMeta:
         meta.unsupported_reason = None
         if meta.status == Status.NOT_EXECUTABLE.value:
             meta.status = Status.PENDING.value
+    meta.strategy_family = family_for(meta.strategy_name, meta.adapter_type,
+                                      meta.family_override)
     return meta
 
 

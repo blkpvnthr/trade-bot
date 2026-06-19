@@ -73,8 +73,14 @@ def parse_pine(text: str) -> dict:
     take = _lines_matching(text, "limit", "takeprofit", "tp ", "tp=", "target", "profit")
     tf = _TF_HINT.findall(text)
 
+    # A `strategy(...)` declaration is backtestable; an `indicator(...)`/study is
+    # not (no orders, no entries/exits) -- e.g. a regime-probability indicator.
+    declares_strategy = bool(re.search(r"\bstrategy\s*\(", text))
+
+    from .correlation import parse_family_override
     return {
         "strategy_name": name,
+        "declares_strategy": declares_strategy,
         "inputs": inputs,
         "indicators": indicators,
         "entry_logic": entry[:20],
@@ -82,6 +88,7 @@ def parse_pine(text: str) -> dict:
         "stop_loss": stop[:20],
         "take_profit": take[:20],
         "timeframe_hints": sorted(set(tf)),
+        "family_override": parse_family_override(text),
     }
 
 

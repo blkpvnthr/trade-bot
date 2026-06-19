@@ -38,6 +38,7 @@ class StrategyMeta:
     take_profit: list = field(default_factory=list)
     timeframe_hints: list = field(default_factory=list)
     indicators: list = field(default_factory=list)
+    declares_strategy: bool = True   # False for indicator()/study scripts (not tradeable)
     status: str = Status.PENDING.value
     # Execution status (filled by the adapter layer + backtest pipeline).
     executable: bool = False
@@ -50,6 +51,11 @@ class StrategyMeta:
     tv_validated_symbols: list = field(default_factory=list)
     missing_tv_symbols: list = field(default_factory=list)
     strategy_confidence: float = 0.0               # 0..100 trustworthiness
+    # Independence diagnostic (population-phase; see correlation.py).
+    family_override: Optional[str] = None          # from a // family: X comment
+    strategy_family: Optional[str] = None          # resolved family tag
+    independence_score: float = 0.0                # 1 - avg|corr| to others
+    avg_correlation: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
