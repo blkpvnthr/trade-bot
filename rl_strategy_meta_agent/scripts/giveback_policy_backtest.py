@@ -33,7 +33,8 @@ from rl_meta.exit_quality import (return_path, running_features, decision_target
                                   sample_decision_ks, RUN_FEATURES)
 from rl_meta.market_context import (build_context_frame, CTX_NUMERIC, REF_SYMBOLS,
                                     SECTOR_ETF)
-from rl_meta.management_policies import POLICIES, severe_giveback_happened, EPS
+from rl_meta.management_policies import (POLICIES, severe_giveback_happened, EPS,
+                                         action_labels)
 from rl_meta.bar_coverage import cached_bars, fetch_with_coverage
 from rl_meta.trade_features import PRE_ENTRY_FEATURES
 from rl_meta.trade_quality import make_models, proba
@@ -64,8 +65,16 @@ def _path_and_idx(t, ts_ns, close):
     return lo, r
 
 
-def train_model(df, pre_cols, bars_dir, refs):
-    """Engineered severe_giveback model on sampled decision bars (train symbols)."""
+def _label_fn(target: str):
+    if target == "severe_giveback":
+        return lambda r, k: int(decision_targets(r, k)["severe_giveback"])
+    return lambda r, k: int(action_labels(r, k)[target])   # e.g. tighten_stop_better
+
+
+def train_model(df, pre_cols, bars_dir, refs, target: str = "severe_giveback"):
+    """Engineered model on sampled decision bars (train symbols), for any decision
+    target ('severe_giveback' or an action label like 'tighten_stop_better')."""
+    label = _label_fn(target)
     feat = pre_cols + list(RUN_FEATURES) + list(CTX_NUMERIC)
     rows, ys = [], []
     cols = pre_cols + ["entry_time", "exit_time", "entry_price", "direction"]
@@ -85,7 +94,7 @@ def train_model(df, pre_cols, bars_dir, refs):
                 crow = ctx.iloc[lo + k]
                 rows.append(pre + [run[f] for f in RUN_FEATURES] +
                             [crow[c] for c in CTX_NUMERIC])
-                ys.append(int(decision_targets(r, k)["severe_giveback"]))
+                ys.append(label(r, k))
     X = pd.DataFrame(rows, columns=feat)
     y = np.asarray(ys)
     model = make_models().get("xgboost") or make_models()["random_forest"]

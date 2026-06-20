@@ -37,6 +37,14 @@ def test_equity_curve_runs():
     assert e["final_equity"] > 0 and "max_drawdown_pct" in e and e["max_drawdown_pct"] >= 0
 
 
+def test_label_fn_selects_target():
+    import giveback_policy_backtest as B
+    r = np.array([0.0, 0.01, 0.03, 0.04, 0.05, 0.02, -0.01])
+    sg = B._label_fn("severe_giveback")
+    ts = B._label_fn("tighten_stop_better")
+    assert sg(r, 2) in (0, 1) and ts(r, 4) == 1     # tightening at the peak helps
+
+
 def test_recovery_cost_splits_gains_and_misses():
     x = np.array([0.05, -0.02, 0.00])     # vs base: +0.05, -0.05, -0.03
     base = np.array([0.00, 0.03, 0.03])
