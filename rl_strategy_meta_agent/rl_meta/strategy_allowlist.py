@@ -10,8 +10,9 @@ unless it is explicitly enabled, so existing behavior is unchanged by default.
 Research / paper only -- this module never touches a broker, order, or risk path
 and never changes position size.
 
-  sniper_strategy is ALLOWED but tagged VERIFY_REPAINT: its returns are not to be
-  trusted until rl_meta.repaint_audit clears it (see scripts/repaint_audit.py).
+  sniper_strategy is BLOCKED: rl_meta.repaint_audit returned INVALID (entries built
+  on a repainting pre-v3 security() HTF call; PF ~19.9). See scripts/repaint_audit.py.
+  The only validated paper families are linear_regression and mean_reversion.
 """
 from __future__ import annotations
 
@@ -20,12 +21,14 @@ import os
 
 log = logging.getLogger("strategy_allowlist")
 
-ALLOWED_FAMILIES = ("linear_regression", "mean_reversion", "sniper_strategy")
-BLOCKED_FAMILIES = ("martingale", "pin_bar_magic_v1")
-VERIFY_FAMILIES = {"sniper_strategy": "VERIFY_REPAINT"}
+ALLOWED_FAMILIES = ("linear_regression", "mean_reversion")
+BLOCKED_FAMILIES = ("martingale", "pin_bar_magic_v1", "sniper_strategy")
+VERIFY_FAMILIES = {}                      # sniper cleared out: audit returned INVALID
 BLOCK_REASON = {
     "martingale": "structural blow-up; the walk-forward drawdown driver",
     "pin_bar_magic_v1": "negative out-of-sample expectancy; suspected repaint",
+    "sniper_strategy": "repaint audit INVALID: entries use a repainting pre-v3 "
+                       "security() HTF call; PF ~19.9 implausible",
 }
 ENV_FLAG = "META_FAMILY_ALLOWLIST"
 
@@ -89,14 +92,14 @@ def _demo():
     # disabled -> pass-through
     a, b = filter_candidates(cands, enabled=False)
     assert len(a) == 6 and not b, "disabled allowlist must not block anything"
-    # enabled -> the two bad families (and unknowns) blocked, good + sniper kept
+    # enabled -> martingale + pin_bar + sniper (invalid) + unknowns blocked
     a, b = filter_candidates(cands, enabled=True)
     blocked = {r["strategy_family"] for r in b}
-    assert "martingale" in blocked and "pin_bar_magic_v1" in blocked
+    assert {"martingale", "pin_bar_magic_v1", "sniper_strategy"} <= blocked
     assert "unknown_xyz" in blocked                    # strict allowlist
-    assert set(a) == {"linear_regression", "mean_reversion", "sniper_strategy"}
+    assert set(a) == {"linear_regression", "mean_reversion"}
     assert all(r["blocked_by_strategy_family"] for r in b)
-    assert family_status("sniper_strategy") == "allowed_verify_repaint"
+    assert family_status("sniper_strategy") == "blocked"
     print("strategy_allowlist._demo OK  blocked:", sorted(blocked))
 
 

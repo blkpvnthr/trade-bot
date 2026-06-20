@@ -603,22 +603,24 @@ python -m rl_meta.train --timesteps 5000     # check_env + PPO smoke train
 selection/execution. It is gated behind `META_FAMILY_ALLOWLIST` (default OFF) and
 never touches a broker, order, risk, or position-sizing path.
 
-- Blocked: `martingale`, `pin_bar_magic_v1`
-- Allowed: `linear_regression`, `mean_reversion`, `sniper_strategy` (see below)
+- Blocked: `martingale`, `pin_bar_magic_v1`, `sniper_strategy`
+- Allowed (validated): `linear_regression`, `mean_reversion` -- and nothing else.
 
 This is a **defensive exclusion validated by walk-forward, NOT proof of alpha.**
-`scripts/strategy_family_walkforward.py` showed that dropping the two bad families
-cut out-of-sample max drawdown ~74% (0.664 -> 0.169) across 4/4 chronological
-folds while raising profit factor and total return. Crucially, the drawdown win
-is almost entirely from removing `martingale` (a structural blow-up strategy) --
-this is removing bad strategies, not discovering an edge.
+Why each family is blocked:
 
-### sniper_strategy: repaint audit = INVALID
+- `martingale` -- **drives the drawdown.** `scripts/strategy_family_walkforward.py`
+  showed dropping it cuts out-of-sample max drawdown ~74% (0.664 -> 0.169) across
+  4/4 chronological folds; `exclude_martingale_only` reproduces the entire DD win.
+  It is a structural blow-up strategy.
+- `pin_bar_magic_v1` -- **negative out-of-sample expectancy** (and repaint-suspect).
+- `sniper_strategy` -- **INVALID due to repaint/lookahead.** `scripts/repaint_audit.py`
+  (engine `rl_meta/repaint_audit.py`) found its entries are built on a repainting
+  pre-v3 `security()` higher-timeframe call, and its 8,383 exported trades show
+  profit factor ~19.9 (impossible for an honest strategy). Its P&L is a repaint
+  artifact; do not trust it. Rebuild non-repainting and re-backtest bar-by-bar
+  before reconsidering.
 
-`scripts/repaint_audit.py` (engine `rl_meta/repaint_audit.py`) audited
-`sniper_strategy`: **INVALID**. Its entries are built on a repainting pre-v3
-`security()` higher-timeframe call, and its 8,383 exported trades show profit
-factor ~19.9 (impossible for an honest strategy). **Do NOT trust sniper P&L** --
-treat it as a repaint artifact until rebuilt non-repainting and re-backtested
-bar-by-bar. The allowlist still tags it `VERIFY_REPAINT`; given the failed audit
-it should be moved to the blocked set before any paper deployment.
+**The only validated paper families are `linear_regression` and `mean_reversion`.**
+Everything else is structurally bad or invalid. This remains a defensive control
+(remove bad strategies), not evidence of alpha.
