@@ -104,6 +104,37 @@ def trailing_stop_return(r: np.ndarray, trail: float = 0.01) -> float:
     return float(r[-1])
 
 
+# -- mid-trade management policy derived from the giveback model -----------
+# The severe_giveback classifier outputs P(the trade is about to surrender >=1%
+# of its peak). This maps that probability + the current path state to ONE
+# management action. It is a research decision rule, not an order: nothing here
+# touches a broker. Thresholds are the backtest's swept operating points.
+EXIT_THR = 0.60       # P(giveback) at/above this -> get out
+TIGHTEN_THR = 0.40    # elevated risk -> tighten the stop, keep the runner
+MANAGEMENT_ACTIONS = ("hold", "scale_out", "tighten_stop", "exit")
+
+
+def management_action(p_giveback: float, ret_now: float, run_giveback: float,
+                      exit_thr: float = EXIT_THR, tighten_thr: float = TIGHTEN_THR) -> str:
+    """hold | scale_out | tighten_stop | exit from the giveback probability.
+
+    - exit         : model says a severe giveback is likely now.
+    - tighten_stop : risk is elevated but not decisive -> protect the open profit.
+    - scale_out    : in profit and the model sees the peak forming (giveback has
+                     started) -> bank part, ride the rest.
+    - hold         : low giveback risk -> let it run.
+    """
+    if not np.isfinite(p_giveback):
+        return "hold"
+    if p_giveback >= exit_thr:
+        return "exit"
+    if p_giveback >= tighten_thr:
+        return "tighten_stop"
+    if ret_now > 0 and run_giveback > 0:
+        return "scale_out"
+    return "hold"
+
+
 def _demo():
     r = np.array([0.0, 0.01, 0.03, 0.02, 0.05, 0.01, -0.01])   # up then give back
     f1 = running_features(r, 3)
@@ -114,6 +145,10 @@ def _demo():
     rows = build_decision_rows(r, {"pre_x": 1.0}, {"trade_id": "t"})
     assert rows and all("run_giveback" in x for x in rows)
     assert trailing_stop_return(r, 0.01) < r.max()             # stop locks before the dump
+    assert management_action(0.9, 0.03, 0.02) == "exit"
+    assert management_action(0.5, 0.03, 0.02) == "tighten_stop"
+    assert management_action(0.1, 0.03, 0.02) == "scale_out"
+    assert management_action(0.1, 0.03, 0.0) == "hold"
     print("exit_quality._demo OK", len(rows), "decision rows")
 
 
