@@ -59,6 +59,7 @@ def test_offline_cache_miss_raises(tmp_path):
 def test_missing_credentials_raises(monkeypatch):
     for k in ("APCA_API_KEY_ID", "APCA_API_SECRET_KEY"):
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(data, "_load_env_file", lambda: None)   # no .env fallback
     with pytest.raises(DataError):
         data.get_credentials()
 

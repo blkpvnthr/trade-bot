@@ -22,9 +22,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rl_meta.trade_features import (read_trades_with_context, build_row,
-                                   FEATURE_GROUPS, PRE_ENTRY_FEATURES,
-                                   EXIT_FEATURES)
-from rl_meta.data import load_bars, DataError
+                                   FEATURE_GROUPS, PRE_ENTRY_FEATURES)
+from rl_meta.bar_coverage import cached_bars
 from rl_meta.registry import read_registry
 from rl_meta.performance import PerformanceDB
 from rl_meta.labels import normalize_bucket
@@ -80,11 +79,9 @@ def main():
         total_trades += len(trades)
         sym = r.get("symbol") or "UNKNOWN"
         if sym not in bars_cache:
-            try:
-                bars_cache[sym] = load_bars(sym, args.timeframe, args.start,
-                                            offline=True, bars_dir=Path(args.bars_dir))
-            except DataError:
-                bars_cache[sym] = None
+            cb = cached_bars(sym, args.timeframe, Path(args.bars_dir))
+            bars_cache[sym] = cb if not cb.empty else None
+            if cb.empty:
                 missing_bars.add(sym)
         meta = {"strategy_id": r["strategy_id"], "symbol": sym, "timeframe": args.timeframe}
         c = ctx(r["strategy_id"], normalize_bucket(r.get("source_folder_label")))

@@ -43,7 +43,26 @@ def read_universe(path: Path = UNIVERSE_PATH) -> list:
     return json.loads(Path(path).read_text())
 
 
+def _load_env_file():
+    """Populate APCA_* from a local .env if not already in the environment.
+    Looks at <project>/.env then the parent repo's .env. Read-only."""
+    if os.environ.get("APCA_API_KEY_ID"):
+        return
+    for cand in (ROOT / ".env", ROOT.parent / ".env"):
+        if not cand.exists():
+            continue
+        for line in cand.read_text(errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k, v = k.strip(), v.strip().strip('"').strip("'")
+            if k.startswith("APCA_") and k not in os.environ:
+                os.environ[k] = v
+
+
 def get_credentials() -> tuple:
+    _load_env_file()
     key = os.environ.get("APCA_API_KEY_ID")
     secret = os.environ.get("APCA_API_SECRET_KEY")
     if not key or not secret:

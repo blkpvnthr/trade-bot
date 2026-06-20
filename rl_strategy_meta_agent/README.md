@@ -241,6 +241,14 @@ are cached (`fetch_alpaca_bars.py --timeframe 15Min`); during/exit/label/context
 are real from the exports. This is dataset construction only -- no model has
 learned a strategy.
 
+**Context bars:** `scripts/fetch_trade_context_bars.py` pulls 15Min OHLCV for
+every dataset symbol (>= 30 days before earliest entry .. latest exit),
+fetching only missing ranges and merging with cache (no duplicate rows;
+`rl_meta/bar_coverage.py`). Credentials load from the environment or a local
+`.env` (gitignored). It writes `data/trade_outcomes/bar_coverage_report.json`,
+then re-run the builder to populate the pre-entry features. Data pull only --
+no orders, no live trading (the trading base URL, even if live, is never used).
+
 ## strategy_confidence (trust, not quality)
 
 `composite_score` answers "how GOOD does this strategy look?"; `strategy_confidence`
@@ -520,7 +528,7 @@ limits override the policy unconditionally.
 ```bash
 pip install -r requirements.txt
 cd rl_strategy_meta_agent
-python -m pytest                 # 172 tests
+python -m pytest                 # 181 tests
 ```
 Each module also has a self-check: `python -m rl_meta.<module>`.
 
