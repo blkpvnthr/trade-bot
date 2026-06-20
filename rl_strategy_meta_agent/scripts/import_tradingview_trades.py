@@ -94,12 +94,15 @@ def main():
                     default=True, help="normalize position sizing (default)")
     ap.add_argument("--no-normalize", dest="normalize", action="store_false")
     ap.add_argument("--reference-qty", type=float, default=REFERENCE_QTY)
+    ap.add_argument("--manifest-timeframe", default="15Min",
+                    help="only import manifest records on this timeframe "
+                         "('all' to import every timeframe)")
     args = ap.parse_args()
 
     db = PerformanceDB()
     stats = {"imported": 0, "skipped": 0, "errors": 0, "n_trades": 0,
              "n_normalized": 0, "scale_sum": 0.0, "max_raw_qty": 0.0,
-             "max_norm_qty": 0.0, "raw_pnl": 0.0, "norm_pnl": 0.0}
+             "max_norm_qty": 0.0, "raw_pnl": 0.0, "norm_pnl": 0.0, "labels": 0}
     mode = "normalized" if args.normalize else "RAW"
     print(f"Importing TradingView exports ({mode}, reference_qty="
           f"{args.reference_qty:g})...\n")
@@ -107,15 +110,26 @@ def main():
     if args.manifest:
         recs = json.loads(Path(args.manifest).read_text()).get("records", [])
         base = Path(args.manifest).resolve().parent
+        today = date.today().isoformat()
         for r in recs:
+            tf = r["timeframe"]
+            if args.manifest_timeframe != "all" and tf != args.manifest_timeframe:
+                stats["skipped"] += 1
+                continue
             csv = Path(r["dest_path"])
             if not csv.exists():
                 csv = base / Path(r["dest_path"]).name  # fallback
             sym = r.get("symbol") or "UNKNOWN"
             vh = _resolve_vh(r["strategy_id"], args.version_hash)
-            _import_one(db, csv, r["strategy_id"], sym, r["timeframe"], vh,
+            _import_one(db, csv, r["strategy_id"], sym, tf, vh,
                         r.get("file_hash"), args.normalize, args.reference_qty,
                         args.force, stats)
+            # Preserve the human WINS/LOSSES/FLAT prior as metadata (not outcome).
+            from rl_meta.labels import normalize_bucket
+            db.record_label(r["strategy_id"], sym, tf,
+                            normalize_bucket(r.get("source_folder_label")),
+                            Path(r["dest_path"]).name, today)
+            stats["labels"] += 1
     elif args.dir:
         files = sorted(Path(args.dir).rglob("*.csv"))
         if not files:
@@ -151,6 +165,7 @@ def _report(s, db_path, normalized):
     print(f"Files imported:        {s['imported']}")
     print(f"Files skipped:         {s['skipped']}  (duplicate / no trades)")
     print(f"Errors:                {s['errors']}")
+    print(f"Human-bucket labels:   {s['labels']}  (WINS/LOSSES/FLAT metadata)")
     print(f"Trades imported:       {n}")
     print(f"Trades normalized:     {s['n_normalized']}  (raw_qty > reference)")
     print(f"Average scale factor:  {avg_sf:.4f}")

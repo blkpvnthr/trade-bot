@@ -207,6 +207,18 @@ RL-eligible TV strategies here are flagged (`pin_bar` needs_review; `sniper`
 suspected_lookahead from a v2 `security()` call) — they pass the gates
 mechanically but should not be trusted until re-exported with `lookahead_off`.
 
+### Human-curated labels (WINS/LOSSES/FLAT) -- metadata, not truth
+Exports filed under `WINS/LOSSES/FLAT` folders are a human **prior** ("I think
+this strategy works / fails / stalls on this ticker"). The importer preserves
+that as `human_bucket` per strategy-symbol (`symbol_labels` table) but **never**
+uses it to compute win rate, PF, expectancy, drawdown, or RL eligibility —
+outcomes come only from normalized Net PnL. Imports are fixed to `15Min`
+(`--manifest-timeframe`, `all` to override). `scripts/label_audit.py` reports
+per strategy-symbol `human_bucket` vs actual outcome, **bucket accuracy**, a
+**mismatch report** (e.g. LOSSES-filed but actually net-positive), and
+works/fails by ticker. The label is available as optional metadata for future
+supervised trade-outcome learning, kept strictly out of the objective metrics.
+
 ## strategy_confidence (trust, not quality)
 
 `composite_score` answers "how GOOD does this strategy look?"; `strategy_confidence`
@@ -486,7 +498,7 @@ limits override the policy unconditionally.
 ```bash
 pip install -r requirements.txt
 cd rl_strategy_meta_agent
-python -m pytest                 # 157 tests
+python -m pytest                 # 162 tests
 ```
 Each module also has a self-check: `python -m rl_meta.<module>`.
 

@@ -190,6 +190,14 @@ class PerformanceDB:
                     version_hash TEXT, source_file TEXT,
                     n_trades INTEGER, imported_at TEXT
                 )""")
+            # Human-curated WINS/LOSSES/FLAT prior per strategy-symbol (metadata
+            # only -- NEVER used to compute outcomes; see labels.py).
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS symbol_labels (
+                    strategy_id TEXT, symbol TEXT, timeframe TEXT,
+                    human_bucket TEXT, source_file TEXT, imported_at TEXT,
+                    PRIMARY KEY (strategy_id, symbol, timeframe)
+                )""")
 
     def record(self, strategy_id: str, on_date: str, lifetime: Metrics,
                rolling: RollingMetrics, rank: int, tier: str, status: str):
@@ -315,6 +323,28 @@ class PerformanceDB:
                 scale_factor=r[10] if r[10] is not None else 1.0,
                 normalized=bool(r[11]), raw_pnl_usd=r[12] or 0.0))
         return out
+
+    def record_label(self, strategy_id: str, symbol: str, timeframe: str,
+                     human_bucket: str, source_file: str, on_date: str):
+        with self._conn() as c:
+            c.execute("INSERT OR REPLACE INTO symbol_labels VALUES (?,?,?,?,?,?)",
+                      (strategy_id, symbol, timeframe, human_bucket, source_file, on_date))
+
+    def symbol_label(self, strategy_id: str, symbol: str, timeframe: str) -> str:
+        with self._conn() as c:
+            row = c.execute("SELECT human_bucket FROM symbol_labels WHERE "
+                            "strategy_id=? AND symbol=? AND timeframe=?",
+                            (strategy_id, symbol, timeframe)).fetchone()
+        return row[0] if row else "UNKNOWN"
+
+    def labels(self, timeframe: str | None = None) -> dict:
+        """{(strategy_id, symbol, timeframe): human_bucket}."""
+        q = "SELECT strategy_id,symbol,timeframe,human_bucket FROM symbol_labels"
+        args = []
+        if timeframe:
+            q += " WHERE timeframe=?"; args.append(timeframe)
+        with self._conn() as c:
+            return {(r[0], r[1], r[2]): r[3] for r in c.execute(q, args).fetchall()}
 
     def imported_strategies(self, timeframe: str | None = None) -> list:
         """Distinct (strategy_id, version_hash) pairs with imported trades.
