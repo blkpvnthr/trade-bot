@@ -81,6 +81,39 @@ def severe_giveback_happened(r, severe: float = SEVERE) -> bool:
     return (float(np.max(r)) - float(r[-1])) >= severe
 
 
+def action_labels(r, k: int, trail: float = 0.005, partial_trail: float = 0.01) -> dict:
+    """Counterfactual ACTION labels at decision bar k -- "which action wins?",
+    not "will a giveback occur?". Compares each action's realized return to
+    holding to the strategy's exit (r[-1]).
+
+      exit_now_better    : exiting fully now beats holding (r[k] > r[-1]).
+      tighten_stop_better: a tight trailing stop from k beats holding.
+      take_partial_better: sell half now + trail the rest beats holding 100%.
+
+    NB: a naive 'sell half, ride the rest to the SAME exit' collapses to
+    exit_now_better algebraically, so the partial here TRAILS its remainder.
+    """
+    rk, final = float(r[k]), float(r[-1])
+    tight = _trail_from(r, k, trail)
+    partial = 0.5 * rk + 0.5 * _trail_from(r, k, partial_trail)
+    return {"exit_now_better": int(rk > final),
+            "tighten_stop_better": int(tight > final),
+            "take_partial_better": int(partial > final)}
+
+
+def giveback_recovery(r, k: int, severe: float = SEVERE) -> dict:
+    """Diagnostic at bar k: did a (future) severe giveback also make a NEW HIGH
+    above the decision-time peak before the strategy's exit? If yes, the giveback
+    flag is tagging a recoverable pullback, not terminal deterioration."""
+    run_peak = float(np.max(r[:k + 1]))
+    fut = r[k + 1:]
+    fut_max = float(np.max(fut)) if len(fut) else float(r[k])
+    peak_from_here = max(float(r[k]), fut_max)
+    return {"severe_giveback": int(peak_from_here - float(r[-1]) >= severe),
+            "new_high_after": int(fut_max > run_peak),
+            "exit_now_better": int(float(r[k]) > float(r[-1]))}
+
+
 def _demo():
     # rise to +5% then give back to -1% (a severe giveback); trigger fires at k=4
     r = np.array([0.0, 0.01, 0.03, 0.04, 0.05, 0.02, -0.01])
@@ -94,6 +127,11 @@ def _demo():
     flat = np.array([0.0, 0.01, 0.02, 0.03])
     pq = np.zeros(4)
     assert all(abs(fn(flat, pq) - flat[-1]) < 1e-9 for fn in POLICIES.values())
+    # action labels: at k=4 (peak +5%, final -1%) exiting now clearly beats holding
+    al = action_labels(r, 4)
+    assert al["exit_now_better"] == 1 and al["tighten_stop_better"] == 1
+    gr = giveback_recovery(r, 2)            # peak ahead is 0.05 > peak-so-far 0.03
+    assert gr["severe_giveback"] == 1 and gr["new_high_after"] == 1
     print("management_policies._demo OK", {k: round(fn(r, p), 4) for k, fn in POLICIES.items()})
 
 

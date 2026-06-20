@@ -55,6 +55,30 @@ def test_trail_from_rides_when_never_hit():
     assert M._trail_from(rising, 1, 0.01) == 0.04     # monotone up -> final
 
 
+def test_action_labels_when_exiting_is_right():
+    # peak +5% at k=4, final -1%: exiting/tightening now beats holding
+    al = M.action_labels(R, 4)
+    assert al["exit_now_better"] == 1
+    assert al["tighten_stop_better"] == 1
+    assert al["take_partial_better"] == 1
+
+
+def test_action_labels_when_holding_is_right():
+    # a recoverable dip: +3% then dips to +1% then rips to +8% at the exit
+    r = np.array([0.0, 0.03, 0.01, 0.05, 0.08])
+    al = M.action_labels(r, 2)                         # at the +1% dip
+    assert al["exit_now_better"] == 0                  # holding to +8% was better
+
+
+def test_giveback_recovery_flags_recoverable_pullback():
+    # severe giveback exists (peak ahead high, final lower) AND a new high forms
+    r = np.array([0.0, 0.02, 0.04, 0.10, 0.03])        # peak 0.10, final 0.03
+    g = M.giveback_recovery(r, 1)                       # decision-time peak = 0.02
+    assert g["severe_giveback"] == 1
+    assert g["new_high_after"] == 1                    # 0.10 > 0.02 -> a new high formed
+    assert g["exit_now_better"] == 0                   # r[1]=0.02 < final 0.03
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
