@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from rl_meta import olps
 from rl_meta.bar_coverage import cached_bars
 from rl_meta.strategy_allowlist import ALLOWED_FAMILIES, BLOCKED_FAMILIES
+from rl_meta.strategy_streams import validate_no_retired
 
 ALLOCATORS = list(olps.ALGOS_RELATIVE) + ["olmar", "rmr", "aggregating"]
 
@@ -86,11 +87,19 @@ def main():
     ap.add_argument("--oos-frac", type=float, default=0.4)
     ap.add_argument("--include-retired", action="store_true",
                     help="include martingale/pin_bar/sniper (artifact-dominated; cautionary only)")
+    ap.add_argument("--streams", default=None,
+                    help="parquet of new-stack daily return streams (assets = columns)")
     ap.add_argument("--out", default="data/trade_outcomes")
     args = ap.parse_args()
     cost = args.cost_bps / 1e4
 
-    R = strategy_returns(args.dataset, include_retired=args.include_retired)
+    if args.streams:
+        R = pd.read_parquet(args.streams).sort_index()
+        validate_no_retired(R.columns)                      # FAIL if any retired asset appears
+        R = R.fillna(0.0)
+        print(f"new-stack streams: {list(R.columns)}")
+    else:
+        R = strategy_returns(args.dataset, include_retired=args.include_retired)
     if R.shape[1] < 2:
         print(f"only {R.shape[1]} validated family stream(s); need >=2 for allocation. "
               "Add new-stack return streams or pass --include-retired for the cautionary baseline.")

@@ -314,6 +314,9 @@ def main():
         out / "accepted_alphas.csv", index=False)
     pd.DataFrame([{**{k: r.get(k) for k in rcol[:-1]}, "reasons": "; ".join(r["reasons"])}
                   for r in rejected]).to_csv(out / "rejected_alphas.csv", index=False)
+    # accepted alpha NODES so downstream (strategy streams) can rebuild the ensemble
+    (out / "accepted_alpha_nodes.json").write_text(json.dumps(
+        [{"formula": a["formula"], "node": a["node"]} for a in accepted]))
     _reason_counts(rejected)
 
     # persist DB (accepted + rejected with status)
