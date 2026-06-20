@@ -219,6 +219,28 @@ per strategy-symbol `human_bucket` vs actual outcome, **bucket accuracy**, a
 works/fails by ticker. The label is available as optional metadata for future
 supervised trade-outcome learning, kept strictly out of the objective metrics.
 
+### Trade-outcome learning dataset
+`rl_meta/trade_features.py` + `scripts/build_trade_outcome_dataset.py` turn each
+imported TradingView trade into one labeled example for supervised
+entry-/exit-quality learning. Features are hard-separated to prevent look-ahead:
+
+- **pre_entry_features** — only bars with `timestamp <= entry_time` (trend,
+  momentum, volume, volatility, VWAP, S/R, entry-bar). Legitimate ENTRY inputs.
+- **during_trade_features** — the realized path (MFE/MAE, hold, excursion order).
+- **exit_features** — exit quality (`profit_capture_ratio`, `giveback_from_mfe`,
+  `exit_efficiency`, ...).
+- **context_features** — `strategy_family`, `strategy_confidence`,
+  `verification_status`, `independence_score`, `rl_eligible`, `human_bucket`.
+- **target_labels** — `normalized_pnl`, `outcome_win/loss/flat`, `return_pct`.
+
+Splits by exit date: train `<2024-01-01`, validation `<2025-01-01`, oos else.
+Outcomes come only from normalized PnL; `human_bucket` is context, never truth.
+Outputs to `data/trade_outcomes/`: `.parquet` + `.csv`, `feature_groups.json`,
+`build_report.json`. Pre-entry + regime features are NaN until 15Min OHLCV bars
+are cached (`fetch_alpaca_bars.py --timeframe 15Min`); during/exit/label/context
+are real from the exports. This is dataset construction only -- no model has
+learned a strategy.
+
 ## strategy_confidence (trust, not quality)
 
 `composite_score` answers "how GOOD does this strategy look?"; `strategy_confidence`
@@ -498,7 +520,7 @@ limits override the policy unconditionally.
 ```bash
 pip install -r requirements.txt
 cd rl_strategy_meta_agent
-python -m pytest                 # 162 tests
+python -m pytest                 # 172 tests
 ```
 Each module also has a self-check: `python -m rl_meta.<module>`.
 
