@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rl_meta.alphas import (BASE_INPUTS, random_alpha, mutate, eval_alpha,
                             formula_str, alpha_id, category, spearman_ic)
-from rl_meta import alpha_db
+from rl_meta import alpha_db, alphas101
 from rl_meta.sequences import candle_feature_frame
 from rl_meta.market_context import build_context_frame, SECTOR_ETF
 from rl_meta.bar_coverage import cached_bars
@@ -62,6 +62,7 @@ def build_panel(symbols, bars_dir, refs, months):
         f["spy_trend"] = ctx["ctx_spy_trend"].values
         f["qqq_trend"] = ctx["ctx_qqq_trend"].values
         f["mkt_regime"] = ctx["ctx_mkt_regime"].map({"bull": 1, "chop": 0, "bear": -1}).fillna(0).values
+        f["vwap"] = (bars["close"].to_numpy(float) / (1 + ctx["ctx_vwap_dist"].fillna(0).values))
         c = bars["close"].to_numpy(float)
         fr = np.vstack([np.concatenate([c[h:] / c[:-h] - 1, [np.nan] * h]) for h in range(1, H + 1)])
         peak = np.nanmax(np.vstack([np.zeros(len(c)), fr]), axis=0)
@@ -71,7 +72,7 @@ def build_panel(symbols, bars_dir, refs, months):
         f["fut_giveback"] = gb
         f["severe_giveback"] = (gb >= 0.01).astype(float)
         f["timestamp"], f["symbol"] = bars["timestamp"].values, sym
-        frames.append(f[BASE_INPUTS + LABELS + ["timestamp", "symbol"]])
+        frames.append(f[BASE_INPUTS + ["vwap"] + LABELS + ["timestamp", "symbol"]])
     panel = pd.concat(frames).dropna(subset=["severe_giveback"])
     return panel.set_index(["symbol", "timestamp"]).sort_index()
 
@@ -87,8 +88,9 @@ def _fingerprint(v):
     return hash(tuple(np.round(rk.values[::step], 2)))
 
 
-def mine(train, target, rng, pop_n, evo_steps, tour):
-    """Regularized evolution; returns every distinct (by prediction) evaluated alpha."""
+def mine(train, target, rng, pop_n, evo_steps, tour, seeds=None):
+    """Regularized evolution; returns every distinct (by prediction) evaluated alpha.
+    `seeds` (e.g. the 101 alphas) are injected into the initial population."""
     seen_f, seen_fp, evald, pop = set(), set(), [], []
 
     def consider(node, source):
@@ -111,6 +113,10 @@ def mine(train, target, rng, pop_n, evo_steps, tour):
         evald.append(rec)
         return rec
 
+    for node in (seeds or []):                       # domain-expert 101 alpha seeds
+        r = consider(node, "seed_101")
+        if r:
+            pop.append(r)
     tries = 0
     while len(pop) < pop_n and tries < pop_n * 6:
         tries += 1
@@ -150,6 +156,21 @@ def prune(evald, train, topk, corr_cut, max_accept):
         if len(kept) >= max_accept:
             break
     return kept
+
+
+def benchmark_101(train, oos, tgt_tr, tgt_oos):
+    """IC of each 101 alpha vs severe_giveback (train + oos) and vs forward return."""
+    rows = []
+    for name, node in alphas101.library():
+        try:
+            ic, icir, _ = spearman_ic(eval_alpha(node, train), tgt_tr)
+            oic, _, _ = spearman_ic(eval_alpha(node, oos), tgt_oos)
+            ric, _, _ = spearman_ic(eval_alpha(node, train), train["fut_ret_4"])
+        except Exception:
+            continue
+        rows.append({"name": name, "ic": ic, "ic_ir": icir, "oos_ic": oic, "ret_ic": ric,
+                     "formula": formula_str(node)})
+    return sorted(rows, key=lambda r: -abs(r["ic"]))
 
 
 def _sharpe(v, fut1):
@@ -199,6 +220,7 @@ def main():
     ap.add_argument("--corr-cut", type=float, default=0.7)
     ap.add_argument("--max-accept", type=int, default=60)
     ap.add_argument("--out", default="data/trade_outcomes")
+    ap.add_argument("--seed-101", action="store_true", help="seed evolution with the 101 alphas")
     ap.add_argument("--rebuild", action="store_true")
     args = ap.parse_args()
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
@@ -206,7 +228,7 @@ def main():
 
     df = pd.read_parquet(args.dataset, columns=["symbol", "strategy_id"])
     symbols = list(df["symbol"].value_counts().index[:args.max_symbols])
-    cache = out / f"_alpha_panel_{args.max_symbols}_{args.months}.parquet"
+    cache = out / f"_alpha_panel_{args.max_symbols}_{args.months}_v2.parquet"
     if cache.exists() and not args.rebuild:
         panel = pd.read_parquet(cache)
         print(f"loaded panel {cache.name}: {panel.shape}")
@@ -227,9 +249,20 @@ def main():
     train = panel[ts < cut]; oos = panel[ts >= cut]
     tgt_tr, tgt_oos = train[TARGET], oos[TARGET]
 
+    bench = None
+    seeds = None
+    if args.seed_101:
+        bench = benchmark_101(train, oos, tgt_tr, tgt_oos)
+        seeds = [node for _, node in alphas101.library()]
+        best = max(bench, key=lambda b: abs(b["ic"]))
+        print(f"101-alpha benchmark vs severe_giveback: best {best['name']} "
+              f"IC {best['ic']} (oos {best['oos_ic']}) | median |IC| "
+              f"{np.median([abs(b['ic']) for b in bench]):.3f}")
+
     rng = np.random.default_rng(0)
-    print(f"\nmining (pop {args.pop}, evo {args.evo_steps}, tournament {args.tournament})...")
-    evald = mine(train, tgt_tr, rng, args.pop, args.evo_steps, args.tournament)
+    print(f"\nmining (pop {args.pop}, evo {args.evo_steps}, tournament {args.tournament}, "
+          f"seed_101={args.seed_101})...")
+    evald = mine(train, tgt_tr, rng, args.pop, args.evo_steps, args.tournament, seeds)
     print(f"distinct alphas evaluated: {len(evald):,}")
 
     kept = prune(evald, train, args.topk, args.corr_cut, args.max_accept)
@@ -266,7 +299,8 @@ def main():
            "top_accepted": [{"formula": r["formula"], "ic": r["ic"], "ic_ir": r["ic_ir"],
                              "corr_to_existing": r.get("corr_to_existing")}
                             for r in sorted(kept, key=lambda r: -abs(r["ic"]))[:15]],
-           "ensemble": ens}
+           "alpha101_benchmark": bench, "ensemble": ens,
+           "n_seed_101_accepted": sum(1 for r in kept if r["source"] == "seed_101")}
     pd.DataFrame(records).to_csv(out / "alpha_mining_alphas.csv", index=False)
     (out / "alpha_mining_report.json").write_text(json.dumps(rep, indent=2, default=str))
     _print(rep)
@@ -281,6 +315,13 @@ def _print(rep):
     print("\ntop accepted alphas (IC vs severe_giveback):")
     for r in rep["top_accepted"]:
         print(f"  IC {r['ic']:+.4f} (IR {r['ic_ir']}) corr {r['corr_to_existing']}  {r['formula']}")
+    if rep.get("alpha101_benchmark"):
+        b = rep["alpha101_benchmark"]
+        print(f"\n=== 101-alpha benchmark vs severe_giveback (top 8 by |IC|) ===")
+        print(f"  ({rep.get('n_seed_101_accepted', 0)} of the 101 seeds survived into the "
+              "accepted independent library)")
+        for r in b[:8]:
+            print(f"  IC {r['ic']:+.4f} (oos {r['oos_ic']:+.4f}, ret-IC {r['ret_ic']:+.4f})  {r['name']}")
     e = rep["ensemble"]
     print(f"\n=== ensemble AUC (held-out symbols) ===")
     print(f"  raw {len(BASE_INPUTS)} inputs        {e['raw_inputs_auc']}")

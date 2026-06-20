@@ -48,6 +48,17 @@ def _pctrank(a):
     return float((a[-1] >= a).mean())
 
 
+def _argpos(fn):
+    return lambda s, w: _gsym(s).transform(
+        lambda x: x.rolling(w, min_periods=w).apply(lambda a: float(fn(a)), raw=True))
+
+
+def _decay_linear(s, w):
+    wts = np.arange(1, w + 1, dtype=float); wts /= wts.sum()
+    return _gsym(s).transform(
+        lambda x: x.rolling(w, min_periods=w).apply(lambda a: float(np.dot(a, wts)), raw=True))
+
+
 TS_UNARY = {
     "ts_mean": lambda s, w: _roll(s, w, "mean"),
     "ts_std": lambda s, w: _roll(s, w, "std"),
@@ -59,16 +70,30 @@ TS_UNARY = {
     "ts_ema": lambda s, w: _gsym(s).transform(lambda x: x.ewm(span=w, min_periods=max(2, w // 2)).mean()),
     "ts_rank": lambda s, w: _gsym(s).transform(
         lambda x: x.rolling(w, min_periods=max(2, w // 2)).apply(_pctrank, raw=True)),
+    # -- 101 Formulaic Alphas operators --
+    "ts_delay": lambda s, w: _gsym(s).shift(w),                       # delay(x, d)
+    "decay_linear": _decay_linear,
+    "ts_product": lambda s, w: _gsym(s).transform(
+        lambda x: x.rolling(w, min_periods=w).apply(lambda a: float(np.prod(a)), raw=True)),
+    "ts_argmax": _argpos(np.argmax),
+    "ts_argmin": _argpos(np.argmin),
 }
 CS_UNARY = {
     "cs_rank": lambda s: _gtime(s).rank(pct=True) - 0.5,
+    "rank": lambda s: _gtime(s).rank(pct=True),                       # 101-Alphas rank (0..1)
     "cs_demean": lambda s: s - _gtime(s).transform("mean"),
+    "indneutralize": lambda s: s - _gtime(s).transform("mean"),       # no industry data -> demean
     "cs_zscore": lambda s: (s - _gtime(s).transform("mean")) / (_gtime(s).transform("std") + 1e-9),
+    "scale": lambda s: s / (_gtime(s.abs()).transform("sum") + 1e-12),  # scale(x, a=1)
     "winsorize": lambda s: _winsorize(s),
+    "log": lambda s: np.sign(s) * np.log1p(s.abs()),
+    "abs": lambda s: s.abs(),
+    "sign": lambda s: np.sign(s),
 }
 BIN = {
     "add": lambda a, b: a + b, "sub": lambda a, b: a - b, "mul": lambda a, b: a * b,
     "div": lambda a, b: a / b.replace(0, np.nan),
+    "lt": lambda a, b: (a < b).astype(float), "gt": lambda a, b: (a > b).astype(float),
 }
 
 
@@ -85,14 +110,27 @@ def _ts_corr(a, b, w):
     return cov / (np.sqrt(va * vb) + 1e-9)
 
 
+def _ts_cov(a, b, w):                                                 # covariance(x, y, d)
+    return _roll(a * b, w, "mean") - _roll(a, w, "mean") * _roll(b, w, "mean")
+
+
 def evaluate(node, panel):
     op = node[0]
     if op == "in":
         return panel[node[1]]
+    if op == "const":
+        return pd.Series(float(node[1]), index=panel.index)
     if op in TS_UNARY:
         return TS_UNARY[op](evaluate(node[1], panel), node[2])
     if op == "ts_corr":
         return _ts_corr(evaluate(node[1], panel), evaluate(node[2], panel), node[3])
+    if op == "covariance":
+        return _ts_cov(evaluate(node[1], panel), evaluate(node[2], panel), node[3])
+    if op == "signedpower":
+        s = evaluate(node[1], panel); return np.sign(s) * (s.abs() ** float(node[2]))
+    if op == "where":
+        c = evaluate(node[1], panel)
+        return evaluate(node[2], panel).where(c > 0, evaluate(node[3], panel))
     if op in CS_UNARY:
         return CS_UNARY[op](evaluate(node[1], panel))
     if op in BIN:
@@ -148,13 +186,10 @@ def formula_str(node) -> str:
     op = node[0]
     if op == "in":
         return node[1]
-    if op in TS_UNARY:
-        return f"{op}({formula_str(node[1])},{node[2]})"
-    if op == "ts_corr":
-        return f"ts_corr({formula_str(node[1])},{formula_str(node[2])},{node[3]})"
-    if op in CS_UNARY:
-        return f"{op}({formula_str(node[1])})"
-    return f"{op}({formula_str(node[1])},{formula_str(node[2])})"
+    if op == "const":
+        return str(node[1])
+    args = ",".join(formula_str(a) if isinstance(a, tuple) else str(a) for a in node[1:])
+    return f"{op}({args})"
 
 
 def alpha_id(node) -> str:
