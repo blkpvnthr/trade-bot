@@ -11,3 +11,4 @@ pytest>=7.4
 #   pip install xgboost lightgbm shap pyarrow
 # stable-baselines3 pulls in torch; install the CPU build if you have no GPU:
 #   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install gplearn      # optional: symbolic-regression alpha generator (rl_meta/gplearn_alpha_generator.py)

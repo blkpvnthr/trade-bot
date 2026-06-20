@@ -89,11 +89,16 @@ CS_UNARY = {
     "log": lambda s: np.sign(s) * np.log1p(s.abs()),
     "abs": lambda s: s.abs(),
     "sign": lambda s: np.sign(s),
+    # gplearn symbolic-regression operators (protected, elementwise)
+    "sqrt": lambda s: np.sqrt(s.abs()),
+    "neg": lambda s: -s,
+    "inv": lambda s: (1.0 / s.where(s.abs() > 1e-3)).fillna(0.0),
 }
 BIN = {
     "add": lambda a, b: a + b, "sub": lambda a, b: a - b, "mul": lambda a, b: a * b,
     "div": lambda a, b: a / b.replace(0, np.nan),
     "lt": lambda a, b: (a < b).astype(float), "gt": lambda a, b: (a > b).astype(float),
+    "gmax": lambda a, b: np.maximum(a, b), "gmin": lambda a, b: np.minimum(a, b),
 }
 
 
