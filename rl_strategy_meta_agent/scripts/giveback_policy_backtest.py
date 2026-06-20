@@ -93,6 +93,31 @@ def train_model(df, pre_cols, bars_dir, refs):
     return model, feat
 
 
+def collect_paths(df, pre_cols, feat, model, bars_dir, refs):
+    """Per held-out trade: the realized return path r and the per-bar p_giveback.
+    Returned once so a threshold sweep can re-apply policies in-memory."""
+    out = []
+    cols = pre_cols + ["entry_time", "exit_time", "entry_price", "direction"]
+    for sym, g in df.groupby("symbol"):
+        bars = cached_bars(sym, "15Min", bars_dir)
+        if bars.empty:
+            continue
+        bars, ts_ns, ctx = _frames(bars, refs, sym)
+        close = bars["close"].to_numpy(float)
+        for t in g[cols].itertuples(index=False):
+            lo, r = _path_and_idx(t, ts_ns, close)
+            if r is None:
+                continue
+            pre = [getattr(t, c) for c in pre_cols]
+            feats = [pre + [running_features(r, k)[f] for f in RUN_FEATURES] +
+                     [ctx.iloc[lo + k][c] for c in CTX_NUMERIC]
+                     for k in range(1, len(r))]
+            p = proba(model, pd.DataFrame(feats, columns=feat))
+            out.append({"symbol": sym, "entry_time": t.entry_time, "exit_time": t.exit_time,
+                        "r": r.tolist(), "p": np.concatenate([[0.0], p]).tolist()})
+    return out
+
+
 def simulate(df, pre_cols, feat, model, bars_dir, refs):
     """Score every bar of every held-out trade and apply each policy."""
     recs = []
