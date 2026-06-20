@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rl_meta.alphas import (BASE_INPUTS, random_alpha, mutate, eval_alpha,
                             formula_str, alpha_id, category, spearman_ic, ic_series)
-from rl_meta import alpha_db, alphas101, multiple_testing as mt
+from rl_meta import alpha_db, alphas101, multiple_testing as mt, alpha_registry
 from rl_meta.sequences import candle_feature_frame
 from rl_meta.market_context import build_context_frame, SECTOR_ETF
 from rl_meta.bar_coverage import cached_bars
@@ -137,38 +137,38 @@ def mine(train, target, rng, pop_n, evo_steps, tour, seeds=None):
     return evald
 
 
-def select(evald, train, target, topk, corr_cut, max_accept, q, n_tests):
-    """FDR-gated selection (Giglio-Liao-Xiu): wild-bootstrap p-value per alpha ->
-    Benjamini-Hochberg over the FULL search burden -> correlation-prune the
-    statistically-significant survivors. Returns (accepted, fdr_diagnostics)."""
+def build_candidates(evald, train, oos, tgt_tr, tgt_oos, panel, topk, q, n_tests):
+    """Compute every registry-gate metric for the top-K alphas: block wild-bootstrap
+    p-value -> Benjamini-Hochberg significance (full search burden), OOS IC, turnover,
+    leakage check. Returns (candidates, abs-corr matrix, fdr_diagnostics)."""
     top = sorted(evald, key=lambda r: -abs(r["ic"]))[:topk]
-    vals = {}
+    vals, cands = {}, []
     for r in top:
         v = eval_alpha(r["node"], train)
         vals[r["formula"]] = v
-        # block = H: the giveback label spans H forward bars -> IC_t autocorrelates
-        r["p_value"] = round(mt.wild_bootstrap_pvalue(ic_series(v, target), 1000, block=H), 4)
-    fdr = mt.fdr_control([r["p_value"] for r in top], q=q, n_tests=n_tests)
-    fdr["n_tested"], fdr["search_burden"] = len(top), n_tests
-    sig = [r for r, d in zip(top, fdr["discoveries"]) if d]
-    if not sig:
-        return [], fdr
-    M = pd.DataFrame({r["formula"]: vals[r["formula"]] for r in sig})
+        p = round(mt.wild_bootstrap_pvalue(ic_series(v, tgt_tr), 1000, block=H), 4)
+        oic, _, _ = spearman_ic(eval_alpha(r["node"], oos), tgt_oos)
+        to = _turnover(eval_alpha(r["node"], panel))
+        cands.append({"node": r["node"], "formula": r["formula"], "ic": r["ic"],
+                      "ic_ir": r["ic_ir"], "oos_ic": oic, "p_value": p, "turnover": to,
+                      "leak_ok": alpha_registry.is_pit_safe(r["node"]),
+                      "source": r["source"], "category": category(r["node"])})
+    fdr = mt.fdr_control([c["p_value"] for c in cands], q=q, n_tests=n_tests)
+    fdr["n_tested"], fdr["search_burden"] = len(cands), n_tests
+    for c, d in zip(cands, fdr["discoveries"]):
+        c["fdr_significant"] = bool(d)
+    M = pd.DataFrame(vals)
     good = {c for c in M.columns if M[c].notna().mean() > 0.3 and M[c].std(skipna=True) > 1e-9}
-    sig = [r for r in sig if r["formula"] in good]
     Msub = M[list(good)].sample(min(40000, len(M)), random_state=0).rank()
     corr = Msub.corr().abs()
-    kept = []
-    for r in sorted(sig, key=lambda r: -abs(r["ic"])):
-        cmax = max((float(corr.loc[r["formula"], k["formula"]]) for k in kept), default=0.0)
-        if not np.isfinite(cmax):
-            cmax = 0.0
-        if cmax < corr_cut:
-            r["corr_to_existing"] = round(cmax, 3)
-            kept.append(r)
-        if len(kept) >= max_accept:
-            break
-    return kept, fdr
+    return cands, corr, fdr
+
+
+def _reason_counts(rejected):
+    from collections import Counter
+    c = Counter(r["reasons"][0].split("(")[0] for r in rejected if r["reasons"])
+    if c:
+        print("  rejection reasons:", ", ".join(f"{k}={n}" for k, n in c.most_common()))
 
 
 def _turnover(v):
@@ -247,6 +247,8 @@ def main():
     ap.add_argument("--max-accept", type=int, default=60)
     ap.add_argument("--out", default="data/trade_outcomes")
     ap.add_argument("--fdr-q", type=float, default=0.10, help="false-discovery-rate level")
+    ap.add_argument("--oos-retain", type=float, default=0.4, help="min |OOS IC| / |train IC|")
+    ap.add_argument("--turnover-cap", type=float, default=2.0, help="max per-bar turnover")
     ap.add_argument("--seed-101", action="store_true", help="seed evolution with the 101 alphas")
     ap.add_argument("--rebuild", action="store_true")
     args = ap.parse_args()
@@ -292,34 +294,45 @@ def main():
     evald = mine(train, tgt_tr, rng, args.pop, args.evo_steps, args.tournament, seeds)
     print(f"distinct alphas evaluated: {len(evald):,}")
 
-    kept, fdr = select(evald, train, tgt_tr, args.topk, args.corr_cut, args.max_accept,
-                       args.fdr_q, len(evald))
-    print(f"FDR q={args.fdr_q}: {fdr['n_discoveries']} of {fdr['n_tested']} top alphas "
-          f"significant (burden {fdr['search_burden']} tests, screened {fdr['n_screened']}) "
-          f"-> accepted independent {len(kept)}")
+    cands, corr, fdr = build_candidates(evald, train, oos, tgt_tr, tgt_oos, panel,
+                                        args.topk, args.fdr_q, len(evald))
+    cfg = {"oos_min_retain": args.oos_retain, "corr_cap": args.corr_cut,
+           "turnover_cap": args.turnover_cap}
+    accepted, rejected = alpha_registry.promote(cands, corr, cfg)
+    accepted = accepted[:args.max_accept]
+    kept = accepted                                      # the accepted registry IS the ensemble set
+    print(f"FDR q={args.fdr_q}: {fdr['n_discoveries']} of {fdr['n_tested']} significant -> "
+          f"REGISTRY accepted {len(accepted)} / rejected {len(rejected)} "
+          f"(of {len(cands)} candidates)")
 
-    # enrich + persist DB
+    # accepted_alphas.csv / rejected_alphas.csv with exact reasons
+    acol = ["formula", "category", "source", "ic", "oos_ic", "ic_ir", "p_value",
+            "fdr_significant", "turnover", "corr_to_existing"]
+    rcol = ["formula", "category", "ic", "oos_ic", "p_value", "fdr_significant",
+            "turnover", "reasons"]
+    pd.DataFrame([{k: a.get(k) for k in acol} for a in accepted]).to_csv(
+        out / "accepted_alphas.csv", index=False)
+    pd.DataFrame([{**{k: r.get(k) for k in rcol[:-1]}, "reasons": "; ".join(r["reasons"])}
+                  for r in rejected]).to_csv(out / "rejected_alphas.csv", index=False)
+    _reason_counts(rejected)
+
+    # persist DB (accepted + rejected with status)
     records = []
-    top_candidates = sorted(evald, key=lambda r: -abs(r["ic"]))[:300]
-    accepted_ids = set()
-    for r in kept:
-        v_all = eval_alpha(r["node"], panel)
-        oos_ic, _, _ = spearman_ic(eval_alpha(r["node"], oos), tgt_oos)
-        sh = _sharpe(v_all, panel["fut_ret_1"])
-        breadth = float(v_all.dropna().groupby(level=1).size().median())
-        rid = alpha_id(r["node"]); accepted_ids.add(rid)
-        rec = alpha_db.record(rid, r["formula"], category(r["node"]), r["ic"],
-                              r["ic_ir"], sh, r.get("corr_to_existing"), breadth,
-                              oos_ic, r["source"], "accepted")
-        rec["p_value"] = r.get("p_value")
-        rec["turnover"] = _turnover(v_all)
+    for a in accepted:
+        v_all = eval_alpha(a["node"], panel)
+        rec = alpha_db.record(alpha_id(a["node"]), a["formula"], a["category"], a["ic"],
+                              a["ic_ir"], _sharpe(v_all, panel["fut_ret_1"]),
+                              a.get("corr_to_existing"),
+                              float(v_all.dropna().groupby(level=1).size().median()),
+                              a["oos_ic"], a["source"], "accepted")
+        rec["p_value"] = a["p_value"]; rec["turnover"] = a["turnover"]
         records.append(rec)
-    for r in top_candidates:
-        rid = alpha_id(r["node"])
-        if rid in accepted_ids:
-            continue
-        records.append(alpha_db.record(rid, r["formula"], category(r["node"]), r["ic"],
-                                       r["ic_ir"], None, None, None, None, r["source"], "rejected"))
+    for r in rejected:
+        rec = alpha_db.record(alpha_id(r["node"]), r["formula"], r["category"], r["ic"],
+                              r["ic_ir"], None, None, None, r["oos_ic"], r["source"], "rejected")
+        rec["p_value"] = r["p_value"]; rec["turnover"] = r["turnover"]
+        rec["rejection_reasons"] = r["reasons"]
+        records.append(rec)
     alpha_db.save(records, out / "alpha_db.json")
 
     print("\ntraining LightGBM ensemble (mined alphas vs raw inputs)...")
@@ -328,6 +341,7 @@ def main():
     rep = {"panel_rows": int(panel.shape[0]), "symbols": int(panel.index.get_level_values(0).nunique()),
            "severe_giveback_rate": round(float(panel[TARGET].mean()), 3),
            "distinct_alphas": len(evald), "accepted_alphas": len(kept),
+           "rejected_alphas": len(rejected),
            "best_ic": round(max(abs(x["ic"]) for x in evald), 5),
            "top_accepted": [{"formula": r["formula"], "ic": r["ic"], "ic_ir": r["ic_ir"],
                              "corr_to_existing": r.get("corr_to_existing")}
