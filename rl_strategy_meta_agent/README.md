@@ -596,3 +596,29 @@ python -m rl_meta.train --timesteps 5000     # check_env + PPO smoke train
    features instead of the simulated regime.
 5. Add per-split rolling re-evaluation so deteriorating strategies are demoted
    from RL eligibility automatically as new OOS data arrives.
+
+## Defensive strategy-family allowlist (paper-only, validated by walk-forward)
+
+`rl_meta/strategy_allowlist.py` blocks structurally-bad strategy families from
+selection/execution. It is gated behind `META_FAMILY_ALLOWLIST` (default OFF) and
+never touches a broker, order, risk, or position-sizing path.
+
+- Blocked: `martingale`, `pin_bar_magic_v1`
+- Allowed: `linear_regression`, `mean_reversion`, `sniper_strategy` (see below)
+
+This is a **defensive exclusion validated by walk-forward, NOT proof of alpha.**
+`scripts/strategy_family_walkforward.py` showed that dropping the two bad families
+cut out-of-sample max drawdown ~74% (0.664 -> 0.169) across 4/4 chronological
+folds while raising profit factor and total return. Crucially, the drawdown win
+is almost entirely from removing `martingale` (a structural blow-up strategy) --
+this is removing bad strategies, not discovering an edge.
+
+### sniper_strategy: repaint audit = INVALID
+
+`scripts/repaint_audit.py` (engine `rl_meta/repaint_audit.py`) audited
+`sniper_strategy`: **INVALID**. Its entries are built on a repainting pre-v3
+`security()` higher-timeframe call, and its 8,383 exported trades show profit
+factor ~19.9 (impossible for an honest strategy). **Do NOT trust sniper P&L** --
+treat it as a repaint artifact until rebuilt non-repainting and re-backtested
+bar-by-bar. The allowlist still tags it `VERIFY_REPAINT`; given the failed audit
+it should be moved to the blocked set before any paper deployment.
