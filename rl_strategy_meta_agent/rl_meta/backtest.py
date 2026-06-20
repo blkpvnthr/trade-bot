@@ -17,6 +17,7 @@ from .performance import compute_metrics, rolling_metrics
 from .ranking import tier_of, validate, oos_pass, rl_risk_gate
 from .signals import backtest_executable, NotExecutable
 from .splits import split_trades, SPLITS
+from .verification import verification_status
 from .types import Metrics, RollingMetrics, StrategyMeta, Status, Tier
 
 # Per-strategy evaluation source (the single source of truth used for metrics).
@@ -58,6 +59,8 @@ class StrategyResult:
     strategy_confidence: float = 0.0                   # 0..100 trustworthiness (confidence.py)
     strategy_family: str = "unknown"                   # independence diagnostic (correlation.py)
     pooled_trades: list = field(default_factory=list)  # single-source trades (for correlation)
+    verification_status: str = ""                      # verified | needs_review | suspected_*
+    verification_reasons: list = field(default_factory=list)
 
 
 def _split_metric_set(trades: list) -> dict:
@@ -145,6 +148,9 @@ def evaluate_strategy(meta: StrategyMeta, bars_by_symbol: dict, timeframe: str,
     res.aggregate_full = res.aggregate["full"]
     res.aggregate_rolling = rolling_metrics(pooled)
     res.tier = tier_of(res.aggregate_full).value
+    # Implausible-results / repaint flag (informational; does NOT gate eligibility).
+    res.verification_status, res.verification_reasons = \
+        verification_status(res.aggregate_full, meta)
 
     # Calendar span + trustworthiness score (available even if later rejected).
     entries = [date.fromisoformat(t.entry_date) for t in pooled]
@@ -194,6 +200,7 @@ def run_backtests(metas: list, bars_by_symbol: dict, timeframe: str,
         m.tv_validated_symbols = res.tv_symbols
         m.missing_tv_symbols = res.missing_tv_symbols
         m.strategy_confidence = res.strategy_confidence
+        m.verification_status = res.verification_status
         res.strategy_family = m.strategy_family or "unknown"
         out.append(res)
     return out

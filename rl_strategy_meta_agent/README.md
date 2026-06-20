@@ -192,6 +192,21 @@ Martingale strategies are **never** RL-eligible regardless of win rate; tiering
 may still report them. These gates are why a 63%-win strategy that blows the
 account (mean_reversion, min equity −$34k) is `SCREEN-ONLY`, not RL-eligible.
 
+### Verification gate (flag, don't reject)
+`rl_meta/verification.py` flags strategies whose results are *too good to be
+plausible*, or whose Pine source has a known repaint/look-ahead vector, for
+**manual review** -- it never rejects or changes RL eligibility. `verification_status`
+∈ `verified | needs_review | suspected_repaint | suspected_lookahead`.
+
+Triggers (statistical anomaly → `needs_review`): `PF > 5 AND maxDD < 2%`;
+`win_rate > 80% AND trade_count > 1000`; `CAGR > 200% AND maxDD < 2%`. Source
+inspection (→ `suspected_lookahead`): old Pine (`@version <= 3`) using
+`security()` without `lookahead_off`. The goal is to surface things worth
+checking the Pine source for, not to reject profitable strategies. Both
+RL-eligible TV strategies here are flagged (`pin_bar` needs_review; `sniper`
+suspected_lookahead from a v2 `security()` call) — they pass the gates
+mechanically but should not be trusted until re-exported with `lookahead_off`.
+
 ## strategy_confidence (trust, not quality)
 
 `composite_score` answers "how GOOD does this strategy look?"; `strategy_confidence`
@@ -471,7 +486,7 @@ limits override the policy unconditionally.
 ```bash
 pip install -r requirements.txt
 cd rl_strategy_meta_agent
-python -m pytest                 # 146 tests
+python -m pytest                 # 157 tests
 ```
 Each module also has a self-check: `python -m rl_meta.<module>`.
 

@@ -39,6 +39,10 @@ class StrategyMeta:
     timeframe_hints: list = field(default_factory=list)
     indicators: list = field(default_factory=list)
     declares_strategy: bool = True   # False for indicator()/study scripts (not tradeable)
+    pine_version: Optional[int] = None
+    uses_security: bool = False
+    lookahead_off: bool = False
+    verification_status: str = ""    # verified | needs_review | suspected_* (verification.py)
     status: str = Status.PENDING.value
     # Execution status (filled by the adapter layer + backtest pipeline).
     executable: bool = False

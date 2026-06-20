@@ -131,6 +131,9 @@ def _scoreboard(results):
         print(f"{r.rank:>2}  {r.strategy_name[:22]:<22} {src:<12} {r.tier:<6} "
               f"{m.trade_count:>6} {m.win_rate*100:>5.1f}% {pf:>6} {oosN:>5} "
               f"{r.composite_score:>6.3f} {sr.strategy_confidence:>5.1f}  {flag}")
+        if sr.verification_status and sr.verification_status != "verified":
+            print(f"      !! {sr.verification_status.upper()}: "
+                  f"{'; '.join(sr.verification_reasons)}")
         if sr.evaluation_source == "tradingview_verified" and sr.missing_tv_symbols:
             print(f"      missing_tv_validation: {', '.join(sr.missing_tv_symbols)}")
 

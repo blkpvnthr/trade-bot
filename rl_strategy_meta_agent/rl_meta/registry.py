@@ -77,10 +77,19 @@ def parse_pine(text: str) -> dict:
     # not (no orders, no entries/exits) -- e.g. a regime-probability indicator.
     declares_strategy = bool(re.search(r"\bstrategy\s*\(", text))
 
+    # Repaint / look-ahead source signals (for the verification gate).
+    vm = re.search(r"//@version\s*=\s*(\d+)", text)
+    pine_version = int(vm.group(1)) if vm else None
+    uses_security = bool(re.search(r"\b(?:request\.)?security\s*\(", text))
+    lookahead_off = "lookahead_off" in text
+
     from .correlation import parse_family_override
     return {
         "strategy_name": name,
         "declares_strategy": declares_strategy,
+        "pine_version": pine_version,
+        "uses_security": uses_security,
+        "lookahead_off": lookahead_off,
         "inputs": inputs,
         "indicators": indicators,
         "entry_logic": entry[:20],
