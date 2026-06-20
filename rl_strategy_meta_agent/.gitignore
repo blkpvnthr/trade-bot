@@ -7,3 +7,4 @@ data/bars/
 data/strategy_registry.json
 
 # Keep data/tradingview_exports/ (sample fixture) and config/ tracked
+external_research/
