@@ -249,6 +249,19 @@ fetching only missing ranges and merging with cache (no duplicate rows;
 then re-run the builder to populate the pre-entry features. Data pull only --
 no orders, no live trading (the trading base URL, even if live, is never used).
 
+### trade_quality_model (does chart context predict winners?)
+`rl_meta/trade_quality.py` + `scripts/train_trade_quality_model.py` train
+LogisticRegression / RandomForest / XGBoost / LightGBM on **pre_entry_features
+only** to predict `outcome_win`, with SHAP explanations. It evaluates on three
+splits of very different honesty: **time** (train pre-2024 → test 2024/2025),
+**group** (train on some symbols → test on held-out symbols), and **random**
+i.i.d. (optimistic). On this data the honest splits give **AUC ≈ 0.51–0.53
+(≈ random)** while the random split inflates to ~0.67 -- the gap is pure
+trade-autocorrelation leakage (same symbol/period in train+test). Conclusion:
+**pre-entry chart context does not generalizably predict these strategies'
+trade outcomes** (consistent with the weak |corr|<0.035 and logreg's 0.53).
+The framework is sound; the negative result is honest. No live trading touched.
+
 ## strategy_confidence (trust, not quality)
 
 `composite_score` answers "how GOOD does this strategy look?"; `strategy_confidence`
@@ -528,7 +541,7 @@ limits override the policy unconditionally.
 ```bash
 pip install -r requirements.txt
 cd rl_strategy_meta_agent
-python -m pytest                 # 181 tests
+python -m pytest                 # 186 tests
 ```
 Each module also has a self-check: `python -m rl_meta.<module>`.
 
