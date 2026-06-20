@@ -30,8 +30,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rl_meta.alphas import (BASE_INPUTS, random_alpha, mutate, eval_alpha,
-                            formula_str, alpha_id, category, spearman_ic)
-from rl_meta import alpha_db, alphas101
+                            formula_str, alpha_id, category, spearman_ic, ic_series)
+from rl_meta import alpha_db, alphas101, multiple_testing as mt
 from rl_meta.sequences import candle_feature_frame
 from rl_meta.market_context import build_context_frame, SECTOR_ETF
 from rl_meta.bar_coverage import cached_bars
@@ -137,25 +137,51 @@ def mine(train, target, rng, pop_n, evo_steps, tour, seeds=None):
     return evald
 
 
-def prune(evald, train, topk, corr_cut, max_accept):
+def select(evald, train, target, topk, corr_cut, max_accept, q, n_tests):
+    """FDR-gated selection (Giglio-Liao-Xiu): wild-bootstrap p-value per alpha ->
+    Benjamini-Hochberg over the FULL search burden -> correlation-prune the
+    statistically-significant survivors. Returns (accepted, fdr_diagnostics)."""
     top = sorted(evald, key=lambda r: -abs(r["ic"]))[:topk]
-    vals = {r["formula"]: eval_alpha(r["node"], train) for r in top}
-    M = pd.DataFrame(vals)
+    vals = {}
+    for r in top:
+        v = eval_alpha(r["node"], train)
+        vals[r["formula"]] = v
+        # block = H: the giveback label spans H forward bars -> IC_t autocorrelates
+        r["p_value"] = round(mt.wild_bootstrap_pvalue(ic_series(v, target), 1000, block=H), 4)
+    fdr = mt.fdr_control([r["p_value"] for r in top], q=q, n_tests=n_tests)
+    fdr["n_tested"], fdr["search_burden"] = len(top), n_tests
+    sig = [r for r, d in zip(top, fdr["discoveries"]) if d]
+    if not sig:
+        return [], fdr
+    M = pd.DataFrame({r["formula"]: vals[r["formula"]] for r in sig})
     good = {c for c in M.columns if M[c].notna().mean() > 0.3 and M[c].std(skipna=True) > 1e-9}
-    top = [r for r in top if r["formula"] in good]           # drop degenerate alphas
+    sig = [r for r in sig if r["formula"] in good]
     Msub = M[list(good)].sample(min(40000, len(M)), random_state=0).rank()
     corr = Msub.corr().abs()
     kept = []
-    for r in top:
+    for r in sorted(sig, key=lambda r: -abs(r["ic"])):
         cmax = max((float(corr.loc[r["formula"], k["formula"]]) for k in kept), default=0.0)
-        if not np.isfinite(cmax):                            # NaN corr -> not redundant
+        if not np.isfinite(cmax):
             cmax = 0.0
         if cmax < corr_cut:
             r["corr_to_existing"] = round(cmax, 3)
             kept.append(r)
         if len(kept) >= max_accept:
             break
-    return kept
+    return kept, fdr
+
+
+def _turnover(v):
+    """Per the Performance-vs-Turnover paper: fraction of the (z-scored) book
+    traded per period. Reported as a diagnostic -- NOT a selection criterion,
+    since turnover has no significant effect on performance."""
+    v = v.replace([np.inf, -np.inf], np.nan)
+    tl = v.index.get_level_values(1)
+    w = v.groupby(tl).transform(lambda x: (x - x.mean()) / (x.std() + 1e-9))
+    num = w.groupby(level=0).diff().abs().groupby(level=1).sum()
+    den = w.abs().groupby(level=1).sum() + 1e-12
+    t = float((num / den).mean())
+    return round(t, 3) if np.isfinite(t) and t < 10 else None   # guard degenerate alphas
 
 
 def benchmark_101(train, oos, tgt_tr, tgt_oos):
@@ -220,6 +246,7 @@ def main():
     ap.add_argument("--corr-cut", type=float, default=0.7)
     ap.add_argument("--max-accept", type=int, default=60)
     ap.add_argument("--out", default="data/trade_outcomes")
+    ap.add_argument("--fdr-q", type=float, default=0.10, help="false-discovery-rate level")
     ap.add_argument("--seed-101", action="store_true", help="seed evolution with the 101 alphas")
     ap.add_argument("--rebuild", action="store_true")
     args = ap.parse_args()
@@ -265,8 +292,11 @@ def main():
     evald = mine(train, tgt_tr, rng, args.pop, args.evo_steps, args.tournament, seeds)
     print(f"distinct alphas evaluated: {len(evald):,}")
 
-    kept = prune(evald, train, args.topk, args.corr_cut, args.max_accept)
-    print(f"accepted (independent) alphas: {len(kept)}")
+    kept, fdr = select(evald, train, tgt_tr, args.topk, args.corr_cut, args.max_accept,
+                       args.fdr_q, len(evald))
+    print(f"FDR q={args.fdr_q}: {fdr['n_discoveries']} of {fdr['n_tested']} top alphas "
+          f"significant (burden {fdr['search_burden']} tests, screened {fdr['n_screened']}) "
+          f"-> accepted independent {len(kept)}")
 
     # enrich + persist DB
     records = []
@@ -278,9 +308,12 @@ def main():
         sh = _sharpe(v_all, panel["fut_ret_1"])
         breadth = float(v_all.dropna().groupby(level=1).size().median())
         rid = alpha_id(r["node"]); accepted_ids.add(rid)
-        records.append(alpha_db.record(rid, r["formula"], category(r["node"]), r["ic"],
-                                       r["ic_ir"], sh, r.get("corr_to_existing"), breadth,
-                                       oos_ic, r["source"], "accepted"))
+        rec = alpha_db.record(rid, r["formula"], category(r["node"]), r["ic"],
+                              r["ic_ir"], sh, r.get("corr_to_existing"), breadth,
+                              oos_ic, r["source"], "accepted")
+        rec["p_value"] = r.get("p_value")
+        rec["turnover"] = _turnover(v_all)
+        records.append(rec)
     for r in top_candidates:
         rid = alpha_id(r["node"])
         if rid in accepted_ids:
@@ -300,7 +333,11 @@ def main():
                              "corr_to_existing": r.get("corr_to_existing")}
                             for r in sorted(kept, key=lambda r: -abs(r["ic"]))[:15]],
            "alpha101_benchmark": bench, "ensemble": ens,
-           "n_seed_101_accepted": sum(1 for r in kept if r["source"] == "seed_101")}
+           "n_seed_101_accepted": sum(1 for r in kept if r["source"] == "seed_101"),
+           "fdr": {k: v for k, v in fdr.items() if k != "discoveries"},
+           "median_turnover": round(float(np.median([rec["turnover"] for rec in records
+                                                     if rec["status"] == "accepted" and rec.get("turnover") is not None])), 3)
+           if kept else None}
     pd.DataFrame(records).to_csv(out / "alpha_mining_alphas.csv", index=False)
     (out / "alpha_mining_report.json").write_text(json.dumps(rep, indent=2, default=str))
     _print(rep)
@@ -312,6 +349,10 @@ def _print(rep):
           f"{rep['symbols']} symbols) ===")
     print(f"distinct alphas {rep['distinct_alphas']:,} | accepted {rep['accepted_alphas']} | "
           f"best |IC| {rep['best_ic']}")
+    f = rep["fdr"]
+    print(f"FDR (q={f['q']}): {f['n_discoveries']} significant of {f['n_tested']} tested "
+          f"(burden {f['search_burden']}), ~{f['expected_false_discoveries']} expected false; "
+          f"median turnover {rep['median_turnover']}")
     print("\ntop accepted alphas (IC vs severe_giveback):")
     for r in rep["top_accepted"]:
         print(f"  IC {r['ic']:+.4f} (IR {r['ic_ir']}) corr {r['corr_to_existing']}  {r['formula']}")

@@ -224,6 +224,22 @@ def spearman_ic(alpha: pd.Series, target: pd.Series, min_xs: int = 5):
     return round(float(ic_t.mean()), 5), round(float(ic_t.mean() / (ic_t.std() + 1e-9)), 4), len(ic_t)
 
 
+def ic_series(alpha: pd.Series, target: pd.Series, min_xs: int = 5) -> np.ndarray:
+    """Per-timestamp IC array (for multiple-testing p-values). Same math as
+    spearman_ic but returns the time series instead of its mean."""
+    df = pd.DataFrame({"a": alpha, "t": target}).replace([np.inf, -np.inf], np.nan).dropna()
+    if len(df) < 100:
+        return np.array([])
+    tl = df.index.get_level_values(1)
+    ra = df["a"].groupby(tl).rank(); rt = df["t"].groupby(tl).rank()
+    ca = ra - ra.groupby(tl).transform("mean"); ct = rt - rt.groupby(tl).transform("mean")
+    num = (ca * ct).groupby(tl).sum()
+    den = np.sqrt((ca * ca).groupby(tl).sum() * (ct * ct).groupby(tl).sum())
+    ic_t = (num / den.replace(0, np.nan))
+    sizes = df["a"].groupby(tl).size()
+    return ic_t[sizes >= min_xs].dropna().to_numpy()
+
+
 def _demo():
     ts = pd.date_range("2024-03-04 14:30", periods=40, freq="15min", tz="UTC")
     rows = []
