@@ -1,0 +1,45 @@
+//@version=6
+// VARIANCE KNOB: default_qty_value = % of equity per trade.
+//   Variance scales ~linearly with size. PF and win-rate are size-INVARIANT
+//   (same trades/exits); only return magnitude and drawdown scale.
+//   100 -> full size (PF 1.05, DD ~20%).  75 -> ~3/4 variance.  50 -> ~half. etc.
+strategy("CryptoNite Approx — SuperTrend Flip + Whale Volume", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=75, pyramiding=0, process_orders_on_close=true, calc_on_every_tick=false)
+atrLen  = input.int(10,   "SuperTrend ATR length")
+atrMult = input.float(3.0,"SuperTrend factor", step=0.1)
+volLen  = input.int(20,   "Volume average length")
+volMult = input.float(1.0,"Whale volume multiple (vol > x * avg)", step=0.1)
+requireUpBar = input.bool(true, "Require up-bar (buying volume)")
+rsiLen   = input.int(14, "RSI length")
+rsiMaLen = input.int(14, "RSI-MA length")
+useRsiExit = input.bool(true, "Exit when RSI crosses below its MA")
+armAfterTP1 = input.bool(true, "Arm RSI exit only after TP1 hit")
+[_st, dir] = ta.supertrend(atrMult, atrLen)
+flipLong = dir < 0 and dir[1] >= 0
+volOK = volume > volMult * ta.sma(volume, volLen) and (not requireUpBar or close >= open)
+rsi   = ta.rsi(close, rsiLen)
+rsiMA = ta.sma(rsi, rsiMaLen)
+rsiExit = ta.crossunder(rsi, rsiMA)
+slPct   = input.float(9.85, "Stop-loss %") / 100.0
+tp1Pct  = input.float(2.5,  "TP1 %")        / 100.0
+tp2Pct  = input.float(5.1,  "TP2 %")        / 100.0
+tp3Pct  = input.float(7.5,  "TP3 %")        / 100.0
+maxBars = input.int(26,     "Max hold (bars)")
+if flipLong and volOK and strategy.position_size == 0
+    strategy.entry("L", strategy.long)
+ep = strategy.position_avg_price
+var bool tp1Hit = false
+tp1Hit := strategy.position_size > 0 ? (tp1Hit or high >= ep*(1+tp1Pct)) : false
+rsiArmed = not armAfterTP1 or tp1Hit
+if strategy.position_size > 0
+    strategy.exit("TP1", "L", qty_percent=33, limit=ep*(1+tp1Pct), stop=ep*(1-slPct))
+    strategy.exit("TP2", "L", qty_percent=33, limit=ep*(1+tp2Pct), stop=ep*(1-slPct))
+    strategy.exit("TP3", "L",                 limit=ep*(1+tp3Pct), stop=ep*(1-slPct))
+    if useRsiExit and rsiExit and rsiArmed
+        strategy.close("L", comment="RSI<MA")
+    if bar_index - strategy.opentrades.entry_bar_index(0) >= maxBars
+        strategy.close("L", comment="time")
+plot(strategy.position_size>0 ? ep*(1-slPct)  : na, "SL Level",   color.new(color.red,0),   style=plot.style_linebr)
+plot(strategy.position_size>0 ? ep*(1+tp2Pct) : na, "TP Level 2", color.new(color.green,0), style=plot.style_linebr)
+plotchar(flipLong and volOK, "whale entry", "▲", location.belowbar, color.aqua, size=size.tiny)
+plotchar(strategy.position_size>0 and useRsiExit and rsiExit and rsiArmed, "rsi exit", "✕", location.abovebar, color.orange, size=size.tiny)
+barcolor(volume > volMult * ta.sma(volume, volLen) ? color.new(color.yellow,0) : na)
