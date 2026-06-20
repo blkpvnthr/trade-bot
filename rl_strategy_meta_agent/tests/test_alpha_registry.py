@@ -57,6 +57,30 @@ def test_is_pit_safe():
     assert not R.is_pit_safe(("cs_rank", ("ts_mean", ("in", "x"), 0)))  # zero window
 
 
+def test_linear_independence_gate_drops_span_redundant():
+    # C is inside the span of 5 modestly-correlated accepted alphas; every pairwise
+    # corr (0.45) is below the cap, but the MULTIPLE correlation makes C redundant.
+    idx = ["A1", "A2", "A3", "A4", "A5", "C"]
+    M = np.eye(6)
+    for i in range(5):
+        M[i, 5] = M[5, i] = 0.45
+    corr = pd.DataFrame(M, index=idx, columns=idx)
+    cands = [_c(f, 0.3 - 0.01 * i, 0.28 - 0.01 * i, 0.0, True, 0.3) for i, f in enumerate(idx)]
+    acc, rej = R.promote(cands, corr, {"corr_cap": 0.7, "indep_residual_min": 0.3})
+    assert [a["formula"] for a in acc] == ["A1", "A2", "A3", "A4", "A5"]
+    cre = next(r for r in rej if r["formula"] == "C")
+    assert "linearly_dependent" in cre["reasons"][0]
+    assert acc[0]["rank_contribution"] == 1.0            # first accepted adds a full dimension
+
+
+def test_effective_breadth():
+    import numpy as np
+    ind = pd.DataFrame(np.eye(4), index=list("abcd"), columns=list("abcd"))
+    assert R.effective_breadth(ind) == 4.0               # fully independent
+    dup = pd.DataFrame(np.ones((4, 4)), index=list("abcd"), columns=list("abcd"))
+    assert abs(R.effective_breadth(dup) - 1.0) < 1e-6    # all identical -> 1 direction
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

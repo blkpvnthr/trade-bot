@@ -160,7 +160,7 @@ def build_candidates(evald, train, oos, tgt_tr, tgt_oos, panel, topk, q, n_tests
     M = pd.DataFrame(vals)
     good = {c for c in M.columns if M[c].notna().mean() > 0.3 and M[c].std(skipna=True) > 1e-9}
     Msub = M[list(good)].sample(min(40000, len(M)), random_state=0).rank()
-    corr = Msub.corr().abs()
+    corr = Msub.corr()                                   # SIGNED (registry needs it for R^2)
     return cands, corr, fdr
 
 
@@ -249,6 +249,8 @@ def main():
     ap.add_argument("--fdr-q", type=float, default=0.10, help="false-discovery-rate level")
     ap.add_argument("--oos-retain", type=float, default=0.4, help="min |OOS IC| / |train IC|")
     ap.add_argument("--turnover-cap", type=float, default=2.0, help="max per-bar turnover")
+    ap.add_argument("--indep-residual", type=float, default=0.3,
+                    help="linear-independence gate: min orthogonal residual vs accepted span")
     ap.add_argument("--seed-101", action="store_true", help="seed evolution with the 101 alphas")
     ap.add_argument("--rebuild", action="store_true")
     args = ap.parse_args()
@@ -297,17 +299,20 @@ def main():
     cands, corr, fdr = build_candidates(evald, train, oos, tgt_tr, tgt_oos, panel,
                                         args.topk, args.fdr_q, len(evald))
     cfg = {"oos_min_retain": args.oos_retain, "corr_cap": args.corr_cut,
-           "turnover_cap": args.turnover_cap}
+           "turnover_cap": args.turnover_cap, "indep_residual_min": args.indep_residual}
     accepted, rejected = alpha_registry.promote(cands, corr, cfg)
     accepted = accepted[:args.max_accept]
     kept = accepted                                      # the accepted registry IS the ensemble set
+    eff_breadth = alpha_registry.effective_breadth(
+        corr.loc[[a["formula"] for a in accepted], [a["formula"] for a in accepted]]) if accepted else 0.0
+    n_indep_rej = sum(1 for r in rejected if r["reasons"] and "linearly_dependent" in r["reasons"][0])
     print(f"FDR q={args.fdr_q}: {fdr['n_discoveries']} of {fdr['n_tested']} significant -> "
           f"REGISTRY accepted {len(accepted)} / rejected {len(rejected)} "
-          f"(of {len(cands)} candidates)")
+          f"({n_indep_rej} linearly-dependent) | effective breadth {eff_breadth} of {len(accepted)}")
 
     # accepted_alphas.csv / rejected_alphas.csv with exact reasons
     acol = ["formula", "category", "source", "ic", "oos_ic", "ic_ir", "p_value",
-            "fdr_significant", "turnover", "corr_to_existing"]
+            "fdr_significant", "turnover", "corr_to_existing", "rank_contribution"]
     rcol = ["formula", "category", "ic", "oos_ic", "p_value", "fdr_significant",
             "turnover", "reasons"]
     pd.DataFrame([{k: a.get(k) for k in acol} for a in accepted]).to_csv(
@@ -351,6 +356,7 @@ def main():
                             for r in sorted(kept, key=lambda r: -abs(r["ic"]))[:15]],
            "alpha101_benchmark": bench, "ensemble": ens,
            "n_seed_101_accepted": sum(1 for r in kept if r["source"] == "seed_101"),
+           "effective_breadth": eff_breadth, "n_linearly_dependent_rejected": n_indep_rej,
            "fdr": {k: v for k, v in fdr.items() if k != "discoveries"},
            "median_turnover": round(float(np.median([rec["turnover"] for rec in records
                                                      if rec["status"] == "accepted" and rec.get("turnover") is not None])), 3)
