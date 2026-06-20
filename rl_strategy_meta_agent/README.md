@@ -142,6 +142,56 @@ eligibility** is not:
 `train.build_views_from_pipeline` feeds the RL allocator only `rl_eligible`
 strategies, and ranking prefers `tradingview_verified` at equal score.
 
+### Import position-size normalization
+TradingView backtests often use unrealistic share counts (500–5000+, even
+indices at thousands of "shares"). On import, trades are normalized to a
+realistic **reference quantity of 10 shares** so strategies are compared on
+roughly equal size:
+
+```
+scale_factor = reference_qty / raw_qty   if raw_qty > reference_qty   (default 10)
+             = 1.0                        otherwise
+pnl (effective) = raw_pnl_usd * scale_factor
+```
+
+Only dollar PnL/qty are scaled; **percentage return, direction, win rate, and
+timing are never changed**. Raw values (`raw_qty`, `raw_pnl_usd`, `return_pct`)
+are preserved for audit and the original CSV is untouched. Flags:
+`--normalize-qty` (default), `--reference-qty 10`, `--no-normalize` (raw mode).
+Normalized PnL drives expectancy, total PnL, drawdown, comparison, and RL.
+
+### Equity curve & drawdown (corrected)
+Metrics build a **valid equity curve** from an explicit `INITIAL_EQUITY` (10,000)
+in **chronological** order (by exit date):
+
+```
+equity_t = INITIAL_EQUITY + cumulative_normalized_pnl_t   (date-ordered)
+peak_t   = max(equity_0 .. equity_t)
+drawdown_t = (peak_t - equity_t) / peak_t
+max_drawdown = max(drawdown_t)
+```
+
+Drawdown is taken from the running **peak**, never from raw cumulative PnL, and
+is order-independent. If equity ever hits **<= 0** the strategy is flagged
+`blown_up = true`, `max_drawdown` is capped at 100%, and it is rejected from RL.
+Metrics expose `initial_equity`, `ending_equity`, `min_equity`, `blown_up`.
+
+### Hard RL risk gates
+Beyond `eligible`, RL (real-capital) eligibility requires ALL of:
+
+| gate | reject if |
+|---|---|
+| blow-up | `blown_up == true` |
+| drawdown | `max_drawdown >= 0.50` |
+| profit factor | `profit_factor < 1.25` |
+| sample size | `trade_count < 500` |
+| OOS size | `oos_trade_count < 250` |
+| martingale | `strategy_family == "martingale"` OR id contains `martingale` |
+
+Martingale strategies are **never** RL-eligible regardless of win rate; tiering
+may still report them. These gates are why a 63%-win strategy that blows the
+account (mean_reversion, min equity −$34k) is `SCREEN-ONLY`, not RL-eligible.
+
 ## strategy_confidence (trust, not quality)
 
 `composite_score` answers "how GOOD does this strategy look?"; `strategy_confidence`
@@ -421,7 +471,7 @@ limits override the policy unconditionally.
 ```bash
 pip install -r requirements.txt
 cd rl_strategy_meta_agent
-python -m pytest                 # 111 tests
+python -m pytest                 # 146 tests
 ```
 Each module also has a self-check: `python -m rl_meta.<module>`.
 

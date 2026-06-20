@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rl_meta.registry import load_strategies, write_registry
+from rl_meta.types import StrategyMeta
 from rl_meta.data import load_universe_bars, read_universe, TIMEFRAMES
 from rl_meta.backtest import run_backtests, persist, population_summary
 from rl_meta.ranking import rank_results
@@ -37,15 +38,24 @@ def main():
     args = ap.parse_args()
 
     metas = load_strategies()
+    db = PerformanceDB()
+
+    # Synthesize stub metas for TradingView strategies that exist ONLY as imports
+    # (no pinescript .txt) so they flow through evaluation as tradingview_verified.
+    existing = {m.strategy_id for m in metas}
+    for sid, vh in db.imported_strategies(args.timeframe):
+        if sid not in existing:
+            metas.append(StrategyMeta(sid, sid, vh, "", "manifest",
+                                      declares_strategy=True))
+            existing.add(sid)
     if not metas:
-        print("No PineScripts in pinescripts/. Add *.txt files and re-run.")
+        print("No strategies (no pinescripts and no imported trades).")
         return
 
     symbols = args.symbols or read_universe()
     bars = load_universe_bars(symbols, args.timeframe, args.start, args.end,
                               refresh=args.refresh, offline=args.offline)
 
-    db = PerformanceDB()
     any_imports = any(db.imported_trades(m.strategy_id, args.timeframe,
                                          m.version_hash) for m in metas)
     if not bars and not any_imports:
@@ -56,9 +66,9 @@ def main():
     print(f"Loaded bars for {len(bars)}/{len(symbols)} symbols @ {args.timeframe}; "
           f"TradingView imports present: {any_imports}\n")
 
-    # db passed in -> any version-matched TradingView import makes the whole
-    # strategy tradingview_verified (adapter disabled, single source of truth).
-    results = run_backtests(metas, bars, args.timeframe, db=db, universe=symbols)
+    # universe=None -> each strategy's coverage is judged on its own symbols
+    # (TV strategies were exported on their own tickers, not the config universe).
+    results = run_backtests(metas, bars, args.timeframe, db=db, universe=None)
 
     for m in metas:
         annotate_executability(m)

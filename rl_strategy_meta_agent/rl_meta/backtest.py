@@ -14,7 +14,7 @@ from datetime import date
 from .adapters import annotate_executability
 from .confidence import strategy_confidence
 from .performance import compute_metrics, rolling_metrics
-from .ranking import tier_of, validate, oos_pass
+from .ranking import tier_of, validate, oos_pass, rl_risk_gate
 from .signals import backtest_executable, NotExecutable
 from .splits import split_trades, SPLITS
 from .types import Metrics, RollingMetrics, StrategyMeta, Status, Tier
@@ -161,15 +161,21 @@ def evaluate_strategy(meta: StrategyMeta, bars_by_symbol: dict, timeframe: str,
 
     ok_oos, reason_oos = oos_pass(res.aggregate["oos"])
     res.eligible = ok_oos
-    # RL (real-capital) eligibility: TV-verified always; adapter_screening only
-    # when explicitly allowed via ALLOW_ADAPTER_SCREENING_FOR_RL.
-    rl_ok = res.evaluation_source == SRC_TV or allow_adapter_screening_for_rl()
-    res.rl_eligible = ok_oos and rl_ok
-    if ok_oos and not rl_ok:
+    res.strategy_family = meta.strategy_family or "unknown"
+    # RL (real-capital) eligibility: OOS pass AND source AND hard risk gates.
+    source_ok = res.evaluation_source == SRC_TV or allow_adapter_screening_for_rl()
+    risk_ok, risk_reason = rl_risk_gate(res.aggregate_full, res.aggregate["oos"],
+                                        meta.strategy_id, res.strategy_family)
+    res.rl_eligible = ok_oos and source_ok and risk_ok
+    if not ok_oos:
+        res.rejection_reason = reason_oos
+    elif not risk_ok:
+        res.rejection_reason = risk_reason
+    elif not source_ok:
         res.rejection_reason = "adapter_screening not RL-eligible " \
             "(set ALLOW_ADAPTER_SCREENING_FOR_RL=true to allow)"
     else:
-        res.rejection_reason = "eligible" if ok_oos else reason_oos
+        res.rejection_reason = "eligible"
     meta.status = Status.ELIGIBLE.value if ok_oos else Status.REJECTED.value
     return res
 

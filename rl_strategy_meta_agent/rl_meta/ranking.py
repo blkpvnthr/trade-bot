@@ -79,6 +79,34 @@ def oos_pass(oos: Metrics) -> tuple:
     return True, "oos validated"
 
 
+# Hard RL-capital risk gates (stricter than research admission). A strategy may
+# still be reported/tiered, but RL eligibility requires ALL of these.
+RL_MAX_DRAWDOWN = 0.50
+RL_MIN_PF = 1.25
+RL_MIN_TRADES = 500
+RL_MIN_OOS_TRADES = 250
+
+
+def rl_risk_gate(full: Metrics, oos: Metrics, strategy_id: str = "",
+                 strategy_family: str = "") -> tuple:
+    """(rl_ok, reason). Realistic-risk gates: blow-up, drawdown ceiling, profit
+    factor floor, sample sizes, and a hard martingale exclusion."""
+    if getattr(full, "blown_up", False):
+        return False, "blown_up (equity hit <=0)"
+    if "martingale" in (strategy_id or "").lower() or \
+            (strategy_family or "").lower() == "martingale":
+        return False, "martingale excluded from RL"
+    if full.max_drawdown >= RL_MAX_DRAWDOWN:
+        return False, f"max_drawdown {full.max_drawdown:.2f} >= {RL_MAX_DRAWDOWN}"
+    if full.profit_factor < RL_MIN_PF:          # inf >= 1.25 passes
+        return False, f"profit_factor {full.profit_factor} < {RL_MIN_PF}"
+    if full.trade_count < RL_MIN_TRADES:
+        return False, f"trade_count {full.trade_count} < {RL_MIN_TRADES}"
+    if oos.trade_count < RL_MIN_OOS_TRADES:
+        return False, f"oos_trade_count {oos.trade_count} < {RL_MIN_OOS_TRADES}"
+    return True, "passes risk gates"
+
+
 def _norm_pf(pf: float) -> float:
     if not math.isfinite(pf):
         return 1.0

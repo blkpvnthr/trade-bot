@@ -63,14 +63,25 @@ class StrategyMeta:
 
 @dataclass
 class TradeRecord:
-    """One closed trade from a backtest."""
+    """One closed trade from a backtest.
+
+    `pnl` is the EFFECTIVE dollar PnL used by all metrics. For imported
+    TradingView trades it is the position-size-NORMALIZED PnL when normalization
+    is on; `raw_pnl_usd` keeps the unscaled value for audit. `return_pct` is
+    never scaled (size doesn't change percentage returns)."""
     entry_date: str       # ISO
     exit_date: str        # ISO
     entry_price: float
     exit_price: float
-    pnl: float            # dollars
-    return_pct: float     # fractional return on capital-at-risk
+    pnl: float            # effective dollars (normalized for imported TV trades)
+    return_pct: float     # fractional return -- NEVER scaled by normalization
     hold_days: float
+    # Position-size normalization (imported TradingView trades only).
+    raw_qty: float = 0.0
+    normalized_qty: float = 0.0
+    scale_factor: float = 1.0
+    normalized: bool = False
+    raw_pnl_usd: float = 0.0     # unscaled PnL, for audit/reporting only
 
 
 @dataclass
@@ -88,6 +99,11 @@ class Metrics:
     avg_hold_days: float = 0.0
     total_return: float = 0.0        # fractional
     cagr: float = 0.0                # fractional, 0 if span < ~1 month
+    # Equity-curve audit (from a valid initial-equity-based curve).
+    initial_equity: float = 0.0
+    ending_equity: float = 0.0
+    min_equity: float = 0.0
+    blown_up: bool = False           # equity hit <=0 at some point -> ruin
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -32,17 +32,22 @@ def tv_trades(n=3):
     return out
 
 
-def make_passing_trades():
-    """120 trades, 70% win, 40 of them in 2025 OOS -> passes full + OOS gates."""
+def make_passing_trades(n=600):
+    """600 trades, ~70% win, 300 in 2025 OOS, small +20/-10 PnL on 10 shares ->
+    passes admission AND the hard RL risk gates (>=500 trades, >=250 OOS,
+    PF>=1.25, DD<50%, not blown up)."""
     trades = []
-    for i in range(120):
-        year = 2025 if i >= 80 else 2019 + (i % 5)   # 0..79 train, 80..119 oos
+    for i in range(n):
+        year = 2025 if i >= n // 2 else 2019 + (i % 5)
         mo = (i % 12) + 1
+        day = (i % 27) + 1
         win = (i % 10) < 7
-        trades.append(TradeRecord(f"{year}-{mo:02d}-15", f"{year}-{mo:02d}-20",
+        trades.append(TradeRecord(f"{year}-{mo:02d}-{day:02d}",
+                                  f"{year}-{mo:02d}-{day:02d}",
                                   100.0, 102.0 if win else 99.0,
-                                  200.0 if win else -100.0,
-                                  0.02 if win else -0.01, 5))
+                                  20.0 if win else -10.0, 0.02 if win else -0.01, 5,
+                                  raw_qty=10, normalized_qty=10,
+                                  raw_pnl_usd=20.0 if win else -10.0))
     return trades
 
 

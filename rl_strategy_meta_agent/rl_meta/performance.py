@@ -20,7 +20,8 @@ from .registry import DATA_DIR
 from .types import Metrics, RollingMetrics, TradeRecord
 
 DB_PATH = DATA_DIR / "strategy_performance.db"
-START_EQUITY = 100_000.0
+INITIAL_EQUITY = 10_000.0          # explicit starting equity for the equity curve
+START_EQUITY = INITIAL_EQUITY      # backwards-compatible alias
 
 
 def _years_span(trades: list) -> float:
@@ -31,9 +32,10 @@ def _years_span(trades: list) -> float:
     return max((d1 - d0).days, 1) / 365.25
 
 
-def compute_metrics(trades: list, start_equity: float = START_EQUITY) -> Metrics:
+def compute_metrics(trades: list, initial_equity: float = INITIAL_EQUITY) -> Metrics:
     if not trades:
-        return Metrics()
+        return Metrics(initial_equity=initial_equity, ending_equity=initial_equity,
+                       min_equity=initial_equity)
 
     pnls = np.array([t.pnl for t in trades], dtype=float)
     rets = np.array([t.return_pct for t in trades], dtype=float)
@@ -58,17 +60,27 @@ def compute_metrics(trades: list, start_equity: float = START_EQUITY) -> Metrics
     dstd = downside.std(ddof=1) if len(downside) > 1 else 0.0
     sortino = float(rets.mean() / dstd * ann) if dstd > 0 else 0.0
 
-    equity = start_equity + np.cumsum(pnls)
-    peak = np.maximum.accumulate(np.concatenate([[start_equity], equity]))
-    curve = np.concatenate([[start_equity], equity])
-    dd = (peak - curve) / peak
-    max_dd = float(dd.max())
-
-    total_return = float((equity[-1] - start_equity) / start_equity)
-    if years >= 0.08 and equity[-1] > 0:
-        cagr = float((equity[-1] / start_equity) ** (1 / years) - 1)
+    # Valid equity curve: chronological (by exit date), from an explicit initial
+    # equity. Drawdown from the running PEAK, not raw cumulative PnL. If equity
+    # ever hits <=0 the strategy blew up -> drawdown capped at 100%.
+    order = sorted(range(n), key=lambda i: (trades[i].exit_date, trades[i].entry_date))
+    ord_pnls = pnls[order]
+    curve = np.concatenate([[initial_equity], initial_equity + np.cumsum(ord_pnls)])
+    peak = np.maximum.accumulate(curve)
+    min_equity = float(curve.min())
+    ending_equity = float(curve[-1])
+    blown_up = min_equity <= 0.0
+    if blown_up:
+        max_dd = 1.0
     else:
-        cagr = -1.0 if equity[-1] <= 0 else 0.0   # wiped out / too-short span
+        safe_peak = np.where(peak > 0, peak, np.nan)
+        max_dd = float(np.nanmax((peak - curve) / safe_peak))
+
+    total_return = float((ending_equity - initial_equity) / initial_equity)
+    if years >= 0.08 and ending_equity > 0:
+        cagr = float((ending_equity / initial_equity) ** (1 / years) - 1)
+    else:
+        cagr = -1.0 if ending_equity <= 0 else 0.0   # wiped out / too-short span
 
     return Metrics(
         trade_count=n,
@@ -83,6 +95,10 @@ def compute_metrics(trades: list, start_equity: float = START_EQUITY) -> Metrics
         avg_hold_days=round(float(np.mean([t.hold_days for t in trades])), 2),
         total_return=round(total_return, 4),
         cagr=round(cagr, 4),
+        initial_equity=round(initial_equity, 2),
+        ending_equity=round(ending_equity, 2),
+        min_equity=round(min_equity, 2),
+        blown_up=blown_up,
     )
 
 
@@ -161,6 +177,8 @@ class PerformanceDB:
                     entry_date   TEXT, exit_date TEXT,
                     entry_price  REAL, exit_price REAL,
                     pnl REAL, return_pct REAL, hold_days REAL,
+                    raw_qty REAL, normalized_qty REAL, scale_factor REAL,
+                    normalized INTEGER, raw_pnl_usd REAL,
                     PRIMARY KEY (strategy_id, symbol, timeframe, version_hash,
                                  source_file, trade_idx)
                 )""")
@@ -266,10 +284,12 @@ class PerformanceDB:
                       "timeframe=? AND source_file=?",
                       (strategy_id, symbol, timeframe, source_file))
             c.executemany(
-                "INSERT INTO imported_trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO imported_trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 [(strategy_id, symbol, timeframe, version_hash, source_file, i,
                   t.entry_date, t.exit_date, t.entry_price, t.exit_price,
-                  t.pnl, t.return_pct, t.hold_days) for i, t in enumerate(trades)])
+                  t.pnl, t.return_pct, t.hold_days,
+                  t.raw_qty, t.normalized_qty, t.scale_factor,
+                  int(t.normalized), t.raw_pnl_usd) for i, t in enumerate(trades)])
             c.execute("INSERT OR REPLACE INTO import_log VALUES (?,?,?,?,?,?,?,?)",
                       (content_hash, strategy_id, symbol, timeframe, version_hash,
                        source_file, len(trades), on_date))
@@ -277,19 +297,35 @@ class PerformanceDB:
 
     def imported_trades(self, strategy_id: str, timeframe: str,
                         version_hash: str) -> dict:
-        """{symbol: [TradeRecord]} of imported trades matching this version."""
+        """{symbol: [TradeRecord]} of imported trades matching this version.
+        The reconstructed `pnl` is the stored (normalized) effective PnL."""
         with self._conn() as c:
             rows = c.execute(
                 "SELECT symbol,entry_date,exit_date,entry_price,exit_price,pnl,"
-                "return_pct,hold_days FROM imported_trades WHERE strategy_id=? AND "
+                "return_pct,hold_days,raw_qty,normalized_qty,scale_factor,"
+                "normalized,raw_pnl_usd FROM imported_trades WHERE strategy_id=? AND "
                 "timeframe=? AND version_hash=? ORDER BY symbol,exit_date",
                 (strategy_id, timeframe, version_hash)).fetchall()
         out: dict = {}
         for r in rows:
             out.setdefault(r[0], []).append(TradeRecord(
                 entry_date=r[1], exit_date=r[2], entry_price=r[3], exit_price=r[4],
-                pnl=r[5], return_pct=r[6], hold_days=r[7]))
+                pnl=r[5], return_pct=r[6], hold_days=r[7],
+                raw_qty=r[8] or 0.0, normalized_qty=r[9] or 0.0,
+                scale_factor=r[10] if r[10] is not None else 1.0,
+                normalized=bool(r[11]), raw_pnl_usd=r[12] or 0.0))
         return out
+
+    def imported_strategies(self, timeframe: str | None = None) -> list:
+        """Distinct (strategy_id, version_hash) pairs with imported trades.
+        Lets the backtester evaluate TradingView strategies that have no
+        pinescript .txt (they enter only via import)."""
+        q = "SELECT DISTINCT strategy_id, version_hash FROM imported_trades"
+        args = []
+        if timeframe:
+            q += " WHERE timeframe=?"; args.append(timeframe)
+        with self._conn() as c:
+            return [(r[0], r[1]) for r in c.execute(q, args).fetchall()]
 
 
 def aggregate_metrics(trades_by_symbol: dict) -> Metrics:

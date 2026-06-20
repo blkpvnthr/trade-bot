@@ -80,6 +80,8 @@ def parse_tv_csv(path) -> list:
     c_pnl_pct = (_col(headers, ["profit", "%"], ["cum"])
                  or _col(headers, ["p&l", "%"], ["cum"])
                  or _col(headers, ["pnl", "%"], ["cum"]))
+    c_qty = _col(headers, ["qty"]) or _col(headers, ["size"], ["value", "%"]) \
+        or _col(headers, ["contracts"]) or _col(headers, ["quantity"])
     if c_type is None or c_dt is None or c_price is None:
         raise ValueError(f"{path.name}: not a recognisable TradingView "
                          "List-of-Trades CSV (missing Type/Date/Price columns)")
@@ -114,17 +116,52 @@ def parse_tv_csv(path) -> list:
         pnl = _num(exit_.get(c_pnl)) if c_pnl else None
         if pnl is None:
             pnl = ret * CAPITAL_PER_TRADE
+        qty = None
+        if c_qty:
+            qty = _num(exit_.get(c_qty)) or _num(entry.get(c_qty))
+        raw_qty = abs(qty) if qty is not None else 0.0
+        pnl = round(float(pnl), 2)
 
         trades.append(TradeRecord(
             entry_date=e_dt.date().isoformat(),
             exit_date=x_dt.date().isoformat(),
             entry_price=round(float(e_px), 4),
             exit_price=round(float(x_px), 4),
-            pnl=round(float(pnl), 2),
+            pnl=pnl,
             return_pct=float(ret),
             hold_days=round((x_dt - e_dt).total_seconds() / 86400.0, 3),
+            raw_qty=raw_qty,
+            normalized_qty=raw_qty,
+            raw_pnl_usd=pnl,
         ))
     trades.sort(key=lambda t: (t.exit_date, t.entry_date))
+    return trades
+
+
+REFERENCE_QTY = 10.0
+
+
+def normalize_trades(trades: list, reference_qty: float = REFERENCE_QTY,
+                     enabled: bool = True) -> list:
+    """Normalize oversized backtest position sizes to a realistic reference
+    quantity (default 10 shares) so strategies are compared on roughly equal
+    risk. Scales dollar PnL (and qty) only; percentage returns, direction, and
+    timing are untouched.
+
+        scale_factor = reference_qty / raw_qty   if raw_qty > reference_qty
+                     = 1.0                        otherwise
+        pnl (effective) = raw_pnl_usd * scale_factor
+
+    Mutates trades in place and returns them. enabled=False records raw values
+    with scale_factor=1.0 and normalized=False (raw mode)."""
+    for t in trades:
+        t.raw_pnl_usd = t.raw_pnl_usd or t.pnl     # preserve unscaled audit value
+        raw_q = t.raw_qty or 0.0
+        sf = (reference_qty / raw_q) if (enabled and raw_q > reference_qty) else 1.0
+        t.scale_factor = round(sf, 6)
+        t.normalized_qty = round(raw_q * sf, 4)
+        t.pnl = round(t.raw_pnl_usd * sf, 4)       # effective PnL used by metrics
+        t.normalized = bool(enabled)
     return trades
 
 
@@ -134,6 +171,20 @@ def parse_filename(name: str):
     parts = stem.split("__")
     if len(parts) == 3 and all(parts):
         return parts[0], parts[1], parts[2]
+    return None
+
+
+def parse_canonical(path):
+    """(strategy_id, symbol, timeframe) from a flat 3-part name, a canonical
+    4-part name ('{id}__{sym}__{tf}__{range}.csv'), or the nested directory
+    structure '{id}/{sym}/{tf}/file.csv'. Returns None if undeterminable."""
+    p = Path(path)
+    parts = p.stem.split("__")
+    if len(parts) >= 3 and all(parts[:3]):
+        return parts[0], parts[1], parts[2]
+    pp = p.parts
+    if len(pp) >= 4:
+        return pp[-4], pp[-3], pp[-2]
     return None
 
 
