@@ -29,6 +29,7 @@ SYMS = ['AAPL', 'AMSC', 'AMZN', 'ARM', 'AVGO', 'CE', 'ENSG', 'GOOG', 'GOOGL', 'G
 MAX_AGE_DAYS = 3
 MIN_COVERAGE = 0.95
 COST_BPS = 5.0
+DEFAULT_LOG_DIR = Path.home() / "qq-shadow"            # TCC-exempt, never under ~/Desktop
 
 
 def _cfg(log_dir):
@@ -151,7 +152,7 @@ def _rank(xs):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--log-dir", default=str(Path.home() / "qq-shadow"))
+    ap.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
     args = ap.parse_args()
     log_dir = Path(args.log_dir); log_dir.mkdir(parents=True, exist_ok=True)
     log = log_dir / "shadow_log.jsonl"
@@ -161,9 +162,8 @@ def main():
     all_dates = sorted({d for s in SYMS for d in bars[s]})
     if len(all_dates) < 2:
         print("not enough bars"); return
-    D, Dn = all_dates[-2], all_dates[-1]
-    seen = {json.loads(l)["date"] for l in log.read_text().splitlines() if l.strip()} if log.exists() else set()
-    if D in seen:
+    D, Dn = all_dates[-2], all_dates[-1]                          # D's book, realized D -> D+1
+    if already_recorded(log, D):                                 # never re-record a date (no rebuild/overwrite)
         _status(log, "up_to_date", D); return
 
     Dt = datetime.fromisoformat(D)
@@ -196,9 +196,26 @@ def main():
            "daily_pnl": round(sum(x * nr.get(s, 0.0) for s, x in w.items()), 6),
            "daily_ic": _spearman(sig, nr), "ic_sign": (1 if (_spearman(sig, nr) or 0) > 0 else
                                                        -1 if (_spearman(sig, nr) or 0) < 0 else 0) if w else 0}
-    with log.open("a") as fh:
-        fh.write(json.dumps(row) + "\n")
+    append_session(log, row)                                    # APPEND-ONLY, one session
     _status(log, "appended", D)
+
+
+def already_recorded(log_path, date):
+    """True if `date` already has a session row -> the run will NOT append again."""
+    p = Path(log_path)
+    if not p.exists():
+        return False
+    return date in {json.loads(l)["date"] for l in p.read_text().splitlines() if l.strip()}
+
+
+def append_session(log_path, row):
+    """Append exactly one session as a JSONL line. Never rewrites/truncates the log.
+    Idempotent guard: refuses to append a date that is already recorded."""
+    if already_recorded(log_path, row["date"]):
+        return False
+    with Path(log_path).open("a") as fh:                        # mode 'a' = append-only
+        fh.write(json.dumps(row) + "\n")
+    return True
 
 
 def _last_weights(log):
@@ -214,10 +231,10 @@ def _status(log, action, D):
     outages = sum(1 for r in rows if r.get("blocked"))
     pnls = [r["daily_pnl"] - COST_BPS / 1e4 * (r.get("turnover") or 0) for r in traded if r.get("daily_pnl") is not None]
     sharpe = (statistics.fmean(pnls) / (statistics.pstdev(pnls) + 1e-12) * math.sqrt(252)) if len(pnls) > 1 else None
-    out = {"action": action, "session_date": D, "status": "IN_PROGRESS", "days": len(rows),
+    out = {"action": action, "session_date": D, "status": "SHADOW_IN_PROGRESS", "days": len(rows),
            "operational_failures": outages, "realized_net_sharpe": round(sharpe, 3) if sharpe is not None else None}
-    (log.parent / "shadow_status.json").write_text(json.dumps(out, indent=2))
-    print("[%s] session %s | days=%d outages=%d realized_net_sharpe=%s | status=IN_PROGRESS (paper, no orders)"
+    (Path(log).parent / "shadow_status.json").write_text(json.dumps(out, indent=2))
+    print("[%s] session %s | days=%d outages=%d realized_net_sharpe=%s | status=SHADOW_IN_PROGRESS (paper, no orders)"
           % (action, D, len(rows), outages, out["realized_net_sharpe"]))
 
 

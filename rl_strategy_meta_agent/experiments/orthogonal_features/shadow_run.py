@@ -33,7 +33,7 @@ import earnings_calendar as EC
 from rl_meta.alphas import spearman_ic
 from run_extended_validation import build_panel, SYMS
 
-SHADOW_LOG = HERE / "sleeve_shadow_log.jsonl"      # the real accumulating shadow record
+SHADOW_LOG = HERE / "sleeve_shadow_replay.jsonl"   # REPLAY demo, REBUILT each run; the real forward log is ~/qq-shadow/shadow_log.jsonl (never touched here)
 WINDOW_TRADING_DAYS = 90
 
 

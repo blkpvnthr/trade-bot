@@ -109,13 +109,13 @@ def _status(log, action, D):
     rep = SH.compare_to_research(df, research_ic=0.02,
                                  research_turnover=PS.SLEEVE["validated_metrics"]["turnover_per_day"]) if not df.empty \
         else {"verdict": "SHADOW_NOT_STARTED", "days": 0}
-    out = {"action": action, "session_date": D.strftime("%Y-%m-%d"), "status": "IN_PROGRESS",
+    out = {"action": action, "session_date": D.strftime("%Y-%m-%d"), "status": "SHADOW_IN_PROGRESS",
            "sleeve_status": PS.SLEEVE["status"], "shadow": rep}
     (log.parent / "shadow_status.json").write_text(json.dumps(out, indent=2, default=str))
     v = rep.get("verdict")
     print(f"[{action}] session {D.date()} | shadow days={rep.get('days')} verdict={v} "
           f"outages={rep.get('operational_failures')} realized_net_sharpe={rep.get('realized_net_sharpe')} "
-          f"ic_sign_consistent={rep.get('ic_sign_consistent')} | status=IN_PROGRESS (no capital, no live orders)")
+          f"ic_sign_consistent={rep.get('ic_sign_consistent')} | status=SHADOW_IN_PROGRESS (no capital, no live orders)")
 
 
 def _xs_ic(signal, rets):
