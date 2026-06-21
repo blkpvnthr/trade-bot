@@ -106,6 +106,24 @@ def test_shadow_gate_blocks_on_operational_failures():
     assert not rep["promotion_ready"] and rep["operational_failures"] == 5
 
 
+def test_standalone_runner_frozen_weights_parity():
+    # the TCC-exempt stdlib runner must reproduce the canonical frozen object EXACTLY (no drift)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("sds", PKG / "shadow_daily_standalone.py")
+    STD = importlib.util.module_from_spec(spec); spec.loader.exec_module(STD)
+    for n_in in (2, 3, 7):
+        sig = {f"S{i}": (1.0 if i < n_in else 0.0) for i in range(20)}
+        ws, ds = STD.frozen_weights(sig, _DQ_OK)
+        wp, dp = PS.target_weights(sig, _DQ_OK)
+        assert set(ws) == set(wp) and all(abs(ws[k] - wp[k]) < 1e-9 for k in ws)
+        assert ds["gross"] == dp["gross"] and ds["n_long"] == dp["n_long"] and ds["net"] == dp["net"]
+    for bad in ({"earnings_age_days": 5, "missing_symbols_ratio": 0.0, "feed_available": True},
+                {"earnings_age_days": 1, "missing_symbols_ratio": 0.10, "feed_available": True},
+                {"earnings_age_days": 1, "missing_symbols_ratio": 0.0, "feed_available": False}):
+        assert STD.frozen_weights({"A": 1.0, "B": 0.0}, bad)[1]["blocked"] is True
+        assert PS.target_weights({"A": 1.0, "B": 0.0}, bad)[1]["blocked"] is True
+
+
 def test_shadow_gate_blocks_on_underrun_or_wrong_direction():
     assert not SH.compare_to_research(_shadow_df(30), 0.02, 0.24)["promotion_ready"]              # too short
     flip = SH.compare_to_research(_shadow_df(70, ic=-0.02, spread=-0.001, pnl=-0.0005), 0.02, 0.24)

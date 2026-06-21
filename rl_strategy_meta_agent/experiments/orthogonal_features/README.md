@@ -330,6 +330,36 @@ shadow clock starts. Live remains out of scope.
 python experiments/orthogonal_features/run_paper_sleeve.py
 ```
 
+## Forward shadow scheduler (TCC-exempt, no Full Disk Access)
+
+The real forward clock runs daily via launchd. macOS TCC blocks launchd from reading
+`~/Desktop`, so the scheduled runner is **self-contained and lives off-Desktop**:
+
+- **Runner (versioned here, deployed off-Desktop):** `shadow_daily_standalone.py` -- STDLIB
+  ONLY, run by the macOS system python `/usr/bin/python3`. It fetches bars (Alpaca REST) +
+  calendar (Massive/AV) over HTTP and reimplements ONLY the tiny frozen book math
+  (`frozen_weights`), which is **parity-tested** against `paper_sleeve.target_weights` so it
+  can never drift. It touches nothing under `~/Desktop` -> no FDA grant needed.
+- **Deployed paths (TCC-exempt):** `~/qq-shadow/shadow_daily_standalone.py`,
+  `~/qq-shadow/config.env` (keys, chmod 600), `~/qq-shadow/shadow_log.jsonl` (the real
+  accumulating forward log), `~/qq-shadow/shadow_status.json`, `~/qq-shadow/launchd.{out,err}.log`.
+- **LaunchAgent:** `~/Library/LaunchAgents/com.quantumquant.earnings-shadow.plist` (reference
+  copy versioned here) -- weekdays 16:45 ET, runs `/usr/bin/python3 ~/qq-shadow/...`.
+- `shadow_daily.py` (venv) is the equivalent runner for MANUAL/interactive runs (uses the
+  canonical modules directly).
+
+Deploy / redeploy:
+```bash
+cp experiments/orthogonal_features/shadow_daily_standalone.py ~/qq-shadow/
+# config.env holds APCA_API_KEY_ID/SECRET, MASSIVE_API_KEY, ALPHA_VANTAGE_API_KEY (chmod 600)
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.quantumquant.earnings-shadow.plist
+launchctl kickstart -k gui/$(id -u)/com.quantumquant.earnings-shadow   # fire once now
+```
+Each run appends one idempotent session (target weights, freshness, coverage, outage, rank
+spread, realized net PnL, turnover, IC sign) and recomputes the running gate. Fails closed on
+earnings age > 3d, coverage < 95%, or source unavailable. Status stays IN_PROGRESS; no capital
+work, no live orders. Verified: launchd exit 0, zero TCC errors.
+
 ## Workflow for a new source
 
 ```
