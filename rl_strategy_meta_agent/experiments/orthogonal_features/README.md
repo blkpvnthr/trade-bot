@@ -253,27 +253,44 @@ python experiments/orthogonal_features/run_extended_validation.py
 
 ## Paper promotion -- earnings_within_7d (the first ACCEPTED signal)
 
-`paper_sleeve.py` + `run_paper_sleeve.py`. The project crosses from research-only
-falsification to **controlled paper deployment** of the one signal that cleared the bar.
-PAPER ONLY: `paper_sleeve.py` is pure (numpy/pandas) and imports no broker/order/execution
-code (AST-enforced by the test).
+`paper_sleeve.py` + `shadow.py` + `run_paper_sleeve.py`. The project crosses from research-only
+falsification to **controlled paper deployment**. Promotion preserves the EXACT statistical
+object that passed validation; it adds no optimizer, threshold, or tuning.
 
-The sleeve is **market-neutral** (dollar-neutral cross-sectional: long names within ~7d of
-earnings, short the rest) so the shadow period measures alpha, not market beta. Safety caps:
-max allocation **10%**, per-name **4%**, no leverage (gross scaled down, never up), no
-options, daily rebalance. **Fail-safe:** if the earnings-date data is missing or older than 2
-days, `target_weights` BLOCKS and returns flat -- it never trades on stale data.
+- **Self-contained / paper-only:** `paper_sleeve.py` is pure numpy/pandas -- no RL-allocator,
+  execution-agent, broker, order, or live-capital imports (AST-enforced by the test).
+- **Frozen signal:** `FROZEN_SIGNAL = "earnings_within_7d"`. Immutable; changing it requires a
+  new research branch (no parameter search / RL overlay).
+- **Market-neutral, the validated object:** daily cross-sectional book, long the earnings-
+  imminent names, short the rest, dollar-neutral **gross 100% (+50% / -50% / net 0%)**, equal-
+  weight within legs. This is exactly the object that scored net Sharpe 1.11. The **10% is a
+  capital fraction PROPOSED at the Capital Allocation Review gate -- it is NOT applied to these
+  weights** (sizing capital is a separate, later concern).
+- **Fail closed:** `target_weights` returns FLAT on any data doubt -- earnings data older than
+  3 days, more than 5% of the universe missing, or the feed unavailable. No leverage, no options.
+- **Registry** (`sleeve_registry.jsonl`): `decision=ACCEPT`, `status=PAPER_PROMOTED`,
+  `promotion_requires_shadow_period=true` + frozen construction/metrics/caps + shadow phase.
 
-Registry record (`sleeve_registry.jsonl`): `decision=ACCEPT`, `status=PAPER_PROMOTED`,
-`promotion_requires_shadow_period=true`, with the frozen validated metrics + caps. Monitoring
-(`monitor()` over a daily paper ledger): realized net Sharpe, turnover, slippage, hit rate,
-earnings-data freshness, post-earnings exit rate.
+### Shadow phase + promotion gate (`shadow.py`)
 
-Paper-backtest sanity (10% market-neutral book, 1,852 days): realized net Sharpe **1.27**
-(reproduces the validated 1.11), turnover 0.026/day (= 0.24 x the 10% gross), post-earnings
-exit rate 1.0 (positions flatten after earnings). The "today" book is FLAT until a forward
-earnings calendar is wired (historical `reportedDate` has no future dates -> fail-safe flat,
-not a guess). Live remains out of scope; promotion still requires the shadow period.
+The next milestone is proving the paper sleeve behaves in the wild as it did in validation, NOT
+finding another factor. `ShadowTracker` logs daily paper behavior (IC, long-short rank spread,
+turnover, P&L, data outages); `compare_to_research` checks **paper IC ~ research IC**, **paper
+turnover ~ research turnover**, **zero operational failures**, over **>= 60 (target 60-90)
+days**. Only then `capital_review_ready` is true. The path is strict:
+
+```
+Research -> Validated -> Paper Sleeve -> Shadow Statistics -> Capital Allocation Review
+```
+
+No stage is skipped; there is no direct jump from validation to live.
+
+Paper-backtest sanity (gross-100% object, 1,852 days): realized net Sharpe **1.35** (reproduces
+the validated 1.11), turnover 0.28/day (~ the validated 0.24), post-earnings exit rate 1.0. The
+shadow-framework demo on the most recent 90 days returns **SHADOW_FAIL** -- 23 of 90 days are
+data outages because historical `reportedDate` thins out near "today". That is the gate working
+as intended, and it is exactly why a **forward earnings calendar** must be wired before the real
+shadow clock starts. Live remains out of scope.
 
 ```bash
 python experiments/orthogonal_features/run_paper_sleeve.py
