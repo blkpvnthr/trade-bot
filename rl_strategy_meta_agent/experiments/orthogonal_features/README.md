@@ -219,6 +219,38 @@ this sample -> quarantined pending more history, not killed and not accepted.
 python experiments/orthogonal_features/run_short_interest_study.py
 ```
 
+## Extended-history validation -- the first deployable signal
+
+`daily_bars.py` (Alpaca SIP adjusted, 2016+) + `run_extended_validation.py`. Resolves the
+three quarantined signals on a **decade** of daily data instead of 8 months, through the
+focused funnel: walk-forward by year, symbol holdout, bootstrap, **placebo labels** (shuffle
+forward returns within each day -> the real signal must beat the null), FDR, net-of-cost daily
+mark-to-market, breakeven, capacity. Decision: ACCEPT only if bootstrap + FDR + placebo +
+holdout + walk-forward all pass net-of-cost; QUARANTINE if positive but underpowered; REJECT
+if OOS decays or costs kill it.
+
+| signal | n_obs | net Sharpe @5bps | turnover | breakeven | boot p | placebo p | FDR | +yrs | holdout | decision |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **earnings_within_7d** | 55,818 (10y) | **1.11** | 0.24 | **56 bps** | 0.0 | 0.0 | yes | 0.73 | +0.32 | **ACCEPT** |
+| sv_ratio | 5,592 (2.3y) | 1.67 | 0.63 | 20 bps | 0.108 | 0.017 | no | 1.0 | +0.67 | QUARANTINE |
+| sv_ratio x vol | 5,592 | 0.21 | 0.64 | 8 bps | 0.83 | 0.27 | no | 0.5 | +0.37 | REJECT |
+| idio_reversal | 55,818 | -1.0 | 1.42 | neg | - | 0.88 | - | 0.09 | -0.62 | REJECT |
+
+**`earnings_within_7d` is the first signal in the whole arc to clear the deployable bar.** On
+8 months it was bootstrap p=0.57 (unconfirmable); on a decade it is net Sharpe 1.11 after 5 bps,
+breakeven 56 bps (11x the cost), bootstrap AND placebo p=0.0, FDR-significant, positive in 8 of
+11 years, survives symbol holdout, low turnover (0.24/day). The pre-earnings drift, robust and
+net-positive on this universe. **`sv_ratio` strengthened** (placebo 0.017, walk-forward 2/2,
+holdout +0.67) but its net-bootstrap p=0.108 just misses -> still QUARANTINE, sample-limited to
+the 2.3y of short-volume history. **`idio_reversal` is dead at daily too** (IC 0.001, no gross
+signal -- distinct from the 15m version that had signal but died on turnover); **`sv_ratio x vol`
+was noise** revealed by more data. Extending history converted one quarantine to ACCEPT and
+collapsed the two weak ones -- exactly what more power is for.
+
+```bash
+python experiments/orthogonal_features/run_extended_validation.py
+```
+
 ## Workflow for a new source
 
 ```
