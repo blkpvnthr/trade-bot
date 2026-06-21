@@ -161,6 +161,35 @@ is 15-min/1-hour forward returns -- a **daily-horizon panel is the cleaner test*
 natural follow-up before fully retiring this channel. Prior estimate was ~25-40%; this is
 the majority null outcome.
 
+## Net-of-cost validation of the surviving leads
+
+`run_lead_validation.py`. Passing the gate earns the right to this test; it is NOT
+deployability. Per lead: dollar-neutral cross-sectional long-short -> daily gross return +
+turnover -> cost curve (net Sharpe vs bps), breakeven cost, block-bootstrap significance of
+net returns at a realistic 5 bps, and an ADV-based capacity proxy. Plus an earnings event
+study.
+
+| lead | gross Sharpe | turnover/day | breakeven | net Sharpe @5bps | bootstrap p(net) | capacity | verdict |
+|---|---|---|---|---|---|---|---|
+| `idio_reversal` | 2.59 | **48.7** | **0.96 bps** | **-10.9** | 0.0 (on the LOSS) | ~$357k | **KILLED by costs** |
+| `earnings_within_7d` | 2.00 | 3.0 | 7.9 bps (OOS 15.6) | +0.73 | **0.57 (n.s.)** | ~$7.1M | survives structurally, **not yet significant** |
+
+**`idio_reversal` is a cost mirage.** A real gross signal (Sharpe 2.6) but ~49x/day
+turnover -> breakeven under 1 bps -> at any realistic cost it is a large, bootstrap-significant
+LOSER (net Sharpe -10.9 at 5 bps). HFT-only, ~$357k capacity. The "surprising winner" of the
+whole search does not survive costs -- the textbook short-term-reversal outcome.
+
+**`earnings_within_7d` is the only structurally-deployable lead** (low turnover, breakeven ~8
+bps > realistic 5 bps, ~$7M capacity) and economically coherent -- the event study (70 events)
+shows +0.66% drift INTO earnings (d-5..d0) and -3.2% after. BUT its net edge at 5 bps is not
+statistically significant (bootstrap p=0.57): real mechanism, too small/short to confirm net of
+cost on 8 months. Promising, unproven -- needs longer history.
+
+Methodological note: the gate's per-bar rank-turnover (0.66 for idio_reversal) badly understated
+deployment turnover (48.7/day); the cost curve is what exposed the fragility. The net-of-cost
+stage is therefore a NECESSARY gate after orthogonality -- a candidate can be FDR-significant,
+orthogonal, and OOS-positive yet die entirely on turnover.
+
 ## Workflow for a new source
 
 ```
