@@ -1,7 +1,7 @@
 # Insider Book - Track 1 CLOSED (execution-quality overlays)
 
 Status: **CLOSED**. The vol-gated insider-shares book is correctly specified as-is. It is not
-"bad" - it is **done**. No further sizing or exit overlays without a pre-registered OOS
+bad - it is **done**. No further sizing or exit overlays without a pre-registered OOS
 hypothesis.
 
 ## Canonical baseline (the deployed edge)
