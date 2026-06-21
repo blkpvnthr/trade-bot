@@ -208,14 +208,42 @@ def already_recorded(log_path, date):
     return date in {json.loads(l)["date"] for l in p.read_text().splitlines() if l.strip()}
 
 
+def _rows(log_path):
+    p = Path(log_path)
+    return [json.loads(l) for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
+
+
+def _next_session_id(log_path):
+    """Monotonic id = last row's session_id + 1 (so a lost middle row leaves a detectable gap)."""
+    ids = [r.get("session_id", 0) for r in _rows(log_path)]
+    return (max(ids) if ids else 0) + 1
+
+
 def append_session(log_path, row):
-    """Append exactly one session as a JSONL line. Never rewrites/truncates the log.
-    Idempotent guard: refuses to append a date that is already recorded."""
+    """Append exactly one session as a JSONL line with a monotonic session_id. Never
+    rewrites/truncates the log. Idempotent guard: refuses a date already recorded."""
     if already_recorded(log_path, row["date"]):
         return False
+    row = {"session_id": _next_session_id(log_path), **row}
     with Path(log_path).open("a") as fh:                        # mode 'a' = append-only
-        fh.write(json.dumps(row) + "\n")
+        fh.write(json.dumps(row, default=str) + "\n")
     return True
+
+
+def session_integrity(log_path):
+    """Corruption detector: expected (highest id assigned) vs actual (rows present). A lost
+    or duplicated row makes them disagree -> immediate alert."""
+    rows = _rows(log_path)
+    ids = [r.get("session_id", 0) for r in rows]
+    dates = [r.get("date") for r in rows]
+    actual = len(rows)
+    expected = max(ids) if ids else 0
+    contiguous = ids == list(range(1, actual + 1))
+    increasing = all(dates[i] < dates[i + 1] for i in range(len(dates) - 1))
+    ok = (expected == actual) and contiguous and increasing
+    return {"expected_session_count": expected, "actual_session_count": actual, "integrity_ok": ok,
+            "integrity_alert": None if ok else
+            "expected %d present %d (contiguous=%s increasing=%s)" % (expected, actual, contiguous, increasing)}
 
 
 def _last_weights(log):
@@ -231,11 +259,15 @@ def _status(log, action, D):
     outages = sum(1 for r in rows if r.get("blocked"))
     pnls = [r["daily_pnl"] - COST_BPS / 1e4 * (r.get("turnover") or 0) for r in traded if r.get("daily_pnl") is not None]
     sharpe = (statistics.fmean(pnls) / (statistics.pstdev(pnls) + 1e-12) * math.sqrt(252)) if len(pnls) > 1 else None
+    integ = session_integrity(log)
     out = {"action": action, "session_date": D, "status": "SHADOW_IN_PROGRESS", "days": len(rows),
-           "operational_failures": outages, "realized_net_sharpe": round(sharpe, 3) if sharpe is not None else None}
+           "operational_failures": outages, "realized_net_sharpe": round(sharpe, 3) if sharpe is not None else None,
+           **integ}
     (Path(log).parent / "shadow_status.json").write_text(json.dumps(out, indent=2))
-    print("[%s] session %s | days=%d outages=%d realized_net_sharpe=%s | status=SHADOW_IN_PROGRESS (paper, no orders)"
-          % (action, D, len(rows), outages, out["realized_net_sharpe"]))
+    alert = "" if integ["integrity_ok"] else "  !! INTEGRITY ALERT: " + integ["integrity_alert"]
+    print("[%s] session %s | sessions=%d/%d outages=%d realized_net_sharpe=%s | status=SHADOW_IN_PROGRESS%s"
+          % (action, D, integ["actual_session_count"], integ["expected_session_count"], outages,
+             out["realized_net_sharpe"], alert))
 
 
 if __name__ == "__main__":

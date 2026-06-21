@@ -52,6 +52,29 @@ def test_never_overwrites_existing_sessions(tmp_path):
     assert log.read_text().splitlines()[0] == first                    # byte-identical, untouched
 
 
+# monotonic session_id + corruption detection (expected vs actual)
+def test_session_id_monotonic_and_integrity_clean(tmp_path):
+    log = tmp_path / "shadow_log.jsonl"
+    for d in ("2026-06-17", "2026-06-18", "2026-06-19"):
+        STD.append_session(log, _row(d))
+    rows = [json.loads(l) for l in log.read_text().splitlines() if l.strip()]
+    assert [r["session_id"] for r in rows] == [1, 2, 3]                 # monotonic, contiguous
+    integ = STD.session_integrity(log)
+    assert integ["expected_session_count"] == 3 and integ["actual_session_count"] == 3
+    assert integ["integrity_ok"] and integ["integrity_alert"] is None
+
+
+def test_integrity_detects_a_lost_session(tmp_path):
+    log = tmp_path / "shadow_log.jsonl"
+    for d in ("2026-06-17", "2026-06-18", "2026-06-19"):
+        STD.append_session(log, _row(d))
+    lines = log.read_text().splitlines()
+    log.write_text(lines[0] + "\n" + lines[2] + "\n")                  # drop the middle session (corruption)
+    integ = STD.session_integrity(log)
+    assert integ["expected_session_count"] == 3 and integ["actual_session_count"] == 2
+    assert not integ["integrity_ok"] and integ["integrity_alert"]      # immediate alert
+
+
 # 5: fail closed -> outage/flat on stale / missing-coverage / unavailable
 def test_fail_closed_stale_coverage_unavailable():
     sig = {"A": 1.0, "B": 0.0, "C": 0.0}

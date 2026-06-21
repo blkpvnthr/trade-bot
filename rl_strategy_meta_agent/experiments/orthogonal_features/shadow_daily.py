@@ -35,6 +35,7 @@ import paper_sleeve as PS
 import shadow as SH
 import earnings_calendar as EC
 import daily_bars as DB
+import shadow_daily_standalone as STD          # one source of truth for append/idempotency/integrity
 from run_extended_validation import SYMS
 
 DEFAULT_LOG_DIR = Path.home() / "Library" / "Application Support" / "qq-shadow"   # TCC-exempt
@@ -60,8 +61,7 @@ def main():
         print("not enough bar history yet"); return
     D, Dn = pd.Timestamp(dates[-2]), pd.Timestamp(dates[-1])      # D's book, realized D->D+1
 
-    seen = {json.loads(l)["date"] for l in log.read_text().splitlines() if l.strip()} if log.exists() else set()
-    if D.strftime("%Y-%m-%d") in seen:
+    if STD.already_recorded(log, D.strftime("%Y-%m-%d")):       # never re-record (no rebuild/overwrite)
         _status(log, "up_to_date", D)
         return
 
@@ -92,8 +92,7 @@ def main():
         "rank_spread": _r(lr - sr), "daily_pnl": _r(sum(w * nr.get(s, 0.0) for s, w in weights.items())),
         "daily_ic": _r(_xs_ic(sig, nr)), "ic_sign": int(np.sign(_xs_ic(sig, nr))) if weights else 0,
     }
-    with log.open("a") as fh:
-        fh.write(json.dumps(row, default=str) + "\n")
+    STD.append_session(log, row)                               # append-only + monotonic session_id
     _status(log, "appended", D)
 
 
@@ -109,13 +108,14 @@ def _status(log, action, D):
     rep = SH.compare_to_research(df, research_ic=0.02,
                                  research_turnover=PS.SLEEVE["validated_metrics"]["turnover_per_day"]) if not df.empty \
         else {"verdict": "SHADOW_NOT_STARTED", "days": 0}
+    integ = STD.session_integrity(log)
     out = {"action": action, "session_date": D.strftime("%Y-%m-%d"), "status": "SHADOW_IN_PROGRESS",
-           "sleeve_status": PS.SLEEVE["status"], "shadow": rep}
+           "sleeve_status": PS.SLEEVE["status"], "shadow": rep, **integ}
     (log.parent / "shadow_status.json").write_text(json.dumps(out, indent=2, default=str))
-    v = rep.get("verdict")
-    print(f"[{action}] session {D.date()} | shadow days={rep.get('days')} verdict={v} "
-          f"outages={rep.get('operational_failures')} realized_net_sharpe={rep.get('realized_net_sharpe')} "
-          f"ic_sign_consistent={rep.get('ic_sign_consistent')} | status=SHADOW_IN_PROGRESS (no capital, no live orders)")
+    alert = "" if integ["integrity_ok"] else "  !! INTEGRITY ALERT: " + integ["integrity_alert"]
+    print(f"[{action}] session {D.date()} | sessions={integ['actual_session_count']}/"
+          f"{integ['expected_session_count']} verdict={rep.get('verdict')} "
+          f"outages={rep.get('operational_failures')} | status=SHADOW_IN_PROGRESS (no capital, no live orders){alert}")
 
 
 def _xs_ic(signal, rets):
