@@ -1,0 +1,110 @@
+{
+  "strategy": "vol_gated_insider_shares",
+  "params": {
+    "hold_days": 3,
+    "cost_bps": 100.0,
+    "alloc": 0.1,
+    "max_open": 3,
+    "vol_gate_pctile": 80,
+    "train_end": "2024-01-01",
+    "trend_band": 0.1,
+    "vol_ref": 0.16,
+    "vol_clip": [
+      0.3,
+      1.8
+    ]
+  },
+  "n_trades_universe": 181,
+  "note": "exposure scaling is pure sizing (trade selection/count invariant); every variant normalized to the baseline's mean deployed exposure to isolate TIMING of risk, not level. give-back EXITS deliberately NOT included.",
+  "variants": {
+    "1_baseline": {
+      "trades_taken": 169,
+      "avg_deployed_exposure": 0.1,
+      "win_rate": 0.5799,
+      "avg_R_net": 0.02262,
+      "CAGR": 0.0764,
+      "total_return": 0.336,
+      "sharpe_active": 2.569,
+      "max_drawdown": -0.074,
+      "calmar": 1.033,
+      "pf_size_weighted": 1.684,
+      "top1_contribution": 0.1431,
+      "top3_contribution": 0.3136,
+      "top5_contribution": 0.4595,
+      "total_drop_top1": 0.2752,
+      "total_drop_top3": 0.2024,
+      "total_drop_top5": 0.1428
+    },
+    "2_trend": {
+      "trades_taken": 169,
+      "avg_deployed_exposure": 0.1048,
+      "win_rate": 0.5799,
+      "avg_R_net": 0.02262,
+      "CAGR": 0.0587,
+      "total_return": 0.2517,
+      "sharpe_active": 2.271,
+      "max_drawdown": -0.1189,
+      "calmar": 0.494,
+      "pf_size_weighted": 1.519,
+      "top1_contribution": 0.122,
+      "top3_contribution": 0.3586,
+      "top5_contribution": 0.5749,
+      "total_drop_top1": 0.2094,
+      "total_drop_top3": 0.1307,
+      "total_drop_top5": 0.0632
+    },
+    "3_vol": {
+      "trades_taken": 169,
+      "avg_deployed_exposure": 0.1029,
+      "win_rate": 0.5799,
+      "avg_R_net": 0.02262,
+      "CAGR": 0.0601,
+      "total_return": 0.258,
+      "sharpe_active": 2.075,
+      "max_drawdown": -0.1168,
+      "calmar": 0.514,
+      "pf_size_weighted": 1.536,
+      "top1_contribution": 0.1698,
+      "top3_contribution": 0.3955,
+      "top5_contribution": 0.551,
+      "total_drop_top1": 0.2011,
+      "total_drop_top3": 0.1228,
+      "total_drop_top5": 0.0725
+    },
+    "4_combined": {
+      "trades_taken": 169,
+      "avg_deployed_exposure": 0.1057,
+      "win_rate": 0.5799,
+      "avg_R_net": 0.02262,
+      "CAGR": 0.0458,
+      "total_return": 0.1928,
+      "sharpe_active": 1.663,
+      "max_drawdown": -0.1538,
+      "calmar": 0.298,
+      "pf_size_weighted": 1.42,
+      "top1_contribution": 0.2082,
+      "top3_contribution": 0.5062,
+      "top5_contribution": 0.7571,
+      "total_drop_top1": 0.1352,
+      "total_drop_top3": 0.0568,
+      "total_drop_top5": -0.0062
+    }
+  },
+  "regime_breakdown": {
+    "bull": {
+      "n": 90,
+      "mean_net": 0.01438,
+      "win_rate": 0.5778
+    },
+    "bear": {
+      "n": 73,
+      "mean_net": 0.04299,
+      "win_rate": 0.6301
+    },
+    "n/a": {
+      "n": 18,
+      "mean_net": 0.01283,
+      "win_rate": 0.6111
+    }
+  }
+}
