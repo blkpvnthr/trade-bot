@@ -157,10 +157,12 @@ def _verdict(r, c):
     lift = r["combined_oos_ic_lift"]
     if lift is None:                      # no accepted set to compare -> judge standalone
         return "ORTHOGONAL_INFORMATIVE" if r["fdr_significant"] else "WEAK"
-    # the user's bar: orthogonal AND a real OOS combined-IC lift (breadth alone is not enough)
-    if lift > c["min_combined_ic_lift"]:
+    # the user's bar: a REAL standalone signal (FDR-significant) that is orthogonal AND adds
+    # OOS combined IC. FDR is necessary -- a tiny combined-IC lift from a non-significant
+    # feature is just combination-weight noise nudging the baseline, not new information.
+    if lift > c["min_combined_ic_lift"] and r["fdr_significant"]:
         return "ORTHOGONAL_INFORMATIVE"
-    return "WEAK"                         # orthogonal but no OOS predictive contribution
+    return "WEAK"                         # orthogonal but no real OOS predictive contribution
 
 
 def _summary(recs):

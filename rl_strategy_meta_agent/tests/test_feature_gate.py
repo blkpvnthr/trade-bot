@@ -60,6 +60,15 @@ def test_accepted_extra_absorbs_redundant_candidate():
     assert r["rank_contribution"] < 0.5 or r["verdict"] != "ORTHOGONAL_INFORMATIVE"
 
 
+def test_verdict_requires_fdr_significance():
+    # a non-FDR-significant feature with a tiny combined-IC lift is combination noise -> WEAK
+    base = {"fdr_significant": False, "turnover": 0.1, "vol_corr": 0.1,
+            "rank_contribution": 0.9, "combined_oos_ic_lift": 0.01, "breadth_lift": 0.0}
+    assert G._verdict(dict(base), G.DEFAULTS) == "WEAK"
+    base["fdr_significant"] = True
+    assert G._verdict(dict(base), G.DEFAULTS) == "ORTHOGONAL_INFORMATIVE"
+
+
 def test_deterministic():
     p = _panel()
     cand = pd.DataFrame({"orthogonal_signal": p["_orth"]}, index=p.index)

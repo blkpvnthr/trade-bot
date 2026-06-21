@@ -67,7 +67,7 @@ come from data outside price/volume.
 | market / sector regime | partly in panel (`spy_trend`, `qqq_trend`, `mkt_regime`) | med | **constant per cross-section** -- needs regime-conditional eval, not the cross-sectional gate |
 | intraday microstructure | partly in panel (wicks, body, `vwap_dist`); book = Databento | low | book-skew already net-negative after spread |
 | **news / earnings / catalyst** | TESTED -- see below | done | event-timing clears; sentiment fails |
-| options flow / put-call / IV rank | AV chains, `book_skew_backtest.py` | low-med | options-positioning already falsified standalone |
+| options flow / put-call / IV rank | TESTED -- see below | done | null vs the validated leads at 15m + 1h |
 | spread / slippage / fill-quality | executor journals have slippage | med | the project's known real edge, but a **sizing/timing** axis, not directional alpha |
 
 ## News / catalyst / FinBERT scan (the first EXTERNAL source)
@@ -127,6 +127,39 @@ interaction terms.
 Caveat: this tests *linear additive* ensembling (the combined-IC objective is linear). A
 NONLINEAR learner that splits on `earnings_within_7d` and then reads `idio_reversal`
 could still extract conditioning value -- untested here, a separate lower-priority probe.
+
+## Options / IV structure (the "positioning" channel)
+
+`options_features.py` + `run_options_study.py`. Options describe how participants are
+positioned *before* information arrives -- a different channel from price (what happened)
+and earnings timing (when info comes). Source: AV `HISTORICAL_OPTIONS` (as-of-date chain
+with IV + greeks + OI). **5,577 symbol-days** fetched across all 24 symbols. ATM found by
+delta (~0.5), tenors by DTE. Leak-free: a bar on date D uses only the chain of the latest
+date strictly before D (prior-session EOD). Candidates: IV rank, IV percentile, term slope
+(IV30-IV7), put/call OI ratio, OI change 1d/5d, 25d skew, and `iv_rank x earnings7`.
+
+**Raised bar:** the accepted space is now the validated leads
+`[volatility_factor, idio_reversal, earnings_within_7d]` (+ the 8 alphas), so a pass means
+"beats every validated lead," not just "beats volatility."
+
+**Verdict: null at both 15-min (`fut_ret_1`) and 1-hour (`fut_ret_4`) horizons.** No
+options/IV feature clears. `iv_rank`/`iv_percentile` are FDR-significant *in-sample*
+(IC ~0.012) and genuinely orthogonal (vol-corr 0.14, rank-contrib 0.95) but OOS IC
+collapses to ~0. OI/skew are not individually significant. The `iv_rank x earnings7`
+composite is FDR-significant but its lift is subsumed by `earnings_within_7d` (rank-contrib
+drops to 0.77). 
+
+Gate hardening from this run: at `fut_ret_4`, three non-significant features (skew, P/C OI,
+OI-change-5d) briefly showed a tiny positive combined-IC lift (+0.002-0.004 on a 0.006
+base) -- combination-weight noise, not signal. `_verdict` now requires **FDR significance
+as a necessary condition** for ORTHOGONAL_INFORMATIVE, which correctly reclassifies them as
+WEAK. Both horizons then agree: null.
+
+Caveats: (1) liquid mega-cap universe -- exactly where options positioning is most
+arbitraged; (2) options-positioning signals are daily/multi-day predictors, and this panel
+is 15-min/1-hour forward returns -- a **daily-horizon panel is the cleaner test** and is the
+natural follow-up before fully retiring this channel. Prior estimate was ~25-40%; this is
+the majority null outcome.
 
 ## Workflow for a new source
 
