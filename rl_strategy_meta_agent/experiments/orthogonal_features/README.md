@@ -190,6 +190,35 @@ deployment turnover (48.7/day); the cost curve is what exposed the fragility. Th
 stage is therefore a NECESSARY gate after orthogonality -- a candidate can be FDR-significant,
 orthogonal, and OOS-positive yet die entirely on turnover.
 
+## Short interest / short volume (the positioning channel)
+
+`short_interest_features.py` + `run_short_interest_study.py`. Short/borrow pressure is a
+genuinely different channel - how participants are positioned before information arrives.
+Source: **Massive** (`api.massive.com`, FINRA aggregator) - two channels: bi-weekly **short
+interest** (`days_to_cover`, `short_interest` shares, SI change; settlement+~12d publication
+lag) and daily **short volume** (`short_volume_ratio`). All 24 symbols, full window. Daily
+horizon only (no 15m churn); horizons **1/3/5/10/20d**; leak-free (strict prior-session for
+short-volume, settlement+pub-lag for short-interest). Borrow fee / utilization are **not in
+this feed** (proprietary securities-lending data) - reported unavailable, not faked.
+
+Raised bar: accepted space = the validated leads `[volatility_factor, idio_reversal,
+earnings_within_7d]`. Net-of-cost P&L is **daily mark-to-market** (`fut_ret_1`) regardless of
+the signal's predictive horizon - using the h-day forward return as a daily P&L inflates
+Sharpe ~sqrt(h)x (overlapping returns); that bug was caught and fixed.
+
+**Verdict: no short-pressure feature is deployable beyond the leads, net-of-cost.** The two
+best are **QUARANTINE, not ACCEPT**: `sv_ratio` (daily short-volume, IC 0.139 @20d, orthogonal
+vol-corr 0.24, net Sharpe 1.56 @5bps, breakeven 21 bps) and `sv_ratio x volatility` (net Sharpe
+1.64, breakeven 29 bps) - both FDR-significant and genuinely orthogonal, but **bootstrap
+p~0.2 (net edge not significant)** on 166 days. True short interest (`days_to_cover`, SI change)
+fails FDR at the 20-day horizon (~8 independent windows). So short-volume is suggestive and
+genuinely independent of the leads, but cannot be confirmed bootstrap-significant net-of-cost on
+this sample -> quarantined pending more history, not killed and not accepted.
+
+```bash
+python experiments/orthogonal_features/run_short_interest_study.py
+```
+
 ## Workflow for a new source
 
 ```
