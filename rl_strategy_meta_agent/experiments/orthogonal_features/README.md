@@ -275,9 +275,12 @@ object that passed validation; it adds no optimizer, threshold, or tuning.
 
 The next milestone is proving the paper sleeve behaves in the wild as it did in validation, NOT
 finding another factor. `ShadowTracker` logs daily paper behavior (IC, long-short rank spread,
-turnover, P&L, data outages); `compare_to_research` checks **paper IC ~ research IC**, **paper
-turnover ~ research turnover**, **zero operational failures**, over **>= 60 (target 60-90)
-days**. Only then `capital_review_ready` is true. The path is strict:
+turnover, P&L, data outages); `compare_to_research` gates on **robust DIRECTIONAL evidence**, not
+IC near-equality -- a modest signal (research IC ~ 0.02) is far too noisy over 60-90 days to demand
+paper IC ~ research IC, which would reject valid signals on normal variance. The gate requires:
+**>= 60 days**, **sign-consistent IC**, **positive mean rank spread**, **positive realized net
+Sharpe**, and **zero operational failures**. Only then `capital_review_ready` is true. The path is
+strict:
 
 ```
 Research -> Validated -> Paper Sleeve -> Shadow Statistics -> Capital Allocation Review

@@ -91,11 +91,14 @@ def main():
 def _print(cal, r, research_ic, ntd, ncd):
     print(f"\n=== earnings_within_7d SHADOW (forward calendar = {cal.source}) ===")
     print(f"window: {ntd} trading days (~{ncd} calendar days) | required >= 60 calendar")
-    print(f"  paper IC        {r['paper_ic']}  vs research IC {SH._round(research_ic)}  (match={r['ic_match']})")
-    print(f"  paper turnover  {r['paper_turnover']}  vs research {r['research_turnover']}  (match={r['turnover_match']})")
-    print(f"  operational failures (data outages): {r['operational_failures']}  (clean={r['ops_clean']})")
-    print(f"  days check: {r['checks']['days']} | ic: {r['checks']['ic']} | "
-          f"turnover: {r['checks']['turnover']} | ops: {r['checks']['ops']}")
+    print(f"  paper IC {r['paper_ic']} vs research IC {SH._round(research_ic)} (sign-consistent={r['ic_sign_consistent']})")
+    print(f"  mean rank spread {r['mean_rank_spread']} (positive={r['rank_spread_positive']}) | "
+          f"realized net Sharpe {r['realized_net_sharpe']} (positive={r['sharpe_positive']})")
+    print(f"  paper turnover {r['paper_turnover']} vs research {r['research_turnover']} (reported, not gated)")
+    print(f"  operational failures (data outages): {r['operational_failures']} (clean={r['ops_clean']})")
+    print(f"  gate: days={r['checks']['days']} | ic_sign={r['checks']['ic_sign']} | "
+          f"rank_spread={r['checks']['rank_spread']} | realized_sharpe={r['checks']['realized_sharpe']} | "
+          f"ops={r['checks']['ops']}")
     print(f"\n=== SHADOW VERDICT: {r['verdict']} ===")
     if r["verdict"] == "READY_FOR_CAPITAL_REVIEW":
         print("  (production-pipeline replay clean; let the forward clock add live sessions before"

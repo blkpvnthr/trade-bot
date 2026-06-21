@@ -19,8 +19,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# promotion tolerances (paper must resemble research)
-DEFAULTS = {"min_days": 60, "ic_abs_tol": 0.01, "turnover_rel_tol": 0.5, "max_operational_failures": 0}
+# Promotion criteria. A modest signal (research IC ~ 0.02) is extremely noisy over only
+# 60-90 days, so the gate does NOT demand paper-IC ~ research-IC near-equality (that rejects
+# valid signals on normal variance). It requires robust DIRECTIONAL evidence instead:
+# sign-consistent IC, positive rank spread, positive realized net Sharpe, zero outages.
+DEFAULTS = {"min_days": 60, "cost_bps": 5.0, "max_operational_failures": 0}
 
 
 class ShadowTracker:
@@ -58,31 +61,42 @@ class ShadowTracker:
 
 
 def compare_to_research(shadow_df: pd.DataFrame, research_ic, research_turnover, cfg=None) -> dict:
-    """Compare the shadow-paper behavior to the research baseline; emit the promotion verdict."""
+    """Emit the promotion verdict from robust DIRECTIONAL evidence (not IC near-equality):
+    >= min_days, sign-consistent IC, positive rank spread, positive realized net Sharpe,
+    zero operational failures. research_turnover is reported for context, not gated."""
     c = {**DEFAULTS, **(cfg or {})}
     if shadow_df.empty:
         return {"verdict": "SHADOW_NOT_STARTED", "days": 0}
     traded = shadow_df[~shadow_df["blocked"].astype(bool)]
     outages = int(shadow_df["blocked"].astype(bool).sum())
-    paper_ic = float(traded["daily_ic"].mean()) if "daily_ic" in traded and len(traded) else float("nan")
-    paper_turn = float(traded["turnover"].mean()) if "turnover" in traded and traded["turnover"].notna().any() else float("nan")
     days = int(len(shadow_df))
+    paper_ic = float(traded["daily_ic"].mean()) if "daily_ic" in traded and len(traded) else float("nan")
+    spread = float(traded["rank_spread"].mean()) if "rank_spread" in traded and len(traded) else float("nan")
+    paper_turn = float(traded["turnover"].mean()) if "turnover" in traded and traded["turnover"].notna().any() else float("nan")
+    if "daily_pnl" in traded and len(traded):
+        # flat (no-earnings-in-window) days are legitimately 0 P&L, not missing
+        net = traded["daily_pnl"].fillna(0).to_numpy(float) - c["cost_bps"] / 1e4 * traded["turnover"].fillna(0).to_numpy(float)
+        realized_sharpe = float(net.mean() / (net.std() + 1e-12) * np.sqrt(252))
+    else:
+        realized_sharpe = float("nan")
 
-    ic_ok = np.isfinite(paper_ic) and abs(paper_ic - research_ic) <= c["ic_abs_tol"]
-    turn_ok = (not np.isfinite(paper_turn)) or research_turnover == 0 or \
-        abs(paper_turn - research_turnover) / research_turnover <= c["turnover_rel_tol"]
-    days_ok = days >= c["min_days"]
-    ops_ok = outages <= c["max_operational_failures"]
-    ready = bool(days_ok and ic_ok and turn_ok and ops_ok)
-    verdict = ("READY_FOR_CAPITAL_REVIEW" if ready else
-               "SHADOW_FAIL" if (np.isfinite(paper_ic) and paper_ic < 0) or outages > c["max_operational_failures"]
-               else "SHADOW_CONTINUE")
+    days_ok = bool(days >= c["min_days"])
+    sign_ok = bool(np.isfinite(paper_ic) and (research_ic == 0 or np.sign(paper_ic) == np.sign(research_ic)))
+    spread_ok = bool(np.isfinite(spread) and spread > 0)
+    sharpe_ok = bool(np.isfinite(realized_sharpe) and realized_sharpe > 0)
+    ops_ok = bool(outages <= c["max_operational_failures"])
+    ready = bool(days_ok and sign_ok and spread_ok and sharpe_ok and ops_ok)
+    failing = outages > c["max_operational_failures"] or (np.isfinite(realized_sharpe) and realized_sharpe < 0) \
+        or (np.isfinite(spread) and spread < 0)
+    verdict = "READY_FOR_CAPITAL_REVIEW" if ready else "SHADOW_FAIL" if failing else "SHADOW_CONTINUE"
     return {"verdict": verdict, "days": days, "days_required": c["min_days"],
-            "paper_ic": _round(paper_ic), "research_ic": _round(research_ic), "ic_match": ic_ok,
+            "paper_ic": _round(paper_ic), "research_ic": _round(research_ic), "ic_sign_consistent": sign_ok,
+            "mean_rank_spread": _round(spread), "rank_spread_positive": spread_ok,
+            "realized_net_sharpe": _round(realized_sharpe), "sharpe_positive": sharpe_ok,
             "paper_turnover": _round(paper_turn), "research_turnover": _round(research_turnover),
-            "turnover_match": turn_ok, "operational_failures": outages, "ops_clean": ops_ok,
-            "promotion_ready": ready,
-            "checks": {"days": days_ok, "ic": ic_ok, "turnover": turn_ok, "ops": ops_ok}}
+            "operational_failures": outages, "ops_clean": ops_ok, "promotion_ready": ready,
+            "checks": {"days": days_ok, "ic_sign": sign_ok, "rank_spread": spread_ok,
+                       "realized_sharpe": sharpe_ok, "ops": ops_ok}}
 
 
 def capital_review_ready(report: dict) -> bool:

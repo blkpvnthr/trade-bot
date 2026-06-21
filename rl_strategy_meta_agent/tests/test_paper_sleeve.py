@@ -84,28 +84,32 @@ def test_registry_export_includes_earnings_within_7d(tmp_path):
 
 
 # --- shadow promotion gate ---
-def _shadow_df(days, ic=0.02, outages=0, turnover=0.24):
+def _shadow_df(days, ic=0.02, spread=0.001, pnl=0.0005, outages=0, turnover=0.24):
     rows = []
     for i in range(days):
         blk = i < outages
         rows.append({"date": f"d{i}", "blocked": blk, "daily_ic": np.nan if blk else ic,
+                     "rank_spread": np.nan if blk else spread, "daily_pnl": np.nan if blk else pnl,
                      "turnover": np.nan if blk else turnover, "data_outage": blk})
     return pd.DataFrame(rows)
 
 
-def test_shadow_gate_ready_only_when_matched_and_clean():
-    rep = SH.compare_to_research(_shadow_df(70, ic=0.02), research_ic=0.02, research_turnover=0.24)
+def test_shadow_gate_ready_on_directional_evidence_not_ic_equality():
+    # paper IC far from research IC in MAGNITUDE but same sign + positive spread/Sharpe + clean -> READY
+    rep = SH.compare_to_research(_shadow_df(70, ic=0.005), research_ic=0.02, research_turnover=0.24)
     assert rep["verdict"] == "READY_FOR_CAPITAL_REVIEW" and SH.capital_review_ready(rep)
+    assert rep["ic_sign_consistent"] and rep["rank_spread_positive"] and rep["sharpe_positive"]
 
 
 def test_shadow_gate_blocks_on_operational_failures():
-    rep = SH.compare_to_research(_shadow_df(70, ic=0.02, outages=5), research_ic=0.02, research_turnover=0.24)
+    rep = SH.compare_to_research(_shadow_df(70, outages=5), research_ic=0.02, research_turnover=0.24)
     assert not rep["promotion_ready"] and rep["operational_failures"] == 5
 
 
-def test_shadow_gate_blocks_when_underrun_or_divergent():
-    assert not SH.compare_to_research(_shadow_df(30, ic=0.02), 0.02, 0.24)["promotion_ready"]   # too short
-    assert not SH.compare_to_research(_shadow_df(70, ic=0.001), 0.02, 0.24)["promotion_ready"]  # IC diverges
+def test_shadow_gate_blocks_on_underrun_or_wrong_direction():
+    assert not SH.compare_to_research(_shadow_df(30), 0.02, 0.24)["promotion_ready"]              # too short
+    flip = SH.compare_to_research(_shadow_df(70, ic=-0.02, spread=-0.001, pnl=-0.0005), 0.02, 0.24)
+    assert not flip["promotion_ready"] and flip["verdict"] == "SHADOW_FAIL"                       # wrong sign/neg
 
 
 if __name__ == "__main__":

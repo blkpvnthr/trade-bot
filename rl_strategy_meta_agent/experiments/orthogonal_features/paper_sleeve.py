@@ -107,7 +107,7 @@ def registry_record(as_of=None, branch="research-orthogonal-features", shadow=No
 
 def export_registry(path, as_of=None, shadow=None):
     rec = registry_record(as_of, shadow=shadow)
-    Path(path).write_text(json.dumps(rec) + "\n")
+    Path(path).write_text(json.dumps(rec, default=str) + "\n")
     return rec
 
 
