@@ -50,6 +50,16 @@ def test_redundant_volatility_flagged_when_corr_high():
     assert rep["features"][0]["verdict"] != "ORTHOGONAL_INFORMATIVE"
 
 
+def test_accepted_extra_absorbs_redundant_candidate():
+    # a candidate identical to an accepted_extra column must not look orthogonal-informative
+    p = _panel()
+    extra = pd.DataFrame({"known": p["_orth"]}, index=p.index)
+    cand = pd.DataFrame({"dup_of_known": p["_orth"] * 1.0}, index=p.index)
+    rep = G.study(p, cand, accepted_nodes=None, accepted_extra=extra)
+    r = rep["features"][0]
+    assert r["rank_contribution"] < 0.5 or r["verdict"] != "ORTHOGONAL_INFORMATIVE"
+
+
 def test_deterministic():
     p = _panel()
     cand = pd.DataFrame({"orthogonal_signal": p["_orth"]}, index=p.index)

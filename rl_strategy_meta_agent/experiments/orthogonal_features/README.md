@@ -106,6 +106,28 @@ since the date is announced weeks ahead). `earnings_within_7d` is now the valida
 -- next it needs a standalone `event_study` (bootstrap + placebo) + net-of-cost check
 before any generator is allowed to mine the earnings-conditioned panel.
 
+## Event as a CONDITIONER (meta-feature layer)
+
+`run_conditioned_study.py` tests the natural follow-up: does event proximity work as a
+CONDITIONING variable -- `base_signal x event_proximity` (e.g. `idio_reversal x
+earnings_within_7d`, `volatility x earnings_within_14d`, `ORB x catalyst_window`) --
+adding OOS lift BEYOND the parts? Each interaction is scored against an accepted space
+that already holds the 8 accepted alphas PLUS every standalone base signal and
+conditioner (`feature_gate.accepted_extra`), so a pass means the interaction adds what
+neither parent provides alone.
+
+**Verdict: no.** No interaction clears -- the earnings effect is a standalone ADDITIVE
+feature, not a useful multiplicative conditioner here. The interactions that do show real
+standalone OOS IC (`idio_reversal x event_recency_decay` +0.022, `idio_reversal x
+catalyst_score` +0.014) have the LOWEST rank-contribution (0.60-0.72): they merely
+re-express `idio_reversal` (already in the book) at higher turnover, adding no orthogonal
+signal. Takeaway: add `earnings_within_7d` as its own feature; don't build base*event
+interaction terms.
+
+Caveat: this tests *linear additive* ensembling (the combined-IC objective is linear). A
+NONLINEAR learner that splits on `earnings_within_7d` and then reads `idio_reversal`
+could still extract conditioning value -- untested here, a separate lower-priority probe.
+
 ## Workflow for a new source
 
 ```

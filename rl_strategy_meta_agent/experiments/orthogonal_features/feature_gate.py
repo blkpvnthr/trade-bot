@@ -58,10 +58,14 @@ def _turnover(rank_series):
     return float(d.groupby(d.index.get_level_values(1)).mean().mean() * 2.0)
 
 
-def study(panel, candidates: pd.DataFrame, accepted_nodes=None, cfg=None) -> dict:
+def study(panel, candidates: pd.DataFrame, accepted_nodes=None, accepted_extra=None,
+          cfg=None) -> dict:
     """panel: base panel with the forward label + volatility features.
     candidates: DataFrame aligned to panel.index, one column per candidate feature.
     accepted_nodes: list of AST nodes (the existing accepted-alpha space) or None.
+    accepted_extra: optional DataFrame of PRE-COMPUTED accepted columns to fold into the
+        accepted space (e.g. the standalone components of an interaction, so the gate
+        measures whether the interaction adds OOS lift BEYOND its own parts).
     Returns a report dict with per-feature records + ensemble-lift summary."""
     c = {**DEFAULTS, **(cfg or {})}
     target = panel[c["label"]]
@@ -72,6 +76,8 @@ def study(panel, candidates: pd.DataFrame, accepted_nodes=None, cfg=None) -> dic
     # existing accepted-alpha space (cs-z), its breadth + combined OOS IC baseline
     acc = accepted_nodes or []
     acc_z = [_cs_z(eval_alpha(n, panel)) for n in acc]
+    if accepted_extra is not None:
+        acc_z += [_cs_z(accepted_extra[col]) for col in accepted_extra.columns]
     g_acc = np.array([spearman_ic(z[tr], target[tr])[0] for z in acc_z]) if acc_z else np.array([])
 
     # build one correlation matrix over accepted + candidates + vol features
