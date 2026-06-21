@@ -66,13 +66,45 @@ come from data outside price/volume.
 | ORB opening range | already in panel (`or_high_dist`, `or_low_dist`) | low | already searched |
 | market / sector regime | partly in panel (`spy_trend`, `qqq_trend`, `mkt_regime`) | med | **constant per cross-section** -- needs regime-conditional eval, not the cross-sectional gate |
 | intraday microstructure | partly in panel (wicks, body, `vwap_dist`); book = Databento | low | book-skew already net-negative after spread |
-| **news / earnings / catalyst** | plumbing exists (Alpaca news + FinBERT, AV news, `av_catalyst.py`) | **high** | genuinely external; catalyst-stack falsified *standalone* but never tested as an orthogonal ensemble feature |
+| **news / earnings / catalyst** | TESTED -- see below | done | event-timing clears; sentiment fails |
 | options flow / put-call / IV rank | AV chains, `book_skew_backtest.py` | low-med | options-positioning already falsified standalone |
 | spread / slippage / fill-quality | executor journals have slippage | med | the project's known real edge, but a **sizing/timing** axis, not directional alpha |
 
-**Highest-value next source: news/earnings/catalyst** -- the only genuinely external,
-not-yet-tested-as-orthogonal-feature source. Execution-quality is the known real edge
-but answers a different objective (sizing, not direction).
+## News / catalyst / FinBERT scan (the first EXTERNAL source)
+
+`run_news_feature_study.py` aligns leak-free news features to the panel
+(`news_features.py`: Alpaca news + FinBERT via `data_sources/`, `av_catalyst.earnings`
+for PIT report dates; strictly publish_time < bar t, rolling window + recency decay) and
+runs them through the same gate. Real data: **18,043 articles across all 24 symbols**,
+2025-10 to 2026-06.
+
+```bash
+python experiments/orthogonal_features/run_news_feature_study.py [--backfill]
+```
+
+| feature | OOS IC | FDR | vol corr | rank contrib | combined-OOS-IC lift | turnover | verdict |
+|---|---|---|---|---|---|---|---|
+| `earnings_within_7d` | +0.009 | yes | 0.04 | 0.99 | **+0.0042** | 0.08 | **ORTHOGONAL_INFORMATIVE** |
+| `earnings_within_14d` | +0.005 | yes | 0.02 | 1.00 | +0.0018 | 0.08 | WEAK |
+| `event_recency_decay` | +0.004 | yes | 0.18 | 0.81 | +0.0015 | 0.16 | WEAK |
+| `catalyst_score` / `news_volume_count` / `abnormal_news_volume` | ~0 | yes | <0.3 | >0.76 | ~0 | low | WEAK |
+| `news_sentiment_mean/max/min`, `finbert_pos/neg` | ≤0 | mostly no | <0.25 | high | **negative** | low | UNINFORMATIVE |
+
+**Verdict: external information DOES add orthogonal edge -- but it is event *timing*, not
+sentiment.** `earnings_within_7d` is FDR-significant, uncorrelated with the volatility
+cluster (0.04), fully independent of the accepted set (rank-contrib 0.99), lifts the
+ensemble's combined OOS IC (0.012 -> 0.016) at near-zero turnover (0.08). Every FinBERT
+**sentiment** feature is uninformative / negative OOS -- the same failure as the
+standalone catalyst falsification ([[project_catalyst_stack]]). So unlike price-only
+symbolic search (which only rediscovered volatility), an external *event-structure*
+feature clears the bar; news *sentiment* does not.
+
+Caveats: the effect is small (+0.0042 lift); `analyst_revision_flag` was excluded as
+not PIT-backtestable (AV EARNINGS_ESTIMATES is snapshot-only); earnings dates are taken
+from actual `reportedDate` as a proxy for the scheduled date (PIT-safe for "within Nd"
+since the date is announced weeks ahead). `earnings_within_7d` is now the validated lead
+-- next it needs a standalone `event_study` (bootstrap + placebo) + net-of-cost check
+before any generator is allowed to mine the earnings-conditioned panel.
 
 ## Workflow for a new source
 

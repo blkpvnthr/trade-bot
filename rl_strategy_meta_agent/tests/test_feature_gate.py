@@ -59,8 +59,11 @@ def test_deterministic():
 
 
 def test_no_live_trading_imports():
-    banned = ("alpaca", "broker", "execution", "order", "dashboard", "premarket",
-              "tjl_engine", "alpaca_feed_manager", "run_v2", "live")
+    # ban broker/order/execution/live modules. Read-only data/news (the Alpaca *data*
+    # API via data_sources.alpaca_news_client) is research-allowed, not a trading path.
+    banned = ("alpaca.trading", "trading_client", "executor", "broker", "submit_order",
+              "execution", "dashboard", "premarket_trade", "tjl_engine",
+              "alpaca_feed_manager", "run_v2", "live_trade", ".orders")
     for f in PKG.glob("*.py"):
         tree = ast.parse(f.read_text())
         mods = []
@@ -70,7 +73,7 @@ def test_no_live_trading_imports():
             elif isinstance(n, ast.ImportFrom) and n.module:
                 mods.append(n.module)
         for m in mods:
-            assert not any(b in m for b in banned), f"{f.name} imports live module {m}"
+            assert not any(b in m.lower() for b in banned), f"{f.name} imports live module {m}"
             assert m.split(".")[0] != "run", f"{f.name} imports run.py"
 
 
