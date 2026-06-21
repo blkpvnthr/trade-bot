@@ -251,6 +251,34 @@ collapsed the two weak ones -- exactly what more power is for.
 python experiments/orthogonal_features/run_extended_validation.py
 ```
 
+## Paper promotion -- earnings_within_7d (the first ACCEPTED signal)
+
+`paper_sleeve.py` + `run_paper_sleeve.py`. The project crosses from research-only
+falsification to **controlled paper deployment** of the one signal that cleared the bar.
+PAPER ONLY: `paper_sleeve.py` is pure (numpy/pandas) and imports no broker/order/execution
+code (AST-enforced by the test).
+
+The sleeve is **market-neutral** (dollar-neutral cross-sectional: long names within ~7d of
+earnings, short the rest) so the shadow period measures alpha, not market beta. Safety caps:
+max allocation **10%**, per-name **4%**, no leverage (gross scaled down, never up), no
+options, daily rebalance. **Fail-safe:** if the earnings-date data is missing or older than 2
+days, `target_weights` BLOCKS and returns flat -- it never trades on stale data.
+
+Registry record (`sleeve_registry.jsonl`): `decision=ACCEPT`, `status=PAPER_PROMOTED`,
+`promotion_requires_shadow_period=true`, with the frozen validated metrics + caps. Monitoring
+(`monitor()` over a daily paper ledger): realized net Sharpe, turnover, slippage, hit rate,
+earnings-data freshness, post-earnings exit rate.
+
+Paper-backtest sanity (10% market-neutral book, 1,852 days): realized net Sharpe **1.27**
+(reproduces the validated 1.11), turnover 0.026/day (= 0.24 x the 10% gross), post-earnings
+exit rate 1.0 (positions flatten after earnings). The "today" book is FLAT until a forward
+earnings calendar is wired (historical `reportedDate` has no future dates -> fail-safe flat,
+not a guess). Live remains out of scope; promotion still requires the shadow period.
+
+```bash
+python experiments/orthogonal_features/run_paper_sleeve.py
+```
+
 ## Workflow for a new source
 
 ```
