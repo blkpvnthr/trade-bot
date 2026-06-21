@@ -19,7 +19,9 @@ def _panel(nsym=6, nt=40, seed=0):
     rows = []
     for s in range(nsym):
         for i, t in enumerate(ts):
-            rows.append((f"S{s}", t, rng.normal() * 0.01, 100.0, 1e6, s, (-1.0) ** i))
+            # const: ranked by symbol, fixed over time (low turnover);
+            # flip: cross-sectional ranking reverses every bar (high turnover)
+            rows.append((f"S{s}", t, rng.normal() * 0.01, 100.0, 1e6, float(s + 1), ((-1.0) ** i) * (s + 1)))
     return pd.DataFrame(rows, columns=["symbol", "timestamp", "fut_ret_1", "close", "volume",
                                        "const_sig", "flip_sig"]).set_index(["symbol", "timestamp"]).sort_index()
 
@@ -44,7 +46,8 @@ def test_breakeven_is_gross_over_turnover():
     p = _panel()
     g, t = LV.streams(p, p["flip_sig"])
     m = stream_metrics(g.values, t.values)
-    assert m["breakeven_cost_bps"] >= 0
+    assert np.isfinite(m["breakeven_cost_bps"])                       # turnover > 0
+    assert abs(m["breakeven_cost_bps"] - g.values.mean() / t.values.mean() * 1e4) < 0.1
 
 
 def test_no_order_execution_imports():
