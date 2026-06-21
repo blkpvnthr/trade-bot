@@ -285,6 +285,37 @@ Research -> Validated -> Paper Sleeve -> Shadow Statistics -> Capital Allocation
 
 No stage is skipped; there is no direct jump from validation to live.
 
+### Forward earnings calendar (the operational fix) + real shadow
+
+`earnings_calendar.py` supplies FUTURE scheduled earnings so the sleeve produces a live book
+instead of relying on historical `reportedDate` (which thinned near "today" and caused the 23
+outages). One source-agnostic interface: **`get_upcoming_earnings(start_date, end_date, symbols)`**.
+Primary source **Massive Benzinga earnings**, fallback **Alpha Vantage `EARNINGS_CALENDAR`**, local
+cache with `fetched_at` freshness. It FAILS CLOSED (`ok=False` -> sleeve flat) if earnings age > 3
+days, coverage < 95%, or no source is available. The sleeve stays source-agnostic -- it only sees
+the `(signal, data_quality)` from `earnings_within_signal` and applies its own fail-closed gate.
+
+`shadow_run.py` runs the shadow on the production calendar pipeline. With the forward calendar the
+recent window is clean:
+
+| | historical reportedDate | forward calendar |
+|---|---|---|
+| operational failures | 23 / 90 | **0 / 90** |
+| coverage | thins at edge | **1.00** (Massive) |
+| paper IC vs research | - | **0.028 vs 0.020 (match)** |
+| paper turnover vs research | - | **0.31 vs 0.24 (match)** |
+| verdict | SHADOW_FAIL | **READY_FOR_CAPITAL_REVIEW** |
+
+The shadow runs clean over 90 trading days (~131 calendar days, > the 60-day floor), paper behaves
+like research, zero outages. This is a production-pipeline replay over recent OUT-OF-SAMPLE data
+(PIT-safe forward dates + realized returns), NOT 60 days of forward-elapsed live paper -- so status
+stays `IN_PROGRESS` and NO capital-allocation work begins. Re-run `shadow_run.py` daily to append
+live forward sessions; the gate re-evaluates each run.
+
+```bash
+python experiments/orthogonal_features/shadow_run.py
+```
+
 Paper-backtest sanity (gross-100% object, 1,852 days): realized net Sharpe **1.35** (reproduces
 the validated 1.11), turnover 0.28/day (~ the validated 0.24), post-earnings exit rate 1.0. The
 shadow-framework demo on the most recent 90 days returns **SHADOW_FAIL** -- 23 of 90 days are
