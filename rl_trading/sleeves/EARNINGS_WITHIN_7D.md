@@ -227,6 +227,18 @@ SCANNER_ONLY=0 EARNINGS_SLEEVE_PAPER_ENABLED=1 EARNINGS_PAPER_OVERRIDE=1 \
   python -m rl_trading.sleeves.earnings_within_7d --json
 ```
 
+### Broker leg: simulator (default) vs real Alpaca paper
+
+`EARNINGS_PAPER_BROKER=sim` (default) records simulated fills only. `EARNINGS_PAPER_BROKER=alpaca`
+forwards each **risk-accepted** ENTER to a real Alpaca **paper** account via `alpaca_paper_broker.py`.
+Hard safety (defense in depth): it reads ONLY `EARNINGS_ALPACA_PAPER_KEY_ID` /
+`EARNINGS_ALPACA_PAPER_SECRET_KEY` (never the live `APCA_*` keys), **refuses any non-`PK` key**
+(an `AK` live key is rejected), refuses a key equal to the live `APCA_API_KEY_ID`, and forces
+`paper=True`. Missing/invalid keys -> broker not ready -> falls back to the simulator (no orders).
+The repo `.env` currently holds **live `AK` keys**, so the Alpaca leg stays fail-closed until
+dedicated paper `PK` keys are set in those two env vars. `PaperExecutor` remains the upstream
+risk-gate authority (limits, sleeve gate, kill switch); only accepted orders reach the broker.
+
 ## Final status
 - scanner-only: **no** - paper enabled via explicit override (2026-06-24)
 - paper-enabled: **yes, via `EARNINGS_PAPER_OVERRIDE=1`** (simulator; methodology validated,

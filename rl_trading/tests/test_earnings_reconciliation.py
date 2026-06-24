@@ -210,3 +210,34 @@ def test_override_bypasses_only_reconciliation_not_methodology():
     # genuinely READY needs no override
     ok = {"recommendation": "READY_FOR_PAPER", "methodology_validation_passed": True}
     assert resolve_paper_authorization(ok, override=False)[:2] == (True, False)
+
+
+# ── real Alpaca PAPER broker: hard refuses live keys, fail-closed ─────────────────
+def test_alpaca_paper_broker_refuses_live_and_missing_keys(monkeypatch):
+    from rl_trading.sleeves.alpaca_paper_broker import AlpacaPaperBroker
+    # no paper keys -> not ready, no orders
+    monkeypatch.delenv("EARNINGS_ALPACA_PAPER_KEY_ID", raising=False)
+    monkeypatch.delenv("EARNINGS_ALPACA_PAPER_SECRET_KEY", raising=False)
+    b = AlpacaPaperBroker()
+    assert b.ready is False and "no_paper_keys" in b.reason
+    assert b.submit_paper_buy("AAPL", 1000.0)["placed"] is False
+    # a LIVE 'AK' key is hard-refused even if provided as the paper key
+    monkeypatch.setenv("EARNINGS_ALPACA_PAPER_KEY_ID", "AKLIVEXYZ")
+    monkeypatch.setenv("EARNINGS_ALPACA_PAPER_SECRET_KEY", "secret")
+    b2 = AlpacaPaperBroker()
+    assert b2.ready is False and "non-paper" in b2.reason
+    # a key identical to the live APCA_API_KEY_ID is refused
+    monkeypatch.setenv("APCA_API_KEY_ID", "PKSAME")
+    monkeypatch.setenv("EARNINGS_ALPACA_PAPER_KEY_ID", "PKSAME")
+    b3 = AlpacaPaperBroker()
+    assert b3.ready is False and "identical to the live" in b3.reason
+    # never advertises live capability
+    assert AlpacaPaperBroker.LIVE_SUPPORTED is False
+
+
+def test_alpaca_paper_broker_module_forces_paper_endpoint():
+    from rl_trading.sleeves import alpaca_paper_broker as B
+    src = open(B.__file__).read()
+    assert "paper=True" in src and "paper=False" not in src          # paper endpoint forced
+    assert "//api.alpaca.markets" not in src                         # no hardcoded live endpoint
+    assert "APCA_API_KEY_ID" in src  # referenced ONLY to refuse reuse, never to authenticate

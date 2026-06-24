@@ -656,20 +656,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
               f"({'; '.join(readiness['blocking_reasons'])})")
     # ponytail: stateless per-run executor submits ENTER notionals only; cross-session book +
     # exit reconciliation is deferred until paper is enabled after the >=4wk shadow stage.
+    broker_kind = os.environ.get("EARNINGS_PAPER_BROKER", "sim").strip().lower()
+    broker = None
+    placed = 0
     if paper_ready:
         audit = SHADOW_LOG_DIR / "paper_audit.jsonl"
         ex = PaperExecutor(equity=equity, risk_limits=sleeve.risk_limits, audit_path=audit)
+        if broker_kind == "alpaca":
+            from .alpaca_paper_broker import AlpacaPaperBroker
+            broker = AlpacaPaperBroker()
+            if not broker.ready:
+                print(f"ALPACA PAPER BROKER NOT READY: {broker.reason} -> simulation only, "
+                      "no broker orders placed")
         for r in plan.rows:
             if r["action"] == "ENTER" and r["target_notional"] > 0:
+                # PaperExecutor is the risk-gate authority (limits + sleeve gate + kill switch).
                 dec = ex.submit(sleeve, Order(
                     sleeve=sleeve.name, symbol=r["symbol"], side="buy",
                     notional=r["target_notional"], ts=plan.asof,
                 ))
                 submitted += int(dec.accepted)
+                # Only a risk-accepted order is forwarded to the real paper broker.
+                if dec.accepted and broker is not None and broker.ready:
+                    res = broker.submit_paper_buy(
+                        r["symbol"], r["target_notional"],
+                        client_order_id=f"earn-{plan.asof}-{r['symbol']}")
+                    placed += int(res.get("placed", False))
 
     mode = "SCANNER_ONLY" if scanner_only or not paper_enabled else "PAPER"
+    broker_status = ("alpaca_paper" if (broker is not None and broker.ready)
+                     else f"sim({broker.reason})" if broker is not None else "sim")
     if args.json:
         print(json.dumps({**payload, "mode": mode, "paper_submitted": submitted,
+                          "broker": broker_status, "broker_orders_placed": placed,
                           "shadow_log": str(log_path)}, indent=2, default=str))
     else:
         print(f"earnings_within_7d [{mode}] asof={plan.asof} ok={payload['ok']} "
