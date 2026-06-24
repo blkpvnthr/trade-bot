@@ -549,7 +549,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--asof", default=date.today().isoformat(), help="planning date YYYY-MM-DD")
     ap.add_argument("--equity", type=float, default=None)
     ap.add_argument("--json", action="store_true", help="print the dashboard payload as JSON")
+    ap.add_argument("--reconcile", action="store_true",
+                    help="reconcile shadow logs vs actual reportedDate; write CSV+summary; no orders")
     args = ap.parse_args(argv)
+
+    if args.reconcile:
+        from . import earnings_reconciliation as RC
+        summary = RC.run_reconcile()
+        readiness = RC.paper_readiness(write=True)
+        print(json.dumps({"reconciliation": summary, "readiness": readiness}, indent=2, default=str)
+              if args.json else
+              f"reconcile: events={summary['events_reconciled']} weeks={summary['weeks_observed']} "
+              f"held_through={summary['held_through_actual_count']} gate_passed={summary['gate_passed']} "
+              f"-> {readiness['recommendation']} ({'; '.join(readiness['blocking_reasons']) or 'ok'})")
+        return 0
 
     # SCANNER_ONLY default 1; paper requires BOTH SCANNER_ONLY=0 AND EARNINGS_SLEEVE_PAPER_ENABLED=1.
     scanner_only = _env_flag("SCANNER_ONLY", "1")
@@ -603,14 +616,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # PaperExecutor independently hard-blocks anything that is not tradeable (and live forever).
     sleeve = earnings_within_7d_sleeve(paper_enabled=paper_enabled)
     submitted = 0
-    # Paper route requires ALL of (Task 8 + provenance gate Task 2): canonical record loads (sleeve
-    # gate passes), paper explicitly enabled, fresh/covered calendar with no fail-closed this run,
-    # AND the >=4wk forward-calendar-vs-actual reconciliation has passed.
-    recon_ok, recon_reason = reconciliation_gate_passed()
+    # Paper route requires ALL of (Task 8 + provenance gates): canonical record loads (sleeve gate
+    # passes), paper explicitly enabled, fresh/covered calendar with no fail-closed this run, the
+    # >=4wk forward-calendar-vs-actual reconciliation passed, AND the historical methodology
+    # validation passed -> i.e. the readiness recommendation is READY_FOR_PAPER.
+    from . import earnings_reconciliation as RC
+    readiness = RC.paper_readiness()
+    ready = readiness["recommendation"] == "READY_FOR_PAPER"
     paper_ready = (not scanner_only and paper_enabled and sleeve.can_trade()
-                   and not plan.fail_closed and recon_ok)
-    if not scanner_only and paper_enabled and not recon_ok:
-        print(f"PAPER BLOCKED: {recon_reason} (provenance caveat: 4wk reconciliation required)")
+                   and not plan.fail_closed and ready)
+    if not scanner_only and paper_enabled and not ready:
+        print(f"PAPER BLOCKED: {readiness['recommendation']} "
+              f"({'; '.join(readiness['blocking_reasons'])})")
     # ponytail: stateless per-run executor submits ENTER notionals only; cross-session book +
     # exit reconciliation is deferred until paper is enabled after the >=4wk shadow stage.
     if paper_ready:

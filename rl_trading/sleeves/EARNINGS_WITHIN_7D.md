@@ -161,10 +161,60 @@ mismatch_rate, ...}`). `reconciliation_gate_passed()` reads it; **missing/incomp
 Until shadow **and** the provenance reconciliation pass, the sleeve stays `paper_enabled=False`
 (SCANNER_ONLY).
 
+## Reconciliation framework (`earnings_reconciliation.py`)
+
+Closes the reportedDate-vs-forward-scheduled gap operationally.
+
+- **Phase 1 driver** (`--reconcile`): reads live shadow logs, segments each symbol's rows into
+  holding episodes (ENTER -> HOLD* -> EXIT), matches each closed episode's `scheduled-at-entry` /
+  `scheduled-latest` / actual `reportedDate` (from the local earnings cache) / exit date, computes
+  `held_through_actual_report` + returns, and writes the consolidated CSV
+  `logs/earnings_within_7d/calendar_reconciliation.csv` (idempotent rebuild) plus the summary
+  `system-data/earnings_within_7d_reconciliation.json`. **Never places orders.**
+- **Summary** fields: `weeks_observed, events_reconciled, held_through_actual_count, mismatch_rate,
+  reschedule_count, avg_days_changed, forward_shadow_return_mean, reportedDate_proxy_return_mean,
+  degradation_vs_proxy, gate_passed, why_not_passed`.
+- **Gate**: `>=4 weeks`, `>=10` reconciled events, **zero** held-through, degradation <= 50% of
+  proxy drift. Missing/incomplete -> paper blocked.
+
+```bash
+python -m rl_trading.sleeves.earnings_within_7d --reconcile        # CSV + summary, no orders
+```
+
+### Phase 2 - historical methodology validation (perturbation proxy)
+
+`experiments/orthogonal_features/run_reconciliation_validation.py` ->
+`out/reconciliation_validation_report.json`. **Limitation:** no historical archive of forward-
+scheduled dates exists (cache stores only `reportedDate`), so the true mismatch is only measurable
+forward from live shadow logs. The retrospective study PERTURBS the reportedDate and checks robustness:
+
+| scenario | flag mismatch | net@10bps | retained vs proxy |
+|---|---|---|---|
+| reportedDate proxy | - | 1.004 | 1.00 |
+| jitter all +-1d | 3.1% | 0.845 | **0.84** |
+| jitter all +-2d | 5.5% | 0.672 | 0.67 |
+| reschedule 10% @2d | 0.6% | 0.84 | 0.84 |
+| reschedule 25% @1d | 0.8% | 0.886 | 0.88 |
+
+Date-shuffle placebo `frac>=real = 0.0` (edge not created by the proxy). **`methodology_validation_passed = True`** -
+the exact reportedDate is not load-bearing; a slightly-off forward-scheduled date still captures the
+drift, so live forward-calendar reasonably reproduces historical behavior.
+
+### Phase 3 - paper readiness
+
+`earnings_reconciliation.paper_readiness()` -> `READY_FOR_PAPER` only if BOTH the live reconciliation
+gate AND the historical methodology gate pass. Current artifact
+(`system-data/earnings_within_7d_paper_readiness.json`):
+
+> **recommendation: `NOT_READY_FOR_PAPER`** - methodology validated (True), but the live
+> reconciliation gate is not passed (no >=4wk shadow data yet). Paper stays OFF.
+
 ## Final status
 - scanner-only: **yes**
-- paper-enabled: **no** (blocked until 4wk reconciliation passes)
+- paper-enabled: **no** (`NOT_READY_FOR_PAPER`; blocked until live 4wk reconciliation passes)
 - live-enabled: **impossible**
+- recommendation: **`NOT_READY_FOR_PAPER`**
+- methodology validation: **passed** (perturbation-robust, edge not created by reportedDate proxy)
 - default variant: **A** (calendar-only equal weight)
 - variant B: **research-only** unless it clears no-turnover-increase
 - variant C: **live-only metadata, non-PIT, disabled** (`LIVE_ONLY_NON_PIT_BACKTESTABLE`)
