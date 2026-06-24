@@ -187,3 +187,4 @@ logs-instance2/
 
 # TJL runtime position state (never commit)
 tjl_open_positions.json
+.env.earnings_paper
