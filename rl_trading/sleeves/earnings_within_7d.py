@@ -525,6 +525,22 @@ def dashboard_payload(plan: DayPlan, calendar: Calendar) -> dict:
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────────
+def resolve_paper_authorization(readiness: Mapping[str, object], override: bool):
+    """Decide paper authorization from the readiness payload + an explicit override flag.
+
+    Returns (ready, override_active, reason). The override bypasses ONLY the live reconciliation
+    gate; it CANNOT bypass methodology validation. It does not touch fail-closed, the sleeve gate,
+    risk limits, the kill switch, or the permanent live block (those are enforced elsewhere).
+    """
+    if readiness.get("recommendation") == "READY_FOR_PAPER":
+        return True, False, "ready"
+    if override and readiness.get("methodology_validation_passed"):
+        return True, True, "override_active:" + str(readiness.get("reconciliation_reason", ""))
+    if override:
+        return False, False, "override_refused:methodology_not_passed"
+    return False, False, "blocked:" + str(readiness.get("recommendation", ""))
+
+
 def _env_flag(name: str, default: str) -> bool:
     return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
 
@@ -622,7 +638,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # validation passed -> i.e. the readiness recommendation is READY_FOR_PAPER.
     from . import earnings_reconciliation as RC
     readiness = RC.paper_readiness()
-    ready = readiness["recommendation"] == "READY_FOR_PAPER"
+    override = _env_flag("EARNINGS_PAPER_OVERRIDE", "0")
+    ready, override_active, auth_msg = resolve_paper_authorization(readiness, override)
+    if override_active:
+        print("WARNING: EARNINGS_PAPER_OVERRIDE active - bypassing the live reconciliation gate "
+              f"({readiness['reconciliation_reason']}). Methodology validated; fail-closed + risk "
+              "limits + no-live remain enforced.")
+    elif override and not ready:
+        print("OVERRIDE REFUSED: methodology validation has not passed; paper stays blocked.")
+    payload["paper_override_active"] = override_active
+    payload["readiness_recommendation"] = readiness["recommendation"]
+    STATUS_PATH.write_text(json.dumps(payload, indent=2, default=str))  # re-write with override audit
     paper_ready = (not scanner_only and paper_enabled and sleeve.can_trade()
                    and not plan.fail_closed and ready)
     if not scanner_only and paper_enabled and not ready:

@@ -209,11 +209,30 @@ gate AND the historical methodology gate pass. Current artifact
 > **recommendation: `NOT_READY_FOR_PAPER`** - methodology validated (True), but the live
 > reconciliation gate is not passed (no >=4wk shadow data yet). Paper stays OFF.
 
+## Explicit paper override (operator decision)
+
+`EARNINGS_PAPER_OVERRIDE=1` bypasses **only** the live 4-week reconciliation gate via
+`resolve_paper_authorization()`. It does **not** bypass: methodology validation (must still pass),
+fail-closed on a stale/low-coverage calendar, the sleeve gate, per-order/exposure risk limits, the
+kill switch, or the permanent live block. The status payload records `paper_override_active` plus the
+truthful `readiness_recommendation` for audit. The `PaperExecutor` is a simulator (no broker call).
+
+```bash
+# fetch fresh forward calendar (needs ALPHA_VANTAGE_API_KEY), then run paper with override:
+python3 -c "import dotenv; dotenv.load_dotenv('.env'); from datetime import date; \
+  from rl_trading.sleeves import earnings_features as EF; \
+  from rl_trading.sleeves.initial import EARNINGS_UNIVERSE; \
+  EF.fetch_av_earnings_calendar(list(EARNINGS_UNIVERSE), date.today())"
+SCANNER_ONLY=0 EARNINGS_SLEEVE_PAPER_ENABLED=1 EARNINGS_PAPER_OVERRIDE=1 \
+  python -m rl_trading.sleeves.earnings_within_7d --json
+```
+
 ## Final status
-- scanner-only: **yes**
-- paper-enabled: **no** (`NOT_READY_FOR_PAPER`; blocked until live 4wk reconciliation passes)
+- scanner-only: **no** - paper enabled via explicit override (2026-06-24)
+- paper-enabled: **yes, via `EARNINGS_PAPER_OVERRIDE=1`** (simulator; methodology validated,
+  reconciliation gate bypassed by operator decision; fail-closed + risk limits + no-live intact)
 - live-enabled: **impossible**
-- recommendation: **`NOT_READY_FOR_PAPER`**
+- recommendation (unbypassed): **`NOT_READY_FOR_PAPER`** (reconciliation still accruing toward 4wk)
 - methodology validation: **passed** (perturbation-robust, edge not created by reportedDate proxy)
 - default variant: **A** (calendar-only equal weight)
 - variant B: **research-only** unless it clears no-turnover-increase

@@ -190,3 +190,23 @@ def test_run_reconcile_writes_files_and_never_orders(tmp_path, monkeypatch):
     src = open(RC.__file__).read()
     for forbidden in ("TradingClient", "submit_order", "live=True", "alpaca.trading"):
         assert forbidden not in src
+
+
+# ── explicit paper override (operator decision) ───────────────────────────────────
+def test_override_bypasses_only_reconciliation_not_methodology():
+    from rl_trading.sleeves.earnings_within_7d import resolve_paper_authorization
+    # methodology passed but reconciliation not -> override authorizes paper
+    r = {"recommendation": "NOT_READY_FOR_PAPER", "methodology_validation_passed": True,
+         "reconciliation_reason": "reconciliation_not_passed"}
+    ready, active, _ = resolve_paper_authorization(r, override=True)
+    assert ready is True and active is True
+    # without the override -> blocked
+    assert resolve_paper_authorization(r, override=False) == (False, False, "blocked:NOT_READY_FOR_PAPER")
+    # override CANNOT bypass a failed methodology validation
+    bad = {"recommendation": "NOT_READY_FOR_PAPER", "methodology_validation_passed": False,
+           "reconciliation_reason": "x"}
+    ready2, active2, reason2 = resolve_paper_authorization(bad, override=True)
+    assert ready2 is False and active2 is False and "methodology" in reason2
+    # genuinely READY needs no override
+    ok = {"recommendation": "READY_FOR_PAPER", "methodology_validation_passed": True}
+    assert resolve_paper_authorization(ok, override=False)[:2] == (True, False)
