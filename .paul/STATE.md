@@ -11,20 +11,20 @@ See: .paul/PROJECT.md (updated 2026-05-20)
 ## Current Position
 
 Milestone: Production Foundation (v0.1)
-Phase: 3 of 4 (Forecast & RL Quality) — Not started (DISCOVERY done)
-Plan: Not started
-Status: Ready to plan (Phase 2 complete + committed; DISCOVERY.md ready → /paul:plan 03-01)
-Last activity: 2026-07-03 — Phase 2 complete: 02-03 unified + transitioned. Trainer I/O canonicalized + provenance; smoke 10/10. AC-5 (live model resolve) deferred to next real session.
+Phase: 3 of 4 (Forecast & RL Quality) — In progress (1 of 3 plans done)
+Plan: 03-01 complete (loop closed); next 03-02
+Status: Ready to plan 03-02 (feature-eng audit). DDR reward shipped opt-in.
+Last activity: 2026-07-03 — 03-01 unified: DDR reward mode (SharpeRewardCalculator + trainer + 7 tests) reconciled + scoped-committed. Default unchanged; DDR opt-in; empirical A/B deferred to 03-03.
 
 Progress:
 - Milestone: [█████░░░░░] 50% (2 of 4 phases)
-- Phase 3: [░░░░░░░░░░] 0%
+- Phase 3: [███░░░░░░░] 33% (1 of 3 plans)
 
 ## Loop Position
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [02-03 loop closed — Phase 2 complete, ready to plan Phase 3]
+  ✓        ✓        ✓     [03-01 loop closed — Phase 3 continues (03-02 next)]
 ```
 
 ## Performance Metrics
@@ -40,6 +40,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 |-------|-------|------------|----------|
 | 01-Data Architecture | 3/3 | 1 session | - |
 | 02-Training Pipeline | 4/4 (02-01/02/02b/03 ✓) | 3 sessions | - |
+| 03-Forecast & RL Quality | 1/3 (03-01 ✓) | - | - |
 
 ## Accumulated Context
 
@@ -69,6 +70,13 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | ENV_PATH missing from run.py module-level scope | Paper launch | XS | Fixed 2026-05-22 (added ENV_PATH = PROJECT_ROOT / ".env") |
 | AC-5: confirm live-trained model resolves — validate_rl_intraday_structure_model()=True | 02-03 | XS | Next real session: python -c "import trade; print(trade.validate_rl_intraday_structure_model())" |
 
+### Git State
+
+Last commit: 65d118e — feat(02-training-pipeline-consistency): Phase 2 complete
+Branch: research-orthogonal-features (NOT main — commit scoped to trainer + .paul only; local, not pushed)
+Feature branches merged: none
+Note: repo working tree carries large unrelated dirt (24 modified / 675 untracked) — phase commit was deliberately scoped, not `git add -A`.
+
 ### Blockers/Concerns
 
 None active.
@@ -84,9 +92,9 @@ None active.
 ## Session Continuity
 
 Last session: 2026-07-03
-Stopped at: Phase 2 complete — 02-03 unified + phase transition (PROJECT/ROADMAP evolved, scoped git commit). Ready to plan Phase 3.
-Next action: `/paul:plan 03-01` (Phase 3 Forecast & RL Quality — DISCOVERY.md ready: DDR reward shaping). Separately, close AC-5 on next real session.
-Resume file: .paul/ROADMAP.md
+Stopped at: 03-01 loop closed (DDR reward shipped opt-in, committed). Phase 3 at 1/3.
+Next action: `/paul:plan 03-02` (feature-eng audit). Note: 03-03 will do the empirical DDR-vs-baseline A/B + eta/clip sweep. (Separately, close AC-5 on next real session.)
+Resume file: .paul/phases/03-forecast-rl-quality/03-01-SUMMARY.md
 
 ---
 *STATE.md — Updated after every significant action*

@@ -75,6 +75,11 @@ RL_SAVE_PATH         = os.environ.get("RL_SAVE_PATH", "models/rl_intraday")  # S
 RL_METRICS_PATH      = os.environ.get("RL_METRICS_PATH", str(OUT_DIR / f"{DATA_TAG}_rl_intraday_training_metrics.json"))  # canonical (AC-2)
 RL_REPLAY_PATH       = os.environ.get("RL_REPLAY_PATH", "rl_trade_replay.csv")
 RL_DATA_PATH         = os.environ.get("RL_DATA_PATH", str(OUT_DIR / f"{DATA_TAG}_intraday_bars_1m.csv"))  # Alpaca-derived bars (AC-1)
+# Reward shaping mode: "sharpe_rolling" (legacy default) | "ddr" (Differential Downside
+# Deviation Ratio, Moody & Saffell 2001 — per-step-additive, downside-only). DDR is opt-in;
+# empirical A/B vs baseline is deferred to the 03-03 eval harness.
+RL_REWARD_MODE       = os.environ.get("RL_REWARD_MODE", "sharpe_rolling")
+RL_REWARD_DDR_ETA    = float(os.environ.get("RL_REWARD_DDR_ETA", 0.02))
 RL_MODEL_OUT         = str(OUT_DIR / f"{DATA_TAG}_rl_intraday_structure_model")  # SB3 appends .zip -> canonical (AC-2)
 
 RISK_REWARD_TARGET   = float(os.environ.get("RL_RR_TARGET", 3.0))
@@ -194,7 +199,7 @@ if SB3_AVAILABLE:
             self.action_space      = make_action_space()
 
             self._state_builder = PrivateMarketStateBuilder(lookback)
-            self._sharpe_calc   = SharpeRewardCalculator()
+            self._sharpe_calc   = SharpeRewardCalculator(mode=RL_REWARD_MODE, eta=RL_REWARD_DDR_ETA)
             self._pivot_scanner = PivotReversalScanner(symbol=symbol)
 
             # Trade state
@@ -687,7 +692,12 @@ def train(
         return _init
 
     train_env = DummyVecEnv([make_env(train_df)])
-    train_env = VecNormalize(train_env, norm_obs=False, norm_reward=True, clip_reward=10.0)
+    if RL_REWARD_MODE == "ddr":
+        # DDR is already a normalised downside-risk ratio and can spike on losses (03-01
+        # DISCOVERY); don't re-normalise reward, just widen the clip to bound outliers.
+        train_env = VecNormalize(train_env, norm_obs=False, norm_reward=False, clip_reward=100.0)
+    else:
+        train_env = VecNormalize(train_env, norm_obs=False, norm_reward=True, clip_reward=10.0)
 
     eval_env  = DummyVecEnv([make_env(eval_df)])
     eval_env  = VecNormalize(eval_env,  norm_obs=False, norm_reward=False, training=False)
@@ -736,6 +746,7 @@ def train(
         DiagnosticsCallback(metrics_path=RL_METRICS_PATH),
     ]
 
+    logger.info("[reward] mode=%s eta=%s", RL_REWARD_MODE, RL_REWARD_DDR_ETA)
     logger.info("Training %s for %d timesteps …", policy_mode.upper(), timesteps)
     model.learn(total_timesteps=timesteps, callback=callbacks)
     os.makedirs(OUT_DIR, exist_ok=True)          # ensure canonical dir exists before save

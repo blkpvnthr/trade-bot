@@ -34,7 +34,7 @@ See Phase details below.
 |-------|------|-------|--------|-----------|
 | 1 | Data Architecture | 3 | Complete | 2026-05-20 |
 | 2 | Training Pipeline Consistency | 3 (+02-02b) | ✅ Complete | 2026-07-03 |
-| 3 | Forecast & RL Quality | 3 | Not started (DISCOVERY done) | - |
+| 3 | Forecast & RL Quality | 3 | Planning (03-01 created) | - |
 | 4 | Paper Trading Validation | 3 | Not started | - |
 
 ### v0.2 — Unified Orchestration
@@ -95,10 +95,10 @@ See Phase details below.
 - Model evaluation harness with held-out validation and walk-forward windows
 - Forecast ensemble metrics logged to system-data/
 
-**Plans:**
-- [ ] 03-01: Feature engineering audit + improvements
-- [ ] 03-02: RL reward function review + retraining (aligned to optimization objective)
-- [ ] 03-03: Model evaluation harness + accuracy metrics + walk-forward validation
+**Plans:** (reordered 2026-07-03 — reward shaping promoted to 03-01; DISCOVERY ready)
+- [ ] 03-01: RL reward shaping — DDR (differential Sortino) replaces naive rolling-Sharpe, selectable + unit-proven (retrain/A-B deferred to 03-03)
+- [ ] 03-02: Feature engineering audit + improvements
+- [ ] 03-03: Model evaluation harness + accuracy metrics + walk-forward validation (empirical A/B of DDR vs baseline)
 
 ### Phase 4: Paper Trading Validation
 

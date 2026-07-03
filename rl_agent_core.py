@@ -379,14 +379,27 @@ class SharpeRewardCalculator:
     propagate, but the Sharpe term dominates (controlled by `sharpe_weight`).
     """
 
-    def __init__(self, window: int = 60, risk_free: float = 0.0, sharpe_weight: float = 0.7):
+    def __init__(self, window: int = 60, risk_free: float = 0.0, sharpe_weight: float = 0.7,
+                 mode: str = "sharpe_rolling", eta: float = 0.02, downside_target: float = 0.0):
         self.window       = window
         self.risk_free    = risk_free
         self.sharpe_weight = sharpe_weight
+        # Reward mode: "sharpe_rolling" (default, legacy) | "ddr" (Differential Downside
+        # Deviation Ratio, Moody & Saffell 2001) — per-step-additive downside-only reward.
+        self.mode         = mode
+        self.eta          = eta               # DDR moment decay
+        self.downside_target = downside_target
         self._returns: deque = deque(maxlen=window)
+        # DDR online state (first moment A, downside second moment DD^2, step count)
+        self._A: float   = 0.0
+        self._DD2: float = 0.0
+        self._ddr_n: int = 0
 
     def reset(self) -> None:
         self._returns.clear()
+        self._A = 0.0
+        self._DD2 = 0.0
+        self._ddr_n = 0
 
     def update(
         self,
@@ -405,6 +418,10 @@ class SharpeRewardCalculator:
             Small bonus/penalty from market-structure signals (entry near
             support, exit near resistance, etc.).  Should be ≪ the Sharpe term.
         """
+        if self.mode == "ddr":
+            return self._update_ddr(step_pnl, structure_bonus)
+
+        # --- sharpe_rolling (default, legacy — numerics unchanged) ---
         self._returns.append(step_pnl)
 
         if len(self._returns) < 2:
@@ -420,6 +437,42 @@ class SharpeRewardCalculator:
         blended = self.sharpe_weight * sharpe + raw_weight * step_pnl
 
         return float(blended + structure_bonus)
+
+    def _update_ddr(self, step_pnl: float, structure_bonus: float = 0.0) -> float:
+        """Differential Downside Deviation Ratio (Moody & Saffell 2001).
+
+        Per-step marginal contribution to the downside-deviation-adjusted return:
+        online first moment A and downside second moment DD^2 are updated with decay
+        eta; the reward D_t uses the PRIOR (t-1) moments so successive rewards are
+        additive rather than the full-window statistic. Downside-only: only losses
+        (R <= target) inflate the risk denominator, so upside variance is not penalised.
+        """
+        self._returns.append(step_pnl)   # keep current_sharpe populated for logging
+        R = float(step_pnl)
+        t = self.downside_target
+
+        if self._ddr_n == 0:
+            # Warm-up: no prior moments — seed state, fall back to raw (no NaN).
+            self._A = R
+            self._DD2 = min(R, t) ** 2
+            self._ddr_n = 1
+            return float(R + structure_bonus)
+
+        A_prev, DD2_prev = self._A, self._DD2
+        dd_prev = math.sqrt(DD2_prev)
+        if dd_prev < 1e-9:
+            # No downside history yet — avoid divide-by-zero.
+            D = R - 0.5 * A_prev
+        elif R > t:
+            D = (R - 0.5 * A_prev) / dd_prev
+        else:
+            D = (DD2_prev * (R - 0.5 * A_prev) - 0.5 * A_prev * R * R) / (dd_prev ** 3)
+
+        # Advance online moments AFTER computing D (D uses the t-1 moments).
+        self._A   = A_prev  + self.eta * (R - A_prev)
+        self._DD2 = DD2_prev + self.eta * (min(R, t) ** 2 - DD2_prev)
+        self._ddr_n += 1
+        return float(D + structure_bonus)
 
     @property
     def current_sharpe(self) -> float:
