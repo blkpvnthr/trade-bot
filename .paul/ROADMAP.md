@@ -20,7 +20,7 @@ v0.1 establishes a solid production foundation: clean data architecture, reliabl
 
 **Production Foundation** (v0.1)
 Status: In progress
-Phases: 1 of 4 complete
+Phases: 2 of 4 complete
 
 **Next Milestone: Unified Orchestration** (v0.2)
 Status: Not started — begins after v0.1 completes
@@ -33,8 +33,8 @@ See Phase details below.
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 1 | Data Architecture | 3 | Complete | 2026-05-20 |
-| 2 | Training Pipeline Consistency | 3 | Planning | - |
-| 3 | Forecast & RL Quality | 3 | Not started | - |
+| 2 | Training Pipeline Consistency | 3 (+02-02b) | ✅ Complete | 2026-07-03 |
+| 3 | Forecast & RL Quality | 3 | Not started (DISCOVERY done) | - |
 | 4 | Paper Trading Validation | 3 | Not started | - |
 
 ### v0.2 — Unified Orchestration
@@ -79,8 +79,8 @@ See Phase details below.
 
 **Plans:**
 - [x] 02-01: build_intraday_training_dataset.py feed alignment + provenance diagnostics
-- [ ] 02-02: forecast_engine.py training data provenance check
-- [ ] 02-03: rl_intraday_structure_trainer.py validation + smoke test
+- [x] 02-02: forecast_engine.py training data provenance check (+ 02-02b corrective)
+- [x] 02-03: rl_intraday_structure_trainer.py canonical I/O + provenance + smoke test (AC-5 live confirmation deferred)
 
 ### Phase 3: Forecast & RL Quality
 
@@ -175,4 +175,4 @@ See Phase details below.
 
 ---
 *Roadmap created: 2026-05-20*
-*Last updated: 2026-05-20 — Phase 4 expanded: added 04-03 time-of-day regime gating*
+*Last updated: 2026-07-03 — Phase 2 (Training Pipeline Consistency) complete; Phase 3 DISCOVERY done (DDR reward shaping)*

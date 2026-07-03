@@ -40,7 +40,7 @@ Build a self-improving quantitative trading system capable of generating consist
 | Type | Application |
 | Version | v0.1 |
 | Status | Beta (paper trading) |
-| Last Updated | 2026-05-20 |
+| Last Updated | 2026-07-03 |
 
 ## Requirements
 
@@ -60,18 +60,23 @@ Build a self-improving quantitative trading system capable of generating consist
 - [x] Alpaca feed architecture separation (PREMARKET_FEED/REGULAR_FEED/FAIL_ON_FEED_ERROR) — v0.1
 - [x] 3-layer architecture separation (source / runtime / Obsidian vault) — v0.1
 - [x] Git cleanup: 244 runtime artifacts removed from tracking — v0.1
+- [x] RL training pipeline feed consistency (build_intraday_training_dataset.py aligned to ALPACA_REGULAR_FEED) — Phase 2 (02-01)
+- [x] forecast_engine.py: consume only Alpaca-derived training datasets — Phase 2 (02-02/02-02b)
+- [x] rl_intraday_structure_trainer.py: canonical date-stamped I/O + Alpaca provenance validated — Phase 2 (02-03)
+- [x] Static training-pipeline smoke test (10/10, fail-exit gated) — Phase 2 (02-03)
 
 ### Active (In Progress)
 
-- [ ] RL training pipeline feed consistency (build_intraday_training_dataset.py aligned to ALPACA_REGULAR_FEED)
-- [ ] End-to-end smoke test with new feed config
+- [ ] Phase 3: Forecast & RL quality — directional accuracy >55% OOS, reward aligned to composite objective (see DISCOVERY: DDR reward shaping)
 
 ### Planned (Next)
 
-- [ ] forecast_engine.py: consume only Alpaca-derived training datasets (no yfinance-sourced CSVs)
-- [ ] rl_intraday_structure_trainer.py: validate training data provenance
-- [ ] options_booster.py: integration validation
-- [ ] Paper trading metrics dashboard
+- [ ] options_booster.py: integration validation — Phase 4
+- [ ] Paper trading metrics dashboard — Phase 4
+
+### Deferred (tracked)
+
+- [ ] AC-5 live confirmation: validate_rl_intraday_structure_model()=True against a freshly-trained canonical model — 02-03 (XS; needs a real trading session, not thin holiday data)
 
 ### Out of Scope
 
@@ -123,6 +128,8 @@ Build a self-improving quantitative trading system capable of generating consist
 | Split PREMARKET_FEED vs REGULAR_FEED | Different feed subscriptions cover different sessions | 2026-05-20 | Active |
 | TradingView screener: discovery only, no OHLCV | Screener provides ranking signal; Alpaca owns price data | 2026-05-20 | Active |
 | 3-layer architecture (source/runtime/Obsidian) | Prevents runtime artifacts polluting git history | 2026-05-20 | Active |
+| Align producer to consumers' canonical paths (not vice-versa) | trainer emitted static paths 5+ consumers couldn't find; fixing the producer default keeps consumers untouched | 2026-07-03 | Active |
+| `[data-source] training_csv=...` provenance log at every training-data load | subprocess stdout provenance so run.py/consumers can prove feed lineage | 2026-07-03 | Active |
 
 ## Success Metrics
 
@@ -201,4 +208,4 @@ Stages 5–8 (walk-forward validation, strategy evaluation, diagnostics, self-op
 
 ---
 *PROJECT.md — Updated when requirements or context change*
-*Last updated: 2026-05-20*
+*Last updated: 2026-07-03 after Phase 2 (Training Pipeline Consistency)*

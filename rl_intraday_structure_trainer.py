@@ -18,6 +18,8 @@ import logging
 import math
 import os
 import random
+from datetime import datetime, timezone
+from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -58,10 +60,22 @@ RL_POLICY_MODE       = os.environ.get("RL_POLICY_MODE", "hybrid")          # hyb
 RL_INTRADAY_TIMESTEPS = int(os.environ.get("RL_INTRADAY_TIMESTEPS", 750_000))
 RL_EVAL_FREQ         = int(os.environ.get("RL_EVAL_FREQ", 25_000))
 RL_N_EVAL_EPISODES   = int(os.environ.get("RL_N_EVAL_EPISODES", 5))
-RL_SAVE_PATH         = os.environ.get("RL_SAVE_PATH", "models/rl_intraday")
-RL_METRICS_PATH      = os.environ.get("RL_METRICS_PATH", "metrics/rl_intraday_metrics.json")
+# Canonical date-stamped output convention — mirror trade.py so producer/consumer tags
+# can never drift (trade.py:118-175: DATA_TAG -> OUT_DIR -> RL_MODEL/METRICS paths).
+PROJECT_ROOT = Path(__file__).resolve().parent
+try:
+    from zoneinfo import ZoneInfo
+    _TODAY_TAG = datetime.now(ZoneInfo("America/New_York")).strftime("%Y%m%d")
+except Exception:  # zoneinfo/tzdata unavailable — UTC fallback (plan: fall back to UTC %Y%m%d)
+    _TODAY_TAG = datetime.now(timezone.utc).strftime("%Y%m%d")
+DATA_TAG = os.getenv("RUN_DATA_DATE", os.getenv("RL_DATA_DATE", _TODAY_TAG)).strip()
+OUT_DIR  = PROJECT_ROOT / "system-data" / DATA_TAG
+
+RL_SAVE_PATH         = os.environ.get("RL_SAVE_PATH", "models/rl_intraday")  # SB3 working/checkpoint dir (best_model + eval logs) — NOT the canonical artifact
+RL_METRICS_PATH      = os.environ.get("RL_METRICS_PATH", str(OUT_DIR / f"{DATA_TAG}_rl_intraday_training_metrics.json"))  # canonical (AC-2)
 RL_REPLAY_PATH       = os.environ.get("RL_REPLAY_PATH", "rl_trade_replay.csv")
-RL_DATA_PATH         = os.environ.get("RL_DATA_PATH", "data/intraday_bars.parquet")
+RL_DATA_PATH         = os.environ.get("RL_DATA_PATH", str(OUT_DIR / f"{DATA_TAG}_intraday_bars_1m.csv"))  # Alpaca-derived bars (AC-1)
+RL_MODEL_OUT         = str(OUT_DIR / f"{DATA_TAG}_rl_intraday_structure_model")  # SB3 appends .zip -> canonical (AC-2)
 
 RISK_REWARD_TARGET   = float(os.environ.get("RL_RR_TARGET", 3.0))
 MAX_BARS_IN_TRADE    = int(os.environ.get("RL_MAX_BARS_IN_TRADE", 60))
@@ -632,6 +646,9 @@ if SB3_AVAILABLE:
 # ---------------------------------------------------------------------------
 
 def load_bars(path: str) -> pd.DataFrame:
+    # Provenance: bars are produced by build_intraday_training_dataset.py (Alpaca IEX). (AC-3)
+    logger.info("[data-source] training_csv=alpaca_derived path=%s", path)
+    print(f"[data-source] training_csv=alpaca_derived path={path}", flush=True)
     if path.endswith(".parquet"):
         return pd.read_parquet(path)
     elif path.endswith(".csv"):
@@ -721,8 +738,9 @@ def train(
 
     logger.info("Training %s for %d timesteps …", policy_mode.upper(), timesteps)
     model.learn(total_timesteps=timesteps, callback=callbacks)
-    model.save(os.path.join(save_path, "final_model"))
-    logger.info("Model saved → %s/final_model", save_path)
+    os.makedirs(OUT_DIR, exist_ok=True)          # ensure canonical dir exists before save
+    model.save(RL_MODEL_OUT)                      # canonical: system-data/{DATE}/{DATE}_rl_intraday_structure_model.zip (AC-2)
+    logger.info("Model saved → %s.zip", RL_MODEL_OUT)
 
     # Load and print metrics
     try:
