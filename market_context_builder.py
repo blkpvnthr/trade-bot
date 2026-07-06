@@ -481,9 +481,12 @@ def get_etf_snapshot(symbols: list[str], period: str = "15d") -> dict[str, Any]:
 def sector_strength_context() -> dict[str, Any]:
     snapshot = get_etf_snapshot(list(SECTOR_ETFS.values()), period="15d")
     rows: list[dict[str, Any]] = []
+    any_real_data = False
 
     for sector, etf in SECTOR_ETFS.items():
         data = snapshot.get(etf, {})
+        if data and "error" not in data:
+            any_real_data = True
         rows.append(
             {
                 "sector": sector,
@@ -502,7 +505,12 @@ def sector_strength_context() -> dict[str, Any]:
 
     leading_etfs = {x["etf"] for x in leading}
 
-    if leading_etfs & {"XLK", "XLC", "XLY"}:
+    if not any_real_data:
+        # Every sector ETF fetch failed or was missing: change_pct is 0.0 for
+        # all rows and "leading" is just dict-insertion-order sort noise, not
+        # a real signal. Missing data must not manufacture a bullish bias.
+        rotation_bias = "mixed"
+    elif leading_etfs & {"XLK", "XLC", "XLY"}:
         rotation_bias = "risk_on_growth"
     elif leading_etfs & {"XLU", "XLP", "XLV"}:
         rotation_bias = "defensive"

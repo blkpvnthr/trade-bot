@@ -649,9 +649,11 @@ def load_universe() -> pd.DataFrame:
         if possible:
             out["continuation_confidence"] = out[possible].apply(pd.to_numeric, errors="coerce").max(axis=1)
         else:
-            out["continuation_confidence"] = 0.70
+            # No confidence-like column present at all: default to neutral, not
+            # bullish (missing data must not be treated as a bullish signal).
+            out["continuation_confidence"] = 0.50
 
-    out["continuation_confidence"] = pd.to_numeric(out["continuation_confidence"], errors="coerce").fillna(0.70)
+    out["continuation_confidence"] = pd.to_numeric(out["continuation_confidence"], errors="coerce").fillna(0.50)
 
     if "price" not in out.columns:
         for c in ["close", "current_price", "underlying_price"]:
@@ -1303,7 +1305,24 @@ def main() -> dict[str, Any]:
             if not universe.empty:
                 print("[structure-filter] filtered symbols=" + ",".join(universe["symbol"].tolist()))
         else:
-            print("[structure-filter] no long_allowed symbols in structure map; skipping filter (map may be missing or pre-market)")
+            # Structure map missing/empty: block new-symbol entries rather than
+            # letting the full universe through, but still allow defending
+            # symbols with an existing open stock position.
+            open_stock_syms = set()
+            try:
+                for sym in positions_by_symbol(trading_client):
+                    if not parse_occ_option_symbol(sym):
+                        open_stock_syms.add(safe_symbol(sym))
+            except Exception as _pe:
+                print(f"[structure-filter] could not fetch positions: {_pe}")
+            before_count = len(universe)
+            universe = universe[universe["symbol"].isin(open_stock_syms)].copy().reset_index(drop=True)
+            removed = before_count - len(universe)
+            print(
+                f"[structure-filter] structure map missing/empty; restricting to open positions "
+                f"open_positions={len(open_stock_syms)} universe_before={before_count} "
+                f"after={len(universe)} removed={removed}"
+            )
     elif not CONFIG.require_structure_long_allowed:
         print("[structure-filter] disabled via OPTIONS_REQUIRE_STRUCTURE_LONG_ALLOWED=0")
 

@@ -297,11 +297,11 @@ class AlpacaBroker:
         )
 
     def get_all_open_positions(self) -> list[BrokerPosition]:
-        try:
-            raw_positions = self.trading.get_all_positions()
-        except Exception as exc:
-            print(f"[broker] failed to fetch positions: {exc}")
-            return []
+        # Fail closed: a transient API error here must not be mistaken for
+        # "no open positions" — that would let the sizing/dedup checks
+        # upstream double-buy into an already-held symbol. Let the caller's
+        # cycle-level handler catch this and retry next cycle instead.
+        raw_positions = self.trading.get_all_positions()
 
         positions: list[BrokerPosition] = []
         for pos in raw_positions:
@@ -322,10 +322,10 @@ class AlpacaBroker:
         return positions
 
     def list_open_orders(self) -> list:
-        try:
-            return self.trading.get_orders()
-        except Exception:
-            return []
+        # Fail closed: an API error must not be mistaken for "no open orders"
+        # — that would defeat duplicate-order prevention. Let the caller's
+        # cycle-level handler catch this and retry next cycle instead.
+        return self.trading.get_orders()
 
     def has_open_order_for_symbol(self, symbol: str) -> bool:
         symbol = safe_symbol(symbol)

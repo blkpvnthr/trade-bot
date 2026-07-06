@@ -168,7 +168,11 @@ WAIT_FOR_MARKET_OPEN = os.getenv("PREMARKET_WAIT_FOR_MARKET_OPEN", "0").lower() 
 MARKET_OPEN_WAIT_TIME = os.getenv("MARKET_OPEN_WAIT_TIME", "09:30")
 
 # Runtime protection. The collector may call this every few minutes, so this script must finish fast.
-MAX_PREMARKET_PLANNER_SYMBOLS = int(os.getenv("MAX_PREMARKET_PLANNER_SYMBOLS", "20"))
+# CLAUDE.md documents this as TRADINGVIEW_MAX_PLANNER_SYMBOLS; honor that name too so operators
+# following the documented env var aren't silently ignored.
+MAX_PREMARKET_PLANNER_SYMBOLS = int(
+    os.getenv("TRADINGVIEW_MAX_PLANNER_SYMBOLS", os.getenv("MAX_PREMARKET_PLANNER_SYMBOLS", "20"))
+)
 MAX_STRUCTURE_WORKERS = int(os.getenv("MAX_STRUCTURE_WORKERS", "6"))
 PLANNER_TOTAL_TIMEOUT_SECONDS = int(os.getenv("PLANNER_TOTAL_TIMEOUT_SECONDS", "240"))
 PER_SYMBOL_TIMEOUT_SECONDS = int(os.getenv("PER_SYMBOL_TIMEOUT_SECONDS", "8"))
@@ -2289,14 +2293,24 @@ def build_premarket_trade_plan() -> dict[str, Any]:
         payload = {
             "created_at_utc": now_utc(),
             "data_source": "none",
+            "status": "error",
             "planner_status": "disabled",
             "execution_mode": "NO_TRADE",
+            "symbol_count": 0,
+            "selected_symbol_count": 0,
+            "selected_symbols": [],
             "valid_plan_count": 0,
-            "plans": [],
+            "valid_symbols": [],
+            "long_allowed_symbols": [],
+            "daily_trade_plans": [],
+            "raw_premarket_pattern_plans": [],
             "error": "No symbols found in latest LLM universe or locked universe.",
         }
         write_json(TRADE_PLAN_PATH, payload)
-        write_json(STRUCTURE_MAP_PATH, {"created_at_utc": now_utc(), "data_source": "none", "planner_status": "disabled", "structures": []})
+        write_json(STRUCTURE_MAP_PATH, {
+            "created_at_utc": now_utc(), "data_source": "none", "status": "error",
+            "planner_status": "disabled", "long_allowed_symbols": [], "structures": [],
+        })
         return payload
 
     # Fetch premarket first for every candidate, then enrich/rank with optional TradingView screener context
@@ -2310,11 +2324,15 @@ def build_premarket_trade_plan() -> dict[str, Any]:
         payload = {
             "created_at_utc": now_utc(),
             "data_source": ds_tag,
+            "status": "safe_mode" if SAFE_MODE_ON_PLANNER_DEGRADATION else "error",
             "planner_status": "degraded_timeout_after_premarket_fetch",
             "execution_mode": "SAFE" if SAFE_MODE_ON_PLANNER_DEGRADATION else "NO_TRADE",
             "symbol_count": len(symbols),
             "selected_symbol_count": len(selected_symbols),
+            "selected_symbols": selected_symbols,
             "valid_plan_count": 0,
+            "valid_symbols": [],
+            "long_allowed_symbols": [],
             "symbol_scores": symbol_scores,
             "tradingview_diagnostics": tv_diagnostics if "tv_diagnostics" in locals() else {},
             "daily_trade_plans": [],
@@ -2323,7 +2341,10 @@ def build_premarket_trade_plan() -> dict[str, Any]:
             "notes": ["Planner timed out before structure build. Allow exits only or safe-mode reduced risk."],
         }
         write_json(TRADE_PLAN_PATH, payload)
-        write_json(STRUCTURE_MAP_PATH, {"created_at_utc": now_utc(), "data_source": ds_tag, "planner_status": payload["planner_status"], "structures": []})
+        write_json(STRUCTURE_MAP_PATH, {
+            "created_at_utc": now_utc(), "data_source": ds_tag, "status": payload["status"],
+            "planner_status": payload["planner_status"], "long_allowed_symbols": [], "structures": [],
+        })
         return payload
 
     intraday_bars = fetch_intraday_bars(selected_symbols)
@@ -2402,9 +2423,12 @@ def build_premarket_trade_plan() -> dict[str, Any]:
         "data_source_tag": ds_tag,
     })
 
+    status = "ok" if planner_status == "ok" else ("safe_mode" if execution_mode == "SAFE" else "error")
+
     payload = {
         "created_at_utc": now_utc(),
         "data_source": ds_tag,
+        "status": status,
         "planner_status": planner_status,
         "execution_mode": execution_mode,
         "elapsed_seconds": elapsed,
@@ -2437,6 +2461,7 @@ def build_premarket_trade_plan() -> dict[str, Any]:
     structure_payload = {
         "created_at_utc": now_utc(),
         "data_source": ds_tag,
+        "status": status,
         "planner_status": planner_status,
         "execution_mode": execution_mode,
         "elapsed_seconds": elapsed,
