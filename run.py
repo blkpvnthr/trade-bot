@@ -107,7 +107,15 @@ TAKE_PROFIT_R_MULTIPLE = 3.0
 MAX_DAILY_LOSS_PCT = 0.02
 MAX_DAILY_LOSS_DOLLARS = 2_000.0
 DAILY_DRAWDOWN_LIMIT = -0.025
-KILL_SWITCH_EQUITY_FLOOR = 95_000.0
+
+# Absolute kill-switch equity floor, in dollars. 0 (default) means "no absolute
+# floor" -- the floor is instead derived per-day as a fraction of that day's
+# starting equity (KILL_SWITCH_EQUITY_FLOOR_PCT), so it scales to whatever
+# account size is actually running instead of only working above a fixed
+# dollar amount. Set KILL_SWITCH_EQUITY_FLOOR to override with a hard dollar
+# floor for a specific account.
+KILL_SWITCH_EQUITY_FLOOR = float(os.getenv("KILL_SWITCH_EQUITY_FLOOR", "0") or 0)
+KILL_SWITCH_EQUITY_FLOOR_PCT = float(os.getenv("KILL_SWITCH_EQUITY_FLOOR_PCT", "0.85"))
 
 
 @dataclass
@@ -722,10 +730,14 @@ class ORBSweepEngulfExecutor:
         blocked = False
         reason = "ok"
 
+        equity_floor = self.config.kill_switch_equity_floor
+        if equity_floor <= 0:
+            equity_floor = start_equity * KILL_SWITCH_EQUITY_FLOOR_PCT
+
         if state.get("kill_triggered"):
             blocked = True
             reason = str(state.get("reason", "kill_switch_already_triggered"))
-        if equity <= self.config.kill_switch_equity_floor:
+        if equity <= equity_floor:
             blocked = True
             reason = "kill_switch_equity_floor"
         if dd_pct <= self.config.daily_drawdown_limit:
