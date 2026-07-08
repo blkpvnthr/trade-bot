@@ -5138,12 +5138,24 @@ class ProductionOrderExecutor:
 
         allowed, kill_reason, daily_return = self._kill_switch_allows_execution(equity)
         if not allowed:
-            print(f"[kill-switch] execution blocked: {kill_reason}")
-            results = pd.DataFrame([{"timestamp_utc": now_utc().isoformat(), "status": "skipped_kill_switch", "message": kill_reason, "daily_return": daily_return}])
-            save_df(pd.DataFrame(), LOG_DIR / f"order_plan_{cycle_id}.csv")
+            # Kill-switch blocks new buy-side entries only. Exits must always remain
+            # allowed so risk can be reduced even while the kill switch is tripped.
+            print(f"[kill-switch] new entries blocked: {kill_reason}")
+            exit_orders = self._augment_exit_orders_with_exit_learning(exit_orders if exit_orders is not None else pd.DataFrame())
+            plan = self._build_order_plan(pd.DataFrame(), exit_orders, equity)
+            if plan.empty:
+                results = pd.DataFrame([{"timestamp_utc": now_utc().isoformat(), "status": "skipped_kill_switch", "message": kill_reason, "daily_return": daily_return}])
+                save_df(pd.DataFrame(), LOG_DIR / f"order_plan_{cycle_id}.csv")
+                save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
+                self._write_account_equity_curve()
+                return pd.DataFrame(), results, self.broker.get_account_snapshot(), positions_before
+
+            print(f"[kill-switch] allowing {len(plan)} exit order(s) to reduce risk: {kill_reason}")
+            save_df(plan, LOG_DIR / f"order_plan_{cycle_id}.csv")
+            results = self._execute_order_plan(plan, cycle_id)
             save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
             self._write_account_equity_curve()
-            return pd.DataFrame(), results, self.broker.get_account_snapshot(), positions_before
+            return plan, results, self.broker.get_account_snapshot(), positions_before
 
         if self.config.cancel_open_orders_first:
             print("[orders] canceling open orders")

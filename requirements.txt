@@ -15,7 +15,7 @@ stable-baselines3>=2.2.0
 # Data / screener
 yfinance>=0.2.38
 tradingview-screener>=0.3.0
-python-tradingview-ta>=0.3.12
+tradingview-ta>=0.3.12
 
 # Strategy platform extras
 pyyaml>=6.0.1
@@ -24,4 +24,4 @@ jinja2>=3.1.0
 # Optional
 sb3-contrib>=2.2.0
 rookiepy>=0.5.0
-pywt>=1.6.0
+PyWavelets>=1.6.0
