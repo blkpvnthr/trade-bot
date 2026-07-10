@@ -77,6 +77,7 @@ EQUITY_CURVE_PATH = LOG_DIR / "orb_sweep_engulf_equity_curve.csv"
 EVENTS_JSONL = LOG_DIR / "orb_sweep_engulf_events.jsonl"
 SIGNAL_STATE_PATH = LOG_DIR / "orb_sweep_engulf_signal_state.json"
 KILL_SWITCH_PATH = LOG_DIR / "kill_switch_state.json"
+HEARTBEAT_FILE = Path(os.getenv("TRADER_HEARTBEAT_FILE", "/tmp/trader_heartbeat"))
 
 DEFAULT_UNIVERSE = [
     "QQQ", "TQQQ", "SQQQ", "SPY", "DIA", "IWM", "XLK", "SOXX", "SMH",
@@ -237,6 +238,14 @@ def json_default(value: Any) -> Any:
 
 def round_price(value: float) -> float:
     return round(float(value), 2) if value >= 1 else round(float(value), 4)
+
+
+def touch_heartbeat() -> None:
+    try:
+        HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        HEARTBEAT_FILE.write_text(now_utc().isoformat(), encoding="utf-8")
+    except Exception as exc:
+        print(f"[heartbeat] failed to write {HEARTBEAT_FILE}: {exc}")
 
 
 def write_event(event: str, payload: dict[str, Any] | None = None) -> None:
@@ -995,6 +1004,7 @@ class ORBSweepEngulfExecutor:
         acct = self.broker.get_account_snapshot()
         gross = self._gross_exposure(acct.equity)
         print(f"[executor] heartbeat | equity=${acct.equity:,.2f} | cash=${acct.cash:,.2f} | buying_power=${acct.buying_power:,.2f} | gross={gross:.2%}")
+        touch_heartbeat()
         self.last_heartbeat_time = now_ts
 
     def run(self) -> None:
@@ -1008,6 +1018,7 @@ class ORBSweepEngulfExecutor:
         print("[executor] entry=close_of_engulfing_candle")
         print("[executor] long=enabled short=" + ("enabled" if self.config.allow_shorts else "disabled"))
         print(f"[executor] take_profit={self.config.take_profit_r_multiple}R")
+        touch_heartbeat()
 
         if self.config.poll_once:
             self.run_cycle()
@@ -1017,6 +1028,7 @@ class ORBSweepEngulfExecutor:
         while True:
             try:
                 self.run_cycle()
+                touch_heartbeat()
                 self._print_heartbeat()
             except KeyboardInterrupt:
                 print("[executor] interrupted by user")
