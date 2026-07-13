@@ -69,12 +69,6 @@ EQUITY_CURVE_PATH = LOG_DIR / "executor_equity_curve.csv"
 EVENTS_JSONL = LOG_DIR / "execution_events.jsonl"
 KILL_SWITCH_PATH = LOG_DIR / "kill_switch_state.json"
 
-TRADE_PATH = Path("/Users/blkpvnthr/Desktop/trader/run.py")
-
-src = TRADE_PATH.read_text(encoding="utf-8")
-backup = TRADE_PATH.with_suffix(".py.bak_run_forever")
-backup.write_text(src, encoding="utf-8")
-
 # =============================================================================
 # Constants
 # =============================================================================

@@ -284,7 +284,17 @@ class AlpacaBroker:
         api_key = os.getenv("APCA_API_KEY_ID")
         secret_key = os.getenv("APCA_API_SECRET_KEY")
         if not api_key or not secret_key:
-            raise RuntimeError(f"Missing APCA_API_KEY_ID / APCA_API_SECRET_KEY in {env_path}")
+            env_exists = env_path.exists()
+            hint = (
+                f"  .env exists at {env_path} but is missing the required keys."
+                if env_exists else
+                f"  No .env file found at {env_path}.\n"
+                f"  Create one by copying an example: cp .env.bot01.example .env\n"
+                f"  Then fill in APCA_API_KEY_ID and APCA_API_SECRET_KEY from https://alpaca.markets"
+            )
+            raise RuntimeError(
+                f"Missing APCA_API_KEY_ID / APCA_API_SECRET_KEY.\n{hint}"
+            )
         self.trading = TradingClient(api_key=api_key, secret_key=secret_key, paper=paper)
 
     def get_account_snapshot(self) -> AccountSnapshot:
@@ -633,12 +643,26 @@ class ORBSweepEngulfExecutor:
         self.last_order_time = 0.0
         self.last_heartbeat_time = 0.0
         self.account_history: list[dict[str, float | str]] = []
+        # In-session dedup guard: symbols ordered this session (keyed by date).
+        # Alpaca position API has latency; relying solely on it causes duplicate
+        # orders within the same poll cycle (observed: 6x CVE/BITO buys on 2026-05-05).
+        self._session_ordered: dict[str, set[str]] = {}  # date -> {symbol}
 
     def _in_cooldown(self) -> bool:
         return (time.time() - self.last_order_time) < self.config.cooldown_seconds
 
     def _mark_order(self) -> None:
         self.last_order_time = time.time()
+
+    def _session_already_ordered(self, symbol: str) -> bool:
+        today = now_utc().date().isoformat()
+        return symbol in self._session_ordered.get(today, set())
+
+    def _record_session_order(self, symbol: str) -> None:
+        today = now_utc().date().isoformat()
+        self._session_ordered.setdefault(today, set()).add(symbol)
+        # Prune stale dates so this dict doesn't grow across midnight
+        self._session_ordered = {k: v for k, v in self._session_ordered.items() if k >= today}
 
     def _record_account_snapshot(self, label: str, cycle_id: str) -> dict[str, float | str]:
         acct = self.broker.get_account_snapshot()
@@ -850,6 +874,14 @@ class ORBSweepEngulfExecutor:
             self._journal_signal(cycle_id, "SKIP", signal, 0, 0.0, acct_before, acct_after, "cooldown_active")
             return {"symbol": signal.symbol, "side": signal.side, "status": "skipped_cooldown", "message": "cooldown_active"}
 
+        # In-session dedup: fastest guard, no API call required.
+        if self._session_already_ordered(signal.symbol):
+            acct_after = self._record_account_snapshot("after_skip", cycle_id)
+            acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
+            self._journal_signal(cycle_id, "SKIP", signal, 0, 0.0, acct_before, acct_after, "session_already_ordered")
+            self.signal_engine.mark_processed(signal)
+            return {"symbol": signal.symbol, "side": signal.side, "status": "skipped_session_dedup", "message": "session_already_ordered"}
+
         positions = self._positions_by_symbol()
         if signal.symbol in positions and abs(positions[signal.symbol].qty) > 0:
             acct_after = self._record_account_snapshot("after_skip", cycle_id)
@@ -890,6 +922,7 @@ class ORBSweepEngulfExecutor:
             print(f"[submitted] {signal.side.upper()} BRACKET {qty} {signal.symbol} entry_ref={signal.entry_price:.4f} stop={signal.stop_loss:.4f} tp={signal.take_profit:.4f} status={status} id={order_id}")
 
             self._mark_order()
+            self._record_session_order(signal.symbol)
             self.signal_engine.mark_processed(signal)
             fill_info = self._poll_fill(order_id)
 
@@ -1096,6 +1129,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-daily-loss-pct", type=float, default=MAX_DAILY_LOSS_PCT)
     parser.add_argument("--max-daily-loss-dollars", type=float, default=MAX_DAILY_LOSS_DOLLARS)
     parser.add_argument("--kill-switch-equity-floor", type=float, default=KILL_SWITCH_EQUITY_FLOOR)
+    parser.add_argument("--diagnostics", action="store_true", help="Print system health without trading and exit.")
     return parser.parse_args()
 
 
@@ -1133,8 +1167,82 @@ def build_config(args: argparse.Namespace) -> ExecutorConfig:
     )
 
 
+def _run_diagnostics(args: argparse.Namespace) -> None:
+    """Print system health and signal-readiness without executing any trades."""
+    print("=" * 60)
+    print("[diagnostics] ORB Sweep/Retest/Engulf — system health check")
+    print("=" * 60)
+
+    # 1. Credentials
+    load_dotenv(ENV_PATH)
+    api_key = os.getenv("APCA_API_KEY_ID", "")
+    secret_key = os.getenv("APCA_API_SECRET_KEY", "")
+    env_ok = bool(api_key and secret_key)
+    print(f"[diagnostics] .env present:  {ENV_PATH.exists()}")
+    print(f"[diagnostics] credentials:   {'OK' if env_ok else 'MISSING — run cannot proceed'}")
+
+    # 2. Footprint file
+    fp = Path(args.footprint_file)
+    if fp.exists() and fp.stat().st_size > 0:
+        try:
+            df = pd.read_csv(fp)
+            print(f"[diagnostics] footprint_file: {fp}  rows={len(df)}  cols={list(df.columns)}")
+        except Exception as exc:
+            print(f"[diagnostics] footprint_file: {fp}  READ ERROR: {exc}")
+    else:
+        print(f"[diagnostics] footprint_file: {fp}  MISSING or EMPTY")
+        print("[diagnostics]   → Signal generation will produce 0 signals.")
+        print("[diagnostics]   → Export TradingView volume footprint CSV and place it at the path above.")
+
+    # 3. Signal state
+    if SIGNAL_STATE_PATH.exists():
+        try:
+            state = json.loads(SIGNAL_STATE_PATH.read_text())
+            n_keys = len(state.get("processed_signal_keys", []))
+            print(f"[diagnostics] signal_state:  {SIGNAL_STATE_PATH}  processed_keys={n_keys}")
+        except Exception:
+            print(f"[diagnostics] signal_state:  {SIGNAL_STATE_PATH}  CORRUPT")
+    else:
+        print(f"[diagnostics] signal_state:  {SIGNAL_STATE_PATH}  not yet created (normal on first run)")
+
+    # 4. Kill switch
+    if KILL_SWITCH_PATH.exists():
+        try:
+            ks = json.loads(KILL_SWITCH_PATH.read_text())
+            triggered = ks.get("kill_triggered", False)
+            print(f"[diagnostics] kill_switch:   triggered={triggered}  date={ks.get('date')}  reason={ks.get('reason')}")
+        except Exception:
+            print(f"[diagnostics] kill_switch:   CORRUPT — will be reset on next run")
+    else:
+        print("[diagnostics] kill_switch:   not active")
+
+    # 5. Broker connectivity (only if credentials available)
+    if env_ok:
+        try:
+            broker = AlpacaBroker(ENV_PATH, paper=not args.live)
+            clock = broker.get_clock_info()
+            acct = broker.get_account_snapshot()
+            positions = broker.get_all_open_positions()
+            print(f"[diagnostics] broker:        CONNECTED  paper={not args.live}")
+            print(f"[diagnostics] market_open:   {clock['is_open']}  next_open={clock['next_open']}")
+            print(f"[diagnostics] equity:        ${acct.equity:,.2f}")
+            print(f"[diagnostics] cash:          ${acct.cash:,.2f}")
+            print(f"[diagnostics] buying_power:  ${acct.buying_power:,.2f}")
+            print(f"[diagnostics] open_positions:{len(positions)}")
+            for pos in positions:
+                print(f"[diagnostics]   {pos.symbol:8s} qty={pos.qty:8.0f}  mv=${pos.market_value:,.2f}  pnl={pos.unrealized_plpc:.2%}")
+        except Exception as exc:
+            print(f"[diagnostics] broker:        ERROR — {exc}")
+
+    print("=" * 60)
+    print("[diagnostics] done")
+
+
 def main() -> None:
     args = parse_args()
+    if args.diagnostics:
+        _run_diagnostics(args)
+        return
     config = build_config(args)
     trader = ORBSweepEngulfExecutor(config)
     trader.run()
