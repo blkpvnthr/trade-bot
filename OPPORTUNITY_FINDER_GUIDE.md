@@ -16,7 +16,7 @@ The Opportunity Finder system has been successfully implemented at `~/Desktop/tr
 7. `opportunity_finder.py` — Main orchestrator (importable + standalone)
 
 **File Modified**:
-- `requirements.txt` — Added `python-tradingview-ta>=0.3.12`
+- `requirements.txt` — Added `tradingview-ta>=3.3.0`
 
 ---
 
@@ -27,7 +27,7 @@ The Opportunity Finder system has been successfully implemented at `~/Desktop/tr
 ```bash
 cd ~/Desktop/trader
 
-# Option A: Install only tradingview-ta (python-tradingview-ta already in requirements.txt)
+# Option A: Install only tradingview-ta (tradingview-ta already in requirements.txt)
 pip install tradingview-ta
 
 # Option B: Reinstall all requirements
@@ -479,5 +479,5 @@ For issues or improvements:
 - Check JSONL event log for errors and diagnostic messages
 - Review `opportunity_finder_report.json` for staleness details
 - Verify config env vars are set correctly
-- Ensure `tradingview-screener` and `python-tradingview-ta` are installed
+- Ensure `tradingview-screener` and `tradingview-ta` are installed
 
