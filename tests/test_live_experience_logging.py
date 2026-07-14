@@ -1,102 +1,125 @@
-import types
 import unittest
-from unittest.mock import patch
-
-import pandas as pd
 
 import run
 
 
+def _make_signal(symbol: str = "HPE") -> run.ORBSweepEngulfSignal:
+    return run.ORBSweepEngulfSignal(
+        symbol=symbol,
+        side="long",
+        trade_date="2026-07-14",
+        timestamp="2026-07-14T14:05:00+00:00",
+        opening_timestamp="2026-07-14T13:30:00+00:00",
+        opening_high=10.50,
+        opening_low=10.00,
+        sweep_price=9.80,
+        retest_timestamp="2026-07-14T14:00:00+00:00",
+        engulf_timestamp="2026-07-14T14:05:00+00:00",
+        retest_delta=-100.0,
+        engulf_delta=150.0,
+        entry_price=10.20,
+        stop_loss=9.80,
+        take_profit=11.40,
+        risk_per_share=0.40,
+        reward_per_share=1.20,
+        retest_open=9.95, retest_high=10.05, retest_low=9.82, retest_close=9.98,
+        engulf_open=9.98, engulf_high=10.22, engulf_low=9.97, engulf_close=10.20,
+    )
+
+
 class _SubmittedOrder:
     id = "order-1"
-    status = "filled"
+    status = "accepted"
 
 
 class _BrokerStub:
-    def get_position(self, symbol):
-        return run.BrokerPosition(symbol=symbol, qty=0)
+    def __init__(self):
+        self.submit_calls = 0
 
-    def has_open_order_for_symbol(self, symbol):
-        return False
-
-    def submit_market_buy(self, symbol, qty, client_order_id, time_in_force):
+    def submit_market_bracket_order(self, **kwargs):
+        self.submit_calls += 1
         return _SubmittedOrder()
 
-    def cancel_open_orders_for_symbol(self, symbol):
-        return None
+    def get_account_snapshot(self):
+        return run.AccountSnapshot(buying_power=100000.0, equity=100000.0, cash=100000.0, portfolio_value=100000.0)
 
     def get_all_open_positions(self):
         return []
 
+    def has_open_order_for_symbol(self, symbol):
+        return False
+
+    def get_order_by_id(self, order_id):
+        return _SubmittedOrder()
+
+
+class _SignalEngineStub:
+    def __init__(self):
+        self.marked = []
+
+    def mark_processed(self, signal):
+        self.marked.append(signal)
+
+
+class _JournalStub:
+    def __init__(self):
+        self.rows = []
+
+    def append(self, row):
+        self.rows.append(row)
+
+
+def _make_executor():
+    executor = run.ORBSweepEngulfExecutor.__new__(run.ORBSweepEngulfExecutor)
+    executor.config = run.ExecutorConfig()
+    executor.journal = _JournalStub()
+    executor.broker = _BrokerStub()
+    executor.signal_engine = _SignalEngineStub()
+    executor.last_order_time = {}
+    executor.last_heartbeat_time = 0.0
+    executor.account_history = []
+    executor._session_ordered = {}
+    return executor
+
 
 class LiveExperienceLoggingTests(unittest.TestCase):
-    def _make_executor(self):
-        executor = run.ProductionOrderExecutor.__new__(run.ProductionOrderExecutor)
-        executor.config = run.build_default_config()
-        executor.config.scanner.require_direction_confirmation_before_buy = False
-        executor.config.scanner.stream_confirmed_append_direction_rejects = False
-        executor.config.scanner.stream_confirmed_submit_trailing_stop_after_fill = False
-        executor.scanner = None
-        executor.broker = _BrokerStub()
-        executor._record_account_snapshot = lambda label, cycle_id: {
-            "equity": 100000.0,
-            "cash": 100000.0,
-            "buying_power": 400000.0,
-        }
-        executor._gross_exposure = lambda equity: 0.0
-        executor._latest_feature_by_symbol = lambda: {}
-        executor._cash_buffer = lambda equity: 0.0
-        executor._max_order_notional = lambda equity: 1_000_000.0
-        executor._risk_profile = lambda equity: types.SimpleNamespace(
-            max_gross_exposure=1.0,
-            min_notional_to_trade=1.0,
-        )
-        executor._read_kill_state = lambda: {"start_equity": 100000.0}
-        executor._mark_order = lambda: None
-        executor._poll_fill = lambda order_id, price: {
-            "fill_status": "filled",
-            "filled_qty": 10,
-            "filled_avg_price": 10.0,
-            "slippage_pct": 0.0,
-        }
-        executor._order_log_context = lambda **kwargs: {}
-        executor._journal_order = lambda *args, **kwargs: None
-        return executor
+    def test_post_submit_logging_failure_does_not_turn_filled_order_into_error(self):
+        executor = _make_executor()
+        signal = _make_signal("HPE")
 
-    def test_logging_failure_does_not_turn_filled_order_into_error(self):
-        executor = self._make_executor()
-        stages = []
+        original_write_event = run.write_event
+        recorded_events = []
 
-        def failing_log_live_experience(**kwargs):
-            stages.append(kwargs["stage"])
-            if kwargs["stage"] == "submitted":
-                raise AttributeError("'ScannerConfig' object has no attribute 'live_experience_log_orders'")
+        def fake_write_event(event, payload=None):
+            recorded_events.append(event)
+            if event == "orb_sweep_engulf_bracket_order_submitted":
+                raise AttributeError("simulated post-submit logging failure")
 
-        executor._log_live_experience = failing_log_live_experience
+        run.write_event = fake_write_event
+        try:
+            result = executor._execute_signal(signal, "cycle-1")
+        finally:
+            run.write_event = original_write_event
 
-        plan = pd.DataFrame(
-            [
-                {
-                    "symbol": "HPE",
-                    "side": "buy",
-                    "order_qty": 10,
-                    "price": 10.0,
-                    "capped_dollars": 100.0,
-                    "reason": "test_entry",
-                    "client_order_id": "client-1",
-                }
-            ]
-        )
+        self.assertEqual(recorded_events, ["orb_sweep_engulf_bracket_order_submitted", "orb_sweep_engulf_post_submit_logging_error"])
+        self.assertEqual(executor.broker.submit_calls, 1)
+        self.assertNotIn(result["status"], {"error", "api_error"})
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["order_id"], "order-1")
+        self.assertEqual(result["symbol"], "HPE")
+        # The signal must still be marked processed / session-deduped even
+        # though post-submission logging blew up, so we never re-submit.
+        self.assertEqual(len(executor.signal_engine.marked), 1)
+        self.assertTrue(executor._session_already_ordered("HPE"))
 
-        with (
-            patch.object(run, "log_executed_order", lambda **kwargs: None),
-            patch.object(run, "write_event", lambda *args, **kwargs: None),
-        ):
-            results = executor._execute_order_plan(plan, "cycle-1")
 
-        self.assertEqual(stages, ["decision", "submitted"])
-        self.assertEqual(list(results["status"]), ["filled"])
-        self.assertEqual(list(results["symbol"]), ["HPE"])
+class PerSymbolCooldownTests(unittest.TestCase):
+    def test_cooldown_on_one_symbol_does_not_block_a_different_symbol(self):
+        executor = _make_executor()
+        executor._mark_order("AAPL")
+
+        self.assertTrue(executor._in_cooldown("AAPL"))
+        self.assertFalse(executor._in_cooldown("MSFT"))
 
 
 if __name__ == "__main__":

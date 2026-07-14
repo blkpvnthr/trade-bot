@@ -640,7 +640,7 @@ class ORBSweepEngulfExecutor:
         self.journal = CsvJournal(JOURNAL_PATH)
         self.broker = AlpacaBroker(ENV_PATH, paper=config.paper)
         self.signal_engine = ORBSweepEngulfSignalEngine(config)
-        self.last_order_time = 0.0
+        self.last_order_time: dict[str, float] = {}
         self.last_heartbeat_time = 0.0
         self.account_history: list[dict[str, float | str]] = []
         # In-session dedup guard: symbols ordered this session (keyed by date).
@@ -648,11 +648,14 @@ class ORBSweepEngulfExecutor:
         # orders within the same poll cycle (observed: 6x CVE/BITO buys on 2026-05-05).
         self._session_ordered: dict[str, set[str]] = {}  # date -> {symbol}
 
-    def _in_cooldown(self) -> bool:
-        return (time.time() - self.last_order_time) < self.config.cooldown_seconds
+    def _in_cooldown(self, symbol: str) -> bool:
+        # Per-symbol: a fill on one symbol must not throttle a different,
+        # independent signal on another symbol within the same poll cycle.
+        last = self.last_order_time.get(safe_symbol(symbol), 0.0)
+        return (time.time() - last) < self.config.cooldown_seconds
 
-    def _mark_order(self) -> None:
-        self.last_order_time = time.time()
+    def _mark_order(self, symbol: str) -> None:
+        self.last_order_time[safe_symbol(symbol)] = time.time()
 
     def _session_already_ordered(self, symbol: str) -> bool:
         today = now_utc().date().isoformat()
@@ -868,7 +871,7 @@ class ORBSweepEngulfExecutor:
         acct_before = self._record_account_snapshot("before_signal", cycle_id)
         acct_before["gross_exposure"] = self._gross_exposure(float(acct_before["equity"]))
 
-        if self._in_cooldown():
+        if self._in_cooldown(signal.symbol):
             acct_after = self._record_account_snapshot("after_skip", cycle_id)
             acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
             self._journal_signal(cycle_id, "SKIP", signal, 0, 0.0, acct_before, acct_after, "cooldown_active")
@@ -907,6 +910,12 @@ class ORBSweepEngulfExecutor:
 
         client_order_id = f"{self.config.order_tag_prefix}_{signal.side}_{run_id()}_{signal.symbol}"[:48]
 
+        # Only the submission call itself can turn this signal into an error.
+        # Everything after a successful submit (fill polling, account snapshot,
+        # journaling) is best-effort reporting on a trade that already exists
+        # at the broker — a failure there must never relabel a live/filled
+        # order as "error" (that previously caused filled trades to be
+        # reported as failures whenever post-submission logging hiccuped).
         try:
             submitted = self.broker.submit_market_bracket_order(
                 symbol=signal.symbol,
@@ -917,13 +926,32 @@ class ORBSweepEngulfExecutor:
                 take_profit_price=signal.take_profit,
                 stop_loss_price=signal.stop_loss,
             )
-            order_id = str(getattr(submitted, "id", ""))
-            status = str(getattr(submitted, "status", "submitted"))
-            print(f"[submitted] {signal.side.upper()} BRACKET {qty} {signal.symbol} entry_ref={signal.entry_price:.4f} stop={signal.stop_loss:.4f} tp={signal.take_profit:.4f} status={status} id={order_id}")
+        except APIError as exc:
+            message = str(exc)
+            print(f"[error] APIError {signal.side.upper()} BRACKET {qty} {signal.symbol}: {message}")
+            acct_after = self._record_account_snapshot("after_error", cycle_id)
+            acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
+            self._journal_signal(cycle_id, "ERROR", signal, qty, est_notional, acct_before, acct_after, message)
+            write_event("orb_sweep_engulf_order_api_error", {"symbol": signal.symbol, "side": signal.side, "error": message})
+            return {"symbol": signal.symbol, "side": signal.side, "status": "api_error", "message": message}
+        except Exception as exc:
+            message = str(exc)
+            print(f"[error] submit failed {signal.side.upper()} BRACKET {qty} {signal.symbol}: {message}")
+            acct_after = self._record_account_snapshot("after_error", cycle_id)
+            acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
+            self._journal_signal(cycle_id, "ERROR", signal, qty, est_notional, acct_before, acct_after, message)
+            write_event("orb_sweep_engulf_order_error", {"symbol": signal.symbol, "side": signal.side, "error": message})
+            return {"symbol": signal.symbol, "side": signal.side, "status": "error", "message": message}
 
-            self._mark_order()
-            self._record_session_order(signal.symbol)
-            self.signal_engine.mark_processed(signal)
+        order_id = str(getattr(submitted, "id", ""))
+        status = str(getattr(submitted, "status", "submitted"))
+        print(f"[submitted] {signal.side.upper()} BRACKET {qty} {signal.symbol} entry_ref={signal.entry_price:.4f} stop={signal.stop_loss:.4f} tp={signal.take_profit:.4f} status={status} id={order_id}")
+
+        self._mark_order(signal.symbol)
+        self._record_session_order(signal.symbol)
+        self.signal_engine.mark_processed(signal)
+
+        try:
             fill_info = self._poll_fill(order_id)
 
             acct_after = self._record_account_snapshot("after_order", cycle_id)
@@ -942,24 +970,18 @@ class ORBSweepEngulfExecutor:
             self._journal_signal(cycle_id, "ORDER", signal, qty, est_notional, acct_before, acct_after, "orb_sweep_retest_engulf_entry_at_close_3r", order_id, status, fill_info)
             write_event("orb_sweep_engulf_bracket_order_submitted", result)
             return result
-
-        except APIError as exc:
-            message = str(exc)
-            print(f"[error] APIError {signal.side.upper()} BRACKET {qty} {signal.symbol}: {message}")
-            acct_after = self._record_account_snapshot("after_error", cycle_id)
-            acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
-            self._journal_signal(cycle_id, "ERROR", signal, qty, est_notional, acct_before, acct_after, message)
-            write_event("orb_sweep_engulf_order_api_error", {"symbol": signal.symbol, "side": signal.side, "error": message})
-            return {"symbol": signal.symbol, "side": signal.side, "status": "api_error", "message": message}
-
         except Exception as exc:
-            message = str(exc)
-            print(f"[error] submit failed {signal.side.upper()} BRACKET {qty} {signal.symbol}: {message}")
-            acct_after = self._record_account_snapshot("after_error", cycle_id)
-            acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
-            self._journal_signal(cycle_id, "ERROR", signal, qty, est_notional, acct_before, acct_after, message)
-            write_event("orb_sweep_engulf_order_error", {"symbol": signal.symbol, "side": signal.side, "error": message})
-            return {"symbol": signal.symbol, "side": signal.side, "status": "error", "message": message}
+            # The order is already live at the broker at this point; only
+            # post-submission reporting failed. Surface the true order status
+            # instead of masquerading as a failed trade.
+            message = f"order_submitted_ok_post_processing_failed: {exc}"
+            print(f"[warn] {message} symbol={signal.symbol} order_id={order_id}")
+            write_event("orb_sweep_engulf_post_submit_logging_error", {"symbol": signal.symbol, "side": signal.side, "order_id": order_id, "error": str(exc)})
+            return {
+                "timestamp_utc": now_utc().isoformat(), "cycle_id": cycle_id, "symbol": signal.symbol,
+                "side": signal.side, "order_class": "bracket", "qty": qty, "status": status,
+                "order_id": order_id, "message": message,
+            }
 
     def run_cycle(self) -> pd.DataFrame:
         cycle_id = run_id()
