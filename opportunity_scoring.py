@@ -47,6 +47,7 @@ class OpportunityCandidate:
     score: float  # 0-100
     setup_type: str
     rvol: float
+    price: float
     premarket_volume: int
     dollar_volume: float
     trend_strength: float  # 0-100
@@ -340,6 +341,7 @@ def score_candidate(
         score=opportunity_score,
         setup_type=setup_type,
         rvol=rvol,
+        price=price,
         premarket_volume=int(premarket_volume),
         dollar_volume=dollar_volume,
         trend_strength=clip01(trend_strength / 100.0) * 100.0,

@@ -7,7 +7,7 @@ Apply universe rotation logic: remove stale symbols, add strong candidates.
 Rotation rules:
 1. Guard: ENABLED=false → return original universe unchanged
 2. Guard: REPLACE_STALE_NAMES=false → skip removal/addition logic
-3. Guard: market_context.trade_permission == 'halt' → block rotation
+3. Guard: market_context.trade_permission in ('halt', 'halt_new_buys') → block rotation
 4. Identify stale symbols (staleness >= STALE_THRESHOLD)
 5. Never remove symbols in long_allowed_symbols (anti-churn)
 6. Budget: max N removals based on universe floor and MAX_REPLACEMENTS
@@ -98,7 +98,7 @@ def apply_rotation(
         )
 
     market_halt = False
-    if market_context and market_context.get("trade_permission") == "halt":
+    if market_context and market_context.get("trade_permission") in ("halt", "halt_new_buys"):
         market_halt = True
 
     if market_halt:
@@ -162,8 +162,7 @@ def apply_rotation(
             continue
         if cand.symbol in current_set:
             continue
-        if not passes_price_filter(cand.rvol, config.min_price, config.max_price):
-            # Note: rvol is here, but should check price. Use rvol field as proxy
+        if not passes_price_filter(cand.price, config.min_price, config.max_price):
             continue
         if not passes_rvol_filter(cand.rvol, config.min_rvol):
             continue

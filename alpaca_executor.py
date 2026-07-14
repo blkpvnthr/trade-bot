@@ -1318,29 +1318,10 @@ def run_execution(
         )
         return pd.DataFrame(), results, account_before, positions_before
 
-    if not enforce_daily_loss_kill_switch(account_before, config):
-        results = pd.DataFrame(
-            [
-                {
-                    "timestamp": utc_now().isoformat(),
-                    "status": "skipped_kill_switch",
-                    "message": "daily loss kill switch active",
-                }
-            ]
-        )
-        save_df(pd.DataFrame(), LOG_DIR / f"order_plan_{stamp}.csv")
-        save_df(results, LOG_DIR / f"order_results_{stamp}.csv")
-        save_execution_summary(
-            run_stamp=stamp,
-            config=config,
-            account_before=account_before,
-            account_after=None,
-            order_plan=pd.DataFrame(),
-            results=results,
-            positions_before=positions_before,
-            positions_after=None,
-        )
-        return pd.DataFrame(), results, account_before, positions_before
+    kill_switch_active = not enforce_daily_loss_kill_switch(account_before, config)
+    if kill_switch_active:
+        print("[kill-switch] daily loss kill switch active: blocking new buys, exits still allowed")
+        rebalance_orders = pd.DataFrame()
 
     if config.cancel_open_orders_first:
         print("[orders] cancel_open_orders requested")

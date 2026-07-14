@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from functools import reduce
 from typing import Any, Callable
 
 import pandas as pd
@@ -654,13 +655,9 @@ def _load_tv_snapshot_for_symbols(
 
     try:
         # Filter by symbols, get all TA fields
-        query = Query()
-        for i, symbol in enumerate(symbols):
-            sym_norm = normalize_symbol(symbol)
-            if i == 0:
-                query = query.set_filter(col("type") == "stock").set_filter(col("name") == sym_norm)
-            else:
-                query = query.set_filter((col("name") == sym_norm) | col("name") == symbols[0])
+        symbol_filters = [col("name") == normalize_symbol(symbol) for symbol in symbols]
+        combined_symbol_filter = reduce(lambda a, b: a | b, symbol_filters)
+        query = Query().set_filter(col("type") == "stock").set_filter(combined_symbol_filter)
 
         # Fetch TA fields: Recommend.All for 1m/5m/15m/1h/1d, MACD, RSI, RVOL
         fields = [

@@ -1268,7 +1268,18 @@ def live_cycle(model: PPO, execute: bool = False) -> list[dict[str, Any]]:
         action_name = "wait"
         reason = market_reason
 
-        if not can_trade:
+        if action == ACTION_SELL and resistance and dist_resistance is not None and dist_resistance <= ENTRY_DISTANCE_PCT:
+            # SELL/exit signals are never gated by can_trade (exits must always be allowed).
+            stop = resistance * (1.0 + STOP_BEYOND_LEVEL_PCT)
+            risk = stop - price
+            tp = price - risk * TAKE_PROFIT_R_MULTIPLE
+            action_name = "sell"
+            reason = "price_near_resistance_rl_sell"
+
+            # This layer treats SELL as exit/avoid unless you add shorting.
+            # submit_order is intentionally not called for short selling.
+
+        elif not can_trade:
             action_name = "wait"
 
         elif action == ACTION_BUY and support and dist_support is not None and dist_support <= ENTRY_DISTANCE_PCT:
@@ -1281,16 +1292,6 @@ def live_cycle(model: PPO, execute: bool = False) -> list[dict[str, Any]]:
 
             if execute and qty > 0:
                 submit_order(symbol, "buy", qty)
-
-        elif action == ACTION_SELL and resistance and dist_resistance is not None and dist_resistance <= ENTRY_DISTANCE_PCT:
-            stop = resistance * (1.0 + STOP_BEYOND_LEVEL_PCT)
-            risk = stop - price
-            tp = price - risk * TAKE_PROFIT_R_MULTIPLE
-            action_name = "sell"
-            reason = "price_near_resistance_rl_sell"
-
-            # This layer treats SELL as exit/avoid unless you add shorting.
-            # submit_order is intentionally not called for short selling.
 
         decisions.append(
             {
