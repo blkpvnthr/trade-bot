@@ -386,7 +386,7 @@ class SharpeRewardCalculator:
         self.sharpe_weight = sharpe_weight
         # Reward mode: "sharpe_rolling" (default, legacy) | "ddr" (Differential Downside
         # Deviation Ratio, Moody & Saffell 2001) — per-step-additive downside-only reward.
-        self.mode         = mode
+        self.mode         = (mode or "sharpe_rolling").strip().lower()
         self.eta          = eta               # DDR moment decay
         self.downside_target = downside_target
         self._returns: deque = deque(maxlen=window)

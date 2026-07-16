@@ -78,7 +78,10 @@ RL_DATA_PATH         = os.environ.get("RL_DATA_PATH", str(OUT_DIR / f"{DATA_TAG}
 # Reward shaping mode: "sharpe_rolling" (legacy default) | "ddr" (Differential Downside
 # Deviation Ratio, Moody & Saffell 2001 — per-step-additive, downside-only). DDR is opt-in;
 # empirical A/B vs baseline is deferred to the 03-03 eval harness.
-RL_REWARD_MODE       = os.environ.get("RL_REWARD_MODE", "sharpe_rolling")
+RL_REWARD_MODE       = os.environ.get("RL_REWARD_MODE", "sharpe_rolling").strip().lower()
+if RL_REWARD_MODE not in {"sharpe_rolling", "ddr"}:
+    print(f"[reward] WARNING: unknown RL_REWARD_MODE={RL_REWARD_MODE!r} -- using sharpe_rolling", flush=True)
+    RL_REWARD_MODE = "sharpe_rolling"
 RL_REWARD_DDR_ETA    = float(os.environ.get("RL_REWARD_DDR_ETA", 0.02))
 RL_MODEL_OUT         = str(OUT_DIR / f"{DATA_TAG}_rl_intraday_structure_model")  # SB3 appends .zip -> canonical (AC-2)
 
