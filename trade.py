@@ -5544,6 +5544,10 @@ class ProductionOrderExecutor:
                         "would_pass_rl_gate": bool(allow),
                     })
                     write_event("rl_shadow_buy_decision", shadow)
+                    # Shadow mode records what the gate *would* have decided but must not
+                    # actually block entries — only a promoted (non-shadow) RL gate may
+                    # reject buys. See CLAUDE.md "RL Training" / RL_SHADOW_MODE.
+                    allow = True
 
                 if not allow and self.config.scanner.rl_allow_hold_when_model_missing:
                     reason = str(signal.get("reason", ""))

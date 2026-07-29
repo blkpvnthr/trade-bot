@@ -46,6 +46,7 @@ class OpportunityCandidate:
     symbol: str
     score: float  # 0-100
     setup_type: str
+    price: float
     rvol: float
     premarket_volume: int
     dollar_volume: float
@@ -339,6 +340,7 @@ def score_candidate(
         symbol=symbol,
         score=opportunity_score,
         setup_type=setup_type,
+        price=price,
         rvol=rvol,
         premarket_volume=int(premarket_volume),
         dollar_volume=dollar_volume,

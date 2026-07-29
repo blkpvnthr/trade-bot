@@ -107,7 +107,10 @@ TAKE_PROFIT_R_MULTIPLE = 3.0
 MAX_DAILY_LOSS_PCT = 0.02
 MAX_DAILY_LOSS_DOLLARS = 2_000.0
 DAILY_DRAWDOWN_LIMIT = -0.025
-KILL_SWITCH_EQUITY_FLOOR = 95_000.0
+# Default sized for the ~$13K paper account this system targets (see CLAUDE.md).
+# Override per-deployment via the KILL_SWITCH_EQUITY_FLOOR env var (already defined
+# in instances/*/.env* templates) rather than editing this constant directly.
+KILL_SWITCH_EQUITY_FLOOR = float(os.getenv("KILL_SWITCH_EQUITY_FLOOR", "11700"))
 
 
 @dataclass

@@ -162,8 +162,7 @@ def apply_rotation(
             continue
         if cand.symbol in current_set:
             continue
-        if not passes_price_filter(cand.rvol, config.min_price, config.max_price):
-            # Note: rvol is here, but should check price. Use rvol field as proxy
+        if not passes_price_filter(cand.price, config.min_price, config.max_price):
             continue
         if not passes_rvol_filter(cand.rvol, config.min_rvol):
             continue
