@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-import run
+import trade as run
 
 
 class _SubmittedOrder:

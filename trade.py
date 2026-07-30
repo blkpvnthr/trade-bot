@@ -4167,40 +4167,54 @@ class ProductionOrderExecutor:
         direction: Optional[dict[str, Any]] = None,
         message: str = "",
     ) -> None:
-        if not getattr(self.config.scanner, "live_experience_logging_enabled", True):
-            return
+        # Experience logging is best-effort telemetry, not part of order execution.
+        # A failure here (bad attribute, disk I/O, etc.) must never be mistaken for
+        # a failed order or abort processing of the remaining order plan.
+        try:
+            if not getattr(self.config.scanner, "live_experience_logging_enabled", True):
+                return
 
-        if stage == "skipped" and not getattr(self.config.scanner, "live_experience_log_skips", True):
-            return
-        if stage in {"submitted", "order", "filled"} and not getattr(
-            self.config.scanner,
-            "live_experience_log_orders",
-            True,
-        ):
-            return
-        if stage in {"error", "api_error"} and not getattr(self.config.scanner, "live_experience_log_errors", True):
-            return
+            if stage == "skipped" and not getattr(self.config.scanner, "live_experience_log_skips", True):
+                return
+            if stage in {"submitted", "order", "filled"} and not getattr(
+                self.config.scanner,
+                "live_experience_log_orders",
+                True,
+            ):
+                return
+            if stage in {"error", "api_error"} and not getattr(self.config.scanner, "live_experience_log_errors", True):
+                return
 
-        symbol = safe_symbol(
-            (order_row.to_dict() if isinstance(order_row, pd.Series) else dict(order_row or {})).get("symbol", "")
-            or (result or {}).get("symbol", "")
-        )
-        position = self.broker.get_position(symbol) if symbol else BrokerPosition(symbol=symbol)
-        row = build_live_experience_row(
-            cycle_id=cycle_id,
-            stage=stage,
-            order_row=order_row,
-            acct_before=acct_before,
-            acct_after=acct_after,
-            result=result,
-            position=position,
-            direction=direction,
-            message=message,
-        )
-        append_live_experience(
-            row,
-            write_parquet=getattr(self.config.scanner, "live_experience_write_parquet", True),
-        )
+            symbol = safe_symbol(
+                (order_row.to_dict() if isinstance(order_row, pd.Series) else dict(order_row or {})).get("symbol", "")
+                or (result or {}).get("symbol", "")
+            )
+            position = self.broker.get_position(symbol) if symbol else BrokerPosition(symbol=symbol)
+            row = build_live_experience_row(
+                cycle_id=cycle_id,
+                stage=stage,
+                order_row=order_row,
+                acct_before=acct_before,
+                acct_after=acct_after,
+                result=result,
+                position=position,
+                direction=direction,
+                message=message,
+            )
+            append_live_experience(
+                row,
+                write_parquet=getattr(self.config.scanner, "live_experience_write_parquet", True),
+            )
+        except Exception as exc:
+            print(f"[warn] live experience logging failed at stage={stage}: {exc}")
+
+    def _safe_log_live_experience(self, **kwargs: Any) -> None:
+        # Call-site guard: telemetry logging must never turn a completed order
+        # decision (filled, skipped, etc.) into a reported execution error.
+        try:
+            self._log_live_experience(**kwargs)
+        except Exception as exc:
+            print(f"[warn] live experience logging failed at stage={kwargs.get('stage')}: {exc}")
 
     def _gross_exposure(self, equity: float) -> float:
         if equity <= 0:
@@ -4942,7 +4956,7 @@ class ProductionOrderExecutor:
             position_before_order = self.broker.get_position(symbol)
 
             # Log the final executable decision state before broker submission/risk skips.
-            self._log_live_experience(
+            self._safe_log_live_experience(
                 cycle_id=cycle_id,
                 stage="decision",
                 order_row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
@@ -4996,7 +5010,7 @@ class ProductionOrderExecutor:
                 acct_after = self._record_account_snapshot("after_skip", cycle_id)
                 acct_after["gross_exposure"] = self._gross_exposure(float(acct_after["equity"]))
                 self._journal_order(cycle_id, "SKIP", row, acct_before, acct_after, skip_message)
-                self._log_live_experience(
+                self._safe_log_live_experience(
                     cycle_id=cycle_id,
                     stage="skipped",
                     order_row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
@@ -5062,7 +5076,7 @@ class ProductionOrderExecutor:
                     fill_info,
                 )
                 write_event("order_submitted", result)
-                self._log_live_experience(
+                self._safe_log_live_experience(
                     cycle_id=cycle_id,
                     stage="submitted",
                     order_row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
@@ -5087,7 +5101,7 @@ class ProductionOrderExecutor:
                 results.append(result)
                 self._journal_order(cycle_id, "ERROR", row, acct_before, acct_after, message)
                 write_event("order_api_error", result)
-                self._log_live_experience(
+                self._safe_log_live_experience(
                     cycle_id=cycle_id,
                     stage="api_error",
                     order_row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
@@ -5107,7 +5121,7 @@ class ProductionOrderExecutor:
                 results.append(result)
                 self._journal_order(cycle_id, "ERROR", row, acct_before, acct_after, message)
                 write_event("order_error", result)
-                self._log_live_experience(
+                self._safe_log_live_experience(
                     cycle_id=cycle_id,
                     stage="error",
                     order_row={**row.to_dict(), "order_qty": qty, "capped_dollars": est_notional},
