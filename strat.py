@@ -444,6 +444,19 @@ def run_backtest(prices: pd.DataFrame,
         adaptive_stages = {}       # funnel: how far each evaluated source got
         adaptive_exit_log = []
 
+    # --- dynamic portfolio-risk controller (default OFF -> multiplier 1.0) -----
+    # A pre-loop pass builds a per-date vol-budget multiplier. It feeds INTO
+    # decide_target_weights, so it cannot read that day's diag cov (circularity);
+    # it uses its own point-in-time opportunity/stress features over the SAME cov
+    # windows the loop uses. Guarded off -> vbm below is unchanged -> byte-identical.
+    dynamic_on = bool(cfg.dynamic_risk_enabled)
+    dyn_mult = None
+    if dynamic_on:
+        from dynamic_risk import dynamic_risk_frame
+        dyn_frame = dynamic_risk_frame(prices, cfg, gate=gate, view=view,
+                                       dates=dates, full_idx=full_idx, R_all=R_all)
+        dyn_mult = dyn_frame["risk_multiplier"]
+
     for i, date in enumerate(dates):
         w = pending.copy()
 
@@ -482,6 +495,11 @@ def run_backtest(prices: pd.DataFrame,
         ssr = i - last_rebalance
         standardize = bool(use_vol_target and view is not None and i > 250)
         vbm = float(vol_mult.get(date, 1.0)) if vol_mult is not None else 1.0
+        if dynamic_on:
+            # Compose multiplicatively with any bond vol_mult; clamp the PRODUCT to
+            # the controller's [min, max] so the dynamic layer stays authoritative.
+            vbm = float(np.clip(vbm * float(dyn_mult.get(date, 1.0)),
+                                cfg.dynamic_risk_min_mult, cfg.dynamic_risk_max_mult))
         gcm = float(growth_mult.get(date, 1.0)) if growth_mult is not None else 1.0
         new_w, rebalanced, diag = decide_target_weights(
             prev_weights=w,
@@ -638,6 +656,8 @@ def run_backtest(prices: pd.DataFrame,
                "Rebalanced": rebalanced}
         if lr_on or exh_on or adaptive_on:
             row["RebalanceReason"] = reason
+        if dynamic_on:
+            row["RiskMultiplier"] = float(dyn_mult.get(date, 1.0))
         hist.append(row)
         wlog.append({"Date": date, "Strategy": label,
                      **{a: float(new_w[j]) for j, a in enumerate(assets)}})
@@ -667,6 +687,18 @@ def run_backtest(prices: pd.DataFrame,
             h.attrs["adaptive_triggered_rebalances"] = int((reasons == "adaptive_rotation").sum())
             h.attrs["adaptive_exit_log"] = adaptive_exit_log
             h.attrs["adaptive_stages"] = dict(adaptive_stages)
+    if dynamic_on:
+        # Full per-date controller frame + summary for the F/G falsification harness
+        # (exposure log, capture ratios, drawdown attribution). Does not alter equity.
+        h.attrs["dynamic_risk_frame"] = dyn_frame
+        mvals = dyn_frame["risk_multiplier"]
+        h.attrs["dynamic_risk"] = {
+            "enabled": True,
+            "mult_mean": float(mvals.mean()), "mult_min": float(mvals.min()),
+            "mult_max": float(mvals.max()), "mult_std": float(mvals.std()),
+            "frac_derisked": float((mvals < 0.999).mean()),
+            "frac_added": float((mvals > 1.001).mean()),
+        }
 
     # Hard constraint audit. Gate and leverage are absolute on every day.
     # Ex-ante vol is absolute on rebalance days and bounded by the breach

@@ -419,6 +419,48 @@ enabling more than one rotation family). Default OFF → byte-identical.
 > (ML) should predict the triple-barrier outcome of the rotation decision itself to
 > sharpen *selection* — not built this pass.
 
+## Dynamic portfolio-risk controller (opt-in, OFF by default, FALSIFIED)
+
+A portfolio-LEVEL risk-budgeting layer (`dynamic_risk.py`) answering "HOW MUCH risk?"
+(the complement of the adaptive engine's "WHERE?"). It scales the strategy's existing
+volatility budget by ONE bounded per-date multiplier — the same `vol_budget_mult` lever
+the bond overlay uses, so the optimizer / vol-scaler / leverage / caps stay authoritative.
+Configs **F** (dynamic only) and **G** (adaptive-D + dynamic). Default OFF → the multiplier
+is exactly 1.0 → byte-identical (proven by parity tests and an OFF-equals-base check).
+
+- **Opportunity O** ∈ [0,1]: convex-weighted growth-sleeve breadth (forecast view, 20d
+  momentum, 200d trend) plus the recovery-state regime.
+- **Stress S** ∈ [0,1]: growth-sleeve covariance stress from the REAL `ewma_cov` —
+  vol level, vol **acceleration** (rising vs falling), and average correlation, each
+  trailing-percentile-ranked. **Drawdown is EXCLUDED from S** — it stays the independent
+  `SevereBear` hard-risk layer.
+- **Asymmetric AND-gate:** `net = clip(O·(1−S) − (1−O)·S + γ_R·R, −1, 1)`. Elevated vol
+  alone with strong breadth nets to neutral (does NOT cut a broad bull on vol). The map has
+  **asymmetric deadbands** (risk > 1.0 is much harder to earn than < 1.0); the stateful
+  recurrence de-risks eagerly/fast, re-risks only after confirmation + a rate limit, and
+  snaps to the floor on `SevereBear`. Recovery R leads the lagging regime and NEVER gates
+  de-risk speed. Composes with the bond `vol_mult` and with adaptive-D (config G).
+
+> **REAL-DATA RESULT (2006–2026, backtest_rotation_overlays.py A/B/C/D/F/G + `--ablation`):**
+> the hypothesis — raise CAGR AND lower MaxDD together — is **FALSIFIED**. F is a modest
+> drawdown-insurance trade (MaxDD **−25.0% → −23.5%**) at a small CAGR cost with **flat
+> Sharpe (0.85)**. On the FROZEN held-out split (2019–2026) F CAGR **13.37% < A 13.55%**,
+> Sharpe **0.76 = 0.76** — no CAGR/Sharpe edge. The **F1–F5 ablation is the decisive kill:**
+> F1 regime-only Sharpe **0.93**, full controller F4/F5 **0.92** — it adds **zero
+> information beyond the existing regime gate** (a slower regime filter). It de-risked 137
+> days ahead of the 2022 trough (helping the worst window) but dragged the calm windows —
+> the "only rescues 2022" pattern.
+>
+> ```bash
+> python backtest_rotation_overlays.py --synthetic --ablation   # offline mechanism check
+> python backtest_rotation_overlays.py --ablation               # real (yfinance) A..G + F1-F5
+> ```
+>
+> **Classification: REJECT — ship OFF.** Same shape as the bond overlay and the Fed/macro
+> regime overlay: more machinery reproduces what the gate already does. A 6-lens adversarial
+> review (lookahead / parity / off-parity / constraint-safety / numerics / gate-soundness)
+> found **0 confirmed bugs** — the controller is correct, just not an edge. Do NOT wire it.
+
 ## Configuration reference
 
 Strategy parameters live in `AllocatorConfig` (unchanged — do not tune here).

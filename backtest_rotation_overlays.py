@@ -10,14 +10,20 @@ universe / dates / capital / fees / forecasts / risk params:
     B  fixed loss -0.5%      loss_replacement, threshold -0.005
     C  fixed loss -2.0%      loss_replacement, threshold -0.020
     D  adaptive              opportunity-gated rotation (deterministic)
+    F  dynamic risk          portfolio-risk controller (vol-budget multiplier)
+    G  D + dynamic risk      adaptive selection AND dynamic risk budgeting
     (E adaptive + ML         DEFERRED this pass -- see LIVE_TRADING.md)
 
 Reports net-of-cost excess-return metrics + rotation accounting + adaptive-only
-diagnostics: rotation alpha (replacement - exited forward return, net of cost),
-turnover / drawdown efficiency, and regime-by-regime (year-window) stability. Ends
-with a PROMOTE / REJECT recommendation for config D per the acceptance gate.
+diagnostics (rotation alpha, turnover/drawdown efficiency, regime stability) and,
+for the dynamic-risk controller, multiplier distribution, up/down-market capture
+vs SPY, deepest-drawdown attribution, risk-timing contribution, and a FROZEN
+chronological dev/holdout split (holdout evaluated once, never used to pick
+params). Ends with a PROMOTE / REVISE / REJECT recommendation for D and for the
+dynamic-risk controller (F/G). The --ablation ladder (F1-F5) establishes whether
+the controller adds information beyond the existing market-regime gate.
 
-    python backtest_rotation_overlays.py --synthetic [--sensitivity]
+    python backtest_rotation_overlays.py --synthetic [--sensitivity] [--ablation]
     python backtest_rotation_overlays.py            # real yfinance data
     python backtest_rotation_overlays.py --prices px.csv
 """
@@ -64,6 +70,48 @@ def _extra(h, cfg):
     dd = eq / eq.cummax() - 1.0
     return {"ulcer": float(np.sqrt((dd ** 2).mean())), "avg_dd": float(dd[dd < 0].mean() if (dd < 0).any() else 0.0),
             "cost_drag": float((h["Turnover"] * cfg.transaction_cost * 2.0).sum())}
+
+
+def _capture(h, spy_ret):
+    """Up/down-market capture vs SPY. down_capture < 1 = falls less; ratio > 1 = good."""
+    r = h["Equity"].pct_change()
+    common = r.index.intersection(spy_ret.index)
+    r, s = r.reindex(common), spy_ret.reindex(common)
+    up, dn = s > 0, s < 0
+    su, sd = float(s[up].sum()), float(s[dn].sum())
+    upc = float(r[up].sum()) / su if abs(su) > 1e-12 else float("nan")
+    dnc = float(r[dn].sum()) / sd if abs(sd) > 1e-12 else float("nan")
+    ratio = upc / abs(dnc) if np.isfinite(dnc) and abs(dnc) > 1e-9 else float("nan")
+    return {"up": upc, "down": dnc, "ratio": ratio}
+
+
+def _dd_attribution(h):
+    """Multiplier behavior through the deepest drawdown: did it de-risk BEFORE the bottom?"""
+    if "RiskMultiplier" not in h.columns:
+        return None
+    eq = h["Equity"]
+    dd = eq / eq.cummax() - 1.0
+    trough = dd.idxmin()
+    peak = eq.loc[:trough].idxmax()
+    win = h.loc[peak:trough, "RiskMultiplier"]
+    if len(win) < 2:
+        return None
+    # days between the lowest-multiplier day and the price trough (>0 = led the bottom).
+    lead = int(len(win) - 1 - win.to_numpy().argmin())
+    after = h.loc[trough:, "RiskMultiplier"]
+    back_1x = after[after >= 1.0]
+    recov = int((back_1x.index[0] - trough).days) if len(back_1x) else -1
+    return {"peak": peak.date(), "trough": trough.date(), "depth": float(dd.min()),
+            "mult_at_peak": float(win.iloc[0]), "mult_at_trough": float(win.iloc[-1]),
+            "mult_avg": float(win.mean()), "mult_min": float(win.min()),
+            "derisk_lead_days": lead, "recovery_days_to_1x": recov}
+
+
+def _subperiod(h, rf, s, e):
+    sub = h.loc[(h.index >= s) & (h.index <= e), "Equity"]
+    if len(sub) < 20:
+        return None
+    return annualized_metrics(sub, rf.loc[sub.index], h.loc[sub.index, "Turnover"])
 
 
 def _counts(h):
@@ -141,12 +189,58 @@ def _run(prices, cfg, gate, view, ic, start, label):
     return run_backtest(prices, cfg, gate, view=view, ic=ic, start=start, label=label)[0]
 
 
+def _ablation_ladder(prices, base, gate, view, ic, start, rf, dev):
+    """
+    F1-F5: does the controller add information BEYOND the market-regime gate?
+
+    Each rung wires a strict superset of the previous one; everything else is
+    neutral. SevereBear snap-to-floor is common to every rung (it is the
+    independent hard-risk layer, not part of the controller's opportunity/stress
+    logic). Read the marginal Sharpe/CAGR/MaxDD steps F1->F5; the controller only
+    earns its place if F4/F5 beat F1 (regime only) materially.
+    """
+    BR = {"view_breadth": 0.30, "mom_breadth": 0.20, "trend_breadth": 0.25}   # breadth, no regime
+    ALL = dict(base.dynamic_risk_opp_weights)
+    SW = dict(base.dynamic_risk_stress_weights)
+
+    def _cfg(opp, stress, gamma):
+        return replace(base, dynamic_risk_enabled=True, dynamic_risk_opp_weights=opp,
+                       dynamic_risk_stress_weights=stress, dynamic_risk_stress_gamma_recovery=gamma)
+
+    ladder = {
+        "F1 regime":  _cfg({"regime": 1.0}, {}, 0.0),
+        "F2 breadth": _cfg(BR, {}, 0.0),
+        "F3 br+strs": _cfg(BR, SW, 0.0),
+        "F4 +regime": _cfg(ALL, SW, 0.0),
+        "F5 +recov":  _cfg(ALL, SW, 0.5),
+    }
+    print("\n" + "=" * 100)
+    print("COMPONENT ABLATION LADDER F1-F5  (development period only)")
+    print("=" * 100)
+    print(f"  {'rung':<12}{'devCAGR':>9}{'devMaxDD':>10}{'devShp':>8}{'devClmr':>9}{'AnnTurn':>9}")
+    res = {}
+    for name, cfg in ladder.items():
+        h = _run(prices, cfg, gate, view, ic, start, name)
+        m = _subperiod(h, rf, *dev) or annualized_metrics(h["Equity"], rf, h["Turnover"])
+        res[name] = m
+        print(f"  {name:<12}{m['cagr']:>9.2%}{m['max_drawdown']:>10.2%}{m['sharpe']:>8.2f}"
+              f"{(m['calmar'] if np.isfinite(m['calmar']) else 0):>9.2f}{m['annual_turnover']:>9.1%}")
+    f1, f4, f5 = res["F1 regime"], res["F4 +regime"], res["F5 +recov"]
+    incr = (f4["sharpe"] > f1["sharpe"] + 0.03) or (f5["sharpe"] > f1["sharpe"] + 0.03)
+    print(f"\n  Incremental info beyond regime (F4/F5 Sharpe > F1 + 0.03): "
+          f"{'YES' if incr else 'NO -- controller is a slower regime filter; REJECT'}")
+    print("  (SevereBear de-risk is common to all rungs; the ladder isolates the "
+          "opportunity/stress/recovery signal only.)")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--prices", default=None)
     ap.add_argument("--synthetic", action="store_true")
     ap.add_argument("--start", default=START)
     ap.add_argument("--sensitivity", action="store_true")
+    ap.add_argument("--ablation", action="store_true",
+                    help="run the F1-F5 component ablation ladder (dev period only)")
     args = ap.parse_args()
 
     prices = _load(args)
@@ -161,6 +255,8 @@ def main() -> int:
         "B -0.5%":  replace(base, loss_replacement_enabled=True, loss_replacement_threshold=-0.005),
         "C -2.0%":  replace(base, loss_replacement_enabled=True, loss_replacement_threshold=-0.020),
         "D adaptv": replace(base, adaptive_rotation_enabled=True),
+        "F dynrsk": replace(base, dynamic_risk_enabled=True),
+        "G D+dynr": replace(base, adaptive_rotation_enabled=True, dynamic_risk_enabled=True),
     }
     rf = prices["CASH_RATE_3M"].astype(float) / 100.0 / TRADING_DAYS
     gate = build_gate_schedule(prices["SPY"], base)
@@ -205,6 +301,13 @@ def main() -> int:
         print(f"  {k:<9} dSharpe {m['sharpe']-A['sharpe']:+.3f}  dCAGR {m['cagr']-A['cagr']:+.2%}  "
               f"dMaxDD {m['max_drawdown']-A['max_drawdown']:+.2%}  dTurn {dturn:+.1%}  "
               f"turn-eff(Sharpe/turn) {te_shrp:+.3f}  DDeff(CAGRsac/DDimpr) {dd_eff:+.2f}")
+
+    # up/down-market capture vs SPY (does the controller keep upside while cutting downside?)
+    spy_ret = prices["SPY"].astype(float).pct_change()
+    print("\nUp/down-market capture vs SPY (down < 1 = falls less; ratio > 1 = favorable):")
+    for k in cfgs:
+        cap = _capture(hs[k], spy_ret)
+        print(f"  {k:<10} up {cap['up']:>6.2f}  down {cap['down']:>6.2f}  ratio {cap['ratio']:>6.2f}")
 
     # adaptive decision funnel (are the intended gates causing the abstention?)
     fn = _funnel(hs["D adaptv"])
@@ -286,6 +389,91 @@ def main() -> int:
     else:
         print(f"  D shows possible alpha vs A -- still confirm on true holdout before enabling.")
     print(f"{'SYNTHETIC -- not evidence for deployment.' if args.synthetic else 'Real data; still OWES walk-forward/holdout/placebo/bootstrap before deploy.'}")
+
+    # -------------------------------------------------------------------------
+    # DYNAMIC PORTFOLIO-RISK CONTROLLER (configs F / G)
+    # -------------------------------------------------------------------------
+    print("\n" + "=" * 100)
+    print("DYNAMIC PORTFOLIO-RISK CONTROLLER  (F = dynamic only, G = D + dynamic)")
+    print("=" * 100)
+
+    print("\nMultiplier distribution (per-day vol-budget scaler):")
+    for k in ("F dynrsk", "G D+dynr"):
+        d = hs[k].attrs.get("dynamic_risk")
+        if d:
+            print(f"  {k:<10} mean {d['mult_mean']:.3f}  min {d['mult_min']:.3f}  "
+                  f"max {d['mult_max']:.3f}  std {d['mult_std']:.3f}  "
+                  f"de-risked {d['frac_derisked']:.0%} of days  added-risk {d['frac_added']:.0%}")
+
+    print("\nDeepest-drawdown attribution (did the controller de-risk BEFORE the bottom?):")
+    for k in ("F dynrsk", "G D+dynr"):
+        at = _dd_attribution(hs[k])
+        if at:
+            print(f"  {k:<10} {at['peak']}->{at['trough']} depth {at['depth']:+.1%}  "
+                  f"mult peak {at['mult_at_peak']:.2f} -> trough {at['mult_at_trough']:.2f} "
+                  f"(avg {at['mult_avg']:.2f}, min {at['mult_min']:.2f})  "
+                  f"de-risk lead {at['derisk_lead_days']}d  back-to-1x {at['recovery_days_to_1x']}d")
+
+    # risk-timing contribution: F-A isolates exposure timing (no selection change);
+    # G-D isolates the same on top of the adaptive selection.
+    Fm, Gm, Dm = ms["F dynrsk"], ms["G D+dynr"], ms["D adaptv"]
+    print("\nRisk-timing contribution (exposure timing only, selection held fixed):")
+    print(f"  F - A : dCAGR {Fm['cagr']-A['cagr']:+.2%}  dMaxDD {Fm['max_drawdown']-A['max_drawdown']:+.2%}  "
+          f"dSharpe {Fm['sharpe']-A['sharpe']:+.3f}  dCalmar {(Fm['calmar'] if np.isfinite(Fm['calmar']) else 0)-(A['calmar'] if np.isfinite(A['calmar']) else 0):+.2f}")
+    print(f"  G - D : dCAGR {Gm['cagr']-Dm['cagr']:+.2%}  dMaxDD {Gm['max_drawdown']-Dm['max_drawdown']:+.2%}  "
+          f"dSharpe {Gm['sharpe']-Dm['sharpe']:+.3f}  dCalmar {(Gm['calmar'] if np.isfinite(Gm['calmar']) else 0)-(Dm['calmar'] if np.isfinite(Dm['calmar']) else 0):+.2f}")
+
+    # frozen chronological dev/holdout split. Params are frozen (defaults); the
+    # holdout is evaluated ONCE and never used to pick parameters (refinement 6).
+    DEV = ("2006-01-01", "2018-12-31"); HOLD = ("2019-01-01", "2026-12-31")
+    print(f"\nDev/holdout split (dev {DEV[0][:4]}-{DEV[1][:4]}, HELD-OUT {HOLD[0][:4]}-{HOLD[1][:4]}; "
+          f"holdout evaluated once, params frozen):")
+    print(f"  {'config':<10}{'dev CAGR':>10}{'dev MaxDD':>11}{'dev Shp':>9}   "
+          f"{'HOLD CAGR':>10}{'HOLD MaxDD':>11}{'HOLD Shp':>9}{'HOLD Clmr':>10}")
+    hold_metrics = {}
+    for k in ("A base", "D adaptv", "F dynrsk", "G D+dynr"):
+        dv = _subperiod(hs[k], rf, *DEV); ho = _subperiod(hs[k], rf, *HOLD)
+        hold_metrics[k] = ho
+        if dv and ho:
+            print(f"  {k:<10}{dv['cagr']:>10.2%}{dv['max_drawdown']:>11.2%}{dv['sharpe']:>9.2f}   "
+                  f"{ho['cagr']:>10.2%}{ho['max_drawdown']:>11.2%}{ho['sharpe']:>9.2f}"
+                  f"{(ho['calmar'] if np.isfinite(ho['calmar']) else 0):>10.2f}")
+        else:
+            print(f"  {k:<10}  (insufficient data in one or both sub-periods -- synthetic?)")
+
+    # F/G acceptance on the HELD-OUT split (primary criterion, refinement 7).
+    print("\n" + "-" * 100)
+    hA, hF, hG = hold_metrics.get("A base"), hold_metrics.get("F dynrsk"), hold_metrics.get("G D+dynr")
+    if hA and hF and hG:
+        def _verdict(name, cand, baseline, base_name):
+            cagr_up = cand["cagr"] > baseline["cagr"]
+            dd_better = (baseline["max_drawdown"] - cand["max_drawdown"]) > 0.02   # materially shallower
+            risk_adj_up = (cand["sharpe"] > baseline["sharpe"] + 1e-9
+                           and (cand["calmar"] if np.isfinite(cand["calmar"]) else 0)
+                               >= (baseline["calmar"] if np.isfinite(baseline["calmar"]) else 0))
+            primary = cagr_up and dd_better and risk_adj_up
+            secondary = (dd_better and cand["cagr"] > baseline["cagr"] - 0.02
+                         and cand["sharpe"] > baseline["sharpe"] + 1e-9)
+            tag = "PROMOTE" if primary else ("REVISE" if secondary else "REJECT")
+            print(f"  [{tag:>7}] {name} vs {base_name} (held-out): "
+                  f"CAGR {cand['cagr']:+.2%} vs {baseline['cagr']:+.2%} | "
+                  f"MaxDD {cand['max_drawdown']:+.2%} vs {baseline['max_drawdown']:+.2%} | "
+                  f"Sharpe {cand['sharpe']:.2f} vs {baseline['sharpe']:.2f}")
+            return tag
+        vF = _verdict("F", hF, hA, "A")
+        vG = _verdict("G", hG, hA, "A")
+        _verdict("G", hG, hold_metrics["D adaptv"], "D")   # complementarity read
+        print("\nVERDICT (DYNAMIC RISK CONTROLLER):")
+        best = "PROMOTE" if "PROMOTE" in (vF, vG) else ("REVISE" if "REVISE" in (vF, vG) else "REJECT")
+        print(f"  {best} DYNAMIC RISK CONTROLLER  (F={vF}, G={vG} vs A on the held-out split).")
+        print("  Reminder: also require F4/F5 > F1 (regime-only) in the --ablation ladder before")
+        print("  crediting the controller with information beyond the existing market-regime gate.")
+        print("  Do NOT promote a config that only rescues 2020/2022 while hurting other regimes.")
+    else:
+        print("  (dev/holdout verdict needs real multi-year data; run without --synthetic.)")
+
+    if args.ablation:
+        _ablation_ladder(prices, base, gate, view, ic, args.start, rf, DEV)
 
     if args.sensitivity:
         print("\n" + "=" * 100)

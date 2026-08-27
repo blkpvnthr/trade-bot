@@ -181,6 +181,38 @@ class AllocatorConfig:
         "CRISIS": -1.50, "DEFENSIVE": -1.25, "BOTTOMING": -1.00,
         "RECOVERING": -1.25, "BULL": -1.75})         # vol-units, A/B-tuned (not optimal)
 
+    # --- Dynamic portfolio-risk / exposure controller ----------------------
+    # A portfolio-LEVEL opportunity & risk-budgeting layer answering "HOW MUCH
+    # risk?" (the adaptive engine answers "WHERE?"). It scales the vol budget by a
+    # single bounded multiplier (see dynamic_risk.py): more risk when the
+    # cross-sectional opportunity set is broad AND calm, less when it is weak AND
+    # stressed, with an asymmetric gate (risk > 1.0 is harder to earn than < 1.0),
+    # a recovery term that leads the lagging regime, and hysteresis/rate-limits.
+    # It COMPOSES with any bond vol_mult and with the adaptive engine (Config G).
+    # DEFAULT OFF -> multiplier is exactly 1.0 -> byte-identical. Falsify (configs
+    # F/G + the F1-F5 ablation ladder, held out) before enabling. Drawdown is NOT
+    # in the stress score by default; it stays the independent hard-risk layer.
+    dynamic_risk_enabled: bool = False
+    dynamic_risk_min_mult: float = 0.25          # max de-risk (floor on the multiplier)
+    dynamic_risk_max_mult: float = 1.15          # max add-risk (>1 harder to earn)
+    dynamic_risk_severe_floor: float = 0.25      # SevereBear snap target (bypass rate limit)
+    dynamic_risk_deadband_up: float = 0.30       # wide: net > this to start ADDING risk
+    dynamic_risk_deadband_down: float = 0.10     # narrow: net < -this to start CUTTING risk
+    dynamic_risk_stress_gamma_recovery: float = 0.50   # gamma_R weight of recovery in net
+    dynamic_risk_vol_percentile_lookback: int = 504    # trailing window for stress ranks
+    dynamic_risk_confirm_days: int = 3           # sustained up-desire before re-risking
+    dynamic_risk_max_up_change: float = 0.04     # per-day re-risk step cap (slow)
+    dynamic_risk_max_down_change: float = 0.10   # per-day de-risk step cap (fast)
+    dynamic_risk_recovery_rate_boost: float = 2.0      # recovery speeds re-risk rate
+    dynamic_risk_margin_up: float = 0.02         # hysteresis: re-risk gap (> margin_down)
+    dynamic_risk_margin_down: float = 0.005      # hysteresis: de-risk gap (eager)
+    dynamic_risk_opp_weights: dict = field(default_factory=lambda: {
+        "view_breadth": 0.30, "mom_breadth": 0.20,
+        "trend_breadth": 0.25, "regime": 0.25})
+    dynamic_risk_stress_weights: dict = field(default_factory=lambda: {
+        "vol_level": 0.30, "vol_accel": 0.25, "corr": 0.45})
+    dynamic_risk_dd_stress_weight: float = 0.0   # ABLATION only; 0 keeps drawdown out of S
+
     initial_capital: float = 823.00
 
     def __post_init__(self) -> None:
@@ -199,6 +231,16 @@ class AllocatorConfig:
         missing = set(self.risk_assets) - set(self.asset_max_weights)
         if missing:
             raise ValueError(f"asset_max_weights missing: {missing}")
+        # Dynamic-risk multiplier bounds must bracket the neutral 1.0, and the
+        # asymmetry invariant (risk > 1.0 is strictly harder to earn than < 1.0)
+        # must hold, so a misconfigured controller can never silently invert.
+        if not (self.dynamic_risk_min_mult <= self.dynamic_risk_severe_floor
+                <= 1.0 <= self.dynamic_risk_max_mult):
+            raise ValueError("dynamic_risk multiplier bounds must satisfy "
+                             "min_mult <= severe_floor <= 1.0 <= max_mult.")
+        if self.dynamic_risk_deadband_down > self.dynamic_risk_deadband_up:
+            raise ValueError("dynamic_risk_deadband_down must be <= "
+                             "dynamic_risk_deadband_up (risk > 1.0 harder to earn).")
 
     def prior_vector(self) -> np.ndarray:
         return np.array([self.asset_prior_sharpe.get(a, self.prior_sharpe)

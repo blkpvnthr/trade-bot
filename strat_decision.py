@@ -84,6 +84,9 @@ class PortfolioDecision:
     vol_budget_mult: float = 1.0
     growth_ceiling_mult: float = 1.0
     bond_regime: dict | None = None
+    portfolio_risk_multiplier: float = 1.0
+    risk_state: str | None = None
+    opportunity_score: float | None = None
     rebalance_reason: str = "scheduled"
     loss_replacement_events: list = field(default_factory=list)
     exhaustion_events: list = field(default_factory=list)
@@ -238,6 +241,24 @@ def compute_target_portfolio(prices: pd.DataFrame,
                        "growth_ceiling_mult": gc_mult,
                        "curve_slope_proxy": reg.curve_slope_proxy, **reg.components}
         source = f"{source}+bond_overlay"
+
+    # Optional dynamic portfolio-risk controller (default OFF -> 1.0 -> byte-identical).
+    # Recompute the SAME per-date multiplier series the backtest builds (over the
+    # identical dates grid) and take the value at the decision date; it feeds the
+    # vol budget, NOT raw weights. Composes multiplicatively with the bond vb_mult;
+    # the PRODUCT is clamped to the controller's [min, max] (parity with run_backtest).
+    portfolio_risk_multiplier, risk_state, opportunity_score = 1.0, None, None
+    if cfg.dynamic_risk_enabled:
+        from dynamic_risk import dynamic_risk_frame
+        dyn_frame = dynamic_risk_frame(prices, cfg, gate=gate, view=view, dates=dates,
+                                       full_idx=full_idx, R_all=R_all)
+        last = dyn_frame.iloc[-1]
+        portfolio_risk_multiplier = float(last["risk_multiplier"])
+        risk_state = str(last["risk_state"])
+        opportunity_score = float(last["opportunity_score"])
+        vb_mult = float(np.clip(vb_mult * portfolio_risk_multiplier,
+                                cfg.dynamic_risk_min_mult, cfg.dynamic_risk_max_mult))
+        source = f"{source}+dynamic_risk"
 
     new_w, rebalanced, diag = decide_target_weights(
         prev_weights=w_prev,
@@ -421,6 +442,9 @@ def compute_target_portfolio(prices: pd.DataFrame,
         vol_budget_mult=vb_mult,
         growth_ceiling_mult=gc_mult,
         bond_regime=bond_regime,
+        portfolio_risk_multiplier=portfolio_risk_multiplier,
+        risk_state=risk_state,
+        opportunity_score=opportunity_score,
         rebalance_reason=rebalance_reason,
         loss_replacement_events=lr_events,
         exhaustion_events=exh_events,
@@ -455,7 +479,15 @@ def _cfg_signature(cfg: AllocatorConfig) -> str:
             "adaptive_diversification_cap", "adaptive_entry_score_threshold",
             "adaptive_hold_score_floor", "adaptive_hazard_confirmations",
             "adaptive_damage_measure", "adaptive_damage_lookback",
-            "adaptive_damage_thresholds"]
+            "adaptive_damage_thresholds",
+            "dynamic_risk_enabled", "dynamic_risk_min_mult", "dynamic_risk_max_mult",
+            "dynamic_risk_severe_floor", "dynamic_risk_deadband_up",
+            "dynamic_risk_deadband_down", "dynamic_risk_stress_gamma_recovery",
+            "dynamic_risk_vol_percentile_lookback", "dynamic_risk_confirm_days",
+            "dynamic_risk_max_up_change", "dynamic_risk_max_down_change",
+            "dynamic_risk_recovery_rate_boost", "dynamic_risk_margin_up",
+            "dynamic_risk_margin_down", "dynamic_risk_opp_weights",
+            "dynamic_risk_stress_weights", "dynamic_risk_dd_stress_weight"]
     payload = {}
     for k in keys:
         v = getattr(cfg, k)
