@@ -188,3 +188,18 @@ logs-instance2/
 # TJL runtime position state (never commit)
 tjl_open_positions.json
 .env.earnings_paper
+
+# Local/generated research artifacts
+.cache/
+EOD/
+experiments/
+graphify-out/
+
+# Local runtime logs
+logs-local/
+
+# Compiled EO meta-selector binary
+rl_strategy_meta_agent/experiments/eo_meta_selector/eo_meta
+
+# Nested third-party repository
+vendor/Kronos/
