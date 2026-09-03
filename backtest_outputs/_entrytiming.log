@@ -1,0 +1,17 @@
+Collecting gated insider entries + intraday bars (IEX 5min)...
+# Insider Entry-Timing Test — next-open vs VWAP-confirmation (real IEX intraday)
+
+Validated vol-gated insider set (rv20≥0.0563, ADV≥$1,000,000), hold 3d, net 1.0% slippage. 180 entries, 120 VWAP-confirmed (67%). VWAP on free IEX feed (partial tape — directional only).
+
+| Entry method | n | Mean | Median | Win% | Sharpe | PF |
+|---|---|---|---|---|---|---|
+| next_open (LIVE/validated) | 180 | +2.62% | +2.18% | 61% | +0.220 | 1.85 |
+| vwap_confirm_or_open | 180 | +1.46% | +1.04% | 56% | +0.124 | 1.42 |
+| vwap_confirm_or_skip | 120 | +1.70% | +1.13% | 58% | +0.141 | 1.51 |
+
+## Verdict
+
+- VWAP-confirm beats next-open (mean+PF, n≥30): **NO**
+  confirm-skip mean +1.70%/PF 1.51 (n=120) vs next-open +2.62%/PF 1.85
+
+**→ VWAP timing does NOT beat next-open (confirmation buys the bounce later/higher, as feared). KEEP next-open. Do NOT wire VWAP/VPIN/BVC — the validated rule stands.**

@@ -1,18 +1,38 @@
 # trade-bot
 ```bash
+pip install flashalpha
+
+from flashalpha import FlashAlpha
+fa = FlashAlpha("XvoBDVTjdoGflFS1JerGEoKU4SphGcNrLAzx82BT")
+gex = fa.gex("SPY")
+print(f"Gamma flip: {gex['gamma_flip']}")
+```
+```BASH
+curl -H "X-Api-Key: XvoBDVTjdoGflFS1JerGEoKU4SphGcNrLAzx82BT" \
+  https://lab.flashalpha.com/v1/exposure/gex/SPY
+```
+```bash
+watch -n 5 'curl -s "https://paper-api.alpaca.markets/v2/orders?status=all&limit=10" \
+-H "APCA-API-KEY-ID: $APCA_API_KEY_ID" \
+-H "APCA-API-SECRET-KEY: $APCA_API_SECRET_KEY" | python3 -m json.tool'
+```
+```bash
 curl https://tv.quantumquant.trade/
+```
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now trade-bot-news-stream
 ```
 ```bash
 python run_optimizer_agent.py --days 1 --write-env-patch
 ```
 ```bash
-tail -n 120 /root/trade-bot/logs/run.log
+tail -n 120 /root/trade-bot-instance2/logs/run.log
 ```
 ```bash
-sudo systemctl restart tradingview-bot
+sudo systemctl restart trade-bot
 ```
 ```bash
-sudo journalctl -u tradingview-bot -f
+sudo journalctl -u trade-bot -f
 ```
 ```bash
 curl https://tv.quantumquant.trade/ {"cash":100000.0,"monitor":{"interval_seconds":10.0,"min_cash_floor":0.0,"stop_loss_pct":-1.5,"take_profit_pct":3.0},"ok":true,"paper":true,"service":"tradingview-webhook","timestamp":"2026-05-18T09:56:52.683257+00:00"}

@@ -1,0 +1,33 @@
+{
+  "run_tag": "svp_B_2018",
+  "universe": [
+    "QQQ",
+    "SPY",
+    "IWM"
+  ],
+  "window": "2018-01-01..2019-01-01",
+  "start_equity": 100000.0,
+  "final_equity": 96627.43,
+  "total_pnl": -3372.57,
+  "return_pct": -3.37,
+  "closed_trades": 18,
+  "win_rate": 16.7,
+  "max_drawdown_pct": 13.54,
+  "by_kind": {
+    "shares": {
+      "n": 9,
+      "pnl": 1405.0
+    },
+    "long_put": {
+      "n": 9,
+      "pnl": -4777.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": -2.9,
+    "sharpe": -0.12,
+    "sortino": -0.12,
+    "ulcer": 7.25,
+    "worst_month_pct": -9.6
+  }
+}

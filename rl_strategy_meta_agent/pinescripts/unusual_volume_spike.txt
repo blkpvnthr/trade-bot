@@ -1,0 +1,14 @@
+//@version=5
+// family: flow
+strategy("Unusual Volume Spike", overlay=true, initial_capital=10000)
+
+// Order-flow proxy: enter on a volume surge well above its recent baseline with
+// an up bar (demand stepping in).
+mult = input.float(2.5, "Volume Multiple")
+volBaseline = ta.highest(volume, 20)[1]
+spike = volume > volBaseline * mult and close > open
+
+if spike
+    strategy.entry("Long", strategy.long)
+if close < low[2]
+    strategy.close("Long")

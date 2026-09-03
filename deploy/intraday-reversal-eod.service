@@ -1,0 +1,13 @@
+[Unit]
+Description=Intraday Reversal Engine — EOD management (tighten+carry up positions that missed PDH)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/trade-bot-instance2
+EnvironmentFile=-/root/trade-bot-instance2/.env
+# Point --positions at the bot's open-reversal positions snapshot (JSON list of
+# ManagedPosition rows). Dry-run: prints intended actions (tighten trail + carry
+# overnight to sell into the next day's high, or close at EOD); the existing exit
+# engine executes them. --force runs regardless of the once-a-day scan marker.
+ExecStart=/root/trade-bot-instance2/.venv/bin/python intraday_reversal_engine.py --manage-eod --force ${INTRADAY_REVERSAL_EOD_ARGS}

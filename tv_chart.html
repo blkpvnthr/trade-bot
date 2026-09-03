@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QuantumQuant · Chart</title>
+<style>
+  html,body{height:100%;margin:0;background:#0d1117;color:#e6edf3;font:14px -apple-system,Segoe UI,Roboto,sans-serif}
+  .bar{height:36px;display:flex;align-items:center;gap:16px;padding:0 14px;background:#161b22;border-bottom:1px solid #30363d}
+  .bar a{color:#58a6ff;text-decoration:none;font-size:13px}.bar b{font-size:13px}
+  .bar .leg{margin-left:auto;display:flex;gap:14px;font-size:12px;color:#8b949e}
+  .leg i{font-style:normal}.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:middle}
+  #tv{position:absolute;inset:36px 0 0 0}
+  #msg{position:absolute;inset:36px 0 0 0;display:none;align-items:center;justify-content:center;padding:24px}
+  #msg .card{max-width:560px;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:22px;line-height:1.7}
+  code{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:1px 6px;font-size:12px}
+  .muted{color:#8b949e;font-size:12px}.err{color:#ef5350}
+</style></head>
+<body>
+<div class="bar">
+  <a href="/dash/">← Dashboard</a>
+  <b>QuantumQuant · <span id="symLabel">QQEQUITY</span> — <span id="symDesc">Account Equity + insider marks + SMA(50)</span></b>
+  <span class="leg" style="gap:10px">
+    <a href="?symbol=QQEQUITY" style="color:#58a6ff">Total</a>
+    <a href="?symbol=QQSTRAT" style="color:#58a6ff">Automated only</a>
+    <span style="color:#30363d">|</span>
+    <i><span class="sw" style="background:#58a6ff"></span>Equity</i>
+    <i><span class="sw" style="background:#f0b90b"></span>SMA(50)</i>
+    <i><span class="sw" style="background:#26a69a"></span>Buy</i>
+    <i><span class="sw" style="background:#ef5350"></span>Sell</i>
+    <i>Charts by <a href="https://www.tradingview.com" target="_blank" rel="noopener" style="color:#58a6ff">TradingView</a></i>
+  </span>
+</div>
+<div id="tv"></div>
+<div id="msg"><div class="card">
+  <h3 style="margin-top:0">📈 Chart</h3>
+  <p id="msgText" class="muted"></p>
+</div></div>
+
+<!-- TradingView Lightweight Charts v5: open-source (Apache-2.0), CDN-loadable, no CORS.
+     https://github.com/tradingview/lightweight-charts — interim until Advanced Charts is self-hosted.
+     Standalone IIFE build exposes the v5 API on window.LightweightCharts. -->
+<script src="https://unpkg.com/lightweight-charts@5/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+(function () {
+  var UDF = "/dash/udf";
+  var SYM = (new URLSearchParams(location.search).get("symbol") || "QQEQUITY").toUpperCase();
+  document.getElementById("symLabel").textContent = SYM;
+  document.getElementById("symDesc").textContent = (SYM === "QQSTRAT")
+    ? "Automated realized P&L (bot trades only) + SMA(50)"
+    : "Total account equity (all origins) + insider marks + SMA(50)";
+
+  function showMsg(html, isErr) {
+    document.getElementById("tv").style.display = "none";
+    var m = document.getElementById("msg");
+    m.style.display = "flex";
+    var t = document.getElementById("msgText");
+    t.innerHTML = html; t.className = isErr ? "err" : "muted";
+  }
+  function j(u) { return fetch(u, { credentials: "same-origin" }).then(function (r) {
+    if (!r.ok) throw new Error("HTTP " + r.status + " on " + u);
+    return r.json();
+  }); }
+
+  var LWC = window.LightweightCharts;
+  if (!(LWC && LWC.createChart && LWC.LineSeries)) {
+    showMsg("The Lightweight Charts library failed to load from the CDN. Check the network tab / CSP.", true);
+    return;
+  }
+
+  var el = document.getElementById("tv");
+  var chart = LWC.createChart(el, {
+    width: el.clientWidth, height: el.clientHeight,
+    layout: { background: { type: "solid", color: "#0d1117" }, textColor: "#e6edf3", attributionLogo: false },
+    grid: { vertLines: { color: "#161b22" }, horzLines: { color: "#161b22" } },
+    rightPriceScale: { borderColor: "#30363d" },
+    timeScale: { borderColor: "#30363d", timeVisible: true, secondsVisible: false },
+    crosshair: { mode: LWC.CrosshairMode.Normal },
+    localization: { priceFormatter: function (p) { return "$" + p.toFixed(2); } }
+  });
+  new ResizeObserver(function () { chart.resize(el.clientWidth, el.clientHeight); }).observe(el);
+
+  // v5 API: addSeries(SeriesType, options)
+  var equity = chart.addSeries(LWC.LineSeries, { color: "#58a6ff", lineWidth: 2, priceLineVisible: false, lastValueVisible: true, title: "Equity" });
+  var sma = chart.addSeries(LWC.LineSeries, { color: "#f0b90b", lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, title: "SMA50" });
+
+  function smaSeries(pts, len) {
+    var out = [], sum = 0;
+    for (var i = 0; i < pts.length; i++) {
+      sum += pts[i].value;
+      if (i >= len) sum -= pts[i - len].value;
+      if (i >= len - 1) out.push({ time: pts[i].time, value: sum / len });
+    }
+    return out;
+  }
+
+  // 5-year window of daily bars from our UDF backend
+  var to = Math.floor(Date.now() / 1000), from = to - 5 * 365 * 24 * 3600;
+  j(UDF + "/history?symbol=" + encodeURIComponent(SYM) + "&from=" + from + "&to=" + to + "&resolution=1")
+    .then(function (d) {
+      if (d.s !== "ok" || !d.t || !d.t.length) {
+        showMsg("No bars yet for <code>" + SYM + "</code>. The backend (<code>/dash/udf</code>) is live but found no data in <code>logs/run.log</code> / bar cache.", false);
+        return null;
+      }
+      // De-dupe + sort by time (Lightweight Charts requires strictly ascending unique times)
+      var seen = {}, line = [];
+      for (var i = 0; i < d.t.length; i++) {
+        var t = d.t[i];
+        if (seen[t]) continue;
+        seen[t] = 1;
+        line.push({ time: t, value: d.c[i] });
+      }
+      line.sort(function (a, b) { return a.time - b.time; });
+      equity.setData(line);
+      if (line.length >= 50) sma.setData(smaSeries(line, 50)); else sma.setData([]);
+      chart.timeScale().fitContent();
+      return line.length;
+    })
+    .then(function (n) {
+      if (n == null) return;
+      // Insider buy/sell marks (only meaningful on the strategy-equity symbol)
+      return j(UDF + "/marks?symbol=" + encodeURIComponent(SYM) + "&from=" + from + "&to=" + to + "&resolution=1D")
+        .then(function (mk) {
+          var ids = mk.id || [], markers = [];
+          for (var i = 0; i < ids.length; i++) {
+            var isBuy = (mk.color[i] || "").toLowerCase() === "#26a69a";
+            markers.push({
+              time: mk.time[i],
+              position: isBuy ? "belowBar" : "aboveBar",
+              color: mk.color[i] || "#8b949e",
+              shape: isBuy ? "arrowUp" : "arrowDown",
+              text: mk.text[i] || mk.label[i] || ""
+            });
+          }
+          // Markers must be sorted ascending by time. v5 API: createSeriesMarkers(series, markers)
+          markers.sort(function (a, b) { return a.time - b.time; });
+          if (markers.length) LWC.createSeriesMarkers(equity, markers);
+        })
+        .catch(function (e) { /* marks are best-effort; chart still renders without them */ console.warn("marks:", e); });
+    })
+    .catch(function (e) {
+      showMsg("Failed to load chart data: <code>" + String(e).replace(/</g, "&lt;") + "</code>", true);
+    });
+})();
+</script>
+</body></html>

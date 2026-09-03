@@ -1,0 +1,48 @@
+{
+  "run_tag": "h2022_ema",
+  "mode": "FIXED",
+  "universe": [
+    "NVDA",
+    "QQQ",
+    "GOOGL",
+    "SPY",
+    "TSLA",
+    "IWM"
+  ],
+  "start_equity": 100000.0,
+  "final_equity": 88280.71,
+  "total_pnl": -11719.29,
+  "return_pct": -11.72,
+  "closed_trades": 109,
+  "win_rate": 51.4,
+  "expectancy": -107.5,
+  "avg_win": 156.0,
+  "avg_loss": -385.9,
+  "worst": -1212.3,
+  "max_drawdown_pct": 11.88,
+  "pnl_per_calendar_day": -28.2,
+  "exit_mix": {
+    "take_profit": 45,
+    "time_stop": 52,
+    "stop_loss": 12
+  },
+  "by_kind": {
+    "put": {
+      "n": 53,
+      "pnl": -12498.0
+    },
+    "call": {
+      "n": 56,
+      "pnl": 779.0
+    }
+  },
+  "params": {
+    "risk_budget": 2000.0,
+    "exposure_pct": 0.35,
+    "tp_frac": 0.5,
+    "sl_mult": 2.0,
+    "time_stop_dte": 21,
+    "max_positions": 6,
+    "regime_mode": "ema"
+  }
+}

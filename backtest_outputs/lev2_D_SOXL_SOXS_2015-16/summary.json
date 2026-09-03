@@ -1,0 +1,28 @@
+{
+  "run_tag": "lev2_D_SOXL_SOXS_2015-16",
+  "universe": [
+    "SOXL",
+    "SOXS"
+  ],
+  "window": "2015-01-01..2016-12-31",
+  "start_equity": 100000.0,
+  "final_equity": 144359.12,
+  "total_pnl": 44359.12,
+  "return_pct": 44.36,
+  "closed_trades": 8,
+  "win_rate": 25.0,
+  "max_drawdown_pct": 39.08,
+  "by_kind": {
+    "shares": {
+      "n": 8,
+      "pnl": 44359.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": 18.5,
+    "sharpe": 0.69,
+    "sortino": 0.86,
+    "ulcer": 24.75,
+    "worst_month_pct": -13.5
+  }
+}

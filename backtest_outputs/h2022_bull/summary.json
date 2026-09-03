@@ -1,0 +1,44 @@
+{
+  "run_tag": "h2022_bull",
+  "mode": "FIXED",
+  "universe": [
+    "NVDA",
+    "QQQ",
+    "GOOGL",
+    "SPY",
+    "TSLA",
+    "IWM"
+  ],
+  "start_equity": 100000.0,
+  "final_equity": 84404.09,
+  "total_pnl": -15595.91,
+  "return_pct": -15.6,
+  "closed_trades": 123,
+  "win_rate": 52.8,
+  "expectancy": -126.8,
+  "avg_win": 178.2,
+  "avg_loss": -468.6,
+  "worst": -1212.3,
+  "max_drawdown_pct": 17.76,
+  "pnl_per_calendar_day": -37.6,
+  "exit_mix": {
+    "time_stop": 65,
+    "take_profit": 40,
+    "stop_loss": 18
+  },
+  "by_kind": {
+    "put": {
+      "n": 123,
+      "pnl": -15596.0
+    }
+  },
+  "params": {
+    "risk_budget": 2000.0,
+    "exposure_pct": 0.35,
+    "tp_frac": 0.5,
+    "sl_mult": 2.0,
+    "time_stop_dte": 21,
+    "max_positions": 6,
+    "regime_mode": "off"
+  }
+}

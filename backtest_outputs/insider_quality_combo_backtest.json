@@ -1,0 +1,17 @@
+{
+  "params": {
+    "delta": 0.8,
+    "dte": 30,
+    "hold": 10,
+    "iv_mult": 1.3,
+    "extrinsic_spread": 0.4,
+    "price_min": 3.99,
+    "trend_sma": 50,
+    "relvol_min": 1.0
+  },
+  "universe_size": 1725,
+  "rows": {
+    "all": 3231,
+    "combo": 470
+  }
+}

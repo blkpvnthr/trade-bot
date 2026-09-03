@@ -69,11 +69,30 @@ def _csv_load(path: Path, **kwargs) -> pd.DataFrame | None:
 
 
 def load_experience_replay(date_tag: str) -> pd.DataFrame | None:
-    path = EXEC_LOGS / date_tag / f"{date_tag}_live_experience_replay.csv"
-    df = _csv_load(path)
-    if df is None or df.empty:
+    # Try CSV first; fall back to JSONL (the live executor writes .jsonl, not .csv)
+    csv_path = EXEC_LOGS / date_tag / f"{date_tag}_live_experience_replay.csv"
+    df = _csv_load(csv_path)
+    if df is not None and not df.empty:
+        return df
+
+    jsonl_path = EXEC_LOGS / date_tag / f"{date_tag}_live_experience_replay.jsonl"
+    if not jsonl_path.exists():
         return None
-    return df
+    try:
+        rows = []
+        with open(jsonl_path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        rows.append(json.loads(line))
+                    except Exception:
+                        pass
+        if not rows:
+            return None
+        return pd.DataFrame(rows)
+    except Exception:
+        return None
 
 
 def load_executor_journal(date_tag: str) -> pd.DataFrame | None:
@@ -101,7 +120,12 @@ def load_self_assessment(date_tag: str) -> dict:
 
 def load_system_health(date_tag: str) -> dict:
     path = SYSTEM_DATA / date_tag / f"{date_tag}_system_health.json"
-    return _json_load(path) or {}
+    data = _json_load(path)
+    if data is None:
+        # File doesn't exist yet — pre-market / session not started. Use sentinel so
+        # callers can distinguish "truly zero" from "file not created yet".
+        return {"health_score": None, "file_missing": True, "issues": [], "journal_error_events": 0}
+    return data
 
 
 def load_evolution_metrics(date_tag: str) -> dict:
@@ -209,7 +233,11 @@ def analyze_skip_patterns(df: pd.DataFrame) -> dict[str, Any]:
 
         for _, row in skipped.iterrows():
             msg = str(row.get("message", ""))
-            reason = str(row.get("reason", msg))
+            # 20260528+ journals have a separate skip_reason column; prefer it when message is blank
+            skip_reason_col = str(row.get("skip_reason", ""))
+            if not msg.strip() or msg == "nan":
+                msg = skip_reason_col
+            reason = str(row.get("reason", msg)) or skip_reason_col
             gate = extract_skip_gate(msg or reason)
             gate_counts[gate] += 1
 
@@ -260,16 +288,19 @@ def analyze_skip_patterns(df: pd.DataFrame) -> dict[str, Any]:
                     "pct_above_0_70": float((arr >= 0.70).mean()),
                 }
 
-    elif "message" in df.columns:
-        # Journal format
-        skip_rows = df[df.get("event", pd.Series()) == "SKIP"]
+    elif "message" in df.columns or "skip_reason" in df.columns:
+        # Journal format (both old single-message and new skip_reason+message columns)
+        event_col = df["event"] if "event" in df.columns else pd.Series(dtype=str)
+        skip_rows = df[event_col == "SKIP"] if not event_col.empty else pd.DataFrame()
         gate_counts: Counter = Counter()
         for _, row in skip_rows.iterrows():
             msg = str(row.get("message", ""))
-            gate_counts[extract_skip_gate(msg)] += 1
+            skip_reason_col = str(row.get("skip_reason", ""))
+            text = msg if (msg.strip() and msg != "nan") else skip_reason_col
+            gate_counts[extract_skip_gate(text)] += 1
         results["gate_counts"] = dict(gate_counts.most_common(20))
         results["n_skipped"] = len(skip_rows)
-        results["n_executed"] = len(df[df.get("event", pd.Series()).isin(["ORDER", "BUY", "SELL"])])
+        results["n_executed"] = len(df[event_col.isin(["ORDER", "BUY", "SELL"])]) if not event_col.empty else 0
         results["skip_rate"] = results["n_skipped"] / max(results["n_skipped"] + results["n_executed"], 1)
 
     return results
@@ -287,13 +318,27 @@ def diagnose_model_layers(date_tag: str) -> dict[str, Any]:
     self_assessment = load_self_assessment(date_tag)
     health = load_system_health(date_tag)
 
+    # When today's scorecard doesn't exist yet (pre-market / session not started),
+    # fall back to yesterday's scorecard so we don't flood the report with stale-file
+    # false positives before the session has had a chance to build today's artifacts.
+    yesterday_tag = (datetime.strptime(date_tag, "%Y%m%d") - timedelta(days=1)).strftime("%Y%m%d")
+    scorecard_missing = not scorecard or not scorecard.get("models")
+    if scorecard_missing:
+        scorecard = load_model_scorecard(yesterday_tag) or {}
+    if not es_metrics or not es_metrics.get("symbols_trained"):
+        es_metrics = load_evolution_metrics(yesterday_tag) or {}
+
     issues: list[str] = []
     warnings_: list[str] = []
     layers: dict[str, Any] = {}
 
     # --- RL Intraday ---
+    # Check the actual file on disk first — the scorecard may be from yesterday when the
+    # model didn't exist yet (pre-market fallback), so a stale "exists=False" is a false positive.
+    _rl_model_file = SYSTEM_DATA / date_tag / f"{date_tag}_rl_intraday_structure_model.zip"
     rl = scorecard.get("models", {}).get("rl_intraday", {})
-    if not rl.get("exists", False):
+    _rl_exists = _rl_model_file.exists() or rl.get("exists", False)
+    if not _rl_exists:
         issues.append("rl_intraday: model file missing — timing gate is disabled or defaulting to neutral")
         layers["rl_intraday"] = {"status": "missing", "impact": "high"}
     else:
@@ -303,6 +348,14 @@ def diagnose_model_layers(date_tag: str) -> dict[str, Any]:
     es = scorecard.get("models", {}).get("evolution_strategy", {})
     n_trained = es.get("symbols_trained", 0)
     n_skipped = es.get("symbols_skipped", 0)
+    # Also check raw metrics in case scorecard is stale
+    if n_trained == 0:
+        raw_trained = es_metrics.get("symbols_trained")
+        if isinstance(raw_trained, list):
+            n_trained = len(raw_trained)
+        raw_skipped = es_metrics.get("symbols_skipped")
+        if isinstance(raw_skipped, list):
+            n_skipped = len(raw_skipped)
     if n_trained == 0:
         root_cause = "no intraday bar history available for any symbol"
         issues.append(f"evolution_strategy: 0/{n_trained + n_skipped} symbols trained — {root_cause}")
@@ -319,8 +372,10 @@ def diagnose_model_layers(date_tag: str) -> dict[str, Any]:
     # --- Forecast Ensemble ---
     fc = scorecard.get("models", {}).get("forecast_ensemble", {})
     pct_approved = fc.get("pct_buy_approved", -1)
-    fc_source = fc.get("source", "unknown")
-    mean_score = fc.get("mean_ensemble_score", 0)
+    if pct_approved is None:
+        pct_approved = -1
+    fc_source = fc.get("source") or "unknown"
+    mean_score = fc.get("mean_ensemble_score") or 0.0  # guard None → 0.0
     if pct_approved == 0.0 or fc_source == "no_data":
         issues.append(
             f"forecast_ensemble: 0% buy-approved, source='{fc_source}' — ensemble not gating; all signals failing. "
@@ -367,7 +422,8 @@ def diagnose_model_layers(date_tag: str) -> dict[str, Any]:
         "issues": issues,
         "warnings": warnings_,
         "model_alignment_score": model_align,
-        "health_score": health.get("health_score", 0),
+        # None when file doesn't exist yet (pre-market); 0 only when it truly scored 0.
+        "health_score": health.get("health_score"),
         "journal_error_events": health.get("journal_error_events", 0),
     }
 
@@ -634,8 +690,42 @@ def generate_recommendations(
             confidence="high",
         )
 
-    # --- System health (only if not already flagged by staleness) ---
-    if model_diagnosis.get("health_score", 1.0) < 0.6 and not stale_issues:
+    # --- Multi-day gate counts: surface persistent patterns the single-day view misses ---
+    multi_day_gates = skip_analysis.get("multi_day_gate_counts", {})
+    single_day_gates = skip_analysis.get("gate_counts", {})
+    for gate, count in multi_day_gates.items():
+        # Only fire if multi-day count is significant AND not already covered by single-day analysis
+        if count < 200:
+            continue
+        if gate in single_day_gates and single_day_gates[gate] > 50:
+            continue  # already handled above
+        if gate == "direction_gate":
+            add(
+                f"Persistent direction gate pressure: {count} blocks over multi-day window",
+                f"direction_gate blocked {count} trades across recent sessions — far exceeding single-day counts. "
+                "This is a structural issue, not a one-off. The lower_low_structure and ml_next_bar_prob_low "
+                "sub-reasons are co-occurring on high-direction-score candidates (mean 1m score ~0.79). "
+                "Recommended: (1) Set REQUIRE_NO_LOWER_LOW_FOR_BUY=0 to stop lower_low from being a hard block, "
+                "(2) lower ML_NEXT_BAR_MIN_BUY_PROBABILITY from 0.50 to 0.45 since the model is near coin-flip "
+                "on these trades.",
+                env_patch=["REQUIRE_NO_LOWER_LOW_FOR_BUY=0", "ML_NEXT_BAR_MIN_BUY_PROBABILITY=0.45"],
+                impact="high",
+                confidence="high",
+            )
+        elif "existing open order" in gate and count > 100:
+            add(
+                f"Persistent 'existing open order' suppression: {count} blocks over multi-day window",
+                f"'{gate}' blocked {count} candidates across recent sessions. "
+                "This suggests the system is re-evaluating the same symbol every cycle while an order is pending. "
+                "Consider: (1) increase order timeout before re-evaluating, "
+                "(2) ensure filled orders are removed from the candidate queue promptly.",
+                impact="medium",
+                confidence="medium",
+            )
+
+    # --- System health (only if not already flagged by staleness, and file actually exists) ---
+    _hs = model_diagnosis.get("health_score")
+    if _hs is not None and _hs < 0.6 and not stale_issues:
         add(
             "System health low — diagnose SAFE mode triggers",
             f"health_score={model_diagnosis['health_score']:.2f}. "
@@ -653,6 +743,36 @@ def generate_recommendations(
             "order processing loops. Check logs for stack traces. Errors may be causing cycles to "
             "skip processing entirely.",
             impact="medium",
+            confidence="high",
+        )
+
+    # --- Missing Python packages (yfinance / openai) ---
+    # Detect from run.log if build_market_context failed due to missing packages
+    _run_log = Path("logs/run.log")
+    _missing_pkg_errors: set[str] = set()
+    if _run_log.exists():
+        try:
+            import re as _re
+            _today = date_tag  # YYYYMMDD string
+            # Only scan last 500 lines to stay fast
+            _lines = _run_log.read_text(errors="replace").splitlines()[-500:]
+            for _ln in _lines:
+                if "build_market_context failed" in _ln and "No module named" in _ln:
+                    _m = _re.search(r"No module named '([^']+)'", _ln)
+                    if _m:
+                        _missing_pkg_errors.add(_m.group(1))
+        except Exception:
+            pass
+    if _missing_pkg_errors:
+        _pkgs = ", ".join(sorted(_missing_pkg_errors))
+        add(
+            f"Missing Python packages prevent live market-context: {_pkgs}",
+            f"build_market_context failed with 'No module named ...' for: {_pkgs}. "
+            "When the market context builder fails, the system falls back to a neutral/cautious context "
+            "instead of assessing the real regime. This means bearish market days may still allow trades "
+            "during the error window. Fix: run  pip install yfinance openai  in the same Python environment "
+            "used to launch run.py. Then verify: python -c \"import yfinance, openai; print('ok')\".",
+            impact="high",
             confidence="high",
         )
 
@@ -759,7 +879,8 @@ def print_summary(report: dict[str, Any]) -> None:
     print("=" * 72)
     print(f"  Market bias   : {report.get('market_bias', '?')}")
     print(f"  Trade perm    : {report.get('trade_permission', '?')}")
-    print(f"  Health score  : {md.get('health_score', '?')}")
+    _hs_display = md.get("health_score")
+    print(f"  Health score  : {f'{_hs_display:.2f}' if _hs_display is not None else 'n/a (pre-market)'}")
     print(f"  Model align   : {md.get('model_alignment_score', '?'):.2f}")
     print()
     print(f"  Skip rate     : {sa.get('skip_rate', 0):.1%}  "

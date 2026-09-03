@@ -1,0 +1,38 @@
+{
+  "run_tag": "acct_tickers3_noovn_av",
+  "window": "2026-05-12..2026-06-04",
+  "symbols": [
+    "VICR",
+    "MU",
+    "ASX",
+    "NOK",
+    "DELL"
+  ],
+  "start_equity": 6260.63,
+  "final_equity": 6260.63,
+  "total_realized_pnl": 0.0,
+  "return_pct": 0.0,
+  "trading_days": 17,
+  "avg_realized_pnl_per_day": 0.0,
+  "entries_filled": 0,
+  "exits_filled": 0,
+  "wins": 0,
+  "losses": 0,
+  "win_rate_pct": 0.0,
+  "avg_win": 0.0,
+  "avg_loss": 0.0,
+  "max_drawdown_pct": 0.0,
+  "open_positions_remaining": 0,
+  "costs_enabled": true,
+  "fees_paid": 0.0,
+  "commission_per_contract": 0.65,
+  "slippage_pct": 0.0075,
+  "chain_source": "alpha_vantage_historical",
+  "assumptions": [
+    "Underlying: REAL Alpaca historical 1-minute bars (RTH).",
+    "Option chains: REAL Alpha Vantage HISTORICAL_OPTIONS (greeks+IV) as-of each date.",
+    "Fills: entries at modeled ask (2.4% spread), exits at modeled mid \u2014 orders ALWAYS fill.",
+    "No real NBBO/L2 liquidity, no commissions, no early assignment, no IV smile/skew.",
+    "Engine risk + exit logic run unchanged; CLAUDE.md backstops gate new entries."
+  ]
+}

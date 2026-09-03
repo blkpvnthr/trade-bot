@@ -56,8 +56,13 @@ _UNIVERSE_DATED = PROJECT_ROOT / f"{DATA_TAG}_locked_trading_universe.txt"
 _UNIVERSE_UNDATED = PROJECT_ROOT / "locked_trading_universe.txt"
 
 RELOAD_SECONDS = int(os.getenv("STREAM_ROUTER_RELOAD_SECONDS", "30"))
+# Alpaca caps a single data stream at 30 symbols. When the universe exceeds the cap we ROTATE a
+# sliding window so every symbol gets streamed in turn (each window dwells STREAM_ROTATE_SECONDS,
+# >= 60s so each symbol captures at least one full 1-min bar before rotating out).
+STREAM_MAX_SYMBOLS = int(os.getenv("STREAM_MAX_SYMBOLS", "30"))
+STREAM_ROTATE_SECONDS = int(os.getenv("STREAM_ROTATE_SECONDS", "60"))
 RETENTION_DAYS = int(os.getenv("STREAM_ROUTER_SHARED_BAR_RETENTION_DAYS", "7"))
-ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower()
+ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "sip").lower()
 
 _STOP = False
 
@@ -140,20 +145,49 @@ async def bar_handler(bar: Any) -> None:
 
 
 async def subscription_manager(stream: StockDataStream) -> None:
+    """Keep the live subscription in sync with the universe, honoring Alpaca's symbol cap.
+
+    universe <= cap : subscribe all (steady state, no churn).
+    universe  > cap : rotate a sliding window of `cap` symbols so EVERY symbol gets streamed in
+                      turn — subscribe the window's new names, unsubscribe those rotating out,
+                      advance the window each cycle. Full coverage every ceil(n/cap) cycles."""
     subscribed: set[str] = set()
+    offset = 0
     while not _STOP:
-        universe = set(load_universe())
-        new = sorted(universe - subscribed)
-        if new:
-            print(f"[stream-router] subscribing new symbols={new}", flush=True)
-            stream.subscribe_bars(bar_handler, *new)
-            subscribed.update(new)
-        dropped = subscribed - universe
-        if dropped:
-            # Alpaca SDK doesn't support mid-session unsubscribe cleanly;
-            # log and leave subscribed — bars for stale symbols are just ignored.
-            print(f"[stream-router] universe dropped symbols={sorted(dropped)} (left subscribed)", flush=True)
-        await asyncio.sleep(RELOAD_SECONDS)
+        universe = list(dict.fromkeys(load_universe()))   # ordered, de-duped
+        n = len(universe)
+        if n == 0:
+            await asyncio.sleep(RELOAD_SECONDS)
+            continue
+        cap = max(1, STREAM_MAX_SYMBOLS)
+        rotating = n > cap
+        if rotating:
+            window = [universe[(offset + i) % n] for i in range(cap)]
+            target = set(window)
+            offset = (offset + cap) % n
+        else:
+            target = set(universe)
+
+        add = sorted(target - subscribed)
+        drop = sorted(subscribed - target)
+        if drop:
+            try:
+                stream.unsubscribe_bars(*drop)
+            except Exception as exc:
+                print(f"[stream-router] unsubscribe error (continuing): {exc}", flush=True)
+            subscribed.difference_update(drop)
+        if add:
+            stream.subscribe_bars(bar_handler, *add)
+            subscribed.update(add)
+
+        if rotating:
+            print(f"[stream-router] rotating window {len(subscribed)}/{n} cap={cap} "
+                  f"+{add} -{drop}", flush=True)
+            await asyncio.sleep(max(RELOAD_SECONDS, STREAM_ROTATE_SECONDS))
+        else:
+            if add or drop:
+                print(f"[stream-router] subscribed={len(subscribed)}/{n} +{add} -{drop}", flush=True)
+            await asyncio.sleep(RELOAD_SECONDS)
 
 
 async def run_stream() -> None:

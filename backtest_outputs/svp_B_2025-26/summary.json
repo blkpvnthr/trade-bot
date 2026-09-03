@@ -1,0 +1,33 @@
+{
+  "run_tag": "svp_B_2025-26",
+  "universe": [
+    "QQQ",
+    "SPY",
+    "IWM"
+  ],
+  "window": "2025-06-02..2026-04-27",
+  "start_equity": 100000.0,
+  "final_equity": 124641.29,
+  "total_pnl": 24641.29,
+  "return_pct": 24.64,
+  "closed_trades": 10,
+  "win_rate": 60.0,
+  "max_drawdown_pct": 6.82,
+  "by_kind": {
+    "long_put": {
+      "n": 1,
+      "pnl": -431.0
+    },
+    "shares": {
+      "n": 9,
+      "pnl": 25072.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": 24.3,
+    "sharpe": 1.7,
+    "sortino": 2.27,
+    "ulcer": 2.44,
+    "worst_month_pct": -4.8
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "run_tag": "trs_2024",
+  "universe": [
+    "QQQ",
+    "SPY",
+    "IWM"
+  ],
+  "window": "2024-01-01..2025-01-01",
+  "start_equity": 100000.0,
+  "final_equity": 112428.66,
+  "total_pnl": 12428.66,
+  "return_pct": 12.43,
+  "closed_trades": 15,
+  "win_rate": 60.0,
+  "max_drawdown_pct": 11.02,
+  "by_kind": {
+    "shares": {
+      "n": 15,
+      "pnl": 12429.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": 10.7,
+    "sharpe": 0.76,
+    "sortino": 1.02,
+    "ulcer": 3.87,
+    "worst_month_pct": -4.8
+  }
+}

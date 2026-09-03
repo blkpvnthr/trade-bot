@@ -8,7 +8,7 @@ This module does NOT select tickers by default.
 Universe selection is handled exclusively by tradingview_institutional_screener.py.
 
 Default flow:
-  1. Ensure TradingView universe exists (calls build_tradingview_institutional_universe()).
+  1. Ensure TradingView universe exists (calls tradingview_institutional_universe.build_tradingview_institutional_universe()).
   2. Load TradingView-selected symbols.
   3. Enrich with yfinance financials.
   4. Optionally call OpenAI for sentiment/catalyst analysis.
@@ -51,6 +51,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
+from symbol_utils import normalize_for_yfinance
 from config.env_loader import load_instance_env
 
 # ---------------------------------------------------------------------------
@@ -199,7 +200,7 @@ def _ensure_tv_universe() -> dict[str, Any]:
 
     print("[llm-report] TradingView universe missing or empty; running screener")
     try:
-        from tradingview_institutional_screener import build_tradingview_institutional_universe
+        from tradingview_institutional_universe import build_tradingview_institutional_universe
         return build_tradingview_institutional_universe()
     except Exception as exc:
         print(f"[llm-report] tradingview_institutional_screener failed: {exc}")
@@ -228,7 +229,7 @@ def enrich_company_details(symbols: list[str]) -> dict[str, dict[str, Any]]:
     enriched: dict[str, dict[str, Any]] = {}
     for symbol in symbols:
         try:
-            ticker = yf.Ticker(symbol)
+            ticker = yf.Ticker(normalize_for_yfinance(symbol))   # BRK.B → BRK-B for Yahoo
             info: dict[str, Any] = {}
             try:
                 info = ticker.get_info() or {}

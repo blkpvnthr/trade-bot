@@ -1,0 +1,14 @@
+# Direction-Selection Filters on ATM Long Calls (real chains, liquid mega-caps)
+
+Trend + structure filters on the SAME momentum entries. Real AV chains, ATM δ0.45-0.65, spread≤10%, enter ASK/exit BID + $0.65/side, 10-day hold. **Judge by median + win + n** (small n = manufactured edge — the lesson from the IV/ORB studies).
+
+| Arm | n | Mean | Median | Sharpe | Win% | MaxDD |
+|---|---|---|---|---|---|---|
+| **baseline** | 250 | +13.9% | **-14.3%** | +0.116 | 42% | -97% |
+| **+200SMA** | 212 | +12.9% | **-14.1%** | +0.108 | 42% | -92% |
+| **+50>200** | 177 | +11.4% | **-23.4%** | +0.091 | 38% | -95% |
+| **+supply** | 11  ⚠️small-n | -19.3% | **-44.5%** | -0.252 | 27% | -46% |
+| **+supply+200SMA** | 10  ⚠️small-n | -15.1% | **-43.1%** | -0.191 | 30% | -46% |
+| **+supply+50>200** | 9  ⚠️small-n | -23.8% | **-44.5%** | -0.303 | 22% | -46% |
+
+_A filter only counts if it lifts median+win at a sample large enough to trust (n≥~25-30). Prefer the single simplest filter that survives; do NOT stack._

@@ -1,0 +1,13 @@
+//@version=5
+// family: breakout
+strategy("Donchian Channel Breakout", overlay=true, initial_capital=10000)
+
+// Classic turtle-style channel breakout (no moving averages).
+length = input.int(20, "Channel Length")
+upper = ta.highest(high, length)[1]
+lower = ta.lowest(low, length)[1]
+
+if close > upper
+    strategy.entry("Long", strategy.long)
+if close < lower
+    strategy.close("Long")

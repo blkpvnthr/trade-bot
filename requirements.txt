@@ -1,27 +1,37 @@
 # Core runtime
-alpaca-py>=0.20.0
-pandas>=2.0.0
-numpy>=1.26.0
-python-dotenv>=1.0.0
-requests>=2.31.0
-pytz>=2024.1
+alpaca-py
+openai
+pandas
+numpy
+python-dotenv
+requests
+pytz
 zoneinfo; python_version < "3.9"
 
 # ML/RL stack
-torch>=2.1.0
-scikit-learn>=1.4.0
-stable-baselines3>=2.2.0
+torch
+transformers  # FinBERT news sentiment (data_sources/finbert_scorer.py); model via `python bootstrap_finbert.py --download` (~440MB → models/nlp/finbert/)
+scikit-learn
+stable-baselines3
 
 # Data / screener
-yfinance>=0.2.38
-tradingview-screener>=0.3.0
-python-tradingview-ta>=0.3.12
+yfinance
+tradingview-screener
+tradingview-ta
 
 # Strategy platform extras
-pyyaml>=6.0.1
-jinja2>=3.1.0
+pyyaml
+jinja2
 
 # Optional
-sb3-contrib>=2.2.0
-rookiepy>=0.5.0
-pywt>=1.6.0
+sb3-contrib
+rookiepy
+pywavelets
+pyarrow  # live-experience replay parquet store (append_live_experience)
+pyportfolioopt  # Black-Litterman + efficient-frontier Buffett optimizer (optional; falls back to conviction allocation)
+streaming-indicators  # real-time incremental indicator state (StreamingIndicatorEngine; falls back to static pandas calc when absent)
+yliveticker  # live premarket quote stream (PremarketLiveFeed; falls back to yfinance/Alpaca premarket logic when absent)
+authlib>=1.3
+
+# Dashboard / web
+flask>=3.1  # dashboard web server + UDF datafeed blueprint (dashboard.py, udf_datafeed.py)

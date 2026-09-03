@@ -1,0 +1,28 @@
+{
+  "run_tag": "lev2_C_TQQQ_SQQQ_2018",
+  "universe": [
+    "TQQQ",
+    "SQQQ"
+  ],
+  "window": "2018-01-01..2019-01-01",
+  "start_equity": 100000.0,
+  "final_equity": 92190.52,
+  "total_pnl": -7809.48,
+  "return_pct": -7.81,
+  "closed_trades": 6,
+  "win_rate": 50.0,
+  "max_drawdown_pct": 12.13,
+  "by_kind": {
+    "shares": {
+      "n": 6,
+      "pnl": -7809.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": -6.8,
+    "sharpe": -0.6,
+    "sortino": -0.54,
+    "ulcer": 8.1,
+    "worst_month_pct": -11.2
+  }
+}

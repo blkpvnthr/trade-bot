@@ -1,0 +1,16 @@
+//@version=5
+// family: volatility
+strategy("Bollinger Squeeze Expansion", overlay=true, initial_capital=10000)
+
+// Volatility regime: enter when a squeeze releases and price breaks the upper band.
+length = input.int(20, "Length")
+mult = input.float(2.0, "StdDev Mult")
+[mid, upper, lower] = ta.bb(close, length, mult)
+
+bandwidth = (upper - lower) / mid
+squeeze = bandwidth < ta.lowest(bandwidth, 50) * 1.1
+
+if squeeze[1] and close > upper
+    strategy.entry("Long", strategy.long)
+if close < mid
+    strategy.close("Long")

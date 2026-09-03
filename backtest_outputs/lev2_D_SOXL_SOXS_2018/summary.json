@@ -1,0 +1,28 @@
+{
+  "run_tag": "lev2_D_SOXL_SOXS_2018",
+  "universe": [
+    "SOXL",
+    "SOXS"
+  ],
+  "window": "2018-01-01..2019-01-01",
+  "start_equity": 100000.0,
+  "final_equity": 81173.35,
+  "total_pnl": -18826.65,
+  "return_pct": -18.83,
+  "closed_trades": 3,
+  "win_rate": 0.0,
+  "max_drawdown_pct": 30.87,
+  "by_kind": {
+    "shares": {
+      "n": 3,
+      "pnl": -18827.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": -16.5,
+    "sharpe": -0.42,
+    "sortino": -0.46,
+    "ulcer": 21.04,
+    "worst_month_pct": -18.7
+  }
+}

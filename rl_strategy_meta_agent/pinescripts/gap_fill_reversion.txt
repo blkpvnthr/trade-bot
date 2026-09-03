@@ -1,0 +1,14 @@
+//@version=5
+// family: mean_reversion
+strategy("Gap Fill Reversion", overlay=true, initial_capital=10000)
+
+// Fade an opening gap-down back toward the prior close (gap fill). A distinct
+// mean-reversion mechanism: triggered by the overnight gap, not RSI/VWAP.
+gapPct = input.float(2.0, "Min Gap %")
+gappedDown = open < close[1] * (1 - gapPct / 100)
+
+if gappedDown and close > open
+    strategy.entry("Long", strategy.long)
+// exit when the gap fills (price reclaims the prior close)
+if close >= close[1]
+    strategy.close("Long")

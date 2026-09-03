@@ -1,0 +1,15 @@
+{
+  "start": "2020-12-22",
+  "end": "2026-05-29",
+  "signals": 793,
+  "signals_gated": 342,
+  "cagr": 1.1049,
+  "max_dd": -0.4026,
+  "sharpe": 1.761,
+  "start_cash": 5000.0,
+  "slippage_bps_per_side": 15.0,
+  "vol_min_rv20": 0.0563,
+  "min_adv": 1000000.0,
+  "freshness_max_days": 2,
+  "note": "in-sample 60/40 SPY blend; per-trade win-rate/return not modeled by the daily-return blend"
+}

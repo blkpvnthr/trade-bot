@@ -1,0 +1,13 @@
+//@version=5
+// family: volatility
+strategy("Keltner Channel Squeeze", overlay=true, initial_capital=10000)
+
+// Keltner-channel volatility breakout (ATR-based envelope, not Bollinger).
+length = input.int(20, "Length")
+mult = input.float(1.5, "ATR Mult")
+[kMid, kUpper, kLower] = ta.kc(close, length, mult)
+
+if close > kUpper
+    strategy.entry("Long", strategy.long)
+if close < kMid
+    strategy.close("Long")

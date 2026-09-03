@@ -1,0 +1,51 @@
+{
+  "run_tag": "idx_h12025",
+  "mode": "FIXED",
+  "universe": [
+    "QQQ",
+    "SPY",
+    "IWM"
+  ],
+  "start_equity": 100000.0,
+  "final_equity": 99887.88,
+  "total_pnl": -112.12,
+  "return_pct": -0.11,
+  "closed_trades": 25,
+  "win_rate": 60.0,
+  "expectancy": -4.5,
+  "avg_win": 165.3,
+  "avg_loss": -259.1,
+  "worst": -840.2,
+  "max_drawdown_pct": 2.59,
+  "regime_entry_days": {
+    "bull": 16,
+    "bear": 8,
+    "cash": 2
+  },
+  "peak_concurrent_risk": 5911.0,
+  "pnl_per_calendar_day": -0.5,
+  "exit_mix": {
+    "take_profit": 11,
+    "stop_loss": 2,
+    "time_stop": 12
+  },
+  "by_kind": {
+    "put": {
+      "n": 16,
+      "pnl": -873.0
+    },
+    "call": {
+      "n": 9,
+      "pnl": 761.0
+    }
+  },
+  "params": {
+    "risk_budget": 2000.0,
+    "exposure_pct": 0.35,
+    "tp_frac": 0.5,
+    "sl_mult": 2.0,
+    "time_stop_dte": 21,
+    "max_positions": 6,
+    "regime_mode": "trend200"
+  }
+}

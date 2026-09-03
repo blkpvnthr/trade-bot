@@ -5,41 +5,42 @@
 See: .paul/PROJECT.md (updated 2026-05-20)
 
 **Core value:** Autonomous paper-trading engine that turns institutional accumulation signals into structured, risk-controlled intraday trade plans.
-**Current focus:** v0.1 Production Foundation — Phase 2: Training Pipeline Consistency
+**Current focus:** v0.1 Production Foundation — Phase 3: Forecast & RL Quality
 **Objective:** Long-term adaptive compounding via multi-factor optimization (Sharpe, consistency, drawdown, profit factor, Calmar, alpha decay)
 
 ## Current Position
 
 Milestone: Production Foundation (v0.1)
-Phase: 2 of 4 (Training Pipeline Consistency) — In Progress
-Plan: 02-02 ✓, 02-02b ✓, 02-03 not yet planned
-Status: Loop closed — ready for 02-03 planning
-Last activity: 2026-05-22 — Applied and unified 02-02b (stream_confirmed fix)
+Phase: 3 of 4 (Forecast & RL Quality) — In progress (1 of 3 plans done)
+Plan: 03-01 complete (loop closed); next 03-02
+Status: Ready to plan 03-02 (feature-eng audit). DDR reward shipped opt-in.
+Last activity: 2026-07-03 — 03-01 unified: DDR reward mode (SharpeRewardCalculator + trainer + 7 tests) reconciled + scoped-committed. Default unchanged; DDR opt-in; empirical A/B deferred to 03-03.
 
 Progress:
-- Milestone: [████░░░░░░] 42%
-- Phase 2: [███████░░░] 75%
+- Milestone: [█████░░░░░] 50% (2 of 4 phases)
+- Phase 3: [███░░░░░░░] 33% (1 of 3 plans)
 
 ## Loop Position
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [02-02b loop complete — ready for 02-03 plan]
+  ✓        ✓        ✓     [03-01 loop closed — Phase 3 continues (03-02 next)]
 ```
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 4 (3 × Phase 1 + 1 × Phase 2)
+- Total plans completed: 7 (3 × Phase 1 + 4 × Phase 2 incl. 02-02b)
 - Average duration: ~session
-- Total execution time: 2 sessions (Phase 2 so far)
+- Total execution time: 3 sessions (Phase 2)
 
 **By Phase:**
 
 | Phase | Plans | Total Time | Avg/Plan |
 |-------|-------|------------|----------|
 | 01-Data Architecture | 3/3 | 1 session | - |
-| 02-Training Pipeline | 2/3 (02-01 ✓, 02-02 ✓) | 2 sessions | - |
+| 02-Training Pipeline | 4/4 (02-01/02/02b/03 ✓) | 3 sessions | - |
+| 03-Forecast & RL Quality | 1/3 (03-01 ✓) | - | - |
 
 ## Accumulated Context
 
@@ -56,6 +57,9 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Smoke test reads source text, not imports | 2 | Avoids torch/alpaca-py side effects; pattern for all future pipeline checks |
 | Orchestration audit is read-only (no hooks in v0.1) | 2 | Hooks reserved for v0.2 Phase 5 after paper trading baseline validated |
 | Corrective plans use NN-NNb naming | 2 | Not tracked in ROADMAP; execute between parent plan and next plan in sequence |
+| 02-03: align producer (rl_intraday_structure_trainer.py) to consumers' canonical paths, not vice-versa | 2 | Trainer wrote models/rl_intraday/final_model.zip + metrics/rl_intraday_metrics.json; trade.py/self_awareness/optimizer/scripts expect system-data/{DATE}/{DATE}_rl_intraday_structure_model.zip + _training_metrics.json. Fix the trainer's default paths; consumers untouched. Smoke test exits 0 despite failures — also fixed. |
+| 2026-07-03: 02-03 Task 3 live-run checkpoint deferred (not fixed in code) | 2 | Path fix proven statically (10/10 smoke + canonical defaults); AC-5 live model_exists=True needs a real session. Do NOT force synthetic training on a shared Alpaca conn. |
+| 2026-07-03: 02-03 Task 2 was a no-op — smoke-test exit gating already present | 2 | Plan premise stale (02-02 already added sys.exit(0/1)). AC-4 met by existing gating + Task 1; scripts/smoke_test_training_pipeline.py unchanged despite files_modified listing. UNIFY should reconcile. |
 
 ### Deferred Issues
 
@@ -64,6 +68,14 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | BOATS feed requires paid Alpaca subscription | Phase 1 | S | When upgrading Alpaca plan |
 | deeplob_orderbook_direction_layer.py never invoked by run.py — signals always 0.50 | 02-02 audit | M | v0.2 Phase 5 orchestration audit |
 | ENV_PATH missing from run.py module-level scope | Paper launch | XS | Fixed 2026-05-22 (added ENV_PATH = PROJECT_ROOT / ".env") |
+| AC-5: confirm live-trained model resolves — validate_rl_intraday_structure_model()=True | 02-03 | XS | Next real session: python -c "import trade; print(trade.validate_rl_intraday_structure_model())" |
+
+### Git State
+
+Last commit: 65d118e — feat(02-training-pipeline-consistency): Phase 2 complete
+Branch: research-orthogonal-features (NOT main — commit scoped to trainer + .paul only; local, not pushed)
+Feature branches merged: none
+Note: repo working tree carries large unrelated dirt (24 modified / 675 untracked) — phase commit was deliberately scoped, not `git add -A`.
 
 ### Blockers/Concerns
 
@@ -79,10 +91,10 @@ None active.
 
 ## Session Continuity
 
-Last session: 2026-05-22
-Stopped at: 02-02b applied and unified; paper trading running (tux_mtf_original, paper mode)
-Next action: Plan 02-03 (`/paul:plan` — rl_intraday_structure_trainer.py validation + smoke test)
-Resume file: .paul/phases/02-training-pipeline-consistency/02-02b-SUMMARY.md
+Last session: 2026-07-03
+Stopped at: 03-01 loop closed (DDR reward shipped opt-in, committed). Phase 3 at 1/3.
+Next action: `/paul:plan 03-02` (feature-eng audit). Note: 03-03 will do the empirical DDR-vs-baseline A/B + eta/clip sweep. (Separately, close AC-5 on next real session.)
+Resume file: .paul/phases/03-forecast-rl-quality/03-01-SUMMARY.md
 
 ---
 *STATE.md — Updated after every significant action*

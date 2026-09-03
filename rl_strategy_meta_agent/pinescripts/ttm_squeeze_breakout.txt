@@ -1,0 +1,17 @@
+//@version=5
+// family: volatility
+strategy("TTM Squeeze Breakout", overlay=true, initial_capital=10000)
+
+// Bollinger Bands compressing INSIDE Keltner Channels = a squeeze; fire long on
+// release. Distinct from a plain BB or KC squeeze (it needs BOTH).
+length = input.int(20, "Length")
+[bbMid, bbUpper, bbLower] = ta.bb(close, length, 2.0)
+[kcMid, kcUpper, kcLower] = ta.kc(close, length, 1.5)
+
+squeezeOn = bbUpper < kcUpper and bbLower > kcLower
+fired = squeezeOn[1] and not squeezeOn
+
+if fired and close > bbMid
+    strategy.entry("Long", strategy.long)
+if close < kcMid
+    strategy.close("Long")

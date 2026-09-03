@@ -246,6 +246,42 @@ CONFIG = OptionsBoosterConfig()
 
 
 # =============================================================================
+# Advisory options sentiment (Alpha Vantage) — never execution-authoritative.
+# Degrades to neutral (no behavior change) if the module/key/data is missing.
+# =============================================================================
+
+try:
+    from options_sentiment_av import (
+        OptionsSentimentClient,
+        evaluate_setup_sentiment,
+        neutral_sentiment,
+    )
+    _SENTIMENT_AVAILABLE = True
+except Exception as _sentiment_import_err:  # pragma: no cover - optional dep
+    OptionsSentimentClient = None  # type: ignore[assignment,misc]
+    evaluate_setup_sentiment = None  # type: ignore[assignment]
+    neutral_sentiment = None  # type: ignore[assignment]
+    _SENTIMENT_AVAILABLE = False
+    print(f"[sentiment] options_sentiment_av unavailable: {_sentiment_import_err}")
+
+_SENTIMENT_CLIENT: Any = None
+
+
+def get_sentiment_client() -> Any:
+    """Lazily build the advisory sentiment client. Returns None if disabled/unavailable."""
+    global _SENTIMENT_CLIENT
+    if not _SENTIMENT_AVAILABLE or not env_bool("OPTIONS_SENTIMENT_AV_ENABLED", True):
+        return None
+    if _SENTIMENT_CLIENT is None:
+        try:
+            _SENTIMENT_CLIENT = OptionsSentimentClient()
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"[sentiment] client init failed: {exc}")
+            _SENTIMENT_CLIENT = None
+    return _SENTIMENT_CLIENT
+
+
+# =============================================================================
 # Helpers
 # =============================================================================
 
@@ -565,7 +601,13 @@ def positions_by_symbol(client: TradingClient) -> dict[str, Any]:
 
 
 def account_equity(client: TradingClient) -> float:
-    acct = client.get_account()
+    try:
+        acct = client.get_account()
+    except Exception as exc:
+        # Network/auth failures should degrade the booster to safe no-op sizing,
+        # not crash the collector subprocess and mask the broader runtime issue.
+        print(f"[options] failed to fetch account equity: {exc}")
+        return 1.0
     return max(to_float(obj_get(acct, "equity", default=0.0)), 1.0)
 
 
@@ -843,7 +885,81 @@ def contract_expected_value(
     }
 
 
-def score_contract(row: pd.Series, underlying_price: float, parsed: dict[str, Any], dte: int, metrics: dict[str, float]) -> dict[str, float]:
+def _empty_sentiment_fields() -> dict[str, Any]:
+    """Advisory sentiment columns with neutral defaults (no decision impact)."""
+    return {
+        "put_call_ratio_chain": None,
+        "put_call_ratio_expiration": None,
+        "volume_oi_ratio_chain": None,
+        "volume_oi_ratio_expiration": None,
+        "sentiment_directional_score": 0.0,
+        "participation_score": 0.5,
+        "contrarian_warning": False,
+        "options_sentiment_confidence": 0.5,
+        "options_sentiment_confidence_multiplier": 1.0,
+        "options_sentiment_skip_low_confirmation": False,
+        "options_sentiment_safety_warning": "",
+        "options_sentiment_decision_impact": "neutral: sentiment unavailable",
+    }
+
+
+def apply_sentiment_to_contract(
+    score: dict[str, Any],
+    sentiment: dict[str, Any] | None,
+    expiration_iso: str,
+    technical_bullish: bool,
+) -> dict[str, Any]:
+    """Fold advisory Alpha Vantage sentiment into a contract score (long-call side).
+
+    Advisory only: adjusts the composite option_score and attaches explanatory
+    fields. It never touches sizing, exposure caps, or hard risk gates.
+    """
+    fields = _empty_sentiment_fields()
+    if not sentiment or not sentiment.get("available") or evaluate_setup_sentiment is None:
+        score.update(fields)
+        return score
+
+    ev = evaluate_setup_sentiment(
+        sentiment,
+        side="call",
+        technical_bullish=technical_bullish,
+        expiration=expiration_iso,
+    )
+
+    pcr_exp_map = sentiment.get("put_call_ratio_expiration") or {}
+    voi_exp_map = sentiment.get("volume_oi_ratio_expiration") or {}
+
+    fields.update(
+        {
+            "put_call_ratio_chain": sentiment.get("put_call_ratio_chain"),
+            "put_call_ratio_expiration": pcr_exp_map.get(expiration_iso, sentiment.get("put_call_ratio_chain")),
+            "volume_oi_ratio_chain": sentiment.get("volume_oi_ratio_chain"),
+            "volume_oi_ratio_expiration": voi_exp_map.get(expiration_iso, sentiment.get("volume_oi_ratio_chain")),
+            "sentiment_directional_score": float(sentiment.get("sentiment_directional_score", 0.0)),
+            "participation_score": float(sentiment.get("participation_score", 0.5)),
+            "contrarian_warning": bool(sentiment.get("contrarian_warning", False)),
+            "options_sentiment_confidence": float(ev.get("final_options_sentiment_confidence", 0.5)),
+            "options_sentiment_confidence_multiplier": float(ev.get("confidence_multiplier", 1.0)),
+            "options_sentiment_skip_low_confirmation": bool(ev.get("skip_low_confirmation", False)),
+            "options_sentiment_safety_warning": ev.get("safety_warning") or "",
+            "options_sentiment_decision_impact": ev.get("decision_impact", ""),
+        }
+    )
+
+    # Advisory re-weighting of the composite score (bounded by the multiplier caps).
+    score["option_score"] = float(score.get("option_score", 0.0)) * fields["options_sentiment_confidence_multiplier"]
+    score.update(fields)
+    return score
+
+
+def score_contract(
+    row: pd.Series,
+    underlying_price: float,
+    parsed: dict[str, Any],
+    dte: int,
+    metrics: dict[str, float],
+    sentiment: dict[str, Any] | None = None,
+) -> dict[str, float]:
     flow = compute_flow_score(metrics)
     ev = contract_expected_value(
         row=row,
@@ -889,7 +1005,7 @@ def score_contract(row: pd.Series, underlying_price: float, parsed: dict[str, An
     if metrics["mid"] < 0.25:
         option_score *= 0.75
 
-    return {
+    score = {
         **flow,
         **ev,
         "option_score": float(option_score),
@@ -900,6 +1016,21 @@ def score_contract(row: pd.Series, underlying_price: float, parsed: dict[str, An
         "gamma_score": float(gamma_score),
         "dte_score": float(dte_score),
     }
+
+    # Advisory sentiment overlay (long-call setup). Bullish premise: the booster
+    # only adds calls when the underlying is in an allowed-long / profitable state.
+    technical_bullish = (
+        clip01(to_float(row.get("continuation_confidence"), 0.0)) >= 0.50
+        or to_float(row.get("structure_confidence", row.get("bullish_structure_score", 0.0)), 0.0) > 0.0
+        or to_float(row.get("momentum_score", row.get("positive_momentum_score", 0.0)), 0.0) > 0.0
+    )
+    score = apply_sentiment_to_contract(
+        score,
+        sentiment,
+        expiration_iso=parsed["expiration"].isoformat(),
+        technical_bullish=bool(technical_bullish),
+    )
+    return score
 
 
 # =============================================================================
@@ -930,7 +1061,13 @@ def selected_limit_price(best: dict[str, Any]) -> float:
     return to_float(best.get("bid"), to_float(best.get("mid"), 0.0))
 
 
-def scan_underlying(option_client: OptionHistoricalDataClient, row: pd.Series, underlying: str, underlying_price: float) -> pd.DataFrame:
+def scan_underlying(
+    option_client: OptionHistoricalDataClient,
+    row: pd.Series,
+    underlying: str,
+    underlying_price: float,
+    sentiment: dict[str, Any] | None = None,
+) -> pd.DataFrame:
     chain = get_option_chain(option_client, underlying)
     if not chain:
         return pd.DataFrame()
@@ -986,7 +1123,7 @@ def scan_underlying(option_client: OptionHistoricalDataClient, row: pd.Series, u
         if CONFIG.max_iv < 10 and not math.isnan(iv) and iv > CONFIG.max_iv:
             continue
 
-        scores = score_contract(row, underlying_price, parsed, dte, metrics)
+        scores = score_contract(row, underlying_price, parsed, dte, metrics, sentiment=sentiment)
 
         if scores["rvolchg_pct"] < CONFIG.min_rvolchg_pct:
             continue
@@ -995,6 +1132,15 @@ def scan_underlying(option_client: OptionHistoricalDataClient, row: pd.Series, u
         if scores["flow_score"] < CONFIG.min_flow_score:
             continue
         if scores["probability_of_profit"] < CONFIG.min_probability_of_profit:
+            continue
+        # Advisory low-confirmation skip (only active when explicitly opted in via
+        # OPTIONS_SENTIMENT_SKIP_LOW_CONFIRMATION; conservative — never forces a trade).
+        if scores.get("options_sentiment_skip_low_confirmation"):
+            write_event(
+                "option_sentiment_low_confirmation_skip",
+                {"underlying": underlying, "option_symbol": safe_symbol(contract_symbol),
+                 "impact": scores.get("options_sentiment_decision_impact", "")},
+            )
             continue
 
         rows.append(
@@ -1030,11 +1176,29 @@ def scan_unusual_options_flow(
 ) -> pd.DataFrame:
     frames = []
     print(f"[flow] scanning underlyings={len(universe)}")
+    sentiment_client = get_sentiment_client()
+    if sentiment_client is not None:
+        print(f"[sentiment] Alpha Vantage advisory sentiment enabled (api_key_present={bool(sentiment_client.api_key)})")
 
     for _, row in universe.iterrows():
         underlying = safe_symbol(row.get("symbol"))
         if not underlying:
             continue
+
+        sentiment = None
+        if sentiment_client is not None:
+            try:
+                sentiment = sentiment_client.get_symbol_sentiment(underlying)
+                if sentiment.get("available"):
+                    print(
+                        f"[sentiment] {underlying}: PCR={sentiment.get('put_call_ratio_chain')} "
+                        f"dir={sentiment.get('sentiment_directional_score'):+.2f} "
+                        f"participation={sentiment.get('participation_score'):.2f} "
+                        f"contrarian={sentiment.get('contrarian_warning')}"
+                    )
+            except Exception as exc:  # pragma: no cover - advisory must never break the scan
+                print(f"[sentiment] {underlying}: fetch failed ({exc}); using neutral")
+                sentiment = None
 
         # Fallback order: row price fields → Alpaca trade → quote mid → bar close → local intraday.
         underlying_price = to_float(row.get("price"), 0.0)
@@ -1062,7 +1226,7 @@ def scan_unusual_options_flow(
             print(f"[flow] skip {underlying}: no underlying price from any source (tried row fields, Alpaca trade/quote/bar, local intraday, structure map)")
             continue
 
-        ranked = scan_underlying(option_client, row, underlying, underlying_price)
+        ranked = scan_underlying(option_client, row, underlying, underlying_price, sentiment=sentiment)
         if not ranked.empty:
             frames.append(ranked)
             best = ranked.iloc[0]
@@ -1170,6 +1334,18 @@ def build_booster_orders(flow: pd.DataFrame, trading_client: TradingClient) -> p
                 "option_spread_pct": best.get("spread_pct"),
                 "option_volume": best.get("volume"),
                 "option_open_interest": best.get("open_interest"),
+                # Advisory Alpha Vantage options sentiment (never sizing-authoritative).
+                "put_call_ratio_chain": best.get("put_call_ratio_chain"),
+                "put_call_ratio_expiration": best.get("put_call_ratio_expiration"),
+                "volume_oi_ratio_chain": best.get("volume_oi_ratio_chain"),
+                "volume_oi_ratio_expiration": best.get("volume_oi_ratio_expiration"),
+                "sentiment_directional_score": best.get("sentiment_directional_score"),
+                "participation_score": best.get("participation_score"),
+                "contrarian_warning": best.get("contrarian_warning"),
+                "options_sentiment_confidence": best.get("options_sentiment_confidence"),
+                "options_sentiment_confidence_multiplier": best.get("options_sentiment_confidence_multiplier"),
+                "options_sentiment_safety_warning": best.get("options_sentiment_safety_warning"),
+                "options_sentiment_decision_impact": best.get("options_sentiment_decision_impact"),
                 "created_at_utc": now_utc().isoformat(),
             }
         )
@@ -1257,6 +1433,7 @@ def main() -> dict[str, Any]:
     print(f"[config] min_volume={CONFIG.min_volume} min_oi={CONFIG.min_open_interest} min_rvolchg_pct={CONFIG.min_rvolchg_pct:.1f}")
     print(f"[config] min_premium_flow=${CONFIG.min_premium_flow_dollars:,.0f}")
     print(f"[config] require_open_underlying_position={CONFIG.require_open_underlying_position}")
+    print(f"[config] options_sentiment_av_enabled={_SENTIMENT_AVAILABLE and env_bool('OPTIONS_SENTIMENT_AV_ENABLED', True)} (advisory only)")
 
     if not CONFIG.enabled:
         summary = {
@@ -1355,6 +1532,10 @@ def main() -> dict[str, Any]:
             "option_delta",
             "option_dte",
             "option_spread_pct",
+            "put_call_ratio_chain",
+            "sentiment_directional_score",
+            "participation_score",
+            "options_sentiment_confidence_multiplier",
         ]
         print("[options] selected contracts:")
         print(orders[[c for c in show_cols if c in orders.columns]].to_string(index=False))

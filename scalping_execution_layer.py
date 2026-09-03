@@ -100,7 +100,8 @@ PAPER: bool = _bool("APCA_PAPER", "true") or not _bool("ALLOW_LIVE_TRADING", "0"
 
 APCA_KEY = os.getenv("APCA_API_KEY_ID", "")
 APCA_SECRET = os.getenv("APCA_API_SECRET_KEY", "")
-APCA_DATA_FEED = os.getenv("SCALP_DATA_FEED", "iex")
+# Honor the global ALPACA_DATA_FEED (SIP by default); SCALP_DATA_FEED stays an explicit override.
+APCA_DATA_FEED = (os.getenv("SCALP_DATA_FEED") or os.getenv("ALPACA_DATA_FEED", "sip")).lower().strip()
 
 
 # ======================================================================
@@ -156,6 +157,87 @@ CFG = ScalpConfig()
 # ======================================================================
 # State machine
 # ======================================================================
+# =============================================================================
+# RL-facing data structures (imported by rl_intraday_structure_trainer.py)
+# =============================================================================
+
+REPLAY_FIELDNAMES: list[str] = [
+    "timestamp", "symbol", "setup_type",
+    "entry_price", "stop_price", "target_price",
+    "sweep_low", "reclaim_price",
+    "volume_spike_ratio", "support_distance_pct",
+    "reclaim_vwap", "reclaim_ema9", "reclaim_ema20",
+    "mfe_pct", "mae_pct", "outcome",
+]
+
+
+class TradeOutcome(str, Enum):
+    WIN         = "win"
+    LOSS        = "loss"
+    AGENT_EXIT  = "agent_exit"
+    STOP        = "stop"
+    TARGET      = "target"
+    MAX_BARS    = "max_bars"
+    PENDING     = "pending"
+
+
+@dataclass
+class TradeRecord:
+    """Single trade record written to the RL replay dataset."""
+    timestamp:            str   = ""
+    symbol:               str   = ""
+    setup_type:           str   = "none"
+    entry_price:          float = 0.0
+    stop_price:           float = 0.0
+    target_price:         float = 0.0
+    sweep_low:            float = 0.0
+    reclaim_price:        float = 0.0
+    volume_spike_ratio:   float = 1.0
+    support_distance_pct: float = 0.0
+    reclaim_vwap:         int   = 0
+    reclaim_ema9:         int   = 0
+    reclaim_ema20:        int   = 0
+    mfe_pct:              float = 0.0
+    mae_pct:              float = 0.0
+    outcome:              str   = TradeOutcome.PENDING
+
+    def as_replay_row(self) -> dict:
+        return {k: getattr(self, k, "") for k in REPLAY_FIELDNAMES}
+
+
+def compute_execution_metrics(trades: list[TradeRecord]) -> dict:
+    """Compute aggregate metrics from a list of TradeRecord objects."""
+    if not trades:
+        return {
+            "n_trades": 0, "win_rate": 0.0, "profit_factor": 0.0,
+            "avg_mfe_pct": 0.0, "avg_mae_pct": 0.0, "avg_capture_ratio": 0.0,
+            "dip_reclaim_entries": 0, "dip_reclaim_win_rate": 0.0,
+        }
+    wins  = [t for t in trades if "win" in t.outcome or t.outcome == TradeOutcome.TARGET]
+    dips  = [t for t in trades if t.setup_type in ("dip_reclaim", "liquidity_sweep_reclaim")]
+    dip_w = [t for t in dips  if "win" in t.outcome]
+    g_win  = sum(t.mfe_pct for t in wins)
+    g_loss = sum(t.mae_pct for t in trades if t not in wins)
+    caps   = [t.mfe_pct / (t.mfe_pct + t.mae_pct + 1e-8) for t in trades]
+    return {
+        "n_trades":              len(trades),
+        "win_rate":              len(wins) / len(trades),
+        "profit_factor":         (g_win + 1e-8) / (g_loss + 1e-8),
+        "avg_mfe_pct":           sum(t.mfe_pct for t in trades) / len(trades),
+        "avg_mae_pct":           sum(t.mae_pct for t in trades) / len(trades),
+        "avg_capture_ratio":     sum(caps) / len(caps),
+        "dip_reclaim_entries":   len(dips),
+        "dip_reclaim_win_rate":  len(dip_w) / max(len(dips), 1),
+    }
+
+
+# Alias so trainers can import ScalpingExecutionLayer without breaking existing code
+class ScalpingExecutionLayer:
+    """Thin wrapper alias kept for RL trainer imports."""
+    pass
+
+
+# =============================================================================
 class ScalpState(str, Enum):
     IDLE = "IDLE"
     RANGE_DEFINED = "RANGE_DEFINED"
@@ -253,6 +335,52 @@ def _append_order_row(row: dict[str, Any]) -> None:
             df_new.to_csv(SCALP_ORDERS_PATH, mode="a", header=False, index=False)
         else:
             df_new.to_csv(SCALP_ORDERS_PATH, index=False)
+    except Exception:
+        pass
+
+
+SCALP_REPLAY_PATH = LOG_DIR / f"{DATA_TAG}_scalp_reclaim_replay.csv"
+
+
+def _write_scalp_replay_label(
+    *,
+    symbol: str,
+    setup_type: str = "scalp_reclaim",
+    entry_price: float,
+    stop_price: float,
+    target_price: float,
+    mfe_pct: float = 0.0,
+    mae_pct: float = 0.0,
+    capture_ratio: float = 0.0,
+    bars_held: int = 0,
+    outcome: str = "pending",
+) -> None:
+    """Append a scalp_reclaim replay label to the RL training replay dataset.
+    Pattern: sweep → reclaim → retest → engulf → 3R
+    outcome is 'pending' at entry; update to 'win'/'loss' when trade closes.
+    """
+    import csv as _csv
+    _row = {
+        "timestamp": _now_utc_iso(),
+        "symbol": symbol,
+        "setup_type": setup_type,
+        "entry_price": round(entry_price, 4),
+        "stop_price": round(stop_price, 4),
+        "target_price": round(target_price, 4),
+        "MFE_pct": round(mfe_pct, 5),
+        "MAE_pct": round(mae_pct, 5),
+        "capture_ratio": round(capture_ratio, 4),
+        "bars_held": bars_held,
+        "outcome": outcome,
+    }
+    _header = list(_row.keys())
+    _write_header = not SCALP_REPLAY_PATH.exists()
+    try:
+        with open(SCALP_REPLAY_PATH, "a", newline="", encoding="utf-8") as _f:
+            _writer = _csv.DictWriter(_f, fieldnames=_header)
+            if _write_header:
+                _writer.writeheader()
+            _writer.writerow(_row)
     except Exception:
         pass
 
@@ -555,6 +683,17 @@ class ScalpingEngine:
             "submitted_at_utc": _now_utc_iso(),
             "paper": PAPER,
         }
+
+        # ── Write dip-reclaim replay label ────────────────────────────────────
+        # Pattern: sweep → reclaim → bearish retest → bullish engulf → 3R target
+        # Feed these records back into RL training as scalp_reclaim labels.
+        _write_scalp_replay_label(
+            symbol=symbol,
+            setup_type="scalp_reclaim",
+            entry_price=entry_price,
+            stop_price=stop_price,
+            target_price=target_price,
+        )
 
         if not EXECUTE_ORDERS:
             print(

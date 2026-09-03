@@ -1,0 +1,11 @@
+REAL-CHAIN validation: signal=momentum max_entries=120 equity=$6,261
+# REAL historical chains — EV selector vs ATM heuristic (the ultimate gate)
+
+Signal **momentum**. 120 entries on REAL Alpha Vantage chains (fetched 123, 3 had no usable chain). Enter at ASK, exit at BID from the actual exit-date chain — no BS in the P&L.
+
+| Method | n | Mean | Sharpe | Win% | Median | Avg δ | Avg spread |
+|---|---|---|---|---|---|---|---|
+| Current (ATM δ0.50) | 120 | +9.5% | +0.092 | 41% | -15.4% | 0.50 | 7.0% |
+| **EV-max (real greeks)** | 120 | **-14.9%** | **-0.115** | 35% | -6.3% | 0.53 | 7.5% |
+
+_Real IV/greeks/strikes/spreads; realized P&L from the actual chain at exit (enter ASK→exit BID + commission)._

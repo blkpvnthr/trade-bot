@@ -1,0 +1,28 @@
+[Unit]
+# QuantumQuant — real-time Alpaca news stream → FinBERT-scored rows in feature_store/news/<SYM>.jsonl
+# Install: copy to /etc/systemd/system/, edit paths/WorkingDirectory for the instance, then
+#   sudo systemctl daemon-reload && sudo systemctl enable --now trade-bot-news-stream
+# Adjust WorkingDirectory + BOT_ENV_FILE for the target instance (e.g. trade-bot-instance2).
+Description=QuantumQuant Alpaca news stream (FinBERT-scored → feature_store/news)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/trade-bot-instance2
+# APCA creds are loaded by the router from this file (BOT_ENV_FILE); FinBERT flags set directly so
+# they're in the environment before Python imports the scorer.
+Environment=BOT_ENV_FILE=/root/trade-bot-instance2/.env.nonl0cal2
+Environment=FINBERT_ENABLED=1
+Environment=FINBERT_MODEL_DIR=models/nlp/finbert
+# Empty NEWS_STREAM_SYMBOLS = stream the locked universe; set to "*" for the all-news firehose.
+Environment=NEWS_STREAM_SYMBOLS=
+ExecStart=/root/trade-bot-instance2/.venv/bin/python alpaca_news_stream_router.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/root/trade-bot-instance2/logs/news_stream.log
+StandardError=append:/root/trade-bot-instance2/logs/news_stream.log
+
+[Install]
+WantedBy=multi-user.target

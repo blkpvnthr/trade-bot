@@ -1,0 +1,51 @@
+{
+  "run_tag": "idx_2022",
+  "mode": "FIXED",
+  "universe": [
+    "QQQ",
+    "SPY",
+    "IWM"
+  ],
+  "start_equity": 100000.0,
+  "final_equity": 100527.11,
+  "total_pnl": 527.11,
+  "return_pct": 0.53,
+  "closed_trades": 73,
+  "win_rate": 68.5,
+  "expectancy": 7.2,
+  "avg_win": 146.0,
+  "avg_loss": -294.4,
+  "worst": -753.4,
+  "max_drawdown_pct": 2.31,
+  "regime_entry_days": {
+    "bull": 2,
+    "bear": 47,
+    "cash": 4
+  },
+  "peak_concurrent_risk": 4594.0,
+  "pnl_per_calendar_day": 1.3,
+  "exit_mix": {
+    "time_stop": 26,
+    "stop_loss": 3,
+    "take_profit": 44
+  },
+  "by_kind": {
+    "put": {
+      "n": 4,
+      "pnl": -2222.0
+    },
+    "call": {
+      "n": 69,
+      "pnl": 2749.0
+    }
+  },
+  "params": {
+    "risk_budget": 2000.0,
+    "exposure_pct": 0.35,
+    "tp_frac": 0.5,
+    "sl_mult": 2.0,
+    "time_stop_dte": 21,
+    "max_positions": 6,
+    "regime_mode": "trend200"
+  }
+}

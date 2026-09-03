@@ -1,0 +1,37 @@
+{
+  "run_tag": "acct_def",
+  "window": "2026-05-12..2026-06-04",
+  "symbols": [
+    "HPE",
+    "LASE",
+    "MGM",
+    "NET",
+    "TWLO"
+  ],
+  "start_equity": 6260.63,
+  "final_equity": 6268.83,
+  "total_realized_pnl": 8.2,
+  "return_pct": 0.131,
+  "trading_days": 17,
+  "avg_realized_pnl_per_day": 0.48,
+  "entries_filled": 6,
+  "exits_filled": 6,
+  "wins": 3,
+  "losses": 3,
+  "win_rate_pct": 50.0,
+  "avg_win": 21.02,
+  "avg_loss": -18.29,
+  "max_drawdown_pct": 1.054,
+  "open_positions_remaining": 0,
+  "costs_enabled": true,
+  "fees_paid": 21.34,
+  "commission_per_contract": 0.65,
+  "slippage_pct": 0.0075,
+  "assumptions": [
+    "Underlying: REAL Alpaca historical 1-minute bars (RTH).",
+    "Option prices: synthesized via engine's black_scholes_call; IV = 20d trailing realized vol.",
+    "Fills: entries at modeled ask (2.4% spread), exits at modeled mid \u2014 orders ALWAYS fill.",
+    "No real NBBO/L2 liquidity, no commissions, no early assignment, no IV smile/skew.",
+    "Engine risk + exit logic run unchanged; CLAUDE.md backstops gate new entries."
+  ]
+}

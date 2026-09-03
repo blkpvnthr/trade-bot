@@ -1,0 +1,41 @@
+{
+  "run_tag": "megb_1000_syn",
+  "window": "2026-05-12..2026-06-04",
+  "symbols": [
+    "QQQ",
+    "SPY",
+    "AAPL",
+    "NVDA",
+    "MSFT",
+    "AMD",
+    "META",
+    "AMZN"
+  ],
+  "start_equity": 6260.63,
+  "final_equity": 6576.34,
+  "total_realized_pnl": 315.71,
+  "return_pct": 5.043,
+  "trading_days": 17,
+  "avg_realized_pnl_per_day": 18.57,
+  "entries_filled": 18,
+  "exits_filled": 18,
+  "wins": 8,
+  "losses": 10,
+  "win_rate_pct": 44.4,
+  "avg_win": 132.29,
+  "avg_loss": -74.26,
+  "max_drawdown_pct": 10.517,
+  "open_positions_remaining": 0,
+  "costs_enabled": true,
+  "fees_paid": 431.42,
+  "commission_per_contract": 0.65,
+  "slippage_pct": 0.0075,
+  "chain_source": "synthetic_black_scholes",
+  "assumptions": [
+    "Underlying: REAL Alpaca historical 1-minute bars (RTH).",
+    "Option prices: synthesized via engine's black_scholes_call; IV = 20d trailing realized vol.",
+    "Fills: entries at modeled ask (2.4% spread), exits at modeled mid \u2014 orders ALWAYS fill.",
+    "No real NBBO/L2 liquidity, no commissions, no early assignment, no IV smile/skew.",
+    "Engine risk + exit logic run unchanged; CLAUDE.md backstops gate new entries."
+  ]
+}

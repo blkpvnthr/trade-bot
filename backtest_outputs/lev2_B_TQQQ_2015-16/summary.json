@@ -1,0 +1,27 @@
+{
+  "run_tag": "lev2_B_TQQQ_2015-16",
+  "universe": [
+    "TQQQ"
+  ],
+  "window": "2015-01-01..2016-12-31",
+  "start_equity": 100000.0,
+  "final_equity": 152347.44,
+  "total_pnl": 52347.44,
+  "return_pct": 52.35,
+  "closed_trades": 8,
+  "win_rate": 25.0,
+  "max_drawdown_pct": 31.2,
+  "by_kind": {
+    "shares": {
+      "n": 8,
+      "pnl": 52347.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": 21.5,
+    "sharpe": 0.75,
+    "sortino": 0.87,
+    "ulcer": 17.62,
+    "worst_month_pct": -14.2
+  }
+}

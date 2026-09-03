@@ -1,0 +1,18 @@
+//@version=5
+// family: trend
+strategy("TJL Trend Join Long", overlay=true, initial_capital=10000)
+
+// Join an ESTABLISHED uptrend on a pullback that reclaims the fast EMA.
+// Distinct from a raw MA crossover: requires regime (close>SMA200, SMA50>SMA200)
+// and enters on the reclaim, not the cross.
+ema20 = ta.ema(close, 20)
+sma50 = ta.sma(close, 50)
+sma200 = ta.sma(close, 200)
+
+uptrend = close > sma200 and sma50 > sma200
+reclaim = ta.crossover(close, ema20)
+
+if uptrend and reclaim
+    strategy.entry("Long", strategy.long)
+if close < sma50
+    strategy.close("Long")

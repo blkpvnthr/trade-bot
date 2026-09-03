@@ -1,0 +1,29 @@
+{
+  "run_tag": "lev2_E_TQNV_25-26",
+  "universe": [
+    "TQQQ",
+    "SOXL",
+    "NVDL"
+  ],
+  "window": "2025-06-02..2026-04-27",
+  "start_equity": 100000.0,
+  "final_equity": 256322.12,
+  "total_pnl": 156322.12,
+  "return_pct": 156.32,
+  "closed_trades": 9,
+  "win_rate": 77.8,
+  "max_drawdown_pct": 30.02,
+  "by_kind": {
+    "shares": {
+      "n": 9,
+      "pnl": 156322.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": 153.5,
+    "sharpe": 1.81,
+    "sortino": 2.16,
+    "ulcer": 12.47,
+    "worst_month_pct": -17.5
+  }
+}

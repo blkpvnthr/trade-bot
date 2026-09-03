@@ -1,0 +1,48 @@
+{
+  "run_tag": "h2526_ema",
+  "mode": "FIXED",
+  "universe": [
+    "NVDA",
+    "QQQ",
+    "GOOGL",
+    "SPY",
+    "TSLA",
+    "IWM"
+  ],
+  "start_equity": 100000.0,
+  "final_equity": 107959.43,
+  "total_pnl": 7959.43,
+  "return_pct": 7.96,
+  "closed_trades": 107,
+  "win_rate": 77.6,
+  "expectancy": 74.4,
+  "avg_win": 170.2,
+  "avg_loss": -257.1,
+  "worst": -852.4,
+  "max_drawdown_pct": 2.14,
+  "pnl_per_calendar_day": 21.6,
+  "exit_mix": {
+    "take_profit": 51,
+    "time_stop": 54,
+    "stop_loss": 2
+  },
+  "by_kind": {
+    "put": {
+      "n": 90,
+      "pnl": 6344.0
+    },
+    "call": {
+      "n": 17,
+      "pnl": 1615.0
+    }
+  },
+  "params": {
+    "risk_budget": 2000.0,
+    "exposure_pct": 0.35,
+    "tp_frac": 0.5,
+    "sl_mult": 2.0,
+    "time_stop_dte": 21,
+    "max_positions": 6,
+    "regime_mode": "ema"
+  }
+}

@@ -47,6 +47,8 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
+from ensure_runtime_outputs import EXIT_ORDER_COLUMNS, ORDER_COLUMNS, ensure_csv
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -398,6 +400,12 @@ def generate_signal(
         signal = "buy"
         signal_type = "pivot_ghost_support_bounce" if structure["missed_lows"] else "pivot_support_bounce"
 
+    # ── Support / resistance strength metrics ────────────────────────────────
+    # Strength = number of distinct levels in that direction, normalized to [0,1].
+    # More levels = denser zone = stronger confluence, harder to break.
+    support_strength = min(1.0, len(supports_below) / max(len(supports), 1))
+    resistance_strength = min(1.0, len(resistances_above) / max(len(resistances), 1))
+
     return {
         "symbol": symbol,
         "signal": signal,
@@ -417,6 +425,11 @@ def generate_signal(
         "is_near_support": is_near_support,
         "is_near_resistance": is_near_resistance,
         "is_bouncing": is_bouncing,
+        # Strength metrics — consumed by RL observations
+        "support_strength": round(support_strength, 4),
+        "resistance_strength": round(resistance_strength, 4),
+        "support_level_count": len(supports_below),
+        "resistance_level_count": len(resistances_above),
         "momentum_positive": momentum_positive,
         "vol_expansion": vol_expansion,
         "support_levels_count": len(supports_below),
@@ -443,7 +456,8 @@ def fetch_daily_bars(symbol: str, lookback_days: int = PIVOT_LOOKBACK_DAYS) -> p
     try:
         end = datetime.now(ET)
         start = end - timedelta(days=lookback_days)
-        ticker = yf.Ticker(symbol)
+        from symbol_utils import normalize_for_yfinance
+        ticker = yf.Ticker(normalize_for_yfinance(symbol))   # BRK.B → BRK-B for Yahoo
         df = ticker.history(
             start=start.strftime("%Y-%m-%d"),
             end=end.strftime("%Y-%m-%d"),
@@ -556,6 +570,148 @@ def build_orders(
 # Main
 # ===========================================================================
 
+# =============================================================================
+# RL-facing streaming API (used by rl_intraday_structure_trainer.py)
+# =============================================================================
+
+from dataclasses import dataclass as _dataclass, field as _field
+
+
+@_dataclass
+class PivotBarLabel:
+    """
+    Labels produced by PivotReversalScanner.push() for a single bar.
+    All fields are used by the RL environment's bar-dict builder.
+    """
+    nearest_support:              float | None = None
+    nearest_resistance:           float | None = None
+    support_strength:             float        = 0.0
+    resistance_strength:          float        = 0.0
+    # Binary flags for reward shaping and obs features
+    liquidity_sweep_detected:     int          = 0
+    support_touch:                int          = 0
+    pivot_low_reclaim:            int          = 0
+    support_break_failed:         int          = 0
+    missed_reversal_level_reclaim:int          = 0
+    breakout_retest:              int          = 0   # price retesting a broken resistance level
+
+
+class PivotReversalScanner:
+    """
+    Streaming pivot-level scanner for RL environments.
+
+    Call push(bar_dict) on every incoming 1m bar.  Returns a PivotBarLabel
+    with the current nearest support/resistance and detected pattern flags.
+    The scanner maintains a rolling window of recent bars and derives levels
+    from them, mirroring compute_pivot_structure() but in incremental form.
+    """
+
+    def __init__(
+        self,
+        symbol: str = "",
+        pivot_length: int = PIVOT_LENGTH,
+        support_zone_pct: float = PIVOT_SUPPORT_ZONE_PCT,
+        window: int = 200,
+    ):
+        self.symbol = symbol
+        self.pivot_length = pivot_length
+        self.support_zone_pct = support_zone_pct
+        self.window = window
+        self._bars: list[dict] = []   # rolling buffer
+        self._prev_low: float | None = None
+
+    def push(self, bar: dict) -> PivotBarLabel:
+        """
+        Ingest one bar and return a PivotBarLabel.
+        bar must have keys: open, high, low, close, volume.
+        """
+        self._bars.append(bar)
+        if len(self._bars) > self.window:
+            self._bars.pop(0)
+
+        price = float(bar.get("close", 0.0))
+        low   = float(bar.get("low",   price))
+        high  = float(bar.get("high",  price))
+
+        if len(self._bars) < max(self.pivot_length * 2 + 1, 5):
+            lbl = PivotBarLabel(nearest_support=price * 0.99, nearest_resistance=price * 1.01)
+            self._prev_low = low
+            return lbl
+
+        highs = np.array([float(b.get("high",  float(b.get("close", 0)))) for b in self._bars])
+        lows  = np.array([float(b.get("low",   float(b.get("close", 0)))) for b in self._bars])
+
+        structure = compute_pivot_structure(highs, lows, self.pivot_length)
+
+        supports = sorted(
+            set([p for _, p in structure["regular_lows"]] + [p for _, p in structure["missed_lows"]]),
+            reverse=True,
+        )
+        resistances = sorted(
+            set([p for _, p in structure["regular_highs"]] + [p for _, p in structure["missed_highs"]])
+        )
+
+        supports_below = [s for s in supports if s < price * 1.005]
+        resistances_above = [r for r in resistances if r > price * 0.995]
+
+        nearest_sup = supports_below[0] if supports_below else price * 0.99
+        nearest_res = resistances_above[0] if resistances_above else price * 1.01
+
+        dist_to_sup = (price - nearest_sup) / max(nearest_sup, 1e-9)
+
+        # Pattern flags
+        prev_low = self._prev_low if self._prev_low is not None else low
+        support_touch         = int(dist_to_sup <= self.support_zone_pct)
+        liquidity_sweep       = int(low < nearest_sup and float(bar.get("close", price)) > nearest_sup)
+        pivot_low_reclaim     = int(low < nearest_sup * 0.998 and float(bar.get("close", price)) >= nearest_sup)
+        support_break_failed  = int(low < nearest_sup and float(bar.get("close", price)) > nearest_sup and high > prev_low)
+        missed_rev_reclaim    = int(len(structure["missed_lows"]) > 0 and support_touch)
+
+        sup_strength = min(1.0, len(supports_below) / max(len(supports), 1))
+        res_strength = min(1.0, len(resistances_above) / max(len(resistances), 1))
+
+        self._prev_low = low
+
+        # Breakout retest: prior resistance now acting as support — bullish continuation
+        breakout_retest = int(
+            len(structure["regular_highs"]) > 0
+            and abs(price - nearest_res) / max(nearest_res, 1e-9) <= self.support_zone_pct * 0.5
+            and float(bar.get("close", price)) >= nearest_res * 0.998
+        )
+
+        return PivotBarLabel(
+            nearest_support               = nearest_sup,
+            nearest_resistance            = nearest_res,
+            support_strength              = sup_strength,
+            resistance_strength           = res_strength,
+            liquidity_sweep_detected      = liquidity_sweep,
+            support_touch                 = support_touch,
+            pivot_low_reclaim             = pivot_low_reclaim,
+            support_break_failed          = support_break_failed,
+            missed_reversal_level_reclaim = missed_rev_reclaim,
+            breakout_retest               = breakout_retest,
+        )
+
+
+def enrich_bar_from_label(bar: dict, lbl: PivotBarLabel) -> dict:
+    """
+    Merge PivotBarLabel fields into a bar dict in-place.
+    Used by rl_intraday_structure_trainer to build the full observation.
+    """
+    bar["nearest_support"]              = lbl.nearest_support
+    bar["nearest_resistance"]           = lbl.nearest_resistance
+    bar["support_strength"]             = lbl.support_strength
+    bar["resistance_strength"]          = lbl.resistance_strength
+    bar["liquidity_sweep_detected"]     = lbl.liquidity_sweep_detected
+    bar["support_touch"]                = lbl.support_touch
+    bar["pivot_low_reclaim"]            = lbl.pivot_low_reclaim
+    bar["support_break_failed"]         = lbl.support_break_failed
+    bar["missed_reversal_level_reclaim"]= lbl.missed_reversal_level_reclaim
+    bar["breakout_retest"]              = lbl.breakout_retest
+    return bar
+
+
+# =============================================================================
 def main() -> dict[str, Any]:
     ts = datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S %Z")
     print("=" * 70)
@@ -577,8 +733,8 @@ def main() -> dict[str, Any]:
             "sell_count": 0,
         }
         OUTPUT_SUMMARY.write_text(json.dumps(summary, indent=2))
-        pd.DataFrame().to_csv(OUTPUT_REBALANCE, index=False)
-        pd.DataFrame().to_csv(OUTPUT_EXITS, index=False)
+        ensure_csv(OUTPUT_REBALANCE, ORDER_COLUMNS)
+        ensure_csv(OUTPUT_EXITS, EXIT_ORDER_COLUMNS)
         return summary
 
     # 1. Screen universe via TradingView
@@ -668,8 +824,14 @@ def main() -> dict[str, Any]:
     buy_df, sell_df = build_orders(signals)
 
     # 4. Write outputs
-    buy_df.to_csv(OUTPUT_REBALANCE, index=False)
-    sell_df.to_csv(OUTPUT_EXITS, index=False)
+    if buy_df.empty and len(buy_df.columns) == 0:
+        ensure_csv(OUTPUT_REBALANCE, ORDER_COLUMNS)
+    else:
+        buy_df.to_csv(OUTPUT_REBALANCE, index=False)
+    if sell_df.empty and len(sell_df.columns) == 0:
+        ensure_csv(OUTPUT_EXITS, EXIT_ORDER_COLUMNS)
+    else:
+        sell_df.to_csv(OUTPUT_EXITS, index=False)
 
     buy_symbols = buy_df["symbol"].tolist() if not buy_df.empty else []
     sell_symbols = sell_df["symbol"].tolist() if not sell_df.empty else []

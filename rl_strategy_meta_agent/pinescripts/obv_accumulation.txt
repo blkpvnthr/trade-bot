@@ -1,0 +1,12 @@
+//@version=5
+// family: flow
+strategy("OBV Accumulation", overlay=false, initial_capital=10000)
+
+// On-balance-volume accumulation: cumulative flow rising over multiple lookbacks.
+obv = ta.obv
+obvRising = obv > obv[5] and obv[5] > obv[10]
+
+if obvRising and close > close[1]
+    strategy.entry("Long", strategy.long)
+if obv < obv[5]
+    strategy.close("Long")

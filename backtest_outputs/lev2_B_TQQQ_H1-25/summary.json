@@ -1,0 +1,27 @@
+{
+  "run_tag": "lev2_B_TQQQ_H1-25",
+  "universe": [
+    "TQQQ"
+  ],
+  "window": "2025-01-01..2025-07-01",
+  "start_equity": 100000.0,
+  "final_equity": 109718.29,
+  "total_pnl": 9718.29,
+  "return_pct": 9.72,
+  "closed_trades": 3,
+  "win_rate": 33.3,
+  "max_drawdown_pct": 32.61,
+  "by_kind": {
+    "shares": {
+      "n": 3,
+      "pnl": 9718.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": 15.2,
+    "sharpe": 0.55,
+    "sortino": 0.65,
+    "ulcer": 18.96,
+    "worst_month_pct": -11.2
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "run_tag": "alpha_20260603_20260604_100000",
+  "window": "2026-06-03..2026-06-04",
+  "symbols": [
+    "SPY",
+    "NVDA"
+  ],
+  "start_equity": 100000.0,
+  "final_equity": 100004.67,
+  "total_realized_pnl": 4.67,
+  "return_pct": 0.005,
+  "trading_days": 2,
+  "avg_realized_pnl_per_day": 2.34,
+  "entries_filled": 2,
+  "exits_filled": 2,
+  "wins": 1,
+  "losses": 1,
+  "win_rate_pct": 50.0,
+  "avg_win": 25.4,
+  "avg_loss": -20.73,
+  "max_drawdown_pct": 0.083,
+  "open_positions_remaining": 0,
+  "assumptions": [
+    "Underlying: REAL Alpaca historical 1-minute bars (RTH).",
+    "Option prices: synthesized via engine's black_scholes_call; IV = 20d trailing realized vol.",
+    "Fills: entries at modeled ask (2.4% spread), exits at modeled mid \u2014 orders ALWAYS fill.",
+    "No real NBBO/L2 liquidity, no commissions, no early assignment, no IV smile/skew.",
+    "Engine risk + exit logic run unchanged; CLAUDE.md backstops gate new entries."
+  ]
+}

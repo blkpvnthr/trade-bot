@@ -1,0 +1,12 @@
+//@version=5
+// family: flow
+strategy("Money Flow Index Surge", overlay=false, initial_capital=10000)
+
+// Volume-weighted money flow crossing up through the midline with rising volume.
+length = input.int(14, "MFI Length")
+m = ta.mfi(hlc3, length)
+
+if ta.crossover(m, 50) and volume > volume[1]
+    strategy.entry("Long", strategy.long)
+if ta.crossunder(m, 50)
+    strategy.close("Long")

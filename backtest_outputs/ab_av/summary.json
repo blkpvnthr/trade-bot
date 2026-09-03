@@ -1,0 +1,36 @@
+{
+  "run_tag": "ab_av",
+  "window": "2026-06-02..2026-06-04",
+  "symbols": [
+    "AAPL",
+    "NVDA",
+    "MSFT"
+  ],
+  "start_equity": 100000.0,
+  "final_equity": 100177.33,
+  "total_realized_pnl": 177.33,
+  "return_pct": 0.177,
+  "trading_days": 3,
+  "avg_realized_pnl_per_day": 59.11,
+  "entries_filled": 2,
+  "exits_filled": 2,
+  "wins": 2,
+  "losses": 0,
+  "win_rate_pct": 100.0,
+  "avg_win": 88.66,
+  "avg_loss": 0.0,
+  "max_drawdown_pct": 0.172,
+  "open_positions_remaining": 0,
+  "costs_enabled": false,
+  "fees_paid": 0.0,
+  "commission_per_contract": 0.0,
+  "slippage_pct": 0.0,
+  "chain_source": "alpha_vantage_historical",
+  "assumptions": [
+    "Underlying: REAL Alpaca historical 1-minute bars (RTH).",
+    "Option chains: REAL Alpha Vantage HISTORICAL_OPTIONS (greeks+IV) as-of each date.",
+    "Fills: entries at modeled ask (2.4% spread), exits at modeled mid \u2014 orders ALWAYS fill.",
+    "No real NBBO/L2 liquidity, no commissions, no early assignment, no IV smile/skew.",
+    "Engine risk + exit logic run unchanged; CLAUDE.md backstops gate new entries."
+  ]
+}

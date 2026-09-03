@@ -1,0 +1,40 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Trade Journal</title>
+<style>
+*{box-sizing:border-box} body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#0f1116;color:#e6e6e6}
+.wrap{max-width:1200px;margin:0 auto;padding:24px}
+h1{font-size:22px;margin:0 0 4px} .meta{color:#9aa;font-size:13px;margin-bottom:18px}
+.badge{padding:2px 8px;border-radius:4px;font-weight:700;font-size:12px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:20px}
+.card{background:#1a1d26;border:1px solid #262a36;border-radius:8px;padding:12px}
+.lbl{color:#8a90a0;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+.val{font-size:20px;font-weight:700;margin-top:4px}
+.pos{color:#3fb950} .neg{color:#f85149}
+.chart{background:#1a1d26;border:1px solid #262a36;border-radius:8px;padding:12px;margin-bottom:20px}
+table{width:100%;border-collapse:collapse;font-size:13px;background:#1a1d26;border-radius:8px;overflow:hidden}
+th,td{padding:7px 10px;text-align:left;border-bottom:1px solid #20242f}
+th{background:#20242f;color:#aab;font-size:11px;text-transform:uppercase;cursor:pointer;user-select:none}
+td.num{text-align:right;font-variant-numeric:tabular-nums} td.sym{font-family:ui-monospace,monospace;font-size:12px}
+tr:hover td{background:#20242f} h2{font-size:15px;margin:24px 0 8px}
+.two{display:grid;grid-template-columns:1fr 320px;gap:20px;align-items:start}
+@media(max-width:800px){.two{grid-template-columns:1fr}}
+</style></head><body><div class="wrap">
+<h1>Trade Journal <span class="badge pos">PAPER</span></h1>
+<div class="meta">Account PA3P12BM90RF · 0 round trips · generated 2026-06-08 11:14:26 · round trips FIFO-matched from Alpaca fills</div>
+<div class="cards"><div class="card"><div class="lbl">Round trips</div><div class="val ">0</div></div><div class="card"><div class="lbl">Realized P&L</div><div class="val pos">$0</div></div><div class="card"><div class="lbl">Win rate</div><div class="val ">0%</div></div><div class="card"><div class="lbl">Profit factor</div><div class="val pos">∞</div></div><div class="card"><div class="lbl">Avg win</div><div class="val pos">$0</div></div><div class="card"><div class="lbl">Avg loss</div><div class="val neg">$0</div></div><div class="card"><div class="lbl">Avg hold</div><div class="val ">0.0h</div></div><div class="card"><div class="lbl">Best</div><div class="val pos">—</div></div><div class="card"><div class="lbl">Worst</div><div class="val neg">—</div></div></div>
+<div class="chart"><p>No trades.</p></div>
+<div class="two">
+<div><h2>Round trips</h2><table id="t"><thead><tr>
+<th>#</th><th>Symbol</th><th>Type</th><th>Qty</th><th>Entry</th><th>In $</th><th>Exit</th><th>Out $</th><th>Hold</th><th>P&amp;L</th><th>Ret</th>
+</tr></thead><tbody></tbody></table></div>
+<div><h2>By symbol</h2><table><thead><tr><th>Symbol</th><th>Trips</th><th>P&amp;L</th></tr></thead><tbody></tbody></table></div>
+</div>
+<script>
+document.querySelectorAll('#t th').forEach((h,i)=>h.onclick=()=>{
+ const tb=document.querySelector('#t tbody'),rows=[...tb.rows];
+ const num=v=>parseFloat(v.replace(/[$,%h]/g,''))||v;
+ const asc=h.dataset.a=h.dataset.a?'':'1';
+ rows.sort((a,b)=>{let x=num(a.cells[i].innerText),y=num(b.cells[i].innerText);
+  return (x>y?1:x<y?-1:0)*(asc?1:-1);});
+ rows.forEach(r=>tb.appendChild(r));});
+</script>
+</div></body></html>

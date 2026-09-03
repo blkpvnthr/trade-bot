@@ -1,0 +1,13 @@
+[Unit]
+Description=Intraday Reversal Engine — afternoon scan (after 1:30 PM ET, toward-PDH candidates)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Adjust WorkingDirectory / User / venv path / EnvironmentFile to your host.
+WorkingDirectory=/root/trade-bot-instance2
+EnvironmentFile=-/root/trade-bot-instance2/.env
+# The runner self-gates to the [START_ET, ENTRY_CUTOFF_ET) window and runs at most
+# once per day (marker under logs/intraday_reversal/), so the timer can fire loosely.
+# Output is dry-run; live routing is the caller's job through run.AlpacaGateway.
+ExecStart=/root/trade-bot-instance2/.venv/bin/python intraday_reversal_engine.py --scan

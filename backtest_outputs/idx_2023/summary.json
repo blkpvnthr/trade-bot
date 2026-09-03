@@ -1,0 +1,51 @@
+{
+  "run_tag": "idx_2023",
+  "mode": "FIXED",
+  "universe": [
+    "QQQ",
+    "SPY",
+    "IWM"
+  ],
+  "start_equity": 100000.0,
+  "final_equity": 94869.4,
+  "total_pnl": -5130.6,
+  "return_pct": -5.13,
+  "closed_trades": 68,
+  "win_rate": 63.2,
+  "expectancy": -75.5,
+  "avg_win": 140.7,
+  "avg_loss": -447.2,
+  "worst": -851.9,
+  "max_drawdown_pct": 7.69,
+  "regime_entry_days": {
+    "bull": 45,
+    "bear": 3,
+    "cash": 5
+  },
+  "peak_concurrent_risk": 5554.0,
+  "pnl_per_calendar_day": -12.4,
+  "exit_mix": {
+    "time_stop": 35,
+    "stop_loss": 9,
+    "take_profit": 24
+  },
+  "by_kind": {
+    "call": {
+      "n": 3,
+      "pnl": -1470.0
+    },
+    "put": {
+      "n": 65,
+      "pnl": -3661.0
+    }
+  },
+  "params": {
+    "risk_budget": 2000.0,
+    "exposure_pct": 0.35,
+    "tp_frac": 0.5,
+    "sl_mult": 2.0,
+    "time_stop_dte": 21,
+    "max_positions": 6,
+    "regime_mode": "trend200"
+  }
+}

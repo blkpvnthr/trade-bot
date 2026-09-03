@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 import yfinance as yf
+from symbol_utils import normalize_for_yfinance
 from config.env_loader import load_instance_env
 from openai import OpenAI
 
@@ -66,7 +67,7 @@ OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MARKET_CONTEXT_MAX_RETRIES", "1"))
 MARKET_CONTEXT_DISABLE_OPENAI = os.getenv("MARKET_CONTEXT_DISABLE_OPENAI", "0").lower() in {"1", "true", "yes"}
 MARKET_CONTEXT_FAIL_OPENAI_CLOSED = os.getenv("MARKET_CONTEXT_FAIL_OPENAI_CLOSED", "0").lower() in {"1", "true", "yes"}
 SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
-ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower().strip()
+ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "sip").lower().strip()
 ALPACA_OPTIONS_MAX_CHAIN_CONTRACTS = int(os.getenv("ALPACA_OPTIONS_MAX_CHAIN_CONTRACTS", "800"))
 ALPACA_OPTIONS_MIN_DTE = int(os.getenv("ALPACA_OPTIONS_MIN_DTE", "7"))
 ALPACA_OPTIONS_MAX_DTE = int(os.getenv("ALPACA_OPTIONS_MAX_DTE", "45"))
@@ -376,7 +377,7 @@ def previous_session_levels_yfinance() -> dict[str, Any]:
 
     for symbol in INDEX_SYMBOLS:
         try:
-            hist = yf.Ticker(symbol).history(period="10d", interval="1d")
+            hist = yf.Ticker(normalize_for_yfinance(symbol)).history(period="10d", interval="1d")
             if hist.empty:
                 continue
 
@@ -449,7 +450,7 @@ def get_etf_snapshot(symbols: list[str], period: str = "15d") -> dict[str, Any]:
 
     for symbol in symbols:
         try:
-            hist = yf.Ticker(symbol).history(period=period, interval="1d")
+            hist = yf.Ticker(normalize_for_yfinance(symbol)).history(period=period, interval="1d")
 
             if hist.empty or len(hist) < 2:
                 out[symbol] = {"error": "insufficient_data"}
@@ -932,6 +933,12 @@ Required schema:
   "risk_level": "low | medium | high",
   "summary": "brief summary",
   "decision_reasons": ["reason 1", "reason 2"],
+  "rate_direction": "cutting | pausing | holding | hiking | tightening",
+  "inflation_trend": "falling | cooling | stable | rising | hot",
+  "recession_risk": "low | medium | elevated | high",
+  "fomc_stance": "dovish | neutral | hawkish",
+  "tariff_risk": "low | medium | elevated | high",
+  "cycle_phase": "early_recovery | expansion | mid_cycle | late_expansion | late_cycle | recession",
   "event_evidence": {{
     "fed_events_today": [],
     "jobs_report_today": [],
@@ -988,6 +995,14 @@ Market interpretation rules:
 - If SPY/QQQ are weak, VXX is rising, and futures are negative, use halt_new_buys.
 - If sector rotation is risk_on_growth, SPY/QQQ are constructive, and no major macro event is confirmed, normal is allowed.
 - If risk is unclear, trade_permission should be cautious.
+
+Macro field rules (REQUIRED — must never be null):
+- rate_direction: infer from recent Fed statements and TLT/rate moves. Default "pausing" when unclear.
+- inflation_trend: infer from recent CPI/PCE data or news context. Default "stable" when unclear.
+- recession_risk: infer from labor market, GDP trend, yield curve. Default "low" when unclear.
+- fomc_stance: infer from recent Fed language and rate action. Default "neutral" when unclear.
+- tariff_risk: infer from trade policy news. Default "low" when unclear.
+- cycle_phase: infer from growth/employment/market trend. Use "mid_cycle" when unclear.
 
 Raw context:
 {json.dumps(safe_json(raw_context), separators=(",", ":"))}
@@ -1105,6 +1120,13 @@ def fallback_classification(raw_context: dict[str, Any], reason: str) -> dict[st
             "scheduled_market_events_today": [],
             "earnings_today": [],
         },
+        # Macro defaults for BAL scoring when LLM is unavailable
+        "rate_direction": "pausing",
+        "inflation_trend": "stable",
+        "recession_risk": "low",
+        "fomc_stance": "neutral",
+        "tariff_risk": "low",
+        "cycle_phase": "mid_cycle",
     }
 
 
@@ -1112,7 +1134,25 @@ def fallback_classification(raw_context: dict[str, Any], reason: str) -> dict[st
 # Main
 # =============================================================================
 
-def build_market_context() -> dict[str, Any]:
+def build_market_context(premarket_snapshot: dict | None = None) -> dict[str, Any]:
+    """Build the market context. `premarket_snapshot` (optional, from PremarketLiveFeed)
+    adds a premarket-awareness summary block; it never changes regime/permission gates."""
+    ctx = _build_market_context_impl()
+    try:
+        if isinstance(ctx, dict):
+            quotes = (premarket_snapshot or {}).get("quotes") or {}
+            ctx["premarket_live"] = {
+                "available": bool(quotes),
+                "fallback_used": bool((premarket_snapshot or {}).get("fallback_used")),
+                "symbols_tracked": len(quotes),
+                "stale_symbols": (premarket_snapshot or {}).get("stale_symbols", []),
+            }
+    except Exception:
+        pass
+    return ctx
+
+
+def _build_market_context_impl() -> dict[str, Any]:
     symbols = load_universe()
 
     raw_context = {
@@ -1157,6 +1197,13 @@ def build_market_context() -> dict[str, Any]:
         "sector_context_summary": classification.get("sector_context_summary", {}),
         "key_etf_context_summary": classification.get("key_etf_context_summary", {}),
         "news_context_summary": classification.get("news_context_summary", {}),
+        # Macro fields for BAL composite scoring (rate/inflation/cycle context)
+        "rate_direction": classification.get("rate_direction") or "pausing",
+        "inflation_trend": classification.get("inflation_trend") or "stable",
+        "recession_risk": classification.get("recession_risk") or "low",
+        "fomc_stance": classification.get("fomc_stance") or "neutral",
+        "tariff_risk": classification.get("tariff_risk") or "low",
+        "cycle_phase": classification.get("cycle_phase") or "mid_cycle",
         "classifier_model": OPENAI_MODEL,
     }
 

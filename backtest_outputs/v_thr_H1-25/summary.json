@@ -1,0 +1,47 @@
+{
+  "run_tag": "v_thr_H1-25",
+  "mode": "FIXED",
+  "universe": [
+    "QQQ",
+    "SPY",
+    "IWM"
+  ],
+  "window": "2025-01-01..2025-07-01",
+  "start_equity": 100000.0,
+  "final_equity": 97750.48,
+  "total_pnl": -2249.52,
+  "return_pct": -2.25,
+  "closed_trades": 16,
+  "win_rate": 25.0,
+  "expectancy": -140.6,
+  "worst": -1357.2,
+  "max_drawdown_pct": 11.62,
+  "pnl_per_day": -9.4,
+  "by_kind": {
+    "long_put": {
+      "n": 6,
+      "pnl": 3188.0
+    },
+    "long_call": {
+      "n": 10,
+      "pnl": -5437.0
+    }
+  },
+  "exit_mix": {
+    "time_stop": 10,
+    "vol_reversal": 6
+  },
+  "regime_entry_days": {
+    "bull": 16,
+    "bear": 8,
+    "cash": 2
+  },
+  "size_mult": 0.75,
+  "metrics": {
+    "cagr_pct": -3.4,
+    "sharpe": -0.13,
+    "sortino": -0.14,
+    "ulcer": 8.45,
+    "worst_month_pct": -3.4
+  }
+}

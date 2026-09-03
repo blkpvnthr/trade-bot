@@ -1,0 +1,29 @@
+{
+  "run_tag": "lev2_A_QQQ_2018",
+  "universe": [
+    "QQQ",
+    "SPY",
+    "IWM"
+  ],
+  "window": "2018-01-01..2019-01-01",
+  "start_equity": 100000.0,
+  "final_equity": 101404.75,
+  "total_pnl": 1404.75,
+  "return_pct": 1.4,
+  "closed_trades": 9,
+  "win_rate": 33.3,
+  "max_drawdown_pct": 9.73,
+  "by_kind": {
+    "shares": {
+      "n": 9,
+      "pnl": 1405.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": 1.2,
+    "sharpe": 0.16,
+    "sortino": 0.15,
+    "ulcer": 6.04,
+    "worst_month_pct": -8.1
+  }
+}

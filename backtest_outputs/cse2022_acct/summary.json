@@ -1,0 +1,47 @@
+{
+  "run_tag": "cse2022_acct",
+  "mode": "LIVE",
+  "universe": [
+    "NVDA",
+    "QQQ",
+    "GOOGL",
+    "SPY",
+    "TSLA",
+    "IWM"
+  ],
+  "start_equity": 6260.63,
+  "final_equity": 3669.0,
+  "total_pnl": -2591.63,
+  "return_pct": -41.4,
+  "closed_trades": 27,
+  "win_rate": 37.0,
+  "expectancy": -96.0,
+  "avg_win": 77.5,
+  "avg_loss": -198.1,
+  "worst": -606.1,
+  "max_drawdown_pct": 41.4,
+  "pnl_per_calendar_day": -6.2,
+  "exit_mix": {
+    "time_stop": 15,
+    "take_profit": 7,
+    "stop_loss": 5
+  },
+  "by_kind": {
+    "call": {
+      "n": 9,
+      "pnl": -422.0
+    },
+    "put": {
+      "n": 18,
+      "pnl": -2170.0
+    }
+  },
+  "params": {
+    "risk_budget": 1000.0,
+    "exposure_pct": 0.35,
+    "tp_frac": 0.5,
+    "sl_mult": 2.0,
+    "time_stop_dte": 21,
+    "max_positions": 6
+  }
+}

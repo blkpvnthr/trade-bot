@@ -1,0 +1,41 @@
+{
+  "run_tag": "dvet_2526",
+  "mode": "FIXED",
+  "universe": [
+    "QQQ",
+    "SPY",
+    "IWM"
+  ],
+  "window": "2025-06-02..2026-04-27",
+  "start_equity": 100000.0,
+  "final_equity": 104956.73,
+  "total_pnl": 4956.73,
+  "return_pct": 4.96,
+  "closed_trades": 97,
+  "win_rate": 36.1,
+  "expectancy": 51.1,
+  "worst": -1176.7,
+  "max_drawdown_pct": 11.51,
+  "pnl_per_day": 13.5,
+  "by_kind": {
+    "long_call": {
+      "n": 95,
+      "pnl": 6497.0
+    },
+    "long_put": {
+      "n": 2,
+      "pnl": -1540.0
+    }
+  },
+  "exit_mix": {
+    "below_5ema": 82,
+    "time_stop": 3,
+    "above_5ema": 1,
+    "vol_reversal": 11
+  },
+  "regime_entry_days": {
+    "bull": 44,
+    "bear": 1,
+    "cash": 3
+  }
+}

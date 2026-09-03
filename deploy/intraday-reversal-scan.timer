@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the intraday reversal scan just after 1:30 PM ET on weekdays
+
+[Timer]
+# Fires a few times each afternoon; the runner gates to >= START_ET (default 13:30 ET)
+# and de-dupes via a once-a-day marker, so multiple firings are harmless. The
+# "America/New_York" suffix requires systemd >= v252; on older systemd set the host
+# TZ to ET or convert these to UTC.
+OnCalendar=Mon-Fri 13:35,14:30,15:30 America/New_York
+Persistent=true
+Unit=intraday-reversal-scan.service
+
+[Install]
+WantedBy=timers.target

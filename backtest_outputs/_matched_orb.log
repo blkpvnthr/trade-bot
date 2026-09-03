@@ -1,0 +1,34 @@
+Matched-horizon ORB test (real Alpaca option bars, 2024+, max 250)...
+# Matched-Horizon ORB Test — ATM baseline vs Sweep-Reclaim ORB (real intraday option bars)
+
+THE last fair ORB test: an intraday-structure entry deserves a SHORT exit, not a 10-day swing. REAL Alpaca 5-min OPTION bars (2024+). Baseline enters the ATM call at 09:45 ET; Sweep-Reclaim at the engulf-candle close on pattern days. Same liquid names, ATM δ0.45-0.65, spread≤10%, ASK in / BID out (½ real spread) + $0.65/side. Exit = close at the horizon.
+
+## Exit horizon: same-day
+
+| Arm | n | Mean | Median | Sharpe | Win% | MaxDD | avg MAE | avg MFE |
+|---|---|---|---|---|---|---|---|---|
+| **ATM baseline (09:45)** | 132 | -1.4% | **-4.4%** | -0.056 | 39% | -56% | -14% | +15% |
+| **Sweep-Reclaim ORB** | 27 | -3.9% | **-2.2%** | -0.365 | 33% | -21% | -11% | +8% |
+
+## Exit horizon: 1-day
+
+| Arm | n | Mean | Median | Sharpe | Win% | MaxDD | avg MAE | avg MFE |
+|---|---|---|---|---|---|---|---|---|
+| **ATM baseline (09:45)** | 128 | +0.3% | **-6.4%** | +0.008 | 42% | -57% | -23% | +30% |
+| **Sweep-Reclaim ORB** | 27 | -12.4% | **-6.8%** | -0.430 | 30% | -52% | -24% | +17% |
+
+## Exit horizon: 2-day
+
+| Arm | n | Mean | Median | Sharpe | Win% | MaxDD | avg MAE | avg MFE |
+|---|---|---|---|---|---|---|---|---|
+| **ATM baseline (09:45)** | 130 | +2.8% | **-4.1%** | +0.051 | 45% | -81% | -28% | +40% |
+| **Sweep-Reclaim ORB** | 27 | +3.2% | **-5.8%** | +0.050 | 48% | -46% | -32% | +40% |
+
+## Exit horizon: 3-day
+
+| Arm | n | Mean | Median | Sharpe | Win% | MaxDD | avg MAE | avg MFE |
+|---|---|---|---|---|---|---|---|---|
+| **ATM baseline (09:45)** | 131 | +0.6% | **-10.4%** | +0.010 | 46% | -86% | -33% | +47% |
+| **Sweep-Reclaim ORB** | 27 | -2.6% | **+1.1%** | -0.048 | 52% | -56% | -35% | +41% |
+
+_If Sweep-Reclaim beats the baseline at SHORT horizons (median+win+Sharpe), the pattern is alive (intraday entry needs intraday exit). If it loses at every horizon → archive ORB research._

@@ -1,0 +1,15 @@
+//@version=5
+// family: mean_reversion
+strategy("RSI Mean Reversion", overlay=false, initial_capital=10000)
+
+length = input.int(14, "RSI Length")
+lower = input.int(30, "Oversold")
+upper = input.int(55, "Exit / Midline")
+
+r = ta.rsi(close, length)
+
+// Buy the reclaim off oversold; exit back at the midline.
+if ta.crossover(r, lower)
+    strategy.entry("Long", strategy.long)
+if r >= upper
+    strategy.close("Long")

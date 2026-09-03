@@ -55,13 +55,14 @@ FEATURE_STREAM_JSONL_PATH = FEATURE_STREAM_DIR / f"{TODAY_TAG}_intraday_feature_
 LOOKBACK_DAYS = int(os.getenv("RL_INTRADAY_LOOKBACK_DAYS", "30"))
 # Must match ALPACA_REGULAR_FEED in premarket_trade_planner.py so RL training
 # uses the same data feed as live execution.
-ALPACA_REGULAR_FEED = os.getenv("ALPACA_REGULAR_FEED", "iex").lower().strip()
+ALPACA_REGULAR_FEED = os.getenv("ALPACA_REGULAR_FEED", "sip").lower().strip()
 ALPACA_FAIL_ON_FEED_ERROR = os.getenv("ALPACA_FAIL_ON_FEED_ERROR", "0").lower() in {"1", "true", "yes"}
 # Legacy alias — if set, overrides ALPACA_REGULAR_FEED.
 _LEGACY_FEED = os.getenv("ALPACA_DATA_FEED", "").lower().strip()
 if _LEGACY_FEED:
     ALPACA_REGULAR_FEED = _LEGACY_FEED
 ALPACA_CHUNK_SIZE = int(os.getenv("ALPACA_CHUNK_SIZE", "25"))
+INTRADAY_USE_STALE_ON_ALPACA_FAILURE = os.getenv("INTRADAY_USE_STALE_ON_ALPACA_FAILURE", "1").lower() in {"1", "true", "yes"}
 
 MIN_ROWS_PER_SYMBOL = int(os.getenv("INTRADAY_MIN_ROWS_PER_SYMBOL", "120"))
 FEATURE_STREAM_BARS_PER_SYMBOL = int(os.getenv("FEATURE_STREAM_BARS_PER_SYMBOL", "30"))
@@ -271,6 +272,50 @@ def fetch_intraday_bars(symbols: list[str]) -> pd.DataFrame:
     df = df.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
 
     return df
+
+
+def load_existing_raw_bars(symbols: list[str]) -> pd.DataFrame:
+    """Fallback to the last local raw-bar artifact when Alpaca is temporarily unavailable."""
+    if not INTRADAY_USE_STALE_ON_ALPACA_FAILURE or not RAW_OUTPUT_PATH.exists():
+        return pd.DataFrame()
+
+    required = ["timestamp", "symbol", "open", "high", "low", "close", "volume"]
+    try:
+        raw = pd.read_csv(RAW_OUTPUT_PATH)
+    except Exception as exc:
+        print(f"[dataset] stale raw fallback unavailable: failed to read {RAW_OUTPUT_PATH}: {exc}")
+        return pd.DataFrame()
+
+    missing = sorted(set(required) - set(raw.columns))
+    if missing:
+        print(f"[dataset] stale raw fallback unavailable: missing columns={missing}")
+        return pd.DataFrame()
+
+    raw = raw[required].copy()
+    raw["timestamp"] = pd.to_datetime(raw["timestamp"], utc=True, errors="coerce")
+    raw["symbol"] = raw["symbol"].map(normalize_symbol)
+    wanted = {normalize_symbol(s) for s in symbols if normalize_symbol(s)}
+    if wanted:
+        raw = raw[raw["symbol"].isin(wanted)].copy()
+    for col in ["open", "high", "low", "close", "volume"]:
+        raw[col] = pd.to_numeric(raw[col], errors="coerce")
+    raw = raw.dropna(subset=["timestamp", "symbol", "open", "high", "low", "close"])
+    raw["volume"] = raw["volume"].fillna(0)
+    raw = raw.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+
+    enough = raw.groupby("symbol").size()
+    usable_symbols = sorted(enough[enough >= MIN_ROWS_PER_SYMBOL].index.tolist())
+    if not usable_symbols:
+        print("[dataset] stale raw fallback unavailable: no symbols have enough rows")
+        return pd.DataFrame()
+
+    raw = raw[raw["symbol"].isin(usable_symbols)].copy()
+    age_minutes = (datetime.now(timezone.utc).timestamp() - RAW_OUTPUT_PATH.stat().st_mtime) / 60.0
+    print(
+        "[dataset] using stale local raw bars after Alpaca failure "
+        f"path={RAW_OUTPUT_PATH} age_minutes={age_minutes:.1f} rows={len(raw)} symbols={len(usable_symbols)}"
+    )
+    return raw
 
 
 # =============================================================================
@@ -903,7 +948,13 @@ def exit_columns() -> list[str]:
 def main() -> None:
     symbols = load_structure_symbols()
 
-    raw = fetch_intraday_bars(symbols)
+    try:
+        raw = fetch_intraday_bars(symbols)
+    except Exception as exc:
+        print(f"[dataset] Alpaca fetch failed: {exc}")
+        raw = load_existing_raw_bars(symbols)
+        if raw.empty:
+            raise
     raw.to_csv(RAW_OUTPUT_PATH, index=False)
     print(f"[saved] {RAW_OUTPUT_PATH}")
 

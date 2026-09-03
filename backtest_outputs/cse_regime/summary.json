@@ -1,0 +1,43 @@
+{
+  "run_tag": "cse_regime",
+  "mode": "LIVE",
+  "universe": [
+    "NVDA",
+    "QQQ",
+    "GOOGL",
+    "SPY",
+    "TSLA",
+    "IWM"
+  ],
+  "start_equity": 6260.63,
+  "final_equity": 8404.04,
+  "total_pnl": 2143.41,
+  "return_pct": 34.24,
+  "closed_trades": 41,
+  "win_rate": 75.6,
+  "expectancy": 52.3,
+  "avg_win": 98.1,
+  "avg_loss": -89.8,
+  "worst": -328.1,
+  "max_drawdown_pct": 9.02,
+  "pnl_per_calendar_day": 5.8,
+  "exit_mix": {
+    "stop_loss": 1,
+    "time_stop": 18,
+    "take_profit": 22
+  },
+  "by_kind": {
+    "put": {
+      "n": 41,
+      "pnl": 2143.0
+    }
+  },
+  "params": {
+    "risk_budget": 1000.0,
+    "exposure_pct": 0.35,
+    "tp_frac": 0.5,
+    "sl_mult": 2.0,
+    "time_stop_dte": 21,
+    "max_positions": 6
+  }
+}

@@ -7,6 +7,7 @@ scipy
 scikit-learn
 stable-baselines3[extra]
 torch
+transformers  # FinBERT news sentiment; model via bootstrap_finbert.py --download
 hmmlearn
 
 # RL environment

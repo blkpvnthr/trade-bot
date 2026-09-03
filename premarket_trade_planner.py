@@ -52,6 +52,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
+from symbol_utils import normalize_for_yfinance
 from config.env_loader import load_instance_env
 
 try:
@@ -113,11 +114,11 @@ YF_AUTO_ADJUST = os.getenv("YF_AUTO_ADJUST", "0").lower() in {"1", "true", "yes"
 
 # Alpaca primary data source config — feed separation.
 # Premarket bars (04:00–09:30 ET) require extended-hours coverage.
-#   boats = Alpaca overnight/premarket feed (paid subscription)
-#   sip   = SIP consolidated tape (extended hours, paid subscription)
-# Regular-session bars (09:30–16:00 ET) use IEX by default (free tier).
-ALPACA_PREMARKET_FEED = os.getenv("ALPACA_PREMARKET_FEED", "sip").lower().strip()
-ALPACA_REGULAR_FEED = os.getenv("ALPACA_REGULAR_FEED", "iex").lower().strip()
+#   overnight/boats = Alpaca overnight/premarket feed (Blue Ocean ATS; → DataFeed.BOATS)
+#   sip             = SIP consolidated tape (extended hours, paid subscription)
+# Default: premarket = overnight feed, regular session = SIP.
+ALPACA_PREMARKET_FEED = os.getenv("ALPACA_PREMARKET_FEED", "overnight").lower().strip()
+ALPACA_REGULAR_FEED = os.getenv("ALPACA_REGULAR_FEED", "sip").lower().strip()
 # When 1: raise immediately on feed errors instead of silent retry/fallback.
 ALPACA_FAIL_ON_FEED_ERROR = os.getenv("ALPACA_FAIL_ON_FEED_ERROR", "0").lower() in {"1", "true", "yes"}
 # When 0: never fall back to yfinance for market data.
@@ -125,11 +126,11 @@ ALLOW_YFINANCE_MARKET_DATA_FALLBACK = os.getenv("ALLOW_YFINANCE_MARKET_DATA_FALL
 ALPACA_BARS_TIMEOUT = int(os.getenv("ALPACA_BARS_TIMEOUT_SECONDS", "30"))
 ALPACA_BATCH_SIZE = int(os.getenv("ALPACA_BATCH_SIZE", "100"))
 
-# Legacy alias kept for backward compat with any callers that set ALPACA_DATA_FEED.
-# Overrides both PREMARKET and REGULAR if explicitly set.
+# Legacy alias kept for backward compat with callers that set ALPACA_DATA_FEED.
+# Overrides only the REGULAR-session feed; premarket stays on the overnight feed
+# (ALPACA_PREMARKET_FEED) so the global SIP flag can't silently disable overnight coverage.
 _LEGACY_FEED = os.getenv("ALPACA_DATA_FEED", "").lower().strip()
 if _LEGACY_FEED:
-    ALPACA_PREMARKET_FEED = _LEGACY_FEED
     ALPACA_REGULAR_FEED = _LEGACY_FEED
 
 MIN_PREMARKET_VOLUME = int(os.getenv("MIN_PREMARKET_VOLUME", "1000"))
@@ -372,6 +373,34 @@ def load_universe() -> list[str]:
             if normalize_symbol(line)
         ]
 
+    # Fallback chain when today's dated file isn't written yet (planner runs before
+    # run.py creates it): try yesterday → non-dated fallback. Safe: these files
+    # represent the approved universe from the most recent prior session.
+    if not symbols:
+        try:
+            from datetime import timedelta
+            _yesterday_tag = (datetime.now(ET) - timedelta(days=1)).strftime("%Y%m%d")
+            _yesterday_path = PROJECT_ROOT / f"{_yesterday_tag}_locked_trading_universe.txt"
+            if _yesterday_path.exists():
+                symbols = [
+                    normalize_symbol(line)
+                    for line in _yesterday_path.read_text(encoding="utf-8").splitlines()
+                    if normalize_symbol(line)
+                ]
+                print(f"[universe] using yesterday's locked universe ({_yesterday_tag}): {len(symbols)} symbols")
+        except Exception as _exc:
+            print(f"[universe] yesterday fallback failed: {_exc}")
+
+    if not symbols:
+        _fallback_path = PROJECT_ROOT / "locked_trading_universe.txt"
+        if _fallback_path.exists():
+            symbols = [
+                normalize_symbol(line)
+                for line in _fallback_path.read_text(encoding="utf-8").splitlines()
+                if normalize_symbol(line)
+            ]
+            print(f"[universe] using non-dated locked_trading_universe.txt: {len(symbols)} symbols")
+
     symbols = sorted(set(s for s in symbols if s))
     print(f"[universe] symbols={len(symbols)}")
     return symbols
@@ -413,8 +442,12 @@ def _resolve_feed(feed_name: str) -> Any:
     name = feed_name.lower().strip()
     if name == "sip":
         return DataFeed.SIP
-    if name in {"boats", "overnight"}:
-        # BOATS is exposed as DataFeed.BOATS in alpaca-py >= 0.20; fall back to SIP.
+    if name == "overnight":
+        # v1beta1/overnight — the derived Alpaca overnight feed (distinct from BOATS).
+        # Fall back to BOATS then SIP on older SDKs that lack DataFeed.OVERNIGHT.
+        return getattr(DataFeed, "OVERNIGHT", getattr(DataFeed, "BOATS", DataFeed.SIP))
+    if name == "boats":
+        # v1beta1/boats — the Blue Ocean ATS feed.
         return getattr(DataFeed, "BOATS", DataFeed.SIP)
     return DataFeed.IEX
 
@@ -749,7 +782,7 @@ def _fetch_minute_bars_yfinance(
 
     for batch in chunked(symbols, YF_BATCH_SIZE):
         batch_diag = {"symbols": batch, "row_count": 0, "counts": {}, "error": None}
-        tickers = " ".join(batch)
+        tickers = " ".join(normalize_for_yfinance(s) for s in batch)
 
         try:
             raw = yf.download(
@@ -889,7 +922,7 @@ def _fetch_multitimeframe_bars_yfinance(symbols: list[str]) -> dict[str, pd.Data
 
         for batch in chunked(symbols, YF_BATCH_SIZE):
             batch_diag: dict[str, Any] = {"symbols": batch, "row_count": 0, "error": None}
-            tickers = " ".join(batch)
+            tickers = " ".join(normalize_for_yfinance(s) for s in batch)
             try:
                 raw = yf.download(
                     tickers=tickers,
@@ -957,7 +990,7 @@ def fetch_multitimeframe_bars(symbols: list[str]) -> dict[str, pd.DataFrame]:
                 for batch in chunked(symbols, YF_BATCH_SIZE):
                     try:
                         raw = yf.download(
-                            tickers=" ".join(batch),
+                            tickers=" ".join(normalize_for_yfinance(s) for s in batch),
                             period=period,
                             interval=tf,
                             prepost=False,

@@ -1,0 +1,108 @@
+Fatal Python error: init_import_site: Failed to import the site module
+Python runtime state: initialized
+Traceback (most recent call last):
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 980, in exec_module
+  File "<frozen site>", line 626, in <module>
+  File "<frozen site>", line 609, in main
+  File "<frozen site>", line 527, in venv
+PermissionError: [Errno 1] Operation not permitted: '/Users/blkpvnthr/Desktop/trader/.venv/pyvenv.cfg'
+Fatal Python error: init_import_site: Failed to import the site module
+Python runtime state: initialized
+Traceback (most recent call last):
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 980, in exec_module
+  File "<frozen site>", line 626, in <module>
+  File "<frozen site>", line 609, in main
+  File "<frozen site>", line 527, in venv
+PermissionError: [Errno 1] Operation not permitted: '/Users/blkpvnthr/Desktop/trader/.venv/pyvenv.cfg'
+Fatal Python error: init_import_site: Failed to import the site module
+Python runtime state: initialized
+Traceback (most recent call last):
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 980, in exec_module
+  File "<frozen site>", line 626, in <module>
+  File "<frozen site>", line 609, in main
+  File "<frozen site>", line 527, in venv
+PermissionError: [Errno 1] Operation not permitted: '/Users/blkpvnthr/Desktop/trader/.venv/pyvenv.cfg'
+Fatal Python error: init_import_site: Failed to import the site module
+Python runtime state: initialized
+Traceback (most recent call last):
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 980, in exec_module
+  File "<frozen site>", line 626, in <module>
+  File "<frozen site>", line 609, in main
+  File "<frozen site>", line 527, in venv
+PermissionError: [Errno 1] Operation not permitted: '/Users/blkpvnthr/Desktop/trader/.venv/pyvenv.cfg'
+Fatal Python error: init_import_site: Failed to import the site module
+Python runtime state: initialized
+Traceback (most recent call last):
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 980, in exec_module
+  File "<frozen site>", line 626, in <module>
+  File "<frozen site>", line 609, in main
+  File "<frozen site>", line 527, in venv
+PermissionError: [Errno 1] Operation not permitted: '/Users/blkpvnthr/Desktop/trader/.venv/pyvenv.cfg'
+[2026-06-11 07:49:03 -0400] [30658] [INFO] Starting gunicorn 26.0.0
+[2026-06-11 07:49:03 -0400] [30658] [INFO] Listening at: http://127.0.0.1:8765 (30658)
+[2026-06-11 07:49:03 -0400] [30658] [INFO] Using worker: sync
+[2026-06-11 07:49:03 -0400] [30660] [INFO] Booting worker with pid: 30660
+[2026-06-11 07:49:03 -0400] [30661] [INFO] Booting worker with pid: 30661
+[2026-06-11 07:49:03 -0400] [30658] [INFO] Control socket listening at /Users/blkpvnthr/.gunicorn/gunicorn.ctl
+[2026-06-11 07:55:02 -0400] [30661] [INFO] Worker exiting (pid: 30661)
+[2026-06-11 07:55:02 -0400] [30658] [INFO] Handling signal: term
+[2026-06-11 07:55:02 -0400] [30660] [INFO] Worker exiting (pid: 30660)
+[2026-06-11 07:55:02 -0400] [30658] [INFO] Worker (pid:30661) was sent SIGTERM!
+[2026-06-11 07:55:02 -0400] [30658] [INFO] Worker (pid:30660) was sent SIGTERM!
+[2026-06-11 07:55:02 -0400] [30658] [INFO] Shutting down: Master
+[2026-06-11 07:55:03 -0400] [38697] [INFO] Starting gunicorn 26.0.0
+[2026-06-11 07:55:03 -0400] [38697] [INFO] Listening at: http://127.0.0.1:8765 (38697)
+[2026-06-11 07:55:03 -0400] [38697] [INFO] Using worker: sync
+[2026-06-11 07:55:03 -0400] [38699] [INFO] Booting worker with pid: 38699
+[2026-06-11 07:55:03 -0400] [38700] [INFO] Booting worker with pid: 38700
+[2026-06-11 07:55:03 -0400] [38697] [INFO] Control socket listening at /Users/blkpvnthr/.gunicorn/gunicorn.ctl
+[2026-06-11 07:56:42 -0400] [38699] [INFO] Worker exiting (pid: 38699)
+[2026-06-11 07:56:42 -0400] [38700] [INFO] Worker exiting (pid: 38700)
+[2026-06-11 07:56:42 -0400] [38697] [INFO] Handling signal: term
+[2026-06-11 07:56:42 -0400] [38697] [INFO] Worker (pid:38700) was sent SIGTERM!
+[2026-06-11 07:56:42 -0400] [38697] [INFO] Worker (pid:38699) was sent SIGTERM!
+[2026-06-11 07:56:42 -0400] [38697] [INFO] Shutting down: Master
+[2026-06-11 07:56:43 -0400] [40554] [INFO] Starting gunicorn 26.0.0
+[2026-06-11 07:56:43 -0400] [40554] [INFO] Listening at: http://127.0.0.1:8765 (40554)
+[2026-06-11 07:56:43 -0400] [40554] [INFO] Using worker: sync
+[2026-06-11 07:56:43 -0400] [40556] [INFO] Booting worker with pid: 40556
+[2026-06-11 07:56:43 -0400] [40557] [INFO] Booting worker with pid: 40557
+[2026-06-11 07:56:43 -0400] [40554] [INFO] Control socket listening at /Users/blkpvnthr/.gunicorn/gunicorn.ctl
+[2026-06-11 08:00:53 -0400] [40554] [INFO] Handling signal: term
+[2026-06-11 08:00:53 -0400] [40556] [INFO] Worker exiting (pid: 40556)
+[2026-06-11 08:00:53 -0400] [40557] [INFO] Worker exiting (pid: 40557)
+[2026-06-11 08:00:53 -0400] [40554] [INFO] Worker (pid:40557) was sent SIGTERM!
+[2026-06-11 08:00:53 -0400] [40554] [INFO] Worker (pid:40556) was sent SIGTERM!
+[2026-06-11 08:00:53 -0400] [40554] [INFO] Shutting down: Master
+[2026-06-11 08:00:54 -0400] [45666] [INFO] Starting gunicorn 26.0.0
+[2026-06-11 08:00:54 -0400] [45666] [INFO] Listening at: http://127.0.0.1:8765 (45666)
+[2026-06-11 08:00:54 -0400] [45666] [INFO] Using worker: sync
+[2026-06-11 08:00:54 -0400] [45668] [INFO] Booting worker with pid: 45668
+[2026-06-11 08:00:54 -0400] [45669] [INFO] Booting worker with pid: 45669
+[2026-06-11 08:00:54 -0400] [45666] [INFO] Control socket listening at /Users/blkpvnthr/.gunicorn/gunicorn.ctl
+[2026-06-11 09:35:58 -0400] [45666] [INFO] Handling signal: hup
+[2026-06-11 09:35:58 -0400] [45666] [INFO] Hang up: Master
+[2026-06-11 09:35:58 -0400] [73401] [INFO] Booting worker with pid: 73401
+[2026-06-11 09:35:58 -0400] [45666] [INFO] Control socket listening at /Users/blkpvnthr/.gunicorn/gunicorn.ctl
+[2026-06-11 09:36:00 -0400] [73502] [INFO] Booting worker with pid: 73502
+[2026-06-11 09:36:00 -0400] [45666] [INFO] Control socket listening at /Users/blkpvnthr/.gunicorn/gunicorn.ctl
+[2026-06-11 09:36:00 -0400] [45668] [INFO] Worker exiting (pid: 45668)
+[2026-06-11 09:36:00 -0400] [45669] [INFO] Worker exiting (pid: 45669)
+[2026-06-11 14:22:33 -0400] [45666] [ERROR] Worker (pid:73502) was sent SIGKILL! Perhaps out of memory?
+[2026-06-11 14:22:33 -0400] [45666] [INFO] Control socket listening at /Users/blkpvnthr/.gunicorn/gunicorn.ctl
+[2026-06-11 14:22:33 -0400] [41690] [INFO] Booting worker with pid: 41690

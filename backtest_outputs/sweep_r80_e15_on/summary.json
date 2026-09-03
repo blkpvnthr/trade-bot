@@ -1,0 +1,39 @@
+{
+  "run_tag": "sweep_r80_e15_on",
+  "window": "2026-05-12..2026-06-04",
+  "symbols": [
+    "ASX",
+    "MU",
+    "NBIX",
+    "NOK",
+    "VICR",
+    "LRCX",
+    "DELL"
+  ],
+  "start_equity": 6260.63,
+  "final_equity": 6549.73,
+  "total_realized_pnl": 289.1,
+  "return_pct": 4.618,
+  "trading_days": 17,
+  "avg_realized_pnl_per_day": 17.01,
+  "entries_filled": 9,
+  "exits_filled": 11,
+  "wins": 4,
+  "losses": 7,
+  "win_rate_pct": 36.4,
+  "avg_win": 278.05,
+  "avg_loss": -117.58,
+  "max_drawdown_pct": 8.344,
+  "open_positions_remaining": 0,
+  "costs_enabled": false,
+  "fees_paid": 0.0,
+  "commission_per_contract": 0.0,
+  "slippage_pct": 0.0,
+  "assumptions": [
+    "Underlying: REAL Alpaca historical 1-minute bars (RTH).",
+    "Option prices: synthesized via engine's black_scholes_call; IV = 20d trailing realized vol.",
+    "Fills: entries at modeled ask (2.4% spread), exits at modeled mid \u2014 orders ALWAYS fill.",
+    "No real NBBO/L2 liquidity, no commissions, no early assignment, no IV smile/skew.",
+    "Engine risk + exit logic run unchanged; CLAUDE.md backstops gate new entries."
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "run_tag": "oos_2023",
+  "mode": "FIXED",
+  "universe": [
+    "NVDA",
+    "QQQ",
+    "GOOGL",
+    "SPY",
+    "TSLA",
+    "IWM"
+  ],
+  "start_equity": 100000.0,
+  "final_equity": 92211.63,
+  "total_pnl": -7788.37,
+  "return_pct": -7.79,
+  "closed_trades": 134,
+  "win_rate": 60.4,
+  "expectancy": -58.1,
+  "avg_win": 176.7,
+  "avg_loss": -417.0,
+  "worst": -1057.4,
+  "max_drawdown_pct": 10.7,
+  "regime_entry_days": {
+    "bull": 45,
+    "bear": 3,
+    "cash": 5
+  },
+  "peak_concurrent_risk": 10391.0,
+  "pnl_per_calendar_day": -18.9,
+  "exit_mix": {
+    "stop_loss": 17,
+    "time_stop": 64,
+    "take_profit": 53
+  },
+  "by_kind": {
+    "put": {
+      "n": 128,
+      "pnl": -5723.0
+    },
+    "call": {
+      "n": 6,
+      "pnl": -2065.0
+    }
+  },
+  "params": {
+    "risk_budget": 2000.0,
+    "exposure_pct": 0.35,
+    "tp_frac": 0.5,
+    "sl_mult": 2.0,
+    "time_stop_dte": 21,
+    "max_positions": 6,
+    "regime_mode": "trend200"
+  }
+}

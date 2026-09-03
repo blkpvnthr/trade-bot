@@ -1,0 +1,14 @@
+# Research-only RL strategy meta-agent. No broker SDKs on purpose.
+# Alpaca historical bars are fetched with the stdlib (urllib) -- no alpaca-py,
+# so there is no TradingClient / order-submission path in the dependency tree.
+numpy>=1.24
+pandas>=2.0
+gymnasium>=0.29
+stable-baselines3>=2.2
+scikit-learn>=1.3      # trade_quality_model (logreg / random forest)
+pytest>=7.4
+# Optional, for the full trade-quality run (gradient boosting + SHAP):
+#   pip install xgboost lightgbm shap pyarrow
+# stable-baselines3 pulls in torch; install the CPU build if you have no GPU:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install gplearn      # optional: symbolic-regression alpha generator (rl_meta/gplearn_alpha_generator.py)

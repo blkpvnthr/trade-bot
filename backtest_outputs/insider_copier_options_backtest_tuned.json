@@ -1,0 +1,21 @@
+{
+  "params": {
+    "min_value": 1000000.0,
+    "window_days": 2,
+    "filing_lag": 2,
+    "horizons": "5,10",
+    "dte": 30,
+    "target_delta": 0.8,
+    "iv_mult": 1.3,
+    "extrinsic_spread": 0.4,
+    "min_advdollar": 0.0,
+    "tag": "_tuned"
+  },
+  "universe_size": 1719,
+  "dropped_illiquid": 0,
+  "horizons": [
+    5,
+    10
+  ],
+  "rows": 6729
+}

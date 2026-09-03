@@ -1,0 +1,41 @@
+{
+  "name": "insider_sizing_and_gate",
+  "description": "Insider sleeve: gate-threshold ladder (P80/P50/none) \u00d7 sizing (flat/tilt/buckets).",
+  "config": {
+    "hold": 5,
+    "min_adv": 1000000,
+    "vol_pctile": 80,
+    "fill_bps": 5.0
+  },
+  "search_space": {
+    "gate": [
+      "volgate_p80",
+      "gate_p50",
+      "fullbook"
+    ],
+    "sizing": [
+      "flat",
+      "voltilt_light",
+      "voltilt_med",
+      "buckets"
+    ]
+  },
+  "promotion_criteria": {
+    "min_trades": 30,
+    "min_sharpe_improvement": 0.0,
+    "max_p_value": 0.1,
+    "min_year_trades": 8,
+    "max_year_loss": -0.01,
+    "burn_in_days": 60,
+    "max_drawdown": -0.4,
+    "train_end": "2024-01-01"
+  },
+  "data_paths": [
+    "/Users/blkpvnthr/Desktop/trader/data/cache/pit_insider_events.json",
+    "/Users/blkpvnthr/Desktop/trader/data/cache/alpaca_bars"
+  ],
+  "git_commit": "c6a6f50094b56570c20f4c82260965fa075ee678",
+  "data_snapshot": "5ee44fe606d8c35e",
+  "created_utc": "2026-06-11T05:20:27.450586+00:00",
+  "spec_hash": "106c4ff12aeb5fe7"
+}

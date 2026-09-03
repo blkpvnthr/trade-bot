@@ -1,0 +1,131 @@
+//@version=6
+strategy("Liquidity-Sweep-Strategy [Bull/Bear Trend]", "Liquidity Sweep Strategy", overlay=true, max_lines_count=500, max_boxes_count=500, max_labels_count=500, max_bars_back=5000, pyramiding=0, default_qty_type=strategy.percent_of_equity, default_qty_value=100, calc_on_every_tick=true)
+
+import TradingView/ta/8
+
+lowerTimeframeTooltip = "The indicator scans lower timeframe data to approximate Net volume. By default, the timeframe is chosen automatically. These inputs override this with a custom timeframe.\n\nHigher timeframes provide more historical data, but the data will be less precise."
+useCustomTimeframeInput = input.bool(false, "Use custom timeframe", tooltip=lowerTimeframeTooltip)
+lowerTimeframeInput = input.timeframe("1", "Timeframe", active=useCustomTimeframeInput)
+
+lowerTimeframe = switch
+    useCustomTimeframeInput => lowerTimeframeInput
+    timeframe.isseconds => "1S"
+    timeframe.isintraday => "1"
+    timeframe.isdaily => "5"
+    => "60"
+
+[upVolume, downVolume, delta] = ta.requestUpAndDownVolume(lowerTimeframe)
+
+deltaBullish = delta > 0
+deltaBearish = delta < 0
+deltaCrossUp = ta.crossover(delta, 0)
+deltaCrossDown = ta.crossunder(delta, 0)
+deltaIncreasing = delta > delta[1]
+deltaDecreasing = delta < delta[1]
+
+rsiLengthInput = input.int(14, minval=1, title="RSI Length", group="RSI Settings")
+rsiSourceInput = input.source(close, "Source", group="RSI Settings")
+change = ta.change(rsiSourceInput)
+up = ta.rma(math.max(change, 0), rsiLengthInput)
+down = ta.rma(-math.min(change, 0), rsiLengthInput)
+rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+rsiCrossOver73 = ta.crossover(rsi, 73)
+
+len = input.int(12, "Length", minval=1, group="Trend Settings")
+mult = input.float(2.0, "Multiplier", minval=0.1, step=0.1, group="Trend Settings")
+src = input.source(close, "Source", group="Trend Settings")
+major_sweep_thresh = input.float(50, "Major Sweep Threshold", minval=0, group="Trend Settings")
+shw_mjr = input.bool(true, "Show Major Liquidations", group="Trend Settings")
+shw_mnr = input.bool(true, "Show Minor Liquidations", group="Trend Settings")
+allowShorts = input.bool(false, "Allow Short Entries On Bearish Trend", group="Strategy Settings")
+
+show_profile = input.bool(true, "Show Volume Profile", group="Profile Settings")
+show_bounds = input.bool(true, "Show Bounding Box", group="Profile Settings")
+res = input.int(40, "Resolution", minval=1, group="Profile Settings")
+scale = input.int(30, "Scale", minval=1, group="Profile Settings")
+
+dismiss = input.bool(false, "Dismiss No Volume Warning", group="Appearance Settings")
+bullColor = input.color(#00ffbb, "Bullish Color", group="Appearance Settings")
+bearColor = input.color(#ff1100, "Bearish Color", group="Appearance Settings")
+pc1 = input.color(color.gray, "Profile Color", group="Appearance Settings")
+
+profileCalculation(start_index, end_index, res, scale) =>
+    top_boundaries = array.new_float(res)
+    bottom_boundaries = array.new_float(res)
+    binlen = array.new_float(res)
+    highs = array.new_float()
+    lows = array.new_float()
+    volumes = array.new_float()
+    for i = bar_index - start_index to bar_index - end_index
+        array.push(highs, high[i])
+        array.push(lows, low[i])
+        array.push(volumes, volume[i])
+    maxx = array.max(highs)
+    minn = array.min(lows)
+    size = array.size(highs)
+    poc = 0.0
+    if size > 0
+        step = (maxx - minn) / res
+        for i = 0 to res - 1
+            bin_size = 0.0
+            bottom = minn + i * step
+            top = minn + (i + 1) * step
+            array.set(bottom_boundaries, i, bottom)
+            array.set(top_boundaries, i, top)
+            for j = 0 to array.size(highs) - 1
+                candle_above_hbar = array.get(lows, j) > top
+                candle_below_hbar = array.get(highs, j) < bottom
+                is_candle_in_bucket = not (candle_above_hbar or candle_below_hbar)
+                bin_size += is_candle_in_bucket ? array.get(volumes, j) : 0
+            array.set(binlen, i, bin_size)
+        boc = array.max(binlen)
+        boci = array.indexof(binlen, boc) > 0 ? array.indexof(binlen, boc) : 0
+        poc := math.avg(array.get(top_boundaries, boci), array.get(bottom_boundaries, boci))
+    [top_boundaries, bottom_boundaries, binlen, poc]
+
+var cumVol = 0.0
+cumVol += nz(volume)
+
+if barstate.islast and cumVol == 0 and not dismiss
+    var table watermark = table.new(position.middle_center, 1, 1)
+    table.cell(watermark, 0, 0, "⚠️This ticker does not have volume data, please try another ticker or open settings to dismiss this warning", text_color=color.new(color.white, 20), text_size=size.huge, bgcolor=color.new(#747474, 50))
+
+basis = ta.sma(ta.ema(src, len), len)
+deviation = ta.ema(math.abs(close - basis), len * 3) * mult
+upper = basis + deviation
+lower = basis - deviation
+
+length = int(len * mult)
+volLow = ta.lowest(volume, length)
+volHigh = ta.highest(volume, length)
+volRange = volHigh - volLow
+nvol = volRange != 0 ? (volume - volLow) / volRange * 100 : 0
+
+var float trend = 0.0
+if close > upper
+    trend := 1
+if close < lower
+    trend := -1
+
+bullishTrend = ta.crossover(trend, 0)
+bearishTrend = ta.crossunder(trend, 0)
+
+buySignal = bullishTrend and deltaBullish
+sellSignal = bearishTrend and deltaBearish
+
+if buySignal
+    strategy.close("Short", alert_message="Bullish Trend Buy")
+    strategy.entry("Long", strategy.long, alert_message="Bullish Trend Buy")
+
+if sellSignal
+    strategy.close("Long", alert_message="Bearish Trend Sell")
+    if allowShorts
+        strategy.entry("Short", strategy.short, alert_message="Bearish Trend Short")
+
+
+
+plot(trend < 0 ? upper : na, color=color.new(bearColor, 30), style=plot.style_linebr, title="Downtrend Line", linewidth=3)
+plot(trend > 0 ? lower : na, color=color.new(bullColor, 30), style=plot.style_linebr, title="Uptrend Line", linewidth=3)
+
+plotshape(buySignal ? lower : na, "Bullish Trend + Delta", shape.labelup, location.absolute, color.new(bullColor, 50), text="BUY", textcolor=chart.fg_color, size=size.small)
+plotshape(sellSignal ? upper : na, "Bearish Trend + Delta", shape.labeldown, location.absolute, color.new(bearColor, 50), text="SELL", textcolor=chart.fg_color, size=size.small)

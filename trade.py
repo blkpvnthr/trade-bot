@@ -100,6 +100,12 @@ except Exception:
     OptionChainRequest = None
     TimeFrame = None
 
+try:
+    from conviction_portfolio_manager import ConvictionPortfolioManager as _ConvictionPortfolioManager
+    _CONVICTION_AVAILABLE = True
+except ImportError:
+    _CONVICTION_AVAILABLE = False
+
 
 # ======================================================================# Paths / environment
 # ======================================================================
@@ -1158,7 +1164,7 @@ def build_options_booster_env(config: ScannerConfig, candidate_symbols: list[str
         "OPTIONS_FLOW_MAX_CONTRACTS_PER_UNDERLYING": str(config.options_flow_max_contracts_per_underlying),
         "OPTIONS_MIN_VOLUME_OI_RATIO": str(config.options_flow_min_volume_oi_ratio),
         "OPTIONS_MIN_PREMIUM_FLOW_DOLLARS": str(config.options_flow_min_premium_dollars),
-        "APCA_PAPER": "1",
+        "APCA_PAPER": "0" if str(os.getenv("ALPACA_PAPER_ONLY", "true")).lower() in {"false", "0", "no"} else "1",
     }
     if candidate_symbols:
         env["OPTIONS_CANDIDATE_SYMBOLS"] = ",".join(candidate_symbols)
@@ -2461,6 +2467,43 @@ class AlpacaBroker:
 
     def cancel_open_orders(self) -> None:
         self.trading.cancel_orders()
+
+    def cancel_open_orders_for_symbol(self, symbol: str) -> list[str]:
+        """Cancel every working/held order for ONE symbol (frees the shares that
+        protective bracket legs hold for orders) so an exit can fill. Other
+        symbols' orders are left untouched. Returns the canceled order IDs."""
+        symbol = safe_symbol(symbol)
+        canceled: list[str] = []
+        for order in self.list_open_orders():
+            try:
+                if safe_symbol(getattr(order, "symbol", "")) != symbol:
+                    continue
+                oid = str(getattr(order, "id", ""))
+                if not oid:
+                    continue
+                self.trading.cancel_order_by_id(oid)
+                canceled.append(oid)
+            except Exception as exc:
+                print(f"[broker] cancel order for {symbol} failed: {exc}")
+        return canceled
+
+    def get_available_qty(self, symbol: str) -> float:
+        """Shares available to sell right now = position qty minus shares held
+        for working orders (Alpaca ``qty_available``). Falls back to total qty
+        when the field is absent; 0.0 when there is no position. Lets the exit
+        path verify it can fill before and after canceling protective orders."""
+        symbol = safe_symbol(symbol)
+        try:
+            for pos in self.trading.get_all_positions():
+                if safe_symbol(getattr(pos, "symbol", "")) != symbol:
+                    continue
+                qa = getattr(pos, "qty_available", None)
+                if qa is not None:
+                    return to_float(qa)
+                return to_float(getattr(pos, "qty", 0.0))
+        except Exception as exc:
+            print(f"[broker] get_available_qty {symbol} failed: {exc}")
+        return 0.0
 
     def get_clock_info(self) -> dict[str, Any]:
         clock = self.trading.get_clock()
@@ -4127,6 +4170,17 @@ class ProductionOrderExecutor:
         self.account_history: list[dict[str, Any]] = []
         self._last_morning_refresh_date: str | None = None
         self._rl_validation_cache: dict[str, Any] | None = None
+        self._conviction_mgr: Any = None
+        if _CONVICTION_AVAILABLE:
+            _conviction_state = PROJECT_ROOT / "system-data" / "conviction_portfolio.json"
+            self._conviction_mgr = _ConvictionPortfolioManager(_conviction_state)
+            # Surface any parse warnings through the JSONL event log so they
+            # appear in post-incident reviews (CPM is stdlib-only, can't call
+            # write_event directly).
+            for _warn in self._conviction_mgr.load_warnings:
+                write_event("conviction_state_load_warning", {"warning": _warn, "state_file": str(_conviction_state)})
+            summary = self._conviction_mgr.get_summary()
+            print(f"[conviction] portfolio loaded: {summary['count']} position(s) protected: {summary['symbols']}")
 
     def _in_cooldown(self) -> bool:
         return (time.time() - self.last_order_time) < self.config.cooldown_seconds
@@ -4781,6 +4835,20 @@ class ProductionOrderExecutor:
                 if plan.empty:
                     return pd.DataFrame()
 
+        # Block SELL orders on conviction-protected long-term positions.
+        if self._conviction_mgr is not None:
+            self._conviction_mgr.reload()           # pick up any CLI changes made mid-session
+            _protected = self._conviction_mgr.get_protected_symbols()
+            if _protected:
+                _sell_mask = (plan["side"] == "sell") & plan["symbol"].map(safe_symbol).isin(_protected)
+                _n_protected = int(_sell_mask.sum())
+                if _n_protected:
+                    _blocked_syms = sorted(plan.loc[_sell_mask, "symbol"].map(safe_symbol).unique())
+                    print(f"[conviction] blocked {_n_protected} SELL order(s) on: {_blocked_syms}")
+                    plan = plan[~_sell_mask].copy()
+                    if plan.empty:
+                        return pd.DataFrame()
+
         plan["abs_delta_shares"] = plan["delta_shares"].abs().fillna(0)
         plan["abs_delta_dollars"] = plan["delta_dollars"].abs().fillna(0)
         plan = plan[(plan["side"] == "sell") | (plan["abs_delta_dollars"] >= self.config.min_notional_to_trade)].copy()
@@ -4849,6 +4917,49 @@ class ProductionOrderExecutor:
             "filled_at": str(getattr(last_order, "filled_at", "") or ""),
             "expired_at": str(getattr(last_order, "expired_at", "") or ""),
         }
+
+    def _prepare_exit(self, symbol: str, qty: int, cycle_id: str, reason: str = "") -> tuple[int, dict[str, Any]]:
+        """Make an exit fillable: cancel this symbol's working/bracket orders to
+        release shares ``held_for_orders``, then size the exit to the shares that
+        are actually available. Returns ``(exit_qty, reliability_meta)``.
+
+        Exits are risk-reduction and must never be blocked — at worst this submits
+        the partial qty currently sellable so risk still drops, rather than letting
+        a plain market sell error out with Alpaca 40310000 "insufficient qty".
+        Emits an ``exit_prepared`` event with full before/after diagnostics.
+        """
+        intended = int(qty)
+        avail_before = self.broker.get_available_qty(symbol)
+        canceled: list[str] = []
+        if avail_before < intended:
+            canceled = self.broker.cancel_open_orders_for_symbol(symbol)
+            if canceled:
+                time.sleep(0.4)  # let cancellations release held shares before re-checking
+        avail_after = self.broker.get_available_qty(symbol) if canceled else avail_before
+        exit_qty = intended
+        if avail_after < intended:
+            # Could not free enough shares; exit what is actually sellable so the
+            # position is still reduced instead of erroring on the full qty.
+            exit_qty = int(max(0.0, avail_after))
+        meta = {
+            "symbol": symbol,
+            "cycle_id": cycle_id,
+            "reason": reason,
+            "orders_canceled": canceled,
+            "orders_canceled_count": len(canceled),
+            "available_qty_before": avail_before,
+            "available_qty_after": avail_after,
+            "exit_qty_intended": intended,
+            "exit_qty_submitted": exit_qty,
+            "resized": exit_qty != intended,
+        }
+        print(
+            f"[exit] {symbol}: canceled {len(canceled)} order(s); "
+            f"avail {avail_before:.0f}->{avail_after:.0f}; "
+            f"intended={intended} submit={exit_qty}"
+        )
+        write_event("exit_prepared", meta)
+        return exit_qty, meta
 
     def _journal_order(
         self,
@@ -4953,7 +5064,10 @@ class ProductionOrderExecutor:
 
             if qty <= 0:
                 skip_message = "qty <= 0"
-            elif self.broker.has_open_order_for_symbol(symbol):
+            elif side == "buy" and self.broker.has_open_order_for_symbol(symbol):
+                # Buy-side only: an existing order must never strand an open
+                # position by blocking its exit. Exit/sell orders instead free
+                # any held shares via cancel-then-sell in _prepare_exit below.
                 skip_message = "existing open order for symbol"
 
             if not skip_message and side == "buy" and direction_by_symbol:
@@ -4981,6 +5095,19 @@ class ProductionOrderExecutor:
                         print(f"[clip] BUY {symbol}: clipped to qty={qty} by gross exposure room")
                     if qty <= 0 or est_notional < profile.min_notional_to_trade:
                         skip_message = "buy_clipped_below_min_notional"
+
+            # EXIT RELIABILITY (sells only): protective bracket legs sit in
+            # "held" status and hold shares (qty_available < qty), so a plain
+            # market sell hits Alpaca 40310000 "insufficient qty available" and
+            # the exit is delayed a full cycle. Cancel THIS symbol's working
+            # orders to release the shares, then size the exit to what is truly
+            # available. This only enables/resizes exits, never blocks them; the
+            # released stop/bracket is immediately superseded by the exit fill.
+            exit_reliability = None
+            if not skip_message and side == "sell":
+                qty, exit_reliability = self._prepare_exit(symbol, qty, cycle_id, reason)
+                if qty <= 0:
+                    skip_message = "exit_no_available_qty_after_cancel"
 
             if skip_message:
                 print(f"[skip] {side.upper()} {qty} {symbol}: {skip_message}")
@@ -5074,8 +5201,21 @@ class ProductionOrderExecutor:
                 )
                 if side == "sell":
                     fill_status = str(fill_info.get("fill_status", status)).lower()
-                    if fill_status in {"filled", "partially_filled", "submitted", "accepted", "new"} or to_float(fill_info.get("filled_qty", 0.0)) > 0:
+                    exit_filled = (
+                        fill_status in {"filled", "partially_filled", "submitted", "accepted", "new"}
+                        or to_float(fill_info.get("filled_qty", 0.0)) > 0
+                    )
+                    if exit_filled:
                         mark_no_reentry_symbol(symbol, reason=reason or "sell_order_submitted")
+                    if exit_reliability is not None:
+                        write_event("exit_result", {
+                            **exit_reliability,
+                            "order_id": order_id,
+                            "status": status,
+                            "fill_status": fill_status,
+                            "filled_qty": to_float(fill_info.get("filled_qty", 0.0)),
+                            "success": bool(exit_filled),
+                        })
                 time.sleep(0.35)
 
             except APIError as exc:
@@ -5087,6 +5227,8 @@ class ProductionOrderExecutor:
                 results.append(result)
                 self._journal_order(cycle_id, "ERROR", row, acct_before, acct_after, message)
                 write_event("order_api_error", result)
+                if side == "sell" and exit_reliability is not None:
+                    write_event("exit_result", {**exit_reliability, "status": "api_error", "message": message, "success": False})
                 self._log_live_experience(
                     cycle_id=cycle_id,
                     stage="api_error",
@@ -5107,6 +5249,8 @@ class ProductionOrderExecutor:
                 results.append(result)
                 self._journal_order(cycle_id, "ERROR", row, acct_before, acct_after, message)
                 write_event("order_error", result)
+                if side == "sell" and exit_reliability is not None:
+                    write_event("exit_result", {**exit_reliability, "status": "error", "message": message, "success": False})
                 self._log_live_experience(
                     cycle_id=cycle_id,
                     stage="error",
@@ -5626,6 +5770,11 @@ class ProductionOrderExecutor:
             return
 
         print(f"[morning] preparing daily inputs for {today}")
+        if self._conviction_mgr is not None:
+            self._conviction_mgr.reload()           # refresh from disk for accurate morning report
+            _cv_summary = self._conviction_mgr.get_summary()
+            if _cv_summary["count"] > 0:
+                print(f"[conviction:morning] {_cv_summary['count']} protected position(s): {_cv_summary['symbols']} | allocated: ${_cv_summary['allocated_capital']:,.0f}")
         run_session_planning_pipeline(self.config.scanner, force=False)
 
         self._last_morning_refresh_date = today

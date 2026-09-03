@@ -1,0 +1,61 @@
+13D events: 2,859 across 1,876 tickers. Fetching bars...
+# Schedule 13D (Activist) Event Signal — Upgraded Gauntlet
+
+Long subject at next open after 13D filing, hold H days. Real IEX daily bars, 100bps cost, ADV≥$1,000,000. 1,876 tickers.
+
+### Hold 3 days (n_total=259)
+
+OOS 2024+: n=57 mean -0.92% median +0.16% win 51% PF 0.64 MaxDD -6%
+
+| Year | n | Mean | Win% | PF |
+|---|---|---|---|---|
+| 2021 ⚠ | 88 | -1.93% | 35% | 0.39 |
+| 2022 ⚠ | 65 | -1.69% | 38% | 0.53 |
+| 2023 ⚠ | 49 | -2.31% | 24% | 0.24 |
+| 2024 ⚠ | 57 | -0.92% | 51% | 0.64 |
+
+MC: P(profit)=10%, median=-46.46% | corr vs insider: +nan
+**VERDICT: FAIL** (PF≥2 ✗, every-year ✗, MC ✗, DD ✓, corr ✓)
+
+### Hold 5 days (n_total=259)
+
+OOS 2024+: n=57 mean -0.45% median -1.06% win 46% PF 0.85 MaxDD -6%
+
+| Year | n | Mean | Win% | PF |
+|---|---|---|---|---|
+| 2021 ⚠ | 88 | -3.27% | 43% | 0.27 |
+| 2022 ⚠ | 65 | -3.68% | 31% | 0.36 |
+| 2023 ⚠ | 49 | -3.15% | 24% | 0.25 |
+| 2024 ⚠ | 57 | -0.45% | 46% | 0.85 |
+
+MC: P(profit)=24%, median=-36.57% | corr vs insider: +nan
+**VERDICT: FAIL** (PF≥2 ✗, every-year ✗, MC ✗, DD ✓, corr ✓)
+
+### Hold 10 days (n_total=259)
+
+OOS 2024+: n=57 mean -0.90% median -1.85% win 35% PF 0.77 MaxDD -7%
+
+| Year | n | Mean | Win% | PF |
+|---|---|---|---|---|
+| 2021 ⚠ | 88 | -4.59% | 31% | 0.25 |
+| 2022 ⚠ | 65 | -3.38% | 34% | 0.46 |
+| 2023 ⚠ | 49 | -1.90% | 31% | 0.57 |
+| 2024 ⚠ | 57 | -0.90% | 35% | 0.77 |
+
+MC: P(profit)=15%, median=-54.56% | corr vs insider: +nan
+**VERDICT: FAIL** (PF≥2 ✗, every-year ✗, MC ✗, DD ✓, corr ✓)
+
+### Hold 20 days (n_total=256)
+
+OOS 2024+: n=54 mean -0.32% median +0.16% win 52% PF 0.94 MaxDD -10%
+
+| Year | n | Mean | Win% | PF |
+|---|---|---|---|---|
+| 2021 ⚠ | 88 | -6.20% | 35% | 0.25 |
+| 2022 ⚠ | 65 | -3.09% | 46% | 0.58 |
+| 2023 ⚠ | 49 | +0.06% | 39% | 1.01 |
+| 2024 ⚠ | 54 | -0.32% | 52% | 0.94 |
+
+MC: P(profit)=25%, median=-55.59% | corr vs insider: +nan
+**VERDICT: FAIL** (PF≥2 ✗, every-year ✗, MC ✗, DD ✓, corr ✓)
+

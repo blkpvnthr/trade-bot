@@ -1,14 +1,199 @@
+# =============================================================================
+# Environment & secrets
+# =============================================================================
+# Block all .env files everywhere; allow only .env.example templates
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+!.env.example
+
+# =============================================================================
+# Python
+# =============================================================================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
 venv/
 .venv/
-__pycache__/
-*.pyc
-.env
-logs/
-daily_system_outputs/
+env/
+.env/
+*.egg-info/
+dist/
+build/
+
+# =============================================================================
+# Editor / tooling / local agent state
+# =============================================================================
+.claude/
+
+# =============================================================================
+# Backups
+# =============================================================================
+*.bak
+*.bak_*
+*~
+*.orig
+
+# =============================================================================
+# macOS
+# =============================================================================
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# =============================================================================
+# Runtime outputs — never commit generated state
+# =============================================================================
+
+# Daily system output directories
 system-data/
+daily_system_outputs/
+20260513_daily_system_outputs/
+
+# Execution and orchestrator logs
+logs/
+execution_logs/
+
+# Local multi-instance runtime PID files
+.local_pids/
+
+# Allow bot env examples (credentials are REPLACE_ME placeholders)
+!.env.bot01.example
+!.env.bot02.example
+!.env.bot03.example
+!.env.bot04.example
+
+# =============================================================================
+# Generated data files
+# =============================================================================
+
+# Event streams and feature streams
+*.jsonl
+*_feature_stream*
+*_symbol_state.json
+*_intraday_feature_stream*
+
+# Trade plans and structure maps
+*_trade_plan.json
+*_trade_plan_diagnostics.json
+*_intraday_structure_map.json
+*_diagnostics.json
+*_premarket_collector_state.json
+*_premarket_collector_events*
+
+# Market context and signals
+*_market_context.json
+*_signals.json
+*_signal.json
+*_multitimeframe_context.json
+*_spx_price_action_state.json
+*_spx_price_action_signal.json
+*_evolution_strategy_signals.json
+*_evolution_strategy_metrics.json
+*_evolution_strategy_models.json
+*_data_validation_state.json
+*_option_booster_summary.json
+*_intraday_dataset_summary.json
+*_stream_confirmed_trade_plan.json
+*_tradingview_institutional_accumulation.json
+*_tradingview_institutional_accumulation_diagnostics.json
+*_llm_universe_financials_report.json
+*_llm_universe_sentiment_report.json
+
+# Universe discovery outputs
+*_locked_trading_universe.txt
+locked_trading_universe.txt
+*_latest_llm_candidate_discovery.json
+*_latest_llm_sentiment_universe.json
+latest_breakout_momentum_candidates.txt
+latest_breakout_momentum_symbols.txt
+latest_breakout_momentum_symbols_csv.txt
+latest_breakout_momentum_candidates.csv
+*_regime_universe_30.txt
+*_locked_trading_universe.csv
+
+# =============================================================================
+# RL model artifacts
+# =============================================================================
+*.zip
+*.pkl
+*.pt
+*.pth
+models/
+rl_models/
+*_rl_intraday_structure_model*
+*_sr_rl_agent_ppo*
+*_spx_multibar_gain_rl_model*
+*_spx_breakout_ppo*
+*_best_params.json
+*_rl_training_metrics.json
+*_spx_max_return_model.json
+*_spx_intraday_breakout_plan.json
+*_spx_rl_training_metrics.json
+*_sr_rl_live_signals.json
+*_sr_rl_best_params.json
+*tensorboard_*
+improvement_plan.json
+rollback_plan.md
+validation_report.json
+
+# =============================================================================
+# Data files
+# =============================================================================
+*.csv
+*.parquet
+alpaca_daily_bars.csv
+alpaca_dynamic_universe.csv
+
+# =============================================================================
+# Misc generated outputs
+# =============================================================================
+data/
+outputs/
+live/training_data.csv
+live/trading_model.zip
+live/vec_normalize.pkl
+live/regime_engine.pkl
+live/logs/
+live/__pycache__/
+docs/frames/
+reports/
+*.db
+tradingview-mcp/
+docs/frames/
+reports/
+*.db
+tradingview-mcp/
+docs/pdfs/
+docs/markdown/
+*.mov
+docs/pdfs/
+docs/markdown/
+docs/*.pdf
+docs/*.png
+docs/frames/
+reports/
+*.db
+*.mov
+tradingview-mcp/
+
+# instance-2 runtime logs
+logs-instance2/
+
+# TJL runtime position state (never commit)
+tjl_open_positions.json
+.env.earnings_paper
+
+# =============================================================================
+# Graphify intelligence artifacts + k8s manifests (merged from main)
+# =============================================================================
 graphify-out/cache/
 graphify-out/feature_streams/
 graphify-out/symbol_state/
 graphify-out/intraday_feature_stream/
 k8s/
-tests/

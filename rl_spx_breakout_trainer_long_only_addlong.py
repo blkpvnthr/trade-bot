@@ -97,7 +97,7 @@ DIAGNOSTICS_PATH = OUT_DIR / f"{DATA_TAG}_spx_rl_signal_diagnostics.csv"
 MARKET_CONTEXT_PATH = OUT_DIR / f"{DATA_TAG}_market_context.json"
 PREMARKET_PLAN_PATH = OUT_DIR / f"{DATA_TAG}_premarket_trade_plan.json"
 
-ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower().strip()
+ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "sip").lower().strip()
 
 MAX_EPISODE_BARS = int(os.getenv("SPX_RL_MAX_EPISODE_BARS", "390"))
 LEVEL_WINDOW_DAYS = int(os.getenv("SPX_DAILY_LEVEL_WINDOW_DAYS", "20"))

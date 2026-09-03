@@ -1,0 +1,29 @@
+{
+  "run_tag": "lev_D_SOXL_SOXS_2018",
+  "universe": [
+    "TQQQ",
+    "SOXL",
+    "NVDL"
+  ],
+  "window": "2018-01-01..2019-01-01",
+  "start_equity": 100000.0,
+  "final_equity": 89694.3,
+  "total_pnl": -10305.7,
+  "return_pct": -10.31,
+  "closed_trades": 6,
+  "win_rate": 16.7,
+  "max_drawdown_pct": 26.41,
+  "by_kind": {
+    "shares": {
+      "n": 6,
+      "pnl": -10306.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": -9.0,
+    "sharpe": -0.08,
+    "sortino": -0.09,
+    "ulcer": 17.59,
+    "worst_month_pct": -22.7
+  }
+}

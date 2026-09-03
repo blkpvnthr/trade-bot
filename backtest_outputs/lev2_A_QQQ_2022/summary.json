@@ -1,0 +1,29 @@
+{
+  "run_tag": "lev2_A_QQQ_2022",
+  "universe": [
+    "QQQ",
+    "SPY",
+    "IWM"
+  ],
+  "window": "2022-01-03..2023-01-03",
+  "start_equity": 100000.0,
+  "final_equity": 93412.13,
+  "total_pnl": -6587.87,
+  "return_pct": -6.59,
+  "closed_trades": 3,
+  "win_rate": 0.0,
+  "max_drawdown_pct": 6.59,
+  "by_kind": {
+    "shares": {
+      "n": 3,
+      "pnl": -6588.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": -5.7,
+    "sharpe": -1.47,
+    "sortino": -0.36,
+    "ulcer": 6.5,
+    "worst_month_pct": -6.6
+  }
+}

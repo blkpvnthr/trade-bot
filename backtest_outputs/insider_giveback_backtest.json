@@ -1,0 +1,226 @@
+{
+  "strategy": "vol_gated_insider_shares",
+  "test": "giveback_exit_overlay_daily_3d",
+  "params": {
+    "hold": 3,
+    "cost_bps": 100.0,
+    "gb_mfe_grid": [
+      0.005,
+      0.01,
+      0.02
+    ],
+    "gb_frac_grid": [
+      0.3,
+      0.5,
+      0.7
+    ],
+    "placebo_n": 200
+  },
+  "n_trades": 181,
+  "baseline_fixed_hold": {
+    "trades_taken": 169,
+    "win_rate": 0.5799,
+    "avg_R_net": 0.02262,
+    "total_return": 0.336,
+    "sharpe_active": 2.569,
+    "max_drawdown": -0.074,
+    "calmar": 1.154,
+    "pf": 1.684,
+    "drop_top3_total": 0.2449,
+    "drop_top5_total": 0.1831
+  },
+  "grid": {
+    "mfe0.005_frac0.3": {
+      "trades_taken": 175,
+      "win_rate": 0.5257,
+      "avg_R_net": 0.01851,
+      "total_return": 0.3313,
+      "sharpe_active": 2.588,
+      "max_drawdown": -0.0653,
+      "calmar": 1.292,
+      "pf": 1.761,
+      "drop_top3_total": 0.2001,
+      "drop_top5_total": 0.1676,
+      "early_exit_rate": 0.818,
+      "winner_retention": {
+        "top_k": 10,
+        "winners_cut": 6,
+        "mean_retention": 0.596,
+        "baseline_mean": 0.3023,
+        "giveback_mean": 0.2087
+      }
+    },
+    "mfe0.005_frac0.5": {
+      "trades_taken": 175,
+      "win_rate": 0.48,
+      "avg_R_net": 0.01572,
+      "total_return": 0.2541,
+      "sharpe_active": 2.402,
+      "max_drawdown": -0.0739,
+      "calmar": 0.875,
+      "pf": 1.611,
+      "drop_top3_total": 0.1646,
+      "drop_top5_total": 0.1111,
+      "early_exit_rate": 0.68,
+      "winner_retention": {
+        "top_k": 10,
+        "winners_cut": 3,
+        "mean_retention": 0.763,
+        "baseline_mean": 0.3023,
+        "giveback_mean": 0.239
+      }
+    },
+    "mfe0.005_frac0.7": {
+      "trades_taken": 175,
+      "win_rate": 0.4457,
+      "avg_R_net": 0.01513,
+      "total_return": 0.2334,
+      "sharpe_active": 2.198,
+      "max_drawdown": -0.0774,
+      "calmar": 0.767,
+      "pf": 1.549,
+      "drop_top3_total": 0.1532,
+      "drop_top5_total": 0.1003,
+      "early_exit_rate": 0.564,
+      "winner_retention": {
+        "top_k": 10,
+        "winners_cut": 2,
+        "mean_retention": 0.765,
+        "baseline_mean": 0.3023,
+        "giveback_mean": 0.24
+      }
+    },
+    "mfe0.01_frac0.3": {
+      "trades_taken": 175,
+      "win_rate": 0.5257,
+      "avg_R_net": 0.01842,
+      "total_return": 0.3272,
+      "sharpe_active": 2.554,
+      "max_drawdown": -0.0652,
+      "calmar": 1.277,
+      "pf": 1.754,
+      "drop_top3_total": 0.1964,
+      "drop_top5_total": 0.1639,
+      "early_exit_rate": 0.801,
+      "winner_retention": {
+        "top_k": 10,
+        "winners_cut": 6,
+        "mean_retention": 0.596,
+        "baseline_mean": 0.3023,
+        "giveback_mean": 0.2087
+      }
+    },
+    "mfe0.01_frac0.5": {
+      "trades_taken": 175,
+      "win_rate": 0.48,
+      "avg_R_net": 0.01563,
+      "total_return": 0.2502,
+      "sharpe_active": 2.385,
+      "max_drawdown": -0.0742,
+      "calmar": 0.858,
+      "pf": 1.605,
+      "drop_top3_total": 0.1609,
+      "drop_top5_total": 0.1077,
+      "early_exit_rate": 0.663,
+      "winner_retention": {
+        "top_k": 10,
+        "winners_cut": 3,
+        "mean_retention": 0.763,
+        "baseline_mean": 0.3023,
+        "giveback_mean": 0.239
+      }
+    },
+    "mfe0.01_frac0.7": {
+      "trades_taken": 175,
+      "win_rate": 0.4457,
+      "avg_R_net": 0.01504,
+      "total_return": 0.2296,
+      "sharpe_active": 2.181,
+      "max_drawdown": -0.0777,
+      "calmar": 0.752,
+      "pf": 1.544,
+      "drop_top3_total": 0.1497,
+      "drop_top5_total": 0.0969,
+      "early_exit_rate": 0.547,
+      "winner_retention": {
+        "top_k": 10,
+        "winners_cut": 2,
+        "mean_retention": 0.765,
+        "baseline_mean": 0.3023,
+        "giveback_mean": 0.24
+      }
+    },
+    "mfe0.02_frac0.3": {
+      "trades_taken": 175,
+      "win_rate": 0.5429,
+      "avg_R_net": 0.02077,
+      "total_return": 0.3772,
+      "sharpe_active": 2.849,
+      "max_drawdown": -0.0603,
+      "calmar": 1.593,
+      "pf": 1.862,
+      "drop_top3_total": 0.2415,
+      "drop_top5_total": 0.2078,
+      "early_exit_rate": 0.735,
+      "winner_retention": {
+        "top_k": 10,
+        "winners_cut": 6,
+        "mean_retention": 0.618,
+        "baseline_mean": 0.3023,
+        "giveback_mean": 0.214
+      }
+    },
+    "mfe0.02_frac0.5": {
+      "trades_taken": 175,
+      "win_rate": 0.4971,
+      "avg_R_net": 0.01706,
+      "total_return": 0.2775,
+      "sharpe_active": 2.631,
+      "max_drawdown": -0.0721,
+      "calmar": 0.978,
+      "pf": 1.668,
+      "drop_top3_total": 0.1863,
+      "drop_top5_total": 0.1318,
+      "early_exit_rate": 0.602,
+      "winner_retention": {
+        "top_k": 10,
+        "winners_cut": 3,
+        "mean_retention": 0.786,
+        "baseline_mean": 0.3023,
+        "giveback_mean": 0.2443
+      }
+    },
+    "mfe0.02_frac0.7": {
+      "trades_taken": 175,
+      "win_rate": 0.4629,
+      "avg_R_net": 0.01647,
+      "total_return": 0.2564,
+      "sharpe_active": 2.425,
+      "max_drawdown": -0.0757,
+      "calmar": 0.862,
+      "pf": 1.602,
+      "drop_top3_total": 0.1747,
+      "drop_top5_total": 0.1209,
+      "early_exit_rate": 0.486,
+      "winner_retention": {
+        "top_k": 10,
+        "winners_cut": 2,
+        "mean_retention": 0.788,
+        "baseline_mean": 0.3023,
+        "giveback_mean": 0.2453
+      }
+    }
+  },
+  "best_variant": "mfe0.02_frac0.3",
+  "placebo_random_exits": {
+    "mean": 0.5135,
+    "q90": 0.615
+  },
+  "strict_bar": {
+    "net_improves": true,
+    "sharpe_holds": true,
+    "tail_preserved": false,
+    "beats_placebo": false
+  },
+  "verdict": "FAIL - flat sizing + fixed 3-day hold; do not over-manage the edge"
+}

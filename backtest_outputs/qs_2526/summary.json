@@ -1,0 +1,45 @@
+{
+  "run_tag": "qs_2526",
+  "mode": "FIXED",
+  "universe": [
+    "QQQ",
+    "SPY"
+  ],
+  "start_equity": 100000.0,
+  "final_equity": 100017.96,
+  "total_pnl": 17.96,
+  "return_pct": 0.02,
+  "closed_trades": 23,
+  "win_rate": 69.6,
+  "expectancy": 0.8,
+  "avg_win": 115.0,
+  "avg_loss": -260.3,
+  "worst": -488.8,
+  "max_drawdown_pct": 1.55,
+  "regime_entry_days": {
+    "bull": 44,
+    "bear": 1,
+    "cash": 3
+  },
+  "peak_concurrent_risk": 3929.0,
+  "pnl_per_calendar_day": 0.0,
+  "exit_mix": {
+    "time_stop": 19,
+    "take_profit": 4
+  },
+  "by_kind": {
+    "put": {
+      "n": 23,
+      "pnl": 18.0
+    }
+  },
+  "params": {
+    "risk_budget": 2000.0,
+    "exposure_pct": 0.35,
+    "tp_frac": 0.5,
+    "sl_mult": 2.0,
+    "time_stop_dte": 21,
+    "max_positions": 6,
+    "regime_mode": "trend200"
+  }
+}

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import pandas as pd
 from config.env_loader import load_instance_env
+from ensure_runtime_outputs import EXIT_ORDER_COLUMNS, ORDER_COLUMNS, ensure_csv
 from alpaca.trading.client import TradingClient
 
 from market_context_builder import TODAY_TAG
@@ -246,8 +247,14 @@ def main() -> None:
     )
 
     targets.to_csv(TARGETS_OUT, index=False)
-    rebalance_orders.to_csv(REBALANCE_OUT, index=False)
-    exit_orders.to_csv(EXIT_OUT, index=False)
+    if rebalance_orders.empty and len(rebalance_orders.columns) == 0:
+        ensure_csv(REBALANCE_OUT, ORDER_COLUMNS)
+    else:
+        rebalance_orders.to_csv(REBALANCE_OUT, index=False)
+    if exit_orders.empty and len(exit_orders.columns) == 0:
+        ensure_csv(EXIT_OUT, EXIT_ORDER_COLUMNS)
+    else:
+        exit_orders.to_csv(EXIT_OUT, index=False)
 
     print_portfolio_summary(summary)
 

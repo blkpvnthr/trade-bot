@@ -1,0 +1,23 @@
+//@version=5
+strategy("SMA Crossover Sample", overlay=true, timeframe="D", initial_capital=10000)
+
+// --- Inputs ---
+fast = input.int(10, "Fast SMA Length")
+slow = input.int(30, "Slow SMA Length")
+sl_pct = input.float(5.0, "Stop Loss %")
+tp_pct = input.float(10.0, "Take Profit %")
+
+// --- Indicators ---
+smaFast = ta.sma(close, fast)
+smaSlow = ta.sma(close, slow)
+
+// --- Entry / Exit Logic ---
+longCondition = ta.crossover(smaFast, smaSlow)
+exitCondition = ta.crossunder(smaFast, smaSlow)
+
+if longCondition
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Stop/Target", "Long", stop=close * (1 - sl_pct / 100), limit=close * (1 + tp_pct / 100))
+
+if exitCondition
+    strategy.close("Long")

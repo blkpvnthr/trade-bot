@@ -1,0 +1,20 @@
+//@version=5
+// family: trend
+strategy("EMA Crossover 12/26", overlay=true, initial_capital=10000)
+
+fast = input.int(12, "Fast EMA")
+slow = input.int(26, "Slow EMA")
+sl_pct = input.float(5.0, "Stop %")
+tp_pct = input.float(10.0, "Target %")
+
+emaFast = ta.ema(close, fast)
+emaSlow = ta.ema(close, slow)
+
+longCondition = ta.crossover(emaFast, emaSlow)
+exitCondition = ta.crossunder(emaFast, emaSlow)
+
+if longCondition
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Stop/Target", "Long", stop=close * (1 - sl_pct / 100), limit=close * (1 + tp_pct / 100))
+if exitCondition
+    strategy.close("Long")

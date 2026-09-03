@@ -1,0 +1,27 @@
+{
+  "run_tag": "lev2_B_TQQQ_2022",
+  "universe": [
+    "TQQQ"
+  ],
+  "window": "2022-01-03..2023-01-03",
+  "start_equity": 100000.0,
+  "final_equity": 77944.56,
+  "total_pnl": -22055.44,
+  "return_pct": -22.06,
+  "closed_trades": 1,
+  "win_rate": 0.0,
+  "max_drawdown_pct": 22.06,
+  "by_kind": {
+    "shares": {
+      "n": 1,
+      "pnl": -22055.0
+    }
+  },
+  "metrics": {
+    "cagr_pct": -19.3,
+    "sharpe": -1.43,
+    "sortino": -0.43,
+    "ulcer": 21.8,
+    "worst_month_pct": -22.1
+  }
+}
