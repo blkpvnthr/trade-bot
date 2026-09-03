@@ -87,7 +87,7 @@ target_session = 2026-08-24   (the next session the weights are held on)
 ```
 
 The decision hash is a pure function of `as_of_close` + target weights + config +
-forecast source — never wall-clock time — so restarts reproduce the same identity.
+forecast source -- never wall-clock time -- so restarts reproduce the same identity.
 
 ---
 
@@ -106,7 +106,7 @@ forecast source — never wall-clock time — so restarts reproduce the same ide
 
 ---
 
-## Safety gates (three layers, all must pass — REJECT, never clip)
+## Safety gates (three layers, all must pass -- REJECT, never clip)
 
 1. **V2.9.8 strategy constraints** (re-checked on the actual, share-rounded book):
    weights finite and non-negative, per-asset caps, growth <= gate ceiling,
@@ -160,7 +160,7 @@ python live_trader.py rebalance --dry-run
 ```
 
 Computes state, decision, target weights, retrieves broker state (if credentials
-exist), builds the full order plan, runs every gate, and prints it — **zero
+exist), builds the full order plan, runs every gate, and prints it -- **zero
 orders**.
 
 ### Paper-trading procedure
@@ -219,7 +219,7 @@ already-submitted legs are reconciled against Alpaca fills; never-submitted legs
 (recorded write-ahead as intents) are submitted. Deterministic client-order-ids
 (`v298-YYYYMMDD-SYM-SIDE-hash8`, plus `-sN` residual slices) and Alpaca's
 duplicate-id rejection prevent double submission. A leg is considered complete
-only when cumulative filled quantity reaches the desired quantity — never merely
+only when cumulative filled quantity reaches the desired quantity -- never merely
 because an order exists or reached a terminal state.
 
 ---
@@ -241,7 +241,7 @@ because an order exists or reached a terminal state.
 The research backtest uses yfinance `auto_adjust=True` total-return closes. The
 live engine uses Alpaca daily bars with `adjustment=ALL` (split + dividend
 adjusted) for the **decision**, which is the closest corporate-action-consistent
-equivalent — but the two vendors are **not** guaranteed numerically identical
+equivalent -- but the two vendors are **not** guaranteed numerically identical
 (different dividend timing/sources). Order sizing always uses **raw executable
 prices** (latest trade), never adjusted historical pseudo-prices. Validate
 splits/dividends/symbol/calendar alignment before trusting live-vs-research parity
@@ -259,7 +259,7 @@ risk levers from bond ETF proxies:
   `growth_ceiling_mult` (tighten the equity gate in risk-off only).
 
 **Enable with `BOND_REGIME_OVERLAY=true`.** When off (default), the multipliers are
-exactly `1.0` — a byte-identical no-op, so the backtest and live parity are
+exactly `1.0` -- a byte-identical no-op, so the backtest and live parity are
 unchanged. When on, `forecast_source` gains `+bond_overlay` and the decision hash
 changes.
 
@@ -281,7 +281,7 @@ changes.
 An optional overlay (`loss_replacement.py`) that, after the allocator sets the
 target book, exits any **actively held** position whose return vs its **cost basis**
 is at or below `loss_replacement_threshold` (default −0.50%) and rotates that
-allocation into the strongest **positive-momentum** eligible asset — then re-runs
+allocation into the strongest **positive-momentum** eligible asset -- then re-runs
 the strategy's own `enforce_constraints` so the swapped book still respects every
 risk limit (per-asset caps, growth ceiling, leverage, vol budget). It is the SAME
 shared helper in the backtest and the live engine.
@@ -305,8 +305,8 @@ shared helper in the backtest and the live engine.
 no-op; when on, `forecast_source` gains `+loss_replacement`, `rebalance_reason`
 becomes `loss_replacement`, and the decision hash changes.
 
-> **This is NOT falsification-validated — ship it OFF.** The A/B harness on real
-> data (2006–2026) shows the −0.50% threshold HURTS risk-adjusted return: it churns
+> **This is NOT falsification-validated -- ship it OFF.** The A/B harness on real
+> data (2006-2026) shows the −0.50% threshold HURTS risk-adjusted return: it churns
 > (turnover 158% → 402%, cost drag 3.1% → 7.9%) and mostly de-risks to cash, giving
 > Sharpe 0.85 → 0.69 (−0.16), CAGR 12.5% → 9.7% (−2.8%) while only trimming max
 > drawdown (−25.0% → −19.3%). Same shape as every rejected overlay here.
@@ -327,12 +327,12 @@ A SECOND, independent exceptional-exit overlay (`momentum_exhaustion.py`). For e
 still-held position it builds a point-in-time composite `momentum_exhaustion_score`
 in [0,1] from four grouped, low-redundancy axes (documented weights):
 
-- **trend/momentum deceleration 0.40** — a prior uptrend (20d>0) whose 5d/10d
+- **trend/momentum deceleration 0.40** -- a prior uptrend (20d>0) whose 5d/10d
   momentum is rolling over, plus SMA20-slope flattening.
-- **oscillator rollover 0.20** — MACD histogram contracting from positive / crossing
+- **oscillator rollover 0.20** -- MACD histogram contracting from positive / crossing
   below zero; RSI rolled down from overbought.
-- **volatility expansion 0.15** — short-horizon realized vol elevated vs its trailing level.
-- **forecast deterioration 0.25** — the allocator's own view (`momentum_view_panel`)
+- **volatility expansion 0.15** -- short-horizon realized vol elevated vs its trailing level.
+- **forecast deterioration 0.25** -- the allocator's own view (`momentum_view_panel`)
   falling from a positive level.
 
 Each axis is smoothed with a short causal rolling-max so staggered evidence counts
@@ -350,8 +350,8 @@ re-processed. Same cooldown + execution/idempotency plumbing.
 by construction (backward-only indicators; `post_exit_outcomes` is offline
 evaluation only, never a decision input). Off by default → byte-identical no-op.
 
-> **Behaviorally INERT on this universe — ship it OFF.** On real data (2006–2026)
-> across the whole threshold×confirmation grid (0.60–0.80 × 1–3), the detector
+> **Behaviorally INERT on this universe -- ship it OFF.** On real data (2006-2026)
+> across the whole threshold×confirmation grid (0.60-0.80 × 1-3), the detector
 > produced at most **1 confirmed exit in 20 years** (3 raw signals, 0 exits at the
 > 0.70/2-day default): config C (exhaustion only) is numerically identical to the
 > baseline. Broad, diversified index ETFs rarely show the violent multi-axis
@@ -371,7 +371,7 @@ evaluation only, never a decision input). Off by default → byte-identical no-o
 
 The UNIFIED rotation engine (`adaptive_rotation.py`), built on the real-data finding
 that a **fixed % stop produces turnover, not alpha**. A deterioration signal here does
-NOT auto-sell — it OPENS a *hold-vs-rotate* evaluation, and capital moves only when a
+NOT auto-sell -- it OPENS a *hold-vs-rotate* evaluation, and capital moves only when a
 candidate (or CASH) is *materially superior after costs*. When enabled it **supersedes**
 the naive `loss_replacement` + `momentum_exhaustion` overlays (a config guard forbids
 enabling more than one rotation family). Default OFF → byte-identical.
@@ -381,13 +381,13 @@ enabling more than one rotation family). Default OFF → byte-identical.
   (`adaptive_damage_thresholds`, looser in BULL, tighter in CRISIS), OR a confirmed
   exhaustion hazard. This only *opens* the evaluation.
 - **Gate 1 (opportunity, rank-units):** cross-sectional percentile ranks (the repo's
-  native currency — the IC is rank-IC) of forecast/accel/risk-adj momentum give a
+  native currency -- the IC is rank-IC) of forecast/accel/risk-adj momentum give a
   common `base_score`; `net_edge = candidate_opportunity − hold_score − turnover_penalty
   − concentration_penalty > adaptive_minimum_rotation_edge`, with a candidate quality
   floor and an asymmetric hysteresis floor (`hold_score_floor`).
 - **Gate 2 (cost, excess-return units):** `view[c]−view[s] > 2·transaction_cost +
   adaptive_cost_safety_margin`. Because `view` is an EXCESS return, CASH's forecast is
-  identically 0 — cash is a first-class, always-available candidate (no rf needed).
+  identically 0 -- cash is a first-class, always-available candidate (no rf needed).
 - **Churn control:** `adaptive_min_hold_days` (a real-damage source bypasses it; a
   hazard-only source respects it), the shared cooldown ledger, and a `position_entry`
   ledger for `days_held` (backtest ↔ live parity via the same session-count template as
@@ -395,14 +395,14 @@ enabling more than one rotation family). Default OFF → byte-identical.
   matrix; the swapped book is re-run through `enforce_constraints`. Same execution /
   idempotency / restart path as the other overlays.
 
-> **REAL-DATA RESULT (2006–2026, backtest_rotation_overlays.py A/B/C/D):**
-> the opportunity gate works exactly as intended — of **643 deterioration events it
+> **REAL-DATA RESULT (2006-2026, backtest_rotation_overlays.py A/B/C/D):**
+> the opportunity gate works exactly as intended -- of **643 deterioration events it
 > executed only 31 (95.2% abstention)**: turnover **170% vs the −0.5% stop's 402%**,
 > Sharpe **0.85 = baseline** (vs the stops' 0.69 / 0.79), and it is the only config with
 > positive turnover efficiency. It is **stable across a 27-cell parameter grid** and
 > across regimes. The decision funnel is caused by the intended gates (hysteresis
 > 643→191, quality floor 191→51, cost gate 51→31); `adaptive_minimum_rotation_edge` is
-> non-binding on this universe (the quality+cost gates dominate — a redundant backstop).
+> non-binding on this universe (the quality+cost gates dominate -- a redundant backstop).
 > **BUT there is no convincing alpha vs baseline** (ΔSharpe +0.003, ΔCAGR +0.05%): split
 > apart, risky→risky rotation alpha is coin-flip (≈50% hit) and risky→cash avoidance has
 > only a transient 10D edge.
@@ -414,25 +414,25 @@ enabling more than one rotation family). Default OFF → byte-identical.
 >
 > **Classification:** PROMOTE the adaptive engine *over the fixed −0.5%/−2.0% stops* as
 > the rotation architecture (it strictly dominates them and falsifies their reflexive
-> trading). **KEEP OFF by default vs the baseline** pending true holdout validation — it
+> trading). **KEEP OFF by default vs the baseline** pending true holdout validation -- it
 > reproduces the baseline with controlled churn but does not add return. `Config E`
 > (ML) should predict the triple-barrier outcome of the rotation decision itself to
-> sharpen *selection* — not built this pass.
+> sharpen *selection* -- not built this pass.
 
 ## Dynamic portfolio-risk controller (opt-in, OFF by default, FALSIFIED)
 
 A portfolio-LEVEL risk-budgeting layer (`dynamic_risk.py`) answering "HOW MUCH risk?"
 (the complement of the adaptive engine's "WHERE?"). It scales the strategy's existing
-volatility budget by ONE bounded per-date multiplier — the same `vol_budget_mult` lever
+volatility budget by ONE bounded per-date multiplier -- the same `vol_budget_mult` lever
 the bond overlay uses, so the optimizer / vol-scaler / leverage / caps stay authoritative.
 Configs **F** (dynamic only) and **G** (adaptive-D + dynamic). Default OFF → the multiplier
 is exactly 1.0 → byte-identical (proven by parity tests and an OFF-equals-base check).
 
 - **Opportunity O** ∈ [0,1]: convex-weighted growth-sleeve breadth (forecast view, 20d
   momentum, 200d trend) plus the recovery-state regime.
-- **Stress S** ∈ [0,1]: growth-sleeve covariance stress from the REAL `ewma_cov` —
+- **Stress S** ∈ [0,1]: growth-sleeve covariance stress from the REAL `ewma_cov` --
   vol level, vol **acceleration** (rising vs falling), and average correlation, each
-  trailing-percentile-ranked. **Drawdown is EXCLUDED from S** — it stays the independent
+  trailing-percentile-ranked. **Drawdown is EXCLUDED from S** -- it stays the independent
   `SevereBear` hard-risk layer.
 - **Asymmetric AND-gate:** `net = clip(O·(1−S) − (1−O)·S + γ_R·R, −1, 1)`. Elevated vol
   alone with strong breadth nets to neutral (does NOT cut a broad bull on vol). The map has
@@ -441,14 +441,14 @@ is exactly 1.0 → byte-identical (proven by parity tests and an OFF-equals-base
   snaps to the floor on `SevereBear`. Recovery R leads the lagging regime and NEVER gates
   de-risk speed. Composes with the bond `vol_mult` and with adaptive-D (config G).
 
-> **REAL-DATA RESULT (2006–2026, backtest_rotation_overlays.py A/B/C/D/F/G + `--ablation`):**
-> the hypothesis — raise CAGR AND lower MaxDD together — is **FALSIFIED**. F is a modest
+> **REAL-DATA RESULT (2006-2026, backtest_rotation_overlays.py A/B/C/D/F/G + `--ablation`):**
+> the hypothesis -- raise CAGR AND lower MaxDD together -- is **FALSIFIED**. F is a modest
 > drawdown-insurance trade (MaxDD **−25.0% → −23.5%**) at a small CAGR cost with **flat
-> Sharpe (0.85)**. On the FROZEN held-out split (2019–2026) F CAGR **13.37% < A 13.55%**,
-> Sharpe **0.76 = 0.76** — no CAGR/Sharpe edge. The **F1–F5 ablation is the decisive kill:**
-> F1 regime-only Sharpe **0.93**, full controller F4/F5 **0.92** — it adds **zero
+> Sharpe (0.85)**. On the FROZEN held-out split (2019-2026) F CAGR **13.37% < A 13.55%**,
+> Sharpe **0.76 = 0.76** -- no CAGR/Sharpe edge. The **F1-F5 ablation is the decisive kill:**
+> F1 regime-only Sharpe **0.93**, full controller F4/F5 **0.92** -- it adds **zero
 > information beyond the existing regime gate** (a slower regime filter). It de-risked 137
-> days ahead of the 2022 trough (helping the worst window) but dragged the calm windows —
+> days ahead of the 2022 trough (helping the worst window) but dragged the calm windows --
 > the "only rescues 2022" pattern.
 >
 > ```bash
@@ -456,13 +456,34 @@ is exactly 1.0 → byte-identical (proven by parity tests and an OFF-equals-base
 > python backtest_rotation_overlays.py --ablation               # real (yfinance) A..G + F1-F5
 > ```
 >
-> **Classification: REJECT — ship OFF.** Same shape as the bond overlay and the Fed/macro
+> **Classification: REJECT -- ship OFF.** Same shape as the bond overlay and the Fed/macro
 > regime overlay: more machinery reproduces what the gate already does. A 6-lens adversarial
 > review (lookahead / parity / off-parity / constraint-safety / numerics / gate-soundness)
-> found **0 confirmed bugs** — the controller is correct, just not an edge. Do NOT wire it.
+> found **0 confirmed bugs** -- the controller is correct, just not an edge. Do NOT wire it.
+
+### Enabling it (paper forward-test only; env-gated, no code edit)
+
+The controller is FALSIFIED and ships OFF. The ONLY sanctioned reason to turn it on is a
+**paper forward-test** to collect out-of-sample evidence. It is env-gated (mirrors the
+bond overlay), so no code change is needed:
+
+- `DYNAMIC_RISK_CONTROLLER=true` -- turns the controller ON (sets
+  `AllocatorConfig.dynamic_risk_enabled=True` in `build_engine`, the single construction
+  point shared by `live_trader.py` and the `run_engine.py` cron). It logs a loud warning
+  that a falsified overlay is active and the frozen strategy is being changed.
+- Under **LIVE** mode the controller is **REFUSED** and stays OFF (it did not pass
+  held-out validation), logging an error -- UNLESS `DYNAMIC_RISK_ALLOW_LIVE=true` is ALSO
+  set. Do not set that flag: enabling a falsified overlay on real money is not sanctioned.
+
+Put the flag in the ONE env file the engine loads (`ENV_FILE=<path>`, else
+`PROJECT_ROOT/.env`). Verify with `python run_engine.py`: the log shows
+`DYNAMIC_RISK_CONTROLLER is ON ...` and the decision surfaces `portfolio_risk_multiplier`
+and `risk_state`. To disable, remove the flag -- default OFF is byte-identical to the base
+strategy. The controller only scales the volatility budget; all three safety gates, the
+leverage cap, and the growth ceiling remain authoritative.
 
 ## Configuration reference
 
-Strategy parameters live in `AllocatorConfig` (unchanged — do not tune here).
+Strategy parameters live in `AllocatorConfig` (unchanged -- do not tune here).
 Operational safety lives in `ExecutionConfig` (env `LIVE_MAX_*`). See
 `.env.example` for the live-trading section.
