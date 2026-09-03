@@ -115,6 +115,23 @@ def build_engine(mode: Mode, *, need_broker: bool = True,
                  store: ExecutionStore | None = None) -> LiveEngine:
     """Construct the engine with real adapters. paper flag is explicit per mode."""
     acfg = acfg or AllocatorConfig()
+    # Optional dynamic portfolio-risk controller (opt-in; FALSIFIED -> ships OFF).
+    # Env-gated like the bond overlay. Because it did NOT pass held-out validation
+    # (a real-data REJECT -- see LIVE_TRADING.md), it is REFUSED under LIVE mode
+    # unless a SEPARATE explicit ack is set: a paper forward-test is the only
+    # sanctioned use, so "enable" can never silently scale real-money risk.
+    if os.environ.get("DYNAMIC_RISK_CONTROLLER", "").strip().lower() in ("1", "true", "yes", "on"):
+        live_ack = os.environ.get("DYNAMIC_RISK_ALLOW_LIVE", "").strip().lower() in ("1", "true", "yes", "on")
+        if mode == Mode.LIVE and not live_ack:
+            log.error("DYNAMIC_RISK_CONTROLLER requested under LIVE, but it is FALSIFIED "
+                      "(held-out REJECT) -- refusing to scale real-money risk; keeping it "
+                      "OFF. Set DYNAMIC_RISK_ALLOW_LIVE=true to override (NOT recommended).")
+        else:
+            from dataclasses import replace as _replace
+            acfg = _replace(acfg, dynamic_risk_enabled=True)
+            log.warning("DYNAMIC_RISK_CONTROLLER is ON -- activating a FALSIFIED overlay "
+                        "(held-out REJECT; see LIVE_TRADING.md) that scales the vol budget. "
+                        "Paper forward-test only; the frozen strategy is being changed.")
     ecfg = ecfg or ExecutionConfig.from_env()
     store = store or ExecutionStore()
 
