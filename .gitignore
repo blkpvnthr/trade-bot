@@ -188,3 +188,12 @@ logs-instance2/
 # TJL runtime position state (never commit)
 tjl_open_positions.json
 .env.earnings_paper
+
+# =============================================================================
+# Graphify intelligence artifacts + k8s manifests (merged from main)
+# =============================================================================
+graphify-out/cache/
+graphify-out/feature_streams/
+graphify-out/symbol_state/
+graphify-out/intraday_feature_stream/
+k8s/
