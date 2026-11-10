@@ -900,7 +900,7 @@ def rank_candidates(latest: pd.DataFrame, model: Pipeline) -> pd.DataFrame:
     latest["rank_score"] = (
             0.35 * latest["model_continuation_prob"]
             + 0.20 * latest["momentum_score"]
-            + 0.15 * latest["signal_confidence"]
+            + 0.15 * latest["breakout_momentum_score"]
             + 0.10 * latest["trend_score"]
             + 0.10 * latest["liquidity_score"]
             + 0.10 * latest["volume_ratio20"].clip(0, 3) / 3

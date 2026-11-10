@@ -31,31 +31,31 @@
 | Metric | Value |
 |---|---|
 | Starting equity | $13,000.00 |
-| Ending equity | $11,581.91 |
-| **Total return** | **-10.91%** |
-| Annualised return | -10.95% |
-| Annualised volatility | 4.66% |
-| **Max drawdown** | **-12.81%** |
-| **Sharpe ratio** | **-3.486** |
-| Total trades | 68 |
-| Win rate | 22.1% |
-| Profit factor | 0.488 |
-| Avg win | $89.94 |
-| Avg loss | $52.21 |
-| Largest winner | $222.41 |
+| Ending equity | $11,540.42 |
+| **Total return** | **-11.23%** |
+| Annualised return | -11.27% |
+| Annualised volatility | 4.67% |
+| **Max drawdown** | **-13.12%** |
+| **Sharpe ratio** | **-3.551** |
+| Total trades | 69 |
+| Win rate | 21.7% |
+| Profit factor | 0.478 |
+| Avg win | $89.28 |
+| Avg loss | $51.83 |
+| Largest winner | $219.21 |
 | Largest loser | $-99.30 |
-| Avg holding period | 8.2 days |
-| Calls traded | 68 |
+| Avg holding period | 8.1 days |
+| Calls traded | 69 |
 | Puts traded | 0 |
-| Gross profit | $1349.05 |
-| Gross loss | $2767.14 |
-| Total commissions | $32.10 |
+| Gross profit | $1339.18 |
+| Gross loss | $2798.76 |
+| Total commissions | $32.70 |
 
 ## Trade Breakdown
 
 | Exit reason | Count |
 |---|---|
-| hard_stop | 51 |
+| hard_stop | 52 |
 | take_profit | 13 |
 | profit_giveback | 4 |
 
@@ -63,14 +63,14 @@
 
 | Skip reason | Count |
 |---|---|
-| contract_cost_exceeds_risk_budget | 165 |
+| contract_cost_exceeds_risk_budget | 170 |
 | no_eligible_contract | 26 |
 | vix_too_high | 1 |
 | insufficient_cash | 0 |
 
 > **$13K risk budget note**: At 1.5% risk = $195.
 > Any contract priced above $1.95/share ($195/contract) was skipped entirely.
-> This occurred **165** time(s) during the backtest period.
+> This occurred **170** time(s) during the backtest period.
 
 ## Methodology Limitations
 

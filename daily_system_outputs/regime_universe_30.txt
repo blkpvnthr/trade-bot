@@ -1,5 +1,9 @@
 TRADING_UNIVERSE = [
     "QQQ",
+    "AAPL",
     "SPY",
+    "IBIT",
+    "AAL",
     "IWM",
+    "TLT",
 ]

@@ -1,18 +1,18 @@
 ===== DAILY WALK-FORWARD-EMULATED SYSTEM SUMMARY =====
-timestamp_utc              : 2026-05-05T10:36:29.204760+00:00
+timestamp_utc              : 2026-11-10T12:50:56.280524+00:00
 execute_requested           : False
 
-account_equity              : $100,000.00
-account_cash                : $100,000.00
+account_equity              : $1,000.00
+account_cash                : $1,000.00
 
-analysis_symbols            : 336
-bar_symbols                 : 341
-feature_rows                : 119,784
-training_rows               : 4,252
-prediction_rows             : 336
+analysis_symbols            : 500
+bar_symbols                 : 505
+feature_rows                : 177,440
+training_rows               : 15,672
+prediction_rows             : 500
 ranked_candidates           : 3
 portfolio_targets           : 2
-validation_auc              : 0.48881533080282924
+validation_auc              : 0.5328233970313211
 
 outputs_dir                 : /Users/blkpvnthr/Desktop/trader/daily_system_outputs
 symbols_file                : /Users/blkpvnthr/Desktop/trader/daily_system_outputs/latest_walkforward_emulated_trade_universe.txt

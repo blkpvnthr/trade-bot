@@ -1600,15 +1600,6 @@ def main() -> None:
 
     # Use the existing optimizer/execution layer for order planning.
     # The optimizer still handles current broker positions, cash buffer, and trade sizing.
-    optimizer_config = OptimizerConfig(
-        starting_equity=account.equity,
-        cash_buffer_pct=args.cash_buffer,
-        max_gross_exposure=optimizer_config.max_gross_exposure,
-        max_position_weight=optimizer_config.max_position_weight,
-        min_position_weight=optimizer_config.min_position_weight,
-        max_positions=args.max_positions,
-        min_trade_dollars=args.min_trade_dollars,
-    )
 
     optimizer_input = add_optimizer_compatibility_columns(targets)
 
