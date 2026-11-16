@@ -211,12 +211,33 @@ MAX_DAILY_LOSS_DOLLARS = 200.0
 
 WIKI_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
-DEFAULT_SCAN_UNIVERSE = [
-    "QQQ", "TQQQ", "SQQQ", "SPY", "DIA", "IWM", "XLK", "SOXX", "SMH",
-    "AMD", "NVDA", "AVGO", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "TSLA",
-    "PLTR", "COIN", "MARA", "RIOT", "RGTI", "QBTS", "QUBT", "IONQ", "SOUN",
-    "OKLO", "APLD", "ALAB", "ARM",
-]
+UNIVERSE_FILE = PROJECT_ROOT / "universe.txt"
+
+def load_trading_universe() -> list[str]:
+    if not UNIVERSE_FILE.is_file():
+        raise FileNotFoundError(f"Trading universe not found: {UNIVERSE_FILE}")
+
+    import re
+
+    text = UNIVERSE_FILE.read_text(encoding="utf-8")
+    text = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+
+    symbols = [
+        symbol.strip().strip(chr(34) + chr(39)).upper()
+        for symbol in re.split(r"[,\s]+", text)
+        if symbol.strip()
+    ]
+
+    symbols = list(dict.fromkeys(symbols))
+
+    if not symbols:
+        raise ValueError("universe.txt contains no trading symbols")
+
+    print(f"[universe] loaded {len(symbols)} symbols from {UNIVERSE_FILE}")
+    return symbols
+
+
+DEFAULT_SCAN_UNIVERSE = load_trading_universe()
 
 
 # ======================================================================# Dataclasses
@@ -303,6 +324,17 @@ class ScannerConfig:
     min_opportunity_score: float = 0.60
     min_breakout_confirmation_score: float = 0.55
     require_positive_momentum_or_breakout: bool = True
+
+    # Daily-green 2:1 strategy (equities, long only).
+    # ENTER when price > today's open; STOP at today's open (day turns red);
+    # TARGET at entry + daily_green_rr * risk, risk = entry - open floored by min_risk_pct.
+    daily_green_strategy_enabled: bool = True
+    daily_green_rr: float = 2.0
+    daily_green_min_risk_pct: float = 0.0015
+    daily_green_per_position_weight: float = 0.09
+    daily_green_max_positions: int = 8
+    daily_green_flatten_before_close_min: int = 5
+    daily_green_reenter_after_stop: bool = False
 
     # Intraday entry-analysis layer.
     analyze_intraday_entries: bool = True
@@ -392,7 +424,7 @@ class ScannerConfig:
 
     # Universe source.
     # Default is LLM sentiment universe from llm_sentiment_universe_selector.py.
-    use_llm_sentiment_universe: bool = True
+    use_llm_sentiment_universe: bool = False
     refresh_llm_sentiment_universe: bool = True
     min_llm_universe_confidence: float = 0.0
 
@@ -3502,7 +3534,10 @@ class MomentumSetupScanner:
         bars = self._download_bars(symbols)
         if bars.empty:
             print("[scanner] no bars downloaded")
-            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+            empty_orders = pd.DataFrame(columns=["symbol", "side", "delta_shares", "delta_dollars", "price", "reason"])
+            empty_orders.to_csv(DEFAULT_REBALANCE_ORDERS, index=False)
+            empty_orders.to_csv(DEFAULT_EXIT_ORDERS, index=False)
+            return empty_orders, empty_orders.copy(), pd.DataFrame()
 
         features = self._build_features(bars)
         scores = self._score_latest(features)
@@ -3523,7 +3558,10 @@ class MomentumSetupScanner:
                     ).reset_index(drop=True)
         if scores.empty:
             print("[scanner] no symbols passed scanner filters")
-            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+            empty_orders = pd.DataFrame(columns=["symbol", "side", "delta_shares", "delta_dollars", "price", "reason"])
+            empty_orders.to_csv(DEFAULT_REBALANCE_ORDERS, index=False)
+            empty_orders.to_csv(DEFAULT_EXIT_ORDERS, index=False)
+            return empty_orders, empty_orders.copy(), pd.DataFrame()
 
         scores.to_csv(SCANNER_SCORES_PATH, index=False)
         print("[scanner] top setups:")
@@ -3688,7 +3726,7 @@ class MomentumSetupScanner:
                 }
             )
 
-            rebalance = pd.DataFrame(rows)
+        rebalance = pd.DataFrame(rows, columns=["symbol", "side", "delta_shares", "delta_dollars", "price", "reason", "target_weight", "current_weight", "delta_weight", "trade_confidence"])
 
         # ------------------------------------------------------------------
         # Execution-alpha gate:
@@ -3712,6 +3750,16 @@ class MomentumSetupScanner:
         print(f"[scanner] wrote rebalance_orders={DEFAULT_REBALANCE_ORDERS} rows={len(rebalance)}")
         print(f"[scanner] wrote exit_orders={DEFAULT_EXIT_ORDERS} rows={len(exits)}")
         return rebalance, exits, scores
+
+    def _trigger_options_booster_if_needed(self, rebalance: pd.DataFrame) -> None:
+        """Fail closed until the optional options booster integration is implemented.
+
+        The original scanner called this missing method. Do not submit options
+        orders from an unverified integration or treat missing candidates as buys.
+        """
+        if not self.config.options_booster_enabled:
+            return
+        print("[options-booster] integration unavailable; skipping options orders (paper executor continues)")
 
     def _rank_pct(self, series: pd.Series) -> pd.Series:
         """Safe percentile rank used for cross-sectional execution ranking."""
@@ -5851,8 +5899,8 @@ def build_default_config() -> ExecutorConfig:
         min_setup_score=0.62,
         min_buy_confidence=0.58,
         min_avg_dollar_volume=5_000_000.0,
-        use_llm_sentiment_universe=True,
-        refresh_llm_sentiment_universe=True,
+        use_llm_sentiment_universe=False,
+        refresh_llm_sentiment_universe=False,
         min_llm_universe_confidence=0.0,
         options_booster_enabled=True,
         options_booster_confidence_threshold=0.75,
@@ -5864,6 +5912,7 @@ def build_default_config() -> ExecutorConfig:
         base_target_weight=0.03,
         max_target_weight=0.10,
         broad_market_scan=False,
+        daily_green_strategy_enabled=True,
         stop_loss_pct=-0.025,
         profit_lock_trigger_pct=0.04,
         profit_giveback_pct=0.015,
