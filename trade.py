@@ -3693,7 +3693,62 @@ class MomentumSetupScanner:
         self._save_state(state)
         return pd.DataFrame(rows)
 
+    def _build_daily_green_orders(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        rebalance_cols = [
+            "symbol", "side", "delta_shares", "delta_dollars", "price", "reason",
+            "target_weight", "current_weight", "delta_weight", "trade_confidence",
+        ]
+        symbols = self._universe()
+        print(f"[daily-green] scanning universe symbols={len(symbols)}")
+
+        bars = self._download_bars(symbols)
+        open_price_map = compute_today_open_and_price(bars)
+
+        acct = self.broker.get_account_snapshot()
+        equity = max(float(acct.equity), 1.0)
+        positions = [p for p in self.broker.get_all_open_positions() if p.qty > 0]
+        held_symbols = {normalize_symbol(p.symbol) for p in positions}
+
+        # Today's open for every held symbol, fetching any not already in the map.
+        open_by_symbol = {sym: o for sym, (o, _p) in open_price_map.items()}
+        missing = [sym for sym in held_symbols if sym not in open_by_symbol]
+        if missing:
+            extra = compute_today_open_and_price(self._download_bars(missing))
+            for sym, (o, _p) in extra.items():
+                open_by_symbol[sym] = o
+
+        now_et = datetime.now(ET)
+
+        exit_rows = build_daily_green_exit_rows(positions, open_by_symbol, now_et, self.config, equity)
+
+        # One round-trip per symbol per day: block same-day re-entry after any exit
+        # (stop or target) unless explicitly allowed.
+        if not self.config.daily_green_reenter_after_stop:
+            for r in exit_rows:
+                if r["reason"] in ("day_turned_red", "rr_2to1_target"):
+                    mark_no_reentry_symbol(r["symbol"], reason=r["reason"])
+
+        # No new entries inside the end-of-day flatten window.
+        if within_eod_flatten_window(now_et, self.config.daily_green_flatten_before_close_min):
+            entry_rows: list[dict[str, Any]] = []
+        else:
+            no_reentry = load_no_reentry_symbols()
+            entry_rows = build_daily_green_entry_rows(
+                open_price_map, held_symbols, no_reentry, equity, self.config, self.executor_config
+            )
+
+        rebalance = pd.DataFrame(entry_rows, columns=rebalance_cols) if entry_rows else pd.DataFrame(columns=rebalance_cols)
+        exits = pd.DataFrame(exit_rows) if exit_rows else pd.DataFrame(columns=rebalance_cols)
+
+        rebalance.to_csv(DEFAULT_REBALANCE_ORDERS, index=False)
+        exits.to_csv(DEFAULT_EXIT_ORDERS, index=False)
+        print(f"[daily-green] entries={len(rebalance)} exits={len(exits)} equity={equity:.2f}")
+        return rebalance, exits, pd.DataFrame()
+
     def build_orders(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        if self.config.daily_green_strategy_enabled:
+            return self._build_daily_green_orders()
+
         symbols = self._universe()
         print(f"[scanner] scanning universe symbols={len(symbols)}")
 

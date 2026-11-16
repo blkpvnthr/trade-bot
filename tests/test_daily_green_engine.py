@@ -209,3 +209,50 @@ def test_exit_rows_stop_target_and_eod():
     eod = datetime(2026, 11, 18, 15, 57, tzinfo=et)
     rows_eod = trade.build_daily_green_exit_rows([pos_hold], open_by_symbol, eod, _cfg(), 13000.0)
     assert len(rows_eod) == 1 and rows_eod[0]["reason"] == "eod_flatten"
+
+
+class _FakeBroker:
+    def __init__(self, equity, positions):
+        self._equity = equity
+        self._positions = positions
+
+    def get_account_snapshot(self):
+        return trade.AccountSnapshot(buying_power=self._equity, equity=self._equity, cash=self._equity, portfolio_value=self._equity)
+
+    def get_all_open_positions(self):
+        return self._positions
+
+
+def _make_daily_green_scanner(equity, positions, bars, universe):
+    s = object.__new__(trade.MomentumSetupScanner)
+    s.broker = _FakeBroker(equity, positions)
+    s.config = trade.ScannerConfig(daily_green_strategy_enabled=True)
+    s.executor_config = trade.ExecutorConfig()
+    s.data = None
+    s.llm_metadata_by_symbol = {}
+    s._universe = lambda: universe
+    s._download_bars = lambda syms: bars
+    return s
+
+
+def test_build_orders_branches_to_daily_green(tmp_path, monkeypatch):
+    monkeypatch.setattr(trade, "DEFAULT_REBALANCE_ORDERS", tmp_path / "rb.csv")
+    monkeypatch.setattr(trade, "DEFAULT_EXIT_ORDERS", tmp_path / "ex.csv")
+    monkeypatch.setattr(trade, "load_no_reentry_symbols", lambda: set())
+    monkeypatch.setattr(trade, "mark_no_reentry_symbol", lambda *a, **k: None)
+    # Pin the clock-dependent EOD check so the test never flakes near the close.
+    monkeypatch.setattr(trade, "within_eod_flatten_window", lambda *a, **k: False)
+
+    bars = pd.DataFrame(
+        [
+            {"symbol": "AAA", "timestamp": pd.Timestamp("2026-11-17 20:00", tz="UTC"), "open": 100.0, "close": 101.0},
+            {"symbol": "BBB", "timestamp": pd.Timestamp("2026-11-17 20:00", tz="UTC"), "open": 50.0, "close": 49.0},
+        ]
+    )
+    s = _make_daily_green_scanner(13000.0, positions=[], bars=bars, universe=["AAA", "BBB"])
+    rebalance, exits, scores = s.build_orders()
+
+    assert list(rebalance["symbol"]) == ["AAA"]
+    assert rebalance.iloc[0]["reason"] == "daily_green_entry"
+    assert exits.empty
+    assert scores.empty
