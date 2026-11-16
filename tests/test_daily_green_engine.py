@@ -178,14 +178,40 @@ def test_entry_rows_respects_no_reentry_and_max_positions():
     assert len(rows2) == 1
 
 
-def test_entry_rows_min_notional_excludes_tiny_account():
+def test_entry_rows_excludes_dust_below_min_notional_floor():
     open_price_map = {"AAA": (10.0, 11.0)}
-    # equity 500 * 0.09 = 45 < min_notional_to_trade (75) -> excluded
+    # equity 10 * 0.09 = 0.90 < dynamic min_notional floor ($1) -> excluded (dust)
     rows = trade.build_daily_green_entry_rows(
         open_price_map, held_symbols=set(), no_reentry_symbols=set(),
-        equity=500.0, config=_cfg(), executor_config=_ecfg(),
+        equity=10.0, config=_cfg(), executor_config=_ecfg(),
     )
     assert rows == []
+
+
+def test_entry_rows_small_account_now_trades():
+    # Regression: an ~$824 account was blocked by the static $75 min_notional
+    # (0.09*824 = 74.23 < 75). With the dynamic cap it must now generate an entry.
+    open_price_map = {"AAA": (46.0, 47.0)}  # green, cheap enough for >=1 share on $74
+    rows = trade.build_daily_green_entry_rows(
+        open_price_map, held_symbols=set(), no_reentry_symbols=set(),
+        equity=824.74, config=_cfg(), executor_config=_ecfg(),
+    )
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "AAA"
+    assert rows[0]["delta_shares"] >= 1
+
+
+def test_risk_profile_caps_small_account_but_preserves_large():
+    small = trade.build_account_risk_profile(824.74)
+    assert small.min_cash_buffer <= 824.74 * trade.MAX_CASH_BUFFER_FRACTION + 1e-9
+    assert small.min_notional_to_trade <= 824.74 * trade.MAX_MIN_NOTIONAL_FRACTION + 1e-9
+    # 9% per-position sizing must clear the dynamic min_notional on a small account
+    assert 0.09 * 824.74 > small.min_notional_to_trade
+
+    big = trade.build_account_risk_profile(13_000.0)
+    # ~$13K account: fixed floors are below the fractional caps, so unchanged
+    assert big.min_cash_buffer == 1_500.0
+    assert big.min_notional_to_trade == 75.0
 
 
 def test_exit_rows_stop_target_and_eod():

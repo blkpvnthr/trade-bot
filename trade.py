@@ -193,6 +193,12 @@ HEARTBEAT_SECONDS = 60
 
 MIN_BUYING_POWER = 250.0
 MIN_NOTIONAL_TO_TRADE = 75.0
+
+# Dynamic risk scaling: a fixed-dollar floor must never exceed these fractions of
+# account equity, or a small account is locked out of trading entirely. Large
+# accounts are unaffected (their fixed floors fall below these fractional caps).
+MAX_CASH_BUFFER_FRACTION = 0.15
+MAX_MIN_NOTIONAL_FRACTION = 0.03
 MIN_WEIGHT_DELTA = 0.005
 
 # Fallback defaults. Actual risk is dynamically scaled from account equity.
@@ -791,6 +797,11 @@ def build_account_risk_profile(equity: float) -> AccountRiskProfile:
         daily_drawdown_limit = -0.0125
         kill_floor_drawdown = 0.07
         min_notional = 1_000.0
+
+    # Dynamic caps: never reserve/require more than a sane fraction of a small
+    # account. No-op for larger accounts whose fixed floors are already lower.
+    min_cash_buffer = min(min_cash_buffer, equity * MAX_CASH_BUFFER_FRACTION)
+    min_notional = min(min_notional, max(1.0, equity * MAX_MIN_NOTIONAL_FRACTION))
 
     return AccountRiskProfile(
         band=band,
@@ -2637,6 +2648,8 @@ def build_daily_green_entry_rows(
         return rows
 
     target_weight = min(config.daily_green_per_position_weight, executor_config.max_position_weight)
+    # Dynamic min-notional scales with the account so small balances are not locked out.
+    min_notional = build_account_risk_profile(equity).min_notional_to_trade
     for raw_symbol, (open_today, price) in open_price_map.items():
         symbol = normalize_symbol(raw_symbol)
         if symbol in held_symbols:
@@ -2647,7 +2660,7 @@ def build_daily_green_entry_rows(
             continue
 
         delta_dollars = target_weight * equity
-        if delta_dollars < executor_config.min_notional_to_trade:
+        if delta_dollars < min_notional:
             continue
         delta_shares = int(delta_dollars // price)
         if delta_shares <= 0:
@@ -4979,7 +4992,7 @@ class ProductionOrderExecutor:
 
         plan["abs_delta_shares"] = plan["delta_shares"].abs().fillna(0)
         plan["abs_delta_dollars"] = plan["delta_dollars"].abs().fillna(0)
-        plan = plan[(plan["side"] == "sell") | (plan["abs_delta_dollars"] >= self.config.min_notional_to_trade)].copy()
+        plan = plan[(plan["side"] == "sell") | (plan["abs_delta_dollars"] >= build_account_risk_profile(equity).min_notional_to_trade)].copy()
         if plan.empty:
             return pd.DataFrame()
 
