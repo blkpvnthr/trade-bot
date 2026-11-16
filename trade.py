@@ -2612,12 +2612,12 @@ def compute_today_open_and_price(bars: pd.DataFrame) -> dict[str, tuple[float, f
     out: dict[str, tuple[float, float]] = {}
     if bars is None or bars.empty:
         return out
+    bars = bars.copy()
+    bars["symbol"] = bars["symbol"].map(normalize_symbol)
     for symbol, g in bars.groupby("symbol", sort=False):
         g = g.sort_values("timestamp")
         last = g.iloc[-1]
-        open_today = to_float(last.get("open"))
-        price = to_float(last.get("close"))
-        out[normalize_symbol(symbol)] = (open_today, price)
+        out[symbol] = (to_float(last.get("open")), to_float(last.get("close")))
     return out
 
 

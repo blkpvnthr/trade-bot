@@ -90,3 +90,44 @@ def test_compute_today_open_and_price():
     out = trade.compute_today_open_and_price(bars)
     assert out["AAA"] == (11.0, 12.0)
     assert out["BBB"] == (50.0, 49.0)
+
+
+def test_exit_decision_rejects_nonpositive_price():
+    assert trade.daily_green_exit_decision(100.0, 0.0, 101.0, 2.0, 0.0015) == (False, "")
+    assert trade.daily_green_exit_decision(100.0, -5.0, 101.0, 2.0, 0.0015) == (False, "")
+
+
+def test_compute_today_open_and_price_sorts_by_timestamp():
+    # rows supplied OUT OF chronological order; latest timestamp must win
+    bars = pd.DataFrame(
+        [
+            {"symbol": "AAA", "timestamp": pd.Timestamp("2026-11-17 20:00", tz="UTC"), "open": 11.0, "close": 12.0},
+            {"symbol": "AAA", "timestamp": pd.Timestamp("2026-11-16 20:00", tz="UTC"), "open": 10.0, "close": 10.5},
+        ]
+    )
+    out = trade.compute_today_open_and_price(bars)
+    assert out["AAA"] == (11.0, 12.0)
+
+
+def test_compute_today_open_and_price_normalizes_before_grouping():
+    bars = pd.DataFrame(
+        [
+            {"symbol": "aapl", "timestamp": pd.Timestamp("2026-11-16 20:00", tz="UTC"), "open": 9.0, "close": 9.5},
+            {"symbol": "AAPL", "timestamp": pd.Timestamp("2026-11-17 20:00", tz="UTC"), "open": 10.0, "close": 11.0},
+        ]
+    )
+    out = trade.compute_today_open_and_price(bars)
+    assert out == {"AAPL": (10.0, 11.0)}
+
+
+def test_compute_today_open_and_price_empty_and_none():
+    assert trade.compute_today_open_and_price(None) == {}
+    assert trade.compute_today_open_and_price(pd.DataFrame()) == {}
+
+
+def test_within_eod_flatten_window_boundaries():
+    et = trade.ET
+    # window_start (15:55:00) inclusive -> True
+    assert trade.within_eod_flatten_window(datetime(2026, 11, 18, 15, 55, 0, tzinfo=et), 5) is True
+    # close (16:00:00) exclusive -> False
+    assert trade.within_eod_flatten_window(datetime(2026, 11, 18, 16, 0, 0, tzinfo=et), 5) is False
