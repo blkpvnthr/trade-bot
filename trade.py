@@ -5334,9 +5334,14 @@ class ProductionOrderExecutor:
             print("[orders] canceling open orders")
             self.broker.cancel_open_orders()
 
-        exit_orders = self._augment_exit_orders_with_exit_learning(exit_orders if exit_orders is not None else pd.DataFrame())
+        daily_green = self.config.scanner.daily_green_strategy_enabled
+        if daily_green:
+            exit_orders = exit_orders if exit_orders is not None else pd.DataFrame()
+        else:
+            exit_orders = self._augment_exit_orders_with_exit_learning(exit_orders if exit_orders is not None else pd.DataFrame())
         plan = self._build_order_plan(rebalance_orders, exit_orders, equity)
-        plan = self._apply_mtf_buy_gate_to_plan(plan)
+        if not daily_green:
+            plan = self._apply_mtf_buy_gate_to_plan(plan)
 
         # Cooldown is buy-only. Exits are always allowed so risk can be reduced immediately.
         if self._in_cooldown() and not plan.empty:
@@ -5828,6 +5833,22 @@ class ProductionOrderExecutor:
             save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
             self._write_account_equity_curve()
             return pd.DataFrame(), results, self.broker.get_account_snapshot(), pd.DataFrame([asdict(p) for p in self.broker.get_all_open_positions()])
+
+        if self.scanner is not None and self.config.scanner.daily_green_strategy_enabled:
+            try:
+                rebalance, exits, _scores = self.scanner.build_orders()
+                if not rebalance.empty or not exits.empty:
+                    return self.run_once_from_frames(rebalance, exits)
+                cycle_id = run_id()
+                results = pd.DataFrame([{"timestamp_utc": now_utc().isoformat(), "status": "daily_green_no_orders", "message": "no green entries and no exits this cycle"}])
+                save_df(pd.DataFrame(), LOG_DIR / f"order_plan_{cycle_id}.csv")
+                save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
+                self._write_account_equity_curve()
+                return pd.DataFrame(), results, self.broker.get_account_snapshot(), pd.DataFrame([asdict(p) for p in self.broker.get_all_open_positions()])
+            except Exception as exc:
+                print(f"[daily-green] cycle failed: {exc}")
+                write_event("daily_green_cycle_error", {"error": str(exc)})
+                return pd.DataFrame(), pd.DataFrame(), self.broker.get_account_snapshot(), pd.DataFrame()
 
         if self.scanner is not None:
             try:

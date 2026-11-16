@@ -256,3 +256,48 @@ def test_build_orders_branches_to_daily_green(tmp_path, monkeypatch):
     assert rebalance.iloc[0]["reason"] == "daily_green_entry"
     assert exits.empty
     assert scores.empty
+
+
+def _make_executor_for_bypass(daily_green_on, calls):
+    e = object.__new__(trade.ProductionOrderExecutor)
+    e.config = trade.ExecutorConfig()
+    e.config.scanner.daily_green_strategy_enabled = daily_green_on
+    e.broker = _FakeBroker(13000.0, positions=[])
+    e.account_history = []
+    # Stub the heavy helpers run_once_from_frames touches.
+    e._record_account_snapshot = lambda label, cid: {"equity": 13000.0, "cash": 13000.0}
+    e._gross_exposure = lambda eq: 0.0
+    e._market_is_open_or_wait = lambda: True
+    e._kill_switch_allows_execution = lambda eq: (True, "", 0.0)
+    e._write_account_equity_curve = lambda: None
+    e._build_order_plan = lambda rb, ex, eq: pd.DataFrame()  # empty -> early return after bypass checks
+    e._in_cooldown = lambda: False
+
+    def spy_augment(ex):
+        calls.append("augment")
+        return ex if ex is not None else pd.DataFrame()
+
+    def spy_mtf(plan):
+        calls.append("mtf")
+        return plan
+
+    e._augment_exit_orders_with_exit_learning = spy_augment
+    e._apply_mtf_buy_gate_to_plan = spy_mtf
+    return e
+
+
+def test_daily_green_bypasses_momentum_gates(monkeypatch):
+    monkeypatch.setattr(trade, "save_df", lambda *a, **k: None)
+    monkeypatch.setattr(trade, "load_no_reentry_symbols", lambda: set())
+
+    calls_on = []
+    e_on = _make_executor_for_bypass(True, calls_on)
+    e_on.run_once_from_frames(pd.DataFrame(), pd.DataFrame())
+    assert "augment" not in calls_on
+    assert "mtf" not in calls_on
+
+    calls_off = []
+    e_off = _make_executor_for_bypass(False, calls_off)
+    e_off.run_once_from_frames(pd.DataFrame(), pd.DataFrame())
+    assert "augment" in calls_off
+    assert "mtf" in calls_off
