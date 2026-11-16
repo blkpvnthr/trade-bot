@@ -20,3 +20,17 @@ def test_build_default_config_uses_universe_txt_in_daily_green():
     assert cfg.use_sp500_fallback is False
     assert cfg.broad_market_scan is False
     assert cfg.universe is None
+
+
+def test_load_trading_universe_parses_file(tmp_path, monkeypatch):
+    f = tmp_path / "universe.txt"
+    f.write_text("AAPL, msft  nvda # comment\nAAPL\n")
+    monkeypatch.setattr(trade, "UNIVERSE_FILE", f)
+    assert trade.load_trading_universe() == ["AAPL", "MSFT", "NVDA"]
+
+
+def test_load_trading_universe_falls_back_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(trade, "UNIVERSE_FILE", tmp_path / "nope.txt")
+    out = trade.load_trading_universe()
+    assert out == trade._FALLBACK_SCAN_UNIVERSE
+    assert "QQQ" in out

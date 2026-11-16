@@ -213,25 +213,31 @@ WIKI_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
 UNIVERSE_FILE = PROJECT_ROOT / "universe.txt"
 
+_FALLBACK_SCAN_UNIVERSE = [
+    "QQQ", "TQQQ", "SQQQ", "SPY", "DIA", "IWM", "XLK", "SOXX", "SMH",
+    "AMD", "NVDA", "AVGO", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "TSLA",
+    "PLTR", "COIN", "MARA", "RIOT", "RGTI", "QBTS", "QUBT", "IONQ", "SOUN",
+    "OKLO", "APLD", "ALAB", "ARM",
+]
+
+
 def load_trading_universe() -> list[str]:
     if not UNIVERSE_FILE.is_file():
-        raise FileNotFoundError(f"Trading universe not found: {UNIVERSE_FILE}")
-
-    import re
+        print(f"[universe] {UNIVERSE_FILE} not found; using built-in fallback universe ({len(_FALLBACK_SCAN_UNIVERSE)} symbols)")
+        return list(_FALLBACK_SCAN_UNIVERSE)
 
     text = UNIVERSE_FILE.read_text(encoding="utf-8")
     text = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
-
     symbols = [
-        symbol.strip().strip(chr(34) + chr(39)).upper()
+        symbol.strip().strip("\"'").upper()
         for symbol in re.split(r"[,\s]+", text)
         if symbol.strip()
     ]
-
     symbols = list(dict.fromkeys(symbols))
 
     if not symbols:
-        raise ValueError("universe.txt contains no trading symbols")
+        print(f"[universe] {UNIVERSE_FILE} empty; using built-in fallback universe ({len(_FALLBACK_SCAN_UNIVERSE)} symbols)")
+        return list(_FALLBACK_SCAN_UNIVERSE)
 
     print(f"[universe] loaded {len(symbols)} symbols from {UNIVERSE_FILE}")
     return symbols
