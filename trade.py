@@ -2621,6 +2621,108 @@ def compute_today_open_and_price(bars: pd.DataFrame) -> dict[str, tuple[float, f
     return out
 
 
+def build_daily_green_entry_rows(
+    open_price_map: dict[str, tuple[float, float]],
+    held_symbols: set[str],
+    no_reentry_symbols: set[str],
+    equity: float,
+    config: "ScannerConfig",
+    executor_config: "ExecutorConfig",
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    slots = config.daily_green_max_positions - len(held_symbols)
+    if slots <= 0:
+        return rows
+
+    target_weight = min(config.daily_green_per_position_weight, executor_config.max_position_weight)
+    for raw_symbol, (open_today, price) in open_price_map.items():
+        symbol = normalize_symbol(raw_symbol)
+        if symbol in held_symbols:
+            continue
+        if not config.daily_green_reenter_after_stop and symbol in no_reentry_symbols:
+            continue
+        if price <= 0 or not daily_green_entry_signal(open_today, price):
+            continue
+
+        delta_dollars = target_weight * equity
+        if delta_dollars < executor_config.min_notional_to_trade:
+            continue
+        delta_shares = int(delta_dollars // price)
+        if delta_shares <= 0:
+            continue
+
+        target_price = daily_green_target_price(price, open_today, config.daily_green_rr, config.daily_green_min_risk_pct)
+        rows.append(
+            {
+                "symbol": symbol,
+                "side": "buy",
+                "delta_shares": delta_shares,
+                "delta_dollars": float(delta_dollars),
+                "price": float(price),
+                "market_price": float(price),
+                "entry_price": float(price),
+                "open_today": float(open_today),
+                "stop_price": float(open_today),
+                "target_price": float(target_price),
+                "risk_reward_ratio": float(config.daily_green_rr),
+                "reason": "daily_green_entry",
+                "target_weight": float(target_weight),
+                "current_weight": 0.0,
+                "delta_weight": float(target_weight),
+                "trade_confidence": 1.0,
+            }
+        )
+        if len(rows) >= slots:
+            break
+    return rows
+
+
+def build_daily_green_exit_rows(
+    positions: list["BrokerPosition"],
+    open_by_symbol: dict[str, float],
+    now_et: datetime,
+    config: "ScannerConfig",
+    equity: float,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    eod = within_eod_flatten_window(now_et, config.daily_green_flatten_before_close_min)
+    for pos in positions:
+        if pos.qty <= 0:
+            continue
+        symbol = normalize_symbol(pos.symbol)
+
+        if eod:
+            reason = "eod_flatten"
+        else:
+            open_today = to_float(open_by_symbol.get(symbol))
+            should_exit, exit_reason = daily_green_exit_decision(
+                open_today,
+                to_float(pos.current_price),
+                to_float(pos.avg_entry_price),
+                config.daily_green_rr,
+                config.daily_green_min_risk_pct,
+            )
+            reason = exit_reason if should_exit else ""
+
+        if not reason:
+            continue
+        rows.append(
+            {
+                "symbol": symbol,
+                "side": "sell",
+                "delta_shares": int(pos.qty),
+                "delta_dollars": float(pos.market_value),
+                "price": float(pos.current_price),
+                "reason": reason,
+                "target_weight": 0.0,
+                "current_weight": float(pos.market_value) / max(equity, 1e-9),
+                "delta_weight": -float(pos.market_value) / max(equity, 1e-9),
+                "trade_confidence": 1.0,
+            }
+        )
+    return rows
+
+
 class MomentumSetupScanner:
     def __init__(self, broker: AlpacaBroker, config: ScannerConfig, executor_config: ExecutorConfig):
         self.broker = broker

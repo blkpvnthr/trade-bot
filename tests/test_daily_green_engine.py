@@ -131,3 +131,81 @@ def test_within_eod_flatten_window_boundaries():
     assert trade.within_eod_flatten_window(datetime(2026, 11, 18, 15, 55, 0, tzinfo=et), 5) is True
     # close (16:00:00) exclusive -> False
     assert trade.within_eod_flatten_window(datetime(2026, 11, 18, 16, 0, 0, tzinfo=et), 5) is False
+
+
+def _cfg(**over):
+    return trade.ScannerConfig(**over)
+
+
+def _ecfg(**over):
+    return trade.ExecutorConfig(**over)
+
+
+def test_entry_rows_selects_only_green_unheld():
+    open_price_map = {
+        "AAA": (100.0, 101.0),  # green -> entry
+        "BBB": (50.0, 49.0),    # red -> skip
+        "CCC": (20.0, 20.5),    # green but held -> skip
+    }
+    rows = trade.build_daily_green_entry_rows(
+        open_price_map, held_symbols={"CCC"}, no_reentry_symbols=set(),
+        equity=13000.0, config=_cfg(), executor_config=_ecfg(),
+    )
+    symbols = {r["symbol"] for r in rows}
+    assert symbols == {"AAA"}
+    r = rows[0]
+    assert r["side"] == "buy"
+    assert r["reason"] == "daily_green_entry"
+    assert r["stop_price"] == 100.0
+    # risk = 101-100 = 1, target = 101 + 2*1 = 103
+    assert r["target_price"] == 103.0
+    assert r["delta_shares"] > 0
+
+
+def test_entry_rows_respects_no_reentry_and_max_positions():
+    open_price_map = {"AAA": (10.0, 11.0), "BBB": (10.0, 11.0), "CCC": (10.0, 11.0)}
+    # no-reentry blocks AAA
+    rows = trade.build_daily_green_entry_rows(
+        open_price_map, held_symbols=set(), no_reentry_symbols={"AAA"},
+        equity=13000.0, config=_cfg(), executor_config=_ecfg(),
+    )
+    assert "AAA" not in {r["symbol"] for r in rows}
+    # max_positions caps count (0 held, cap 1 -> 1 row)
+    rows2 = trade.build_daily_green_entry_rows(
+        open_price_map, held_symbols=set(), no_reentry_symbols=set(),
+        equity=13000.0, config=_cfg(daily_green_max_positions=1), executor_config=_ecfg(),
+    )
+    assert len(rows2) == 1
+
+
+def test_entry_rows_min_notional_excludes_tiny_account():
+    open_price_map = {"AAA": (10.0, 11.0)}
+    # equity 500 * 0.09 = 45 < min_notional_to_trade (75) -> excluded
+    rows = trade.build_daily_green_entry_rows(
+        open_price_map, held_symbols=set(), no_reentry_symbols=set(),
+        equity=500.0, config=_cfg(), executor_config=_ecfg(),
+    )
+    assert rows == []
+
+
+def test_exit_rows_stop_target_and_eod():
+    et = trade.ET
+    pos_red = trade.BrokerPosition(symbol="AAA", qty=10, market_value=990.0, avg_entry_price=101.0, current_price=99.0)
+    pos_win = trade.BrokerPosition(symbol="BBB", qty=10, market_value=1030.0, avg_entry_price=101.0, current_price=103.0)
+    pos_hold = trade.BrokerPosition(symbol="CCC", qty=10, market_value=1005.0, avg_entry_price=101.0, current_price=100.5)
+    open_by_symbol = {"AAA": 100.0, "BBB": 100.0, "CCC": 100.0}
+    midday = datetime(2026, 11, 18, 12, 0, tzinfo=et)
+
+    rows = trade.build_daily_green_exit_rows([pos_red, pos_win, pos_hold], open_by_symbol, midday, _cfg(), 13000.0)
+    by_sym = {r["symbol"]: r["reason"] for r in rows}
+    assert by_sym["AAA"] == "day_turned_red"
+    assert by_sym["BBB"] == "rr_2to1_target"
+    assert "CCC" not in by_sym  # held
+    for r in rows:
+        assert r["side"] == "sell"
+        assert r["delta_shares"] == 10
+
+    # EOD window flattens everything
+    eod = datetime(2026, 11, 18, 15, 57, tzinfo=et)
+    rows_eod = trade.build_daily_green_exit_rows([pos_hold], open_by_symbol, eod, _cfg(), 13000.0)
+    assert len(rows_eod) == 1 and rows_eod[0]["reason"] == "eod_flatten"
