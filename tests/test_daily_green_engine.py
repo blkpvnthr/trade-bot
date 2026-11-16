@@ -317,3 +317,47 @@ def test_build_orders_legacy_path_untouched_when_disabled(monkeypatch):
     except RuntimeError as exc:
         assert "legacy path reached" in str(exc)
     assert called["daily_green"] is False
+
+
+def test_direction_confirmation_bypassed_in_daily_green():
+    plan = pd.DataFrame([{"symbol": "AAA", "side": "buy"}])
+    calls = []
+
+    class _Scanner:
+        def confirm_buy_direction(self, syms):
+            calls.append(list(syms))
+            return pd.DataFrame([{"symbol": "AAA", "direction_confirmed": True}])
+
+    e_on = object.__new__(trade.ProductionOrderExecutor)
+    e_on.config = trade.ExecutorConfig()
+    e_on.config.scanner.daily_green_strategy_enabled = True
+    e_on.scanner = _Scanner()
+    assert e_on._direction_confirmations_for_buys(plan) == {}
+    assert calls == []
+
+    e_off = object.__new__(trade.ProductionOrderExecutor)
+    e_off.config = trade.ExecutorConfig()
+    e_off.config.scanner.daily_green_strategy_enabled = False
+    e_off.config.scanner.require_direction_confirmation_before_buy = True
+    e_off.scanner = _Scanner()
+    out = e_off._direction_confirmations_for_buys(plan)
+    assert calls == [["AAA"]]
+    assert out == {"AAA": {"symbol": "AAA", "direction_confirmed": True}}
+
+
+def test_within_eod_flatten_window_early_close():
+    et = trade.ET
+    close = datetime(2026, 11, 27, 13, 0, 0, tzinfo=et)  # early-close day, 13:00 ET
+    assert trade.within_eod_flatten_window(datetime(2026, 11, 27, 12, 57, tzinfo=et), 5, close) is True
+    assert trade.within_eod_flatten_window(datetime(2026, 11, 27, 12, 50, tzinfo=et), 5, close) is False
+    assert trade.within_eod_flatten_window(datetime(2026, 11, 27, 13, 30, tzinfo=et), 5, close) is False
+    # default path (no close_dt) still uses 16:00
+    assert trade.within_eod_flatten_window(datetime(2026, 11, 18, 15, 56, tzinfo=et), 5) is True
+
+
+def test_exit_rows_eod_with_early_close():
+    et = trade.ET
+    close = datetime(2026, 11, 27, 13, 0, 0, tzinfo=et)
+    pos = trade.BrokerPosition(symbol="AAA", qty=10, market_value=1005.0, avg_entry_price=101.0, current_price=100.5)
+    rows = trade.build_daily_green_exit_rows([pos], {"AAA": 100.0}, datetime(2026, 11, 27, 12, 57, tzinfo=et), trade.ScannerConfig(), 13000.0, close)
+    assert len(rows) == 1 and rows[0]["reason"] == "eod_flatten"

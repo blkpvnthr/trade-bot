@@ -2599,11 +2599,13 @@ def daily_green_exit_decision(
     return (False, "")
 
 
-def within_eod_flatten_window(now_et: datetime, minutes_before_close: int) -> bool:
-    # Regular US equities session closes at 16:00 ET; skip weekends.
-    if now_et.weekday() >= 5:
-        return False
-    close_dt = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+def within_eod_flatten_window(now_et: datetime, minutes_before_close: int, close_dt: Optional[datetime] = None) -> bool:
+    # Regular US equities session closes at 16:00 ET. On early-close (half) days
+    # the broker clock reports an earlier close, passed in via close_dt.
+    if close_dt is None:
+        if now_et.weekday() >= 5:
+            return False
+        close_dt = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
     window_start = close_dt - timedelta(minutes=minutes_before_close)
     return window_start <= now_et < close_dt
 
@@ -2683,9 +2685,9 @@ def build_daily_green_exit_rows(
     now_et: datetime,
     config: "ScannerConfig",
     equity: float,
-) -> list[dict[str, Any]]:
+    close_dt: Optional[datetime] = None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    eod = within_eod_flatten_window(now_et, config.daily_green_flatten_before_close_min)
+    eod = within_eod_flatten_window(now_et, config.daily_green_flatten_before_close_min, close_dt)
     for pos in positions:
         if pos.qty <= 0:
             continue
@@ -3719,7 +3721,16 @@ class MomentumSetupScanner:
 
         now_et = datetime.now(ET)
 
-        exit_rows = build_daily_green_exit_rows(positions, open_by_symbol, now_et, self.config, equity)
+        close_dt = None
+        try:
+            clock_info = self.broker.get_clock_info()
+            next_close = clock_info.get("next_close")
+            if next_close:
+                close_dt = pd.Timestamp(next_close).tz_convert(ET).to_pydatetime()
+        except Exception:
+            close_dt = None
+
+        exit_rows = build_daily_green_exit_rows(positions, open_by_symbol, now_et, self.config, equity, close_dt)
 
         # One round-trip per symbol per day: block same-day re-entry after any exit
         # (stop or target) unless explicitly allowed.
@@ -3729,7 +3740,7 @@ class MomentumSetupScanner:
                     mark_no_reentry_symbol(r["symbol"], reason=r["reason"])
 
         # No new entries inside the end-of-day flatten window.
-        if within_eod_flatten_window(now_et, self.config.daily_green_flatten_before_close_min):
+        if within_eod_flatten_window(now_et, self.config.daily_green_flatten_before_close_min, close_dt):
             entry_rows: list[dict[str, Any]] = []
         else:
             no_reentry = load_no_reentry_symbols()
@@ -5085,21 +5096,33 @@ class ProductionOrderExecutor:
             }
         )
 
+    def _direction_confirmations_for_buys(self, plan: pd.DataFrame) -> dict[str, dict[str, Any]]:
+        """Return per-symbol direction-confirmation rows for BUY orders.
+
+        Daily-green mode intentionally replaces the momentum/ML setup signal, so
+        it bypasses confirm_buy_direction entirely and returns no gating data.
+        """
+        if self.scanner is None or self.config.scanner.daily_green_strategy_enabled:
+            return {}
+        if not self.config.scanner.require_direction_confirmation_before_buy:
+            return {}
+        buy_symbols = sorted(set(plan.loc[plan["side"] == "buy", "symbol"].map(safe_symbol)))
+        if not buy_symbols:
+            return {}
+        direction_df = self.scanner.confirm_buy_direction(buy_symbols)
+        if direction_df.empty:
+            return {}
+        return {
+            safe_symbol(row["symbol"]): row.to_dict()
+            for _, row in direction_df.iterrows()
+        }
+
     def _execute_order_plan(self, plan: pd.DataFrame, cycle_id: str) -> pd.DataFrame:
         results: list[dict[str, Any]] = []
         if plan.empty:
             return pd.DataFrame()
 
-        direction_by_symbol: dict[str, dict[str, Any]] = {}
-        if self.scanner is not None and self.config.scanner.require_direction_confirmation_before_buy:
-            buy_symbols = sorted(set(plan.loc[plan["side"] == "buy", "symbol"].map(safe_symbol)))
-            if buy_symbols:
-                direction_df = self.scanner.confirm_buy_direction(buy_symbols)
-                if not direction_df.empty:
-                    direction_by_symbol = {
-                        safe_symbol(row["symbol"]): row.to_dict()
-                        for _, row in direction_df.iterrows()
-                    }
+        direction_by_symbol = self._direction_confirmations_for_buys(plan)
 
         # Load once per cycle so executed-order logs capture the same
         # multi-timeframe/exit-learning context that gated the trade.
