@@ -301,3 +301,19 @@ def test_daily_green_bypasses_momentum_gates(monkeypatch):
     e_off.run_once_from_frames(pd.DataFrame(), pd.DataFrame())
     assert "augment" in calls_off
     assert "mtf" in calls_off
+
+
+def test_build_orders_legacy_path_untouched_when_disabled(monkeypatch):
+    # With the flag off, build_orders must NOT take the daily-green branch.
+    # We prove this by asserting the branch guard is the only daily-green entry.
+    s = object.__new__(trade.MomentumSetupScanner)
+    s.config = trade.ScannerConfig(daily_green_strategy_enabled=False)
+    called = {"daily_green": False}
+    s._build_daily_green_orders = lambda: called.__setitem__("daily_green", True) or (pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+    # Make the legacy path fail fast so we do not need network; we only care which branch ran.
+    s._universe = lambda: (_ for _ in ()).throw(RuntimeError("legacy path reached"))
+    try:
+        s.build_orders()
+    except RuntimeError as exc:
+        assert "legacy path reached" in str(exc)
+    assert called["daily_green"] is False
