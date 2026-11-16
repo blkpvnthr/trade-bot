@@ -2563,6 +2563,64 @@ def _atr(df: pd.DataFrame, window: int = 14) -> pd.Series:
     return tr.ewm(alpha=1 / window, adjust=False).mean()
 
 
+# ======================================================================
+# Daily-green 2:1 strategy helpers (pure, no I/O).
+# ENTER when price > today's open; STOP at today's open; TARGET at
+# entry + rr * risk, risk = max(entry - open, min_risk_pct * entry).
+# ======================================================================
+def daily_green_entry_signal(open_today: float, current_price: float) -> bool:
+    return open_today > 0 and current_price > open_today
+
+
+def daily_green_risk_distance(entry_price: float, open_today: float, min_risk_pct: float) -> float:
+    raw = entry_price - open_today
+    floor = min_risk_pct * entry_price
+    return max(raw, floor)
+
+
+def daily_green_target_price(entry_price: float, open_today: float, rr: float, min_risk_pct: float) -> float:
+    return entry_price + rr * daily_green_risk_distance(entry_price, open_today, min_risk_pct)
+
+
+def daily_green_exit_decision(
+    open_today: float,
+    current_price: float,
+    avg_entry_price: float,
+    rr: float,
+    min_risk_pct: float,
+) -> tuple[bool, str]:
+    if open_today <= 0 or current_price <= 0:
+        return (False, "")
+    if current_price <= open_today:
+        return (True, "day_turned_red")
+    target = daily_green_target_price(avg_entry_price, open_today, rr, min_risk_pct)
+    if current_price >= target:
+        return (True, "rr_2to1_target")
+    return (False, "")
+
+
+def within_eod_flatten_window(now_et: datetime, minutes_before_close: int) -> bool:
+    # Regular US equities session closes at 16:00 ET; skip weekends.
+    if now_et.weekday() >= 5:
+        return False
+    close_dt = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+    window_start = close_dt - timedelta(minutes=minutes_before_close)
+    return window_start <= now_et < close_dt
+
+
+def compute_today_open_and_price(bars: pd.DataFrame) -> dict[str, tuple[float, float]]:
+    out: dict[str, tuple[float, float]] = {}
+    if bars is None or bars.empty:
+        return out
+    for symbol, g in bars.groupby("symbol", sort=False):
+        g = g.sort_values("timestamp")
+        last = g.iloc[-1]
+        open_today = to_float(last.get("open"))
+        price = to_float(last.get("close"))
+        out[normalize_symbol(symbol)] = (open_today, price)
+    return out
+
+
 class MomentumSetupScanner:
     def __init__(self, broker: AlpacaBroker, config: ScannerConfig, executor_config: ExecutorConfig):
         self.broker = broker
