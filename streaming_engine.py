@@ -1,6 +1,8 @@
 from __future__ import annotations
 from enum import Enum
 from collections import defaultdict, deque
+from dataclasses import dataclass
+import trade
 
 
 class OrderState(Enum):
@@ -74,3 +76,34 @@ class LatencyTracker:
                 "p99": percentile(xs, 99),
             }
         return out
+
+
+@dataclass
+class SymbolState:
+    symbol: str
+    today_open: float = 0.0
+    last_price: float = 0.0
+    last_event_ts: float = 0.0
+    held: bool = False
+    in_flight: bool = False
+    done_today: bool = False
+
+
+def is_stale(last_event_ts: float, now: float, threshold_s: float) -> bool:
+    return (now - last_event_ts) > threshold_s
+
+
+def decide_streaming_entry(state, equity, no_reentry, config, executor_config):
+    if state.held or state.in_flight or state.done_today:
+        return None
+    if state.today_open <= 0 or state.last_price <= 0:
+        return None
+    rows = trade.build_daily_green_entry_rows(
+        {state.symbol: (state.today_open, state.last_price)},
+        held_symbols=set(),
+        no_reentry_symbols=set(no_reentry),
+        equity=equity,
+        config=config,
+        executor_config=executor_config,
+    )
+    return rows[0] if rows else None
