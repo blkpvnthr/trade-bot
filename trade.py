@@ -2539,10 +2539,10 @@ class AlpacaBroker:
         )
         return self.trading.submit_order(order_data=order)
 
-    def submit_market_buy(self, symbol: str, qty: int, client_order_id: str, tif: TimeInForce):
+    def submit_market_buy(self, symbol: str, qty: float, client_order_id: str, tif: TimeInForce):
         return self.submit_market_order(symbol, "buy", qty, client_order_id, tif)
 
-    def submit_market_sell(self, symbol: str, qty: int, client_order_id: str, tif: TimeInForce):
+    def submit_market_sell(self, symbol: str, qty: float, client_order_id: str, tif: TimeInForce):
         return self.submit_market_order(symbol, "sell", qty, client_order_id, tif)
 
     def get_order_by_id(self, order_id: str):
@@ -5245,6 +5245,8 @@ class ProductionOrderExecutor:
                             est_notional = qty * price
                             if qty <= 0:
                                 skip_message = "not_fractionable_qty_below_1_share"
+                            elif est_notional < profile.min_notional_to_trade:
+                                skip_message = "not_fractionable_qty_below_min_notional"
 
             if skip_message:
                 print(f"[skip] {side.upper()} {qty} {symbol}: {skip_message}")
