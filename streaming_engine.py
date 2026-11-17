@@ -1,5 +1,6 @@
 from __future__ import annotations
 from enum import Enum
+from collections import defaultdict, deque
 
 
 class OrderState(Enum):
@@ -41,3 +42,35 @@ class OrderStateMachine:
             self._state[cid] = to_state
             return True
         return False
+
+
+def percentile(values, q: float) -> float:
+    xs = sorted(values)
+    if not xs:
+        return 0.0
+    if len(xs) == 1:
+        return float(xs[0])
+    rank = (q / 100.0) * (len(xs) - 1)
+    lo = int(rank)
+    hi = min(lo + 1, len(xs) - 1)
+    frac = rank - lo
+    return float(xs[lo] + (xs[hi] - xs[lo]) * frac)
+
+
+class LatencyTracker:
+    def __init__(self, maxlen: int = 1000) -> None:
+        self._samples: dict[str, deque] = defaultdict(lambda: deque(maxlen=maxlen))
+
+    def record(self, stage: str, value: float) -> None:
+        self._samples[stage].append(float(value))
+
+    def summary(self) -> dict:
+        out = {}
+        for stage, xs in self._samples.items():
+            out[stage] = {
+                "n": len(xs),
+                "p50": percentile(xs, 50),
+                "p95": percentile(xs, 95),
+                "p99": percentile(xs, 99),
+            }
+        return out

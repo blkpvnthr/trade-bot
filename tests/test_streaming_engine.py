@@ -18,3 +18,12 @@ def test_state_machine_reject_path():
     m.advance("c2", se.OrderState.SIGNAL_CONFIRMED)
     m.advance("c2", se.OrderState.RISK_APPROVED)
     assert m.advance("c2", se.OrderState.REJECTED) is True
+
+def test_percentile_and_summary():
+    assert se.percentile([1,2,3,4,5], 50) == 3
+    assert se.percentile([], 50) == 0.0
+    t = se.LatencyTracker()
+    for v in [10,20,30,40,50]:
+        t.record("e2e_ms", v)
+    s = t.summary()["e2e_ms"]
+    assert s["n"] == 5 and s["p50"] == 30
