@@ -618,6 +618,9 @@ class ExecutorConfig:
     time_in_force: TimeInForce = TimeInForce.DAY
     order_tag_prefix: str = "qq_13k"
 
+    # M2: when True, main() runs the async StreamingEngine instead of the sync loop.
+    enable_streaming_engine: bool = False
+
     scanner: ScannerConfig = field(default_factory=ScannerConfig)
 
 
@@ -6292,6 +6295,10 @@ def build_default_config() -> ExecutorConfig:
 
 def main() -> None:
     config = build_default_config()
+    if config.enable_streaming_engine:
+        import streaming_engine
+        streaming_engine.run_streaming(config)
+        return
     threading.Thread(
     target=launch_intraday_dataset_builder,
     daemon=True,

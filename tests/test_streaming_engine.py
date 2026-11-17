@@ -46,3 +46,89 @@ def test_decide_entry_green_and_blocks():
     assert se.decide_streaming_entry(_st(in_flight=True), 824.74, set(), cfg, ecfg) is None
     assert se.decide_streaming_entry(_st(done_today=True), 824.74, set(), cfg, ecfg) is None
     assert se.decide_streaming_entry(_st(), 824.74, {"QQQ"}, cfg, ecfg) is None   # no-reentry
+
+
+# ---------------------------------------------------------------------------
+# Task 4: StreamingEngine event wiring (async, fakes - no network)
+# ---------------------------------------------------------------------------
+import asyncio
+import types
+
+
+class _FakeBroker:
+    def __init__(self):
+        self.buys = []
+        self.sells = []
+
+    def submit_market_buy(self, sym, qty, cid, tif):
+        self.buys.append((sym, qty, cid))
+        return types.SimpleNamespace(id="o1", status="accepted")
+
+    def submit_market_sell(self, sym, qty, cid, tif):
+        self.sells.append((sym, qty, cid))
+        return types.SimpleNamespace(id="o2", status="accepted")
+
+
+class _FakeExec:
+    def _kill_switch_allows_execution(self, eq):
+        return (True, "", 0.0)
+
+    def _cash_buffer(self, eq):
+        return 100.0
+
+    def _max_order_notional(self, eq):
+        return 10_000.0
+
+
+def _engine(monkeypatch):
+    monkeypatch.setattr(trade, "within_eod_flatten_window", lambda *a, **k: False)
+    monkeypatch.setattr(trade, "load_no_reentry_symbols", lambda: set())
+    monkeypatch.setattr(trade, "mark_no_reentry_symbol", lambda *a, **k: None)
+    e = object.__new__(se.StreamingEngine)
+    e.config = trade.ExecutorConfig()
+    e.exec = _FakeExec()
+    e.broker = _FakeBroker()
+    e.states = {"QQQ": se.SymbolState(symbol="QQQ", today_open=660.0, last_price=660.0, last_event_ts=0.0)}
+    e.sm = se.OrderStateMachine()
+    e.latency = se.LatencyTracker()
+    e.cid_symbol = {}
+    e._acct = types.SimpleNamespace(equity=824.74, cash=824.74, buying_power=824.74)
+    e._no_reentry = set()
+    e._close_dt = None
+    return e
+
+
+def test_streaming_entry_and_dedupe(monkeypatch):
+    async def go():
+        e = _engine(monkeypatch)
+        e._loop = asyncio.get_running_loop()
+        await e.on_trade(types.SimpleNamespace(symbol="QQQ", price=661.0))  # green vs open 660
+        assert len(e.broker.buys) == 1
+        await e.on_trade(types.SimpleNamespace(symbol="QQQ", price=662.0))  # in_flight -> no dupe
+        assert len(e.broker.buys) == 1
+    asyncio.run(go())
+
+
+def test_streaming_exit_on_red(monkeypatch):
+    async def go():
+        e = _engine(monkeypatch)
+        e._loop = asyncio.get_running_loop()
+        st = e.states["QQQ"]
+        st.held, st.qty, st.avg_entry, st.in_flight = True, 0.1, 661.0, False
+        await e.on_trade(types.SimpleNamespace(symbol="QQQ", price=659.0))  # red vs open -> exit
+        assert len(e.broker.sells) == 1 and abs(e.broker.sells[0][1] - 0.1) < 1e-9
+    asyncio.run(go())
+
+
+def test_order_update_fill_sets_held(monkeypatch):
+    async def go():
+        e = _engine(monkeypatch)
+        e._loop = asyncio.get_running_loop()
+        cid = "c1"
+        e.cid_symbol[cid] = "QQQ"
+        e.states["QQQ"].in_flight = True
+        order = types.SimpleNamespace(client_order_id=cid, side="buy", status="filled")
+        await e.on_order_update(types.SimpleNamespace(order=order, event="fill"))
+        st = e.states["QQQ"]
+        assert st.held and st.done_today and not st.in_flight
+    asyncio.run(go())
