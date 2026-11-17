@@ -68,6 +68,9 @@ class _FakeBroker:
         self.sells.append((sym, qty, cid))
         return types.SimpleNamespace(id="o2", status="accepted")
 
+    def is_fractionable(self, sym):
+        return True
+
 
 class _FakeExec:
     def _kill_switch_allows_execution(self, eq):
@@ -92,6 +95,15 @@ def _engine(monkeypatch):
     e.sm = se.OrderStateMachine()
     e.latency = se.LatencyTracker()
     e.cid_symbol = {}
+    e.cid_side = {}
+    e.cid_ts = {}
+    e.cid_committed = {}
+    e._committed_cash = 0.0
+    e._positions = []
+    e._gross_before = 0.0
+    e._kill_ok = True
+    e._kill_reason = ""
+    e.inflight_timeout_s = 20.0
     e._acct = types.SimpleNamespace(equity=824.74, cash=824.74, buying_power=824.74)
     e._no_reentry = set()
     e._close_dt = None
@@ -126,9 +138,33 @@ def test_order_update_fill_sets_held(monkeypatch):
         e._loop = asyncio.get_running_loop()
         cid = "c1"
         e.cid_symbol[cid] = "QQQ"
+        e.cid_side[cid] = "buy"  # side recorded at submit (not parsed from order obj)
         e.states["QQQ"].in_flight = True
         order = types.SimpleNamespace(client_order_id=cid, side="buy", status="filled")
         await e.on_order_update(types.SimpleNamespace(order=order, event="fill"))
         st = e.states["QQQ"]
         assert st.held and st.done_today and not st.in_flight
+    asyncio.run(go())
+
+
+def test_make_cid_is_unique_same_symbol_side(monkeypatch):
+    e = _engine(monkeypatch)
+    a = e._make_cid("QQQ", "buy")
+    b = e._make_cid("QQQ", "buy")
+    assert a != b and len(a) <= 48 and "QQQ" in a
+
+
+def test_order_update_sell_fill_classified_by_recorded_side(monkeypatch):
+    async def go():
+        e = _engine(monkeypatch)
+        e._loop = asyncio.get_running_loop()
+        cid = "c2"
+        e.cid_symbol[cid] = "QQQ"
+        e.cid_side[cid] = "sell"  # even though a real order.side would stringify oddly
+        st = e.states["QQQ"]
+        st.held, st.qty, st.in_flight = True, 0.1, True
+        # order.side intentionally an enum-like object to prove we do NOT parse it
+        order = types.SimpleNamespace(client_order_id=cid, side=types.SimpleNamespace(value="buy"), status="filled")
+        await e.on_order_update(types.SimpleNamespace(order=order, event="fill"))
+        assert st.held is False and st.qty == 0.0 and st.done_today is True
     asyncio.run(go())

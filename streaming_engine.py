@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import time
+import uuid
 from enum import Enum
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -136,6 +137,27 @@ def decide_streaming_entry(state, equity, no_reentry, config, executor_config):
     return rows[0] if rows else None
 
 
+def opens_for_today(bars):
+    """Today's (open, last) per symbol from daily bars, only when the latest bar is
+    actually today in ET. Avoids trading green-vs-open against a stale prior-day open
+    when the engine starts before today's daily bar exists."""
+    out = {}
+    if bars is None or bars.empty:
+        return out
+    today = trade.datetime.now(trade.ET).date()
+    for sym, g in bars.groupby("symbol", sort=False):
+        g = g.sort_values("timestamp")
+        last = g.iloc[-1]
+        ts = last.get("timestamp")
+        try:
+            d = ts.tz_convert(trade.ET).date()
+        except Exception:
+            d = None
+        if d == today:
+            out[trade.normalize_symbol(sym)] = (trade.to_float(last.get("open")), trade.to_float(last.get("close")))
+    return out
+
+
 class StreamingEngine:
     """Async, event-driven daily-green engine (M2). Flag-gated; paper-only.
 
@@ -167,6 +189,15 @@ class StreamingEngine:
         self.staleness_threshold_s = 30.0
         self.acct_refresh_s = 5.0
         self.latency_report_s = 30.0
+        self.inflight_timeout_s = 20.0
+        self.cid_side: dict[str, str] = {}
+        self.cid_ts: dict[str, float] = {}
+        self.cid_committed: dict[str, float] = {}
+        self._committed_cash = 0.0
+        self._positions: list = []
+        self._gross_before = 0.0
+        self._kill_ok = True
+        self._kill_reason = ""
 
     @property
     def symbols(self) -> list[str]:
@@ -175,11 +206,20 @@ class StreamingEngine:
     async def _in_executor(self, fn, *args):
         return await self._loop.run_in_executor(None, fn, *args)
 
+    def _make_cid(self, symbol: str, side: str) -> str:
+        # Unique per order: run_id is only second-resolution, so add symbol/side/uuid.
+        return f"{self.config.order_tag_prefix}_{trade.run_id()}_{symbol}_{side}_{uuid.uuid4().hex[:8]}"[:48]
+
+    def _release_cid(self, cid: str) -> None:
+        self._committed_cash = max(0.0, self._committed_cash - self.cid_committed.pop(cid, 0.0))
+        self.cid_side.pop(cid, None)
+        self.cid_ts.pop(cid, None)
+
     async def bootstrap(self) -> None:
         self._loop = asyncio.get_running_loop()
         syms = await self._in_executor(self.scanner._universe)
         bars = await self._in_executor(self.scanner._download_bars, syms)
-        opx = trade.compute_today_open_and_price(bars)
+        opx = opens_for_today(bars)  # date-validated; stale prior-day opens excluded
         await self._refresh_account_and_positions()
         await self._refresh_no_reentry()
         await self._refresh_close_dt()
@@ -198,6 +238,13 @@ class StreamingEngine:
         self._positions = await self._in_executor(self.broker.get_all_open_positions)
         self._acct_ts = time.monotonic()
         self._apply_positions()
+        eq = max(float(self._acct.equity), 1.0)
+        self._gross_before = sum(max(0.0, float(p.market_value)) for p in self._positions) / eq
+        # Kill-switch does file I/O; evaluate here (off the entry hot path) and cache.
+        kill = await self._in_executor(self.exec._kill_switch_allows_execution, eq)
+        self._kill_ok, self._kill_reason = bool(kill[0]), str(kill[1])
+        # Reconcile committed-cash reserve to orders still in flight.
+        self._committed_cash = sum(self.cid_committed.values())
 
     def _apply_positions(self) -> None:
         pos_by = {trade.normalize_symbol(p.symbol): p for p in getattr(self, "_positions", []) if p.qty > 0}
@@ -250,20 +297,24 @@ class StreamingEngine:
             st.last_event_ts = time.monotonic()
 
     def _risk_ok(self, row, equity: float) -> tuple[bool, str]:
+        # Pure (no I/O): uses cached kill-switch allowance + cached account/positions.
         acct = self._acct
         price = float(row["price"])
         est = float(row["delta_shares"]) * price
-        allowed, reason, _ = self.exec._kill_switch_allows_execution(equity)
-        if not allowed:
-            return False, f"kill_switch:{reason}"
+        if not self._kill_ok:
+            return False, f"kill_switch:{self._kill_reason}"
         if float(acct.buying_power) < self.config.min_buying_power:
             return False, "buying_power_below_minimum"
-        if float(acct.cash) - est < self.exec._cash_buffer(equity):
+        if float(acct.cash) - self._committed_cash - est < self.exec._cash_buffer(equity):
             return False, "cash_buffer_violation"
         if est > self.exec._max_order_notional(equity):
             return False, "exceeds_max_order_notional"
-        if est < trade.build_account_risk_profile(equity).min_notional_to_trade:
+        profile = trade.build_account_risk_profile(equity)
+        if est < profile.min_notional_to_trade:
             return False, "below_min_notional"
+        gross_room = max(0.0, (profile.max_gross_exposure - self._gross_before) * equity)
+        if est > gross_room:
+            return False, "exceeds_gross_exposure"
         return True, ""
 
     async def _maybe_enter(self, st, t0: float) -> None:
@@ -272,11 +323,15 @@ class StreamingEngine:
         # No new entries inside the EOD flatten window.
         if trade.within_eod_flatten_window(trade.datetime.now(trade.ET), self.config.scanner.daily_green_flatten_before_close_min, self._close_dt):
             return
+        # Portfolio max-positions cap (held + in-flight across all symbols).
+        open_count = sum(1 for s in self.states.values() if s.held or s.in_flight)
+        if open_count >= self.config.scanner.daily_green_max_positions:
+            return
         equity = max(float(self._acct.equity), 1.0)
         row = decide_streaming_entry(st, equity, self._no_reentry, self.config.scanner, self.config)
         if not row:
             return
-        cid = trade.run_id()
+        cid = self._make_cid(st.symbol, "buy")
         self.sm.advance(cid, OrderState.SIGNAL_CONFIRMED)
         t_sig = time.monotonic()
         ok, why = self._risk_ok(row, equity)
@@ -286,7 +341,8 @@ class StreamingEngine:
             return
         self.sm.advance(cid, OrderState.RISK_APPROVED)
         t_risk = time.monotonic()
-        await self._submit(st, "buy", float(row["delta_shares"]), cid, t0, t_sig, t_risk)
+        est = float(row["delta_shares"]) * float(row["price"])
+        await self._submit(st, "buy", float(row["delta_shares"]), cid, t0, t_sig, t_risk, est_notional=est)
 
     async def _maybe_exit(self, st) -> None:
         if st.in_flight or st.qty <= 0:
@@ -299,15 +355,29 @@ class StreamingEngine:
             if not should_exit:
                 return
         t0 = time.monotonic()
-        cid = trade.run_id()
+        cid = self._make_cid(st.symbol, "sell")
         self.sm.advance(cid, OrderState.SIGNAL_CONFIRMED)
         self.sm.advance(cid, OrderState.RISK_APPROVED)  # exits always allowed (risk reduction)
         print(f"[streaming] EXIT {st.symbol} qty={st.qty} reason={reason} cid={cid}")
         await self._submit(st, "sell", float(st.qty), cid, t0, t0, t0, exit_reason=reason)
 
-    async def _submit(self, st, side: str, qty: float, cid: str, t0: float, t_sig: float, t_risk: float, exit_reason: str = "") -> None:
+    async def _submit(self, st, side: str, qty: float, cid: str, t0: float, t_sig: float, t_risk: float, exit_reason: str = "", est_notional: float = 0.0) -> None:
+        # Fractionable fallback for buys: a non-fractionable asset must use whole shares.
+        if side == "buy" and self.config.scanner.enable_fractional_orders and not float(qty).is_integer():
+            frac = await self._in_executor(self.broker.is_fractionable, st.symbol)
+            if not frac:
+                qty = float(int(qty))
+                if qty <= 0:
+                    self.sm.advance(cid, OrderState.REJECTED)
+                    print(f"[streaming] REJECT {st.symbol} cid={cid}: not_fractionable_qty_below_1_share")
+                    return
         st.in_flight = True
         self.cid_symbol[cid] = st.symbol
+        self.cid_side[cid] = side
+        self.cid_ts[cid] = time.monotonic()
+        if side == "buy":
+            self.cid_committed[cid] = est_notional
+            self._committed_cash += est_notional
         self.sm.advance(cid, OrderState.ORDER_SUBMITTING)
         try:
             if side == "buy":
@@ -318,6 +388,7 @@ class StreamingEngine:
         except Exception as exc:
             self.sm.advance(cid, OrderState.REJECTED)
             st.in_flight = False
+            self._release_cid(cid)
             print(f"[streaming] submit FAILED {side} {st.symbol} cid={cid}: {exc}")
             return
         t_sub = time.monotonic()
@@ -337,7 +408,11 @@ class StreamingEngine:
             "fill": OrderState.FILLED,
             "filled": OrderState.FILLED,
             "canceled": OrderState.CANCELED,
+            "cancelled": OrderState.CANCELED,
+            "expired": OrderState.CANCELED,
+            "done_for_day": OrderState.CANCELED,
             "rejected": OrderState.REJECTED,
+            "suspended": OrderState.REJECTED,
         }
         to = mapping.get(status)
         if cid and to:
@@ -347,15 +422,17 @@ class StreamingEngine:
             st = self.states.get(sym)
             if st:
                 st.in_flight = False
+                # Side is recorded at submit (do NOT parse order.side: a real
+                # alpaca OrderSide.BUY stringifies to "orderside.buy", not "buy").
+                side = self.cid_side.get(cid, "")
                 if to == OrderState.FILLED:
-                    # Buy fill -> held + one-round-trip-per-day; exit fill -> position closed.
-                    side = str(getattr(order, "side", "")).lower()
                     if side == "buy":
                         st.held, st.done_today = True, True
                     else:
                         st.held, st.qty, st.done_today = False, 0.0, True
                         if not self.config.scanner.daily_green_reenter_after_stop:
                             await self._in_executor(trade.mark_no_reentry_symbol, sym, "streaming_exit")
+            self._release_cid(cid)
         print(f"[streaming] order_update cid={cid} status={status} -> {to}")
 
     async def supervisor(self) -> None:
@@ -367,14 +444,42 @@ class StreamingEngine:
                 try:
                     await self._refresh_account_and_positions()
                     await self._refresh_no_reentry()
+                    await self._refresh_close_dt()
+                    await self._refresh_missing_opens()
                 except Exception as exc:
                     print(f"[streaming] refresh failed: {exc}")
+            # Exit/EOD sweep: evaluate held symbols even if they get no ticks
+            # (illiquid names must still stop/target/EOD-flatten).
+            for st in list(self.states.values()):
+                if st.held and not st.in_flight:
+                    await self._maybe_exit(st)
+            # In-flight reaper: clear a stuck in-flight after a timeout (missed terminal
+            # update / reconnect) so the symbol is not blocked forever.
+            for cid, ts in list(self.cid_ts.items()):
+                if now - ts > self.inflight_timeout_s:
+                    sym = self.cid_symbol.get(cid)
+                    st = self.states.get(sym) if sym else None
+                    if st:
+                        st.in_flight = False
+                    print(f"[streaming] in-flight reaper cleared cid={cid} sym={sym} ({self.inflight_timeout_s:.0f}s no terminal update)")
+                    self._release_cid(cid)
             stale = [s for s, st in self.states.items() if is_stale(st.last_event_ts, now, self.staleness_threshold_s)]
             if stale:
                 print(f"[streaming] STALE (>{self.staleness_threshold_s:.0f}s no events): {len(stale)} symbols e.g. {stale[:5]}")
             if now - last_report >= self.latency_report_s:
                 print(f"[streaming] latency: {self.latency.summary()}")
                 last_report = now
+
+    async def _refresh_missing_opens(self) -> None:
+        missing = [s for s, st in self.states.items() if st.today_open <= 0]
+        if not missing:
+            return
+        bars = await self._in_executor(self.scanner._download_bars, missing)
+        opx = opens_for_today(bars)
+        for s in missing:
+            o, _p = opx.get(s, (0.0, 0.0))
+            if o > 0:
+                self.states[s].today_open = o
 
     async def run(self) -> None:
         await self.bootstrap()
