@@ -348,6 +348,9 @@ class ScannerConfig:
     daily_green_flatten_before_close_min: int = 5
     daily_green_reenter_after_stop: bool = False
 
+    # Fractional orders: exact-dollar sizing so small accounts can buy any name.
+    enable_fractional_orders: bool = True
+
     # Intraday entry-analysis layer.
     analyze_intraday_entries: bool = True
     intraday_lookback_days: int = 5
@@ -726,6 +729,12 @@ def json_default(value: Any) -> Any:
     if hasattr(value, "value"):
         return value.value
     return str(value)
+
+
+def normalize_order_qty(qty: float):
+    """Alpaca order qty: whole numbers stay int (legacy parity); fractions round to 9 dp."""
+    q = float(qty)
+    return int(q) if q.is_integer() else round(q, 9)
 
 
 def build_account_risk_profile(equity: float) -> AccountRiskProfile:
@@ -2426,6 +2435,7 @@ class AlpacaBroker:
             secret_key=self.secret_key,
             paper=paper,
         )
+        self._fractionable_cache: dict[str, bool] = {}
 
     def get_account_snapshot(self) -> AccountSnapshot:
         acct = self.trading.get_account()
@@ -2504,10 +2514,24 @@ class AlpacaBroker:
             "next_close": str(getattr(clock, "next_close", "")),
         }
 
-    def submit_market_order(self, symbol: str, side: str, qty: int, client_order_id: str, tif: TimeInForce):
+    def is_fractionable(self, symbol: str) -> bool:
+        """Whether Alpaca allows fractional qty for this asset (cached per symbol)."""
+        symbol = safe_symbol(symbol)
+        if symbol in self._fractionable_cache:
+            return self._fractionable_cache[symbol]
+        try:
+            asset = self.trading.get_asset(symbol)
+            frac = bool(getattr(asset, "fractionable", False))
+        except Exception as exc:
+            print(f"[broker] fractionable check failed for {symbol}: {exc}")
+            frac = False
+        self._fractionable_cache[symbol] = frac
+        return frac
+
+    def submit_market_order(self, symbol: str, side: str, qty: float, client_order_id: str, tif: TimeInForce):
         order = MarketOrderRequest(
             symbol=safe_symbol(symbol),
-            qty=int(qty),
+            qty=normalize_order_qty(qty),
             side=OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL,
             type=OrderType.MARKET,
             time_in_force=tif,
@@ -2662,7 +2686,10 @@ def build_daily_green_entry_rows(
         delta_dollars = target_weight * equity
         if delta_dollars < min_notional:
             continue
-        delta_shares = int(delta_dollars // price)
+        if config.enable_fractional_orders:
+            delta_shares = round(delta_dollars / price, 9) if price > 0 else 0.0
+        else:
+            delta_shares = int(delta_dollars // price)
         if delta_shares <= 0:
             continue
 
@@ -2725,7 +2752,7 @@ def build_daily_green_exit_rows(
             {
                 "symbol": symbol,
                 "side": "sell",
-                "delta_shares": int(pos.qty),
+                "delta_shares": float(pos.qty),
                 "delta_dollars": float(pos.market_value),
                 "price": float(pos.current_price),
                 "reason": reason,
@@ -4427,6 +4454,14 @@ class ProductionOrderExecutor:
         profile = self._risk_profile(equity)
         return min(profile.max_order_dollars, equity * profile.max_single_order_notional_pct)
 
+    def _qty_from_dollars(self, dollars: float, price: float):
+        """Shares a dollar budget buys: fractional (9 dp) when enabled, else whole shares."""
+        if price <= 0:
+            return 0
+        if self.config.scanner.enable_fractional_orders:
+            return round(dollars / price, 9)
+        return int(dollars // price)
+
     def _market_is_open_or_wait(self) -> bool:
         if self.config.allow_closed_market or not self.config.require_market_open:
             print("[clock] market-open guard disabled")
@@ -5006,11 +5041,12 @@ class ProductionOrderExecutor:
         plan.loc[buy_mask, "capped_dollars"] = plan.loc[buy_mask, "abs_delta_dollars"].clip(upper=max_order_notional)
         plan.loc[~buy_mask, "capped_dollars"] = plan.loc[~buy_mask, "abs_delta_dollars"]
 
-        plan["order_qty"] = plan["abs_delta_shares"].fillna(0).astype(int)
+        frac = self.config.scanner.enable_fractional_orders
+        base_qty = plan["abs_delta_shares"].fillna(0)
+        plan["order_qty"] = base_qty.astype(float) if frac else base_qty.astype(int)
         qty_from_dollars = (plan["order_qty"] <= 0) & (plan["price"] > 0)
-        plan.loc[qty_from_dollars, "order_qty"] = (
-            plan.loc[qty_from_dollars, "capped_dollars"] / plan.loc[qty_from_dollars, "price"]
-        ).fillna(0).astype(int)
+        derived = (plan.loc[qty_from_dollars, "capped_dollars"] / plan.loc[qty_from_dollars, "price"]).fillna(0)
+        plan.loc[qty_from_dollars, "order_qty"] = (derived.round(9) if frac else derived.astype(int))
 
         plan = plan[(plan["order_qty"] > 0) & (plan["order_qty"] <= self.config.max_single_order_qty)].copy()
         if plan.empty:
@@ -5144,7 +5180,7 @@ class ProductionOrderExecutor:
         for _, row in plan.iterrows():
             symbol = safe_symbol(row.get("symbol"))
             side = str(row.get("side", "")).lower()
-            qty = to_int(row.get("order_qty"))
+            qty = to_float(row.get("order_qty")) if self.config.scanner.enable_fractional_orders else to_int(row.get("order_qty"))
             price = to_float(row.get("price"))
             est_notional = to_float(row.get("capped_dollars", row.get("abs_delta_dollars", 0.0)))
             reason = str(row.get("reason", ""))
@@ -5193,15 +5229,22 @@ class ProductionOrderExecutor:
                     skip_message = f"cash_buffer_violation cash={cash:.2f} projected={cash - est_notional:.2f} required={cash_buffer:.2f}"
                 else:
                     if est_notional > max_order_notional:
-                        qty = int(max_order_notional // price) if price > 0 else 0
+                        qty = self._qty_from_dollars(max_order_notional, price)
                         est_notional = qty * price
                         print(f"[clip] BUY {symbol}: clipped to qty={qty} by max_order_notional")
                     if est_notional > gross_room:
-                        qty = int(gross_room // price) if price > 0 else 0
+                        qty = self._qty_from_dollars(gross_room, price)
                         est_notional = qty * price
                         print(f"[clip] BUY {symbol}: clipped to qty={qty} by gross exposure room")
                     if qty <= 0 or est_notional < profile.min_notional_to_trade:
                         skip_message = "buy_clipped_below_min_notional"
+                    # Fractional fallback: a non-fractionable asset must use whole shares.
+                    if not skip_message and self.config.scanner.enable_fractional_orders and not float(qty).is_integer():
+                        if not self.broker.is_fractionable(symbol):
+                            qty = int(qty)
+                            est_notional = qty * price
+                            if qty <= 0:
+                                skip_message = "not_fractionable_qty_below_1_share"
 
             if skip_message:
                 print(f"[skip] {side.upper()} {qty} {symbol}: {skip_message}")

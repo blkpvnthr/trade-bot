@@ -387,3 +387,52 @@ def test_exit_rows_eod_with_early_close():
     pos = trade.BrokerPosition(symbol="AAA", qty=10, market_value=1005.0, avg_entry_price=101.0, current_price=100.5)
     rows = trade.build_daily_green_exit_rows([pos], {"AAA": 100.0}, datetime(2026, 11, 27, 12, 57, tzinfo=et), trade.ScannerConfig(), 13000.0, close)
     assert len(rows) == 1 and rows[0]["reason"] == "eod_flatten"
+
+
+# ---------------------------------------------------------------------------
+# M1: fractional orders
+# ---------------------------------------------------------------------------
+def _executor_frac(frac):
+    e = object.__new__(trade.ProductionOrderExecutor)
+    e.config = trade.ExecutorConfig()
+    e.config.scanner.enable_fractional_orders = frac
+    return e
+
+
+def test_enable_fractional_orders_default_on():
+    assert trade.ScannerConfig().enable_fractional_orders is True
+
+
+def test_normalize_order_qty():
+    assert trade.normalize_order_qty(3.0) == 3
+    assert isinstance(trade.normalize_order_qty(3.0), int)
+    assert trade.normalize_order_qty(0.1119) == 0.1119
+    assert trade.normalize_order_qty(0.12345678912) == round(0.12345678912, 9)
+
+
+def test_qty_from_dollars_fractional_vs_integer():
+    assert _executor_frac(True)._qty_from_dollars(74.23, 661.0) == round(74.23 / 661.0, 9)
+    assert _executor_frac(False)._qty_from_dollars(74.23, 661.0) == 0
+    assert _executor_frac(True)._qty_from_dollars(100.0, 50.0) == 2.0
+    assert _executor_frac(False)._qty_from_dollars(100.0, 50.0) == 2
+    assert _executor_frac(True)._qty_from_dollars(50.0, 0.0) == 0
+
+
+def test_entry_rows_fractional_high_priced_name():
+    opx = {"QQQ": (660.0, 661.0)}  # green vs open
+    on = trade.build_daily_green_entry_rows(opx, set(), set(), 824.74, _cfg(), _ecfg())
+    assert len(on) == 1 and 0 < on[0]["delta_shares"] < 1  # fractional share
+    off = trade.build_daily_green_entry_rows(
+        opx, set(), set(), 824.74, _cfg(enable_fractional_orders=False), _ecfg()
+    )
+    assert off == []  # integer shares -> 0 -> excluded
+
+
+def test_exit_rows_sell_full_fractional_qty():
+    midday = datetime(2026, 11, 18, 12, 0, tzinfo=trade.ET)
+    frac_pos = trade.BrokerPosition(symbol="QQQ", qty=0.1123, market_value=71.9, avg_entry_price=659.0, current_price=640.0)
+    rows = trade.build_daily_green_exit_rows([frac_pos], {"QQQ": 660.0}, midday, _cfg(), 824.74)
+    assert len(rows) == 1 and abs(rows[0]["delta_shares"] - 0.1123) < 1e-9  # full fractional qty, not truncated
+    int_pos = trade.BrokerPosition(symbol="QQQ", qty=10, market_value=6400.0, avg_entry_price=659.0, current_price=640.0)
+    rows2 = trade.build_daily_green_exit_rows([int_pos], {"QQQ": 660.0}, midday, _cfg(), 824.74)
+    assert rows2[0]["delta_shares"] == 10.0
