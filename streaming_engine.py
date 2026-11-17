@@ -211,8 +211,10 @@ class StreamingEngine:
         return f"{self.config.order_tag_prefix}_{trade.run_id()}_{symbol}_{side}_{uuid.uuid4().hex[:8]}"[:48]
 
     def _release_cid(self, cid: str) -> None:
+        # Release the cash reserve + stop the reaper for this cid. KEEP cid_side so a
+        # LATE terminal update (post-reaper reconnect backlog) still classifies the
+        # fill correctly; cid_side/cid_symbol are evicted only on a real terminal.
         self._committed_cash = max(0.0, self._committed_cash - self.cid_committed.pop(cid, 0.0))
-        self.cid_side.pop(cid, None)
         self.cid_ts.pop(cid, None)
 
     async def bootstrap(self) -> None:
@@ -312,7 +314,9 @@ class StreamingEngine:
         profile = trade.build_account_risk_profile(equity)
         if est < profile.min_notional_to_trade:
             return False, "below_min_notional"
-        gross_room = max(0.0, (profile.max_gross_exposure - self._gross_before) * equity)
+        # Subtract in-flight committed buy notional (not yet in _gross_before) so
+        # back-to-back entries in one refresh window cannot collectively over-expose.
+        gross_room = max(0.0, (profile.max_gross_exposure - self._gross_before) * equity) - self._committed_cash
         if est > gross_room:
             return False, "exceeds_gross_exposure"
         return True, ""
@@ -364,7 +368,11 @@ class StreamingEngine:
     async def _submit(self, st, side: str, qty: float, cid: str, t0: float, t_sig: float, t_risk: float, exit_reason: str = "", est_notional: float = 0.0) -> None:
         # Fractionable fallback for buys: a non-fractionable asset must use whole shares.
         if side == "buy" and self.config.scanner.enable_fractional_orders and not float(qty).is_integer():
-            frac = await self._in_executor(self.broker.is_fractionable, st.symbol)
+            try:
+                frac = await self._in_executor(self.broker.is_fractionable, st.symbol)
+            except Exception as exc:
+                print(f"[streaming] fractionable check failed {st.symbol}: {exc}; using whole shares")
+                frac = False
             if not frac:
                 qty = float(int(qty))
                 if qty <= 0:
@@ -420,19 +428,25 @@ class StreamingEngine:
         sym = self.cid_symbol.get(cid)
         if sym and to in (OrderState.FILLED, OrderState.CANCELED, OrderState.REJECTED):
             st = self.states.get(sym)
+            # Side is recorded at submit (do NOT parse order.side: a real alpaca
+            # OrderSide.BUY stringifies to "orderside.buy", not "buy").
+            side = self.cid_side.get(cid, "")
             if st:
                 st.in_flight = False
-                # Side is recorded at submit (do NOT parse order.side: a real
-                # alpaca OrderSide.BUY stringifies to "orderside.buy", not "buy").
-                side = self.cid_side.get(cid, "")
                 if to == OrderState.FILLED:
                     if side == "buy":
                         st.held, st.done_today = True, True
-                    else:
+                    elif side == "sell":
                         st.held, st.qty, st.done_today = False, 0.0, True
                         if not self.config.scanner.daily_green_reenter_after_stop:
                             await self._in_executor(trade.mark_no_reentry_symbol, sym, "streaming_exit")
+                    else:
+                        # Unknown side (cid not recorded): never guess exit - let the
+                        # periodic broker-truth refresh reconcile held/qty.
+                        print(f"[streaming] order_update FILLED cid={cid} sym={sym} unknown side; skipping state mutation")
             self._release_cid(cid)
+            self.cid_side.pop(cid, None)
+            self.cid_symbol.pop(cid, None)
         print(f"[streaming] order_update cid={cid} status={status} -> {to}")
 
     async def supervisor(self) -> None:

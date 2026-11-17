@@ -168,3 +168,34 @@ def test_order_update_sell_fill_classified_by_recorded_side(monkeypatch):
         await e.on_order_update(types.SimpleNamespace(order=order, event="fill"))
         assert st.held is False and st.qty == 0.0 and st.done_today is True
     asyncio.run(go())
+
+
+def test_reaper_then_late_buy_fill_not_misclassified(monkeypatch):
+    # Regression: reaper releases a cid but must KEEP cid_side, so a late buy
+    # terminal update is classified as a buy (held), not defaulted to an exit.
+    async def go():
+        e = _engine(monkeypatch)
+        e._loop = asyncio.get_running_loop()
+        cid = "c3"
+        e.cid_symbol[cid] = "QQQ"
+        e.cid_side[cid] = "buy"
+        e.cid_committed[cid] = 74.0
+        e._committed_cash = 74.0
+        e.cid_ts[cid] = 0.0
+        st = e.states["QQQ"]
+        st.in_flight = True
+        e._release_cid(cid)          # reaper-style release
+        st.in_flight = False
+        assert cid in e.cid_side      # side retained for a late terminal
+        assert e._committed_cash == 0.0
+        order = types.SimpleNamespace(client_order_id=cid, side=types.SimpleNamespace(value="buy"), status="filled")
+        await e.on_order_update(types.SimpleNamespace(order=order, event="fill"))
+        assert st.held is True and st.done_today is True   # BUY, not exit
+        assert st.qty == 0.0 and not st.in_flight
+
+
+def test_gross_exposure_gate_blocks(monkeypatch):
+    e = _engine(monkeypatch)
+    e._gross_before = 0.72  # at MICRO max_gross_exposure
+    ok, why = e._risk_ok({"price": 50.0, "delta_shares": 1.0}, 824.74)
+    assert ok is False and why == "exceeds_gross_exposure"
