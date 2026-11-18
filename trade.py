@@ -620,6 +620,8 @@ class ExecutorConfig:
 
     # M2: when True, main() runs the async StreamingEngine instead of the sync loop.
     enable_streaming_engine: bool = False
+    # M3: terminal dashboard mode (dashboard|full|signals|orders).
+    terminal_mode: str = "dashboard"
 
     scanner: ScannerConfig = field(default_factory=ScannerConfig)
 
@@ -6258,9 +6260,13 @@ def build_default_config() -> ExecutorConfig:
         rl_min_enter_short_confidence=0.70,
     )
 
+    # Paper by default; live requires APCA_PAPER=0 AND explicit ALLOW_LIVE_TRADING=1
+    # (enforced in validate_and_print_execution_mode).
+    paper = os.getenv("APCA_PAPER", "1").strip().lower() not in ("0", "false", "no")
+
     return ExecutorConfig(
-        paper=True,
-        live=False,
+        paper=paper,
+        live=not paper,
         poll_once=False,
         poll_seconds=POLL_SECONDS,
         rebalance_orders_path=DEFAULT_REBALANCE_ORDERS,
@@ -6289,12 +6295,44 @@ def build_default_config() -> ExecutorConfig:
         order_wait_seconds=ORDER_WAIT_SECONDS,
         time_in_force=TimeInForce.DAY,
         order_tag_prefix="qq_13k",
+        enable_streaming_engine=os.getenv("STREAMING_ENGINE", "0").strip() == "1",
+        terminal_mode=os.getenv("TERMINAL_MODE", "dashboard").strip().lower(),
         scanner=scanner_config,
     )
 
 
+def validate_and_print_execution_mode(config: "ExecutorConfig") -> None:
+    """Validate the execution-mode config and print a startup banner.
+
+    Refuses to start live (paper=False) unless ALLOW_LIVE_TRADING=1 is explicitly set.
+    """
+    paper = bool(config.paper)
+    allow_live = os.getenv("ALLOW_LIVE_TRADING", "0").strip() == "1"
+    if not paper and not allow_live:
+        raise RuntimeError(
+            "LIVE trading requested (paper=False) without ALLOW_LIVE_TRADING=1. "
+            "Refusing to start. Set APCA_PAPER=1 for paper, or ALLOW_LIVE_TRADING=1 to "
+            "explicitly authorize live order execution."
+        )
+    tmode = getattr(config, "terminal_mode", "dashboard")
+    if tmode not in ("dashboard", "full", "signals", "orders"):
+        raise RuntimeError(f"Invalid TERMINAL_MODE={tmode!r}; expected dashboard|full|signals|orders")
+    path = "STREAMING" if config.enable_streaming_engine else "SYNC"
+    mode = "PAPER" if paper else "LIVE"
+    frac = getattr(config.scanner, "enable_fractional_orders", False)
+    print("=" * 64)
+    print(f"[mode] EXECUTION PATH : {path}")
+    print(f"[mode] TRADING MODE   : {mode}")
+    print(f"[mode] TERMINAL MODE  : {tmode}")
+    print(f"[mode] FRACTIONAL     : {frac}")
+    if config.enable_streaming_engine:
+        print("[mode] STREAM SUBS    : trades + 1-min bars + quotes (IEX) + order updates")
+    print("=" * 64)
+
+
 def main() -> None:
     config = build_default_config()
+    validate_and_print_execution_mode(config)
     if config.enable_streaming_engine:
         import streaming_engine
         streaming_engine.run_streaming(config)
