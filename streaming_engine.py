@@ -17,6 +17,15 @@ except Exception:  # pragma: no cover - streaming deps optional for unit tests
     TradingStream = None
     DataFeed = None
 
+import terminal_dashboard as td
+
+
+def _enum_value(x) -> str:
+    """Lower-cased value of an Alpaca enum (OrderStatus/OrderSide) or plain string.
+    A real OrderStatus.FILLED stringifies 'orderstatus.filled', so use .value."""
+    v = getattr(x, "value", None)
+    return str(v).lower() if v is not None else str(x or "").lower()
+
 
 class OrderState(Enum):
     SIGNAL_CONFIRMED = "SIGNAL_CONFIRMED"
@@ -198,6 +207,34 @@ class StreamingEngine:
         self._gross_before = 0.0
         self._kill_ok = True
         self._kill_reason = ""
+        self._data_connected = False
+        self._broker_connected = False
+        # M3 terminal + structured audit
+        self.bus = td.EventBus()
+        trade.LOG_DIR.mkdir(parents=True, exist_ok=True)
+        self.audit = td.AuditLogger(self.bus, trade.LOG_DIR / f"{trade.DATA_TAG}_streaming_events.jsonl")
+        self.renderer = td.TerminalRenderer(
+            self.bus, mode=getattr(config, "terminal_mode", "dashboard"), status_provider=self._status
+        )
+
+    def _status(self) -> dict:
+        eq = float(self._acct.equity) if self._acct else 0.0
+        bp = float(self._acct.buying_power) if self._acct else 0.0
+        lat = self.latency.summary().get("event_to_submit_ms", {})
+        return {
+            "mode": "PAPER" if self.config.paper else "LIVE",
+            "data": "up" if self._data_connected else "down",
+            "broker": "up" if self._broker_connected else "down",
+            "candidates": len(self.states),
+            "held": sum(1 for s in self.states.values() if s.held),
+            "in_flight": sum(1 for s in self.states.values() if s.in_flight),
+            "equity": f"{eq:.2f}",
+            "bp": f"{bp:.2f}",
+            "gross": f"{self._gross_before:.2f}",
+            "p50ms": round(lat.get("p50", 0.0), 1),
+            "p95ms": round(lat.get("p95", 0.0), 1),
+            "p99ms": round(lat.get("p99", 0.0), 1),
+        }
 
     @property
     def symbols(self) -> list[str]:
@@ -278,6 +315,8 @@ class StreamingEngine:
             return
         st.last_price = float(getattr(ev, "price", st.last_price) or st.last_price)
         st.last_event_ts = time.monotonic()
+        self._data_connected = True
+        self.bus.emit("DATA", {"symbol": sym, "px": st.last_price})
         if st.held:
             await self._maybe_exit(st)
         else:
@@ -337,13 +376,16 @@ class StreamingEngine:
             return
         cid = self._make_cid(st.symbol, "buy")
         self.sm.advance(cid, OrderState.SIGNAL_CONFIRMED)
+        self.bus.emit("SIGNAL", {"symbol": st.symbol, "cid": cid, "px": st.last_price, "open": st.today_open})
         t_sig = time.monotonic()
         ok, why = self._risk_ok(row, equity)
         if not ok:
             self.sm.advance(cid, OrderState.REJECTED)
-            print(f"[streaming] REJECT entry {st.symbol} cid={cid}: {why}")
+            self.bus.emit("RISK", {"symbol": st.symbol, "cid": cid, "approved": False, "reason": why})
             return
         self.sm.advance(cid, OrderState.RISK_APPROVED)
+        self.bus.emit("RISK", {"symbol": st.symbol, "cid": cid, "approved": True})
+        self.bus.emit("DECISION", {"symbol": st.symbol, "cid": cid, "action": "BUY", "qty": float(row["delta_shares"])})
         t_risk = time.monotonic()
         est = float(row["delta_shares"]) * float(row["price"])
         await self._submit(st, "buy", float(row["delta_shares"]), cid, t0, t_sig, t_risk, est_notional=est)
@@ -362,7 +404,7 @@ class StreamingEngine:
         cid = self._make_cid(st.symbol, "sell")
         self.sm.advance(cid, OrderState.SIGNAL_CONFIRMED)
         self.sm.advance(cid, OrderState.RISK_APPROVED)  # exits always allowed (risk reduction)
-        print(f"[streaming] EXIT {st.symbol} qty={st.qty} reason={reason} cid={cid}")
+        self.bus.emit("DECISION", {"symbol": st.symbol, "cid": cid, "action": "EXIT", "reason": reason, "qty": float(st.qty)})
         await self._submit(st, "sell", float(st.qty), cid, t0, t0, t0, exit_reason=reason)
 
     async def _submit(self, st, side: str, qty: float, cid: str, t0: float, t_sig: float, t_risk: float, exit_reason: str = "", est_notional: float = 0.0) -> None:
@@ -377,7 +419,7 @@ class StreamingEngine:
                 qty = float(int(qty))
                 if qty <= 0:
                     self.sm.advance(cid, OrderState.REJECTED)
-                    print(f"[streaming] REJECT {st.symbol} cid={cid}: not_fractionable_qty_below_1_share")
+                    self.bus.emit("RISK", {"symbol": st.symbol, "cid": cid, "approved": False, "reason": "not_fractionable_qty_below_1_share"})
                     return
         st.in_flight = True
         self.cid_symbol[cid] = st.symbol
@@ -397,22 +439,25 @@ class StreamingEngine:
             self.sm.advance(cid, OrderState.REJECTED)
             st.in_flight = False
             self._release_cid(cid)
-            print(f"[streaming] submit FAILED {side} {st.symbol} cid={cid}: {exc}")
+            self.bus.emit("ERROR", {"symbol": st.symbol, "cid": cid, "msg": f"submit failed: {exc}"})
             return
         t_sub = time.monotonic()
-        self.latency.record("event_to_submit_ms", (t_sub - t0) * 1000.0)
+        e2e = (t_sub - t0) * 1000.0
+        self.latency.record("event_to_submit_ms", e2e)
         self.latency.record("signal_to_risk_ms", max(0.0, (t_risk - t_sig) * 1000.0))
-        print(f"[streaming] SUBMIT {side} {qty} {st.symbol} cid={cid} e2e={(t_sub - t0) * 1000:.1f}ms {exit_reason}")
+        self.bus.emit("ORDER", {"symbol": st.symbol, "cid": cid, "side": side, "qty": qty, "e2e_ms": round(e2e, 1), "reason": exit_reason})
 
     async def on_order_update(self, ev) -> None:
         order = getattr(ev, "order", None)
         cid = str(getattr(order, "client_order_id", "") or "") if order is not None else ""
-        status = str(getattr(ev, "event", "") or getattr(order, "status", "") or "").lower()
+        submit_ts = self.cid_ts.get(cid)
+        status = _enum_value(getattr(ev, "event", "")) or _enum_value(getattr(order, "status", ""))
         mapping = {
             "new": OrderState.BROKER_ACKNOWLEDGED,
             "accepted": OrderState.BROKER_ACKNOWLEDGED,
             "pending_new": OrderState.BROKER_ACKNOWLEDGED,
             "partial_fill": OrderState.PARTIALLY_FILLED,
+            "partially_filled": OrderState.PARTIALLY_FILLED,
             "fill": OrderState.FILLED,
             "filled": OrderState.FILLED,
             "canceled": OrderState.CANCELED,
@@ -447,7 +492,15 @@ class StreamingEngine:
             self._release_cid(cid)
             self.cid_side.pop(cid, None)
             self.cid_symbol.pop(cid, None)
-        print(f"[streaming] order_update cid={cid} status={status} -> {to}")
+        cat = {
+            OrderState.BROKER_ACKNOWLEDGED: "ACK",
+            OrderState.PARTIALLY_FILLED: "FILL",
+            OrderState.FILLED: "FILL",
+            OrderState.CANCELED: "CANCEL",
+            OrderState.REJECTED: "REJECT",
+        }.get(to, "ACK")
+        lat_ms = round((time.monotonic() - submit_ts) * 1000.0, 1) if submit_ts else None
+        self.bus.emit(cat, {"symbol": sym or "", "cid": cid, "status": status, "ack_latency_ms": lat_ms})
 
     async def supervisor(self) -> None:
         last_report = time.monotonic()
@@ -502,12 +555,16 @@ class StreamingEngine:
         self.data_stream.subscribe_bars(self.on_bar, *syms)
         self.data_stream.subscribe_quotes(self.on_quote, *syms)
         self.trading_stream.subscribe_trade_updates(self.on_order_update)
+        self._broker_connected = True
         print(f"[streaming] subscribed {len(syms)} symbols; starting streams (paper={self.config.paper})")
         # _run_forever() is the awaitable form; run() is blocking and non-composable.
+        # Renderer + audit are independent tasks so terminal/logging never delay execution.
         await asyncio.gather(
             self.data_stream._run_forever(),
             self.trading_stream._run_forever(),
             self.supervisor(),
+            self.renderer.run(),
+            self.audit.run(),
         )
 
 

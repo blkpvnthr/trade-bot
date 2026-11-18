@@ -53,6 +53,7 @@ def test_decide_entry_green_and_blocks():
 # ---------------------------------------------------------------------------
 import asyncio
 import types
+import terminal_dashboard as td
 
 
 class _FakeBroker:
@@ -104,6 +105,9 @@ def _engine(monkeypatch):
     e._kill_ok = True
     e._kill_reason = ""
     e.inflight_timeout_s = 20.0
+    e.bus = td.EventBus()
+    e._data_connected = False
+    e._broker_connected = False
     e._acct = types.SimpleNamespace(equity=824.74, cash=824.74, buying_power=824.74)
     e._no_reentry = set()
     e._close_dt = None
@@ -199,3 +203,79 @@ def test_gross_exposure_gate_blocks(monkeypatch):
     e._gross_before = 0.72  # at MICRO max_gross_exposure
     ok, why = e._risk_ok({"price": 50.0, "delta_shares": 1.0}, 824.74)
     assert ok is False and why == "exceeds_gross_exposure"
+
+
+# ---------------------------------------------------------------------------
+# M3 Part D: regression tests using ACTUAL Alpaca enum representations
+# ---------------------------------------------------------------------------
+from alpaca.trading.enums import OrderSide, OrderStatus
+
+
+class _NonFractionableBroker(_FakeBroker):
+    def is_fractionable(self, sym):
+        return False
+
+
+def test_real_orderside_buy_not_parsed_from_order(monkeypatch):
+    # order.side is a REAL OrderSide.BUY (str()-> 'OrderSide.BUY'); we must classify
+    # via the recorded cid_side, not by parsing the enum.
+    async def go():
+        e = _engine(monkeypatch)
+        e._loop = asyncio.get_running_loop()
+        cid = "r1"
+        e.cid_symbol[cid] = "QQQ"
+        e.cid_side[cid] = "buy"
+        e.states["QQQ"].in_flight = True
+        order = types.SimpleNamespace(client_order_id=cid, side=OrderSide.BUY, status=OrderStatus.FILLED)
+        await e.on_order_update(types.SimpleNamespace(order=order, event="fill"))
+        st = e.states["QQQ"]
+        assert st.held is True and st.done_today is True  # BUY, not misread as exit
+    asyncio.run(go())
+
+
+def test_real_orderstatus_filled_via_enum_value(monkeypatch):
+    # No 'event' field: must fall back to order.status (real OrderStatus.FILLED ->
+    # _enum_value -> 'filled'), not str(enum) which would be 'orderstatus.filled'.
+    async def go():
+        e = _engine(monkeypatch)
+        e._loop = asyncio.get_running_loop()
+        cid = "r2"
+        e.cid_symbol[cid] = "QQQ"
+        e.cid_side[cid] = "sell"
+        st = e.states["QQQ"]
+        st.held, st.qty, st.in_flight = True, 0.1, True
+        order = types.SimpleNamespace(client_order_id=cid, side=OrderSide.SELL, status=OrderStatus.FILLED)
+        await e.on_order_update(types.SimpleNamespace(order=order))  # no .event
+        assert st.held is False and st.qty == 0.0 and st.done_today is True
+    asyncio.run(go())
+
+
+def test_real_orderstatus_partially_filled_maps(monkeypatch):
+    assert se._enum_value(OrderStatus.PARTIALLY_FILLED) == "partially_filled"
+    async def go():
+        e = _engine(monkeypatch)
+        e._loop = asyncio.get_running_loop()
+        cid = "r3"
+        e.cid_symbol[cid] = "QQQ"
+        e.cid_side[cid] = "buy"
+        e.sm.advance(cid, se.OrderState.SIGNAL_CONFIRMED)
+        e.sm.advance(cid, se.OrderState.RISK_APPROVED)
+        e.sm.advance(cid, se.OrderState.ORDER_SUBMITTING)
+        e.sm.advance(cid, se.OrderState.ORDER_SUBMITTED)
+        e.sm.advance(cid, se.OrderState.BROKER_ACKNOWLEDGED)
+        order = types.SimpleNamespace(client_order_id=cid, side=OrderSide.BUY, status=OrderStatus.PARTIALLY_FILLED)
+        await e.on_order_update(types.SimpleNamespace(order=order))  # status-value path
+        assert e.sm.state(cid) == se.OrderState.PARTIALLY_FILLED
+    asyncio.run(go())
+
+
+def test_non_fractionable_fallback_rejects_sub_share(monkeypatch):
+    # Non-fractionable asset + fractional qty that floors to 0 -> rejected, no order.
+    async def go():
+        e = _engine(monkeypatch)
+        e.broker = _NonFractionableBroker()
+        e._loop = asyncio.get_running_loop()
+        st = e.states["QQQ"]
+        await e._submit(st, "buy", 0.1123, "cid_nf", 0.0, 0.0, 0.0, est_notional=74.0)
+        assert e.broker.buys == [] and not st.in_flight
+    asyncio.run(go())
