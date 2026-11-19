@@ -18,9 +18,10 @@ from datetime import datetime, timezone
 CATEGORIES = (
     "DATA", "SCAN", "TREND", "TV", "SIGNAL", "DECISION",
     "RISK", "ORDER", "ACK", "FILL", "CANCEL", "REJECT", "ERROR",
+    "FLOW", "EXIT",
 )
 CRITICAL_CATEGORIES = frozenset(
-    {"SIGNAL", "DECISION", "RISK", "ORDER", "ACK", "FILL", "CANCEL", "REJECT", "ERROR"}
+    {"SIGNAL", "DECISION", "RISK", "ORDER", "ACK", "FILL", "CANCEL", "REJECT", "ERROR", "EXIT"}
 )
 
 # Per-mode display filter. None => show all.
@@ -28,9 +29,9 @@ _MODE_FILTER = {
     "full": None,
     "dashboard": None,  # dashboard draws a panel + a tail of recent events
     "signals": frozenset(
-        {"SCAN", "TREND", "TV", "SIGNAL", "DECISION", "RISK", "ORDER", "ACK", "FILL", "CANCEL", "REJECT", "ERROR"}
+        {"SCAN", "TREND", "TV", "SIGNAL", "DECISION", "RISK", "ORDER", "ACK", "FILL", "CANCEL", "REJECT", "ERROR", "FLOW", "EXIT"}
     ),
-    "orders": frozenset({"ORDER", "ACK", "FILL", "CANCEL", "REJECT", "RISK", "ERROR"}),
+    "orders": frozenset({"ORDER", "ACK", "FILL", "CANCEL", "REJECT", "RISK", "ERROR", "EXIT"}),
 }
 
 _COLOR = {
@@ -38,8 +39,39 @@ _COLOR = {
     "SIGNAL": "\033[36m", "DECISION": "\033[33m", "RISK": "\033[31m",
     "ORDER": "\033[34m", "ACK": "\033[34m", "FILL": "\033[32m",
     "CANCEL": "\033[33m", "REJECT": "\033[31m", "ERROR": "\033[91m",
+    "FLOW": "\033[96m", "EXIT": "\033[93m",
 }
 _RESET = "\033[0m"
+
+# Exit decisions colored by urgency for the dashboard panel.
+_EXIT_DECISION_COLOR = {
+    "HOLD_STRONG": "\033[32m", "HOLD_CAUTION": "\033[36m", "PROTECT_PROFIT": "\033[33m",
+    "PARTIAL_TAKE_PROFIT": "\033[33m", "FULL_EXIT": "\033[31m", "RISK_EXIT": "\033[91m",
+    "INSUFFICIENT_DATA": "\033[90m",
+}
+
+
+def format_exit_panel(exit_events: dict) -> list[str]:
+    """Render the order-flow profit-exit panel from the latest EXIT event per symbol.
+
+    Each event carries: symbol, decision, score, pressure, cvd (trend), exhaustion,
+    u_plpc / peak_plpc, stop (proposed trailing), enforce/shadow. IEX-only data scope.
+    """
+    if not exit_events:
+        return []
+    lines = ["  -- order-flow profit-exit (data_source=IEX, proxy not consolidated) --",
+             f"    {'SYM':<6} {'ACTION':<19} {'SCORE':>5} {'PRESSURE':<11} {'CVD':>7} "
+             f"{'EXH':>4} {'uP&L%':>6} {'pkP&L%':>6} {'STOP':>8} {'MODE':<7}"]
+    for sym, ev in sorted(exit_events.items()):
+        dec = str(ev.get("decision", "?"))
+        color = _EXIT_DECISION_COLOR.get(dec, "")
+        mode = "ENFORCE" if ev.get("enforce") and not ev.get("shadow", True) else "shadow"
+        lines.append(
+            f"    {color}{sym:<6} {dec:<19}{_RESET} {float(ev.get('score',0)):>5.1f} "
+            f"{str(ev.get('pressure','?')):<11} {float(ev.get('cvd',0)):>7.1f} "
+            f"{float(ev.get('exhaustion',0)):>4.2f} {float(ev.get('u_plpc',0))*100:>6.2f} "
+            f"{float(ev.get('peak_plpc',0))*100:>6.2f} {float(ev.get('stop',0)):>8.2f} {mode:<7}")
+    return lines
 
 
 def should_display(mode: str, category: str) -> bool:
@@ -132,6 +164,7 @@ class TerminalRenderer:
         self.status_provider = status_provider
         self.dashboard_interval = dashboard_interval
         self.recent: deque = deque(maxlen=feed_tail)
+        self.exit_panel: dict[str, dict] = {}  # latest EXIT event per symbol
         self._running = True
 
     def stop(self) -> None:
@@ -159,6 +192,8 @@ class TerminalRenderer:
         of = self.bus.overflow_summary()
         print(f"[dashboard] events={sum(self.bus.counts.values())} "
               f"dropped_display={of['dropped_display']} dropped_audit={of['dropped_audit']}")
+        for line in format_exit_panel(self.exit_panel):
+            print(line)
         for line in list(self.recent):
             print("  " + line)
         print("=" * 72)
@@ -170,6 +205,8 @@ class TerminalRenderer:
                 ev = await asyncio.wait_for(self.bus.display_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 ev = None
+            if ev is not None and ev.get("category") == "EXIT" and ev.get("symbol"):
+                self.exit_panel[str(ev["symbol"])] = ev  # keep latest per symbol for the panel
             if ev is not None and should_display(self.mode, ev.get("category", "")):
                 line = self.format_event(ev)
                 if self.mode == "dashboard":

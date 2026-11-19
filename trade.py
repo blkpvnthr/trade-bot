@@ -129,6 +129,7 @@ SCANNER_STATE_PATH = LOG_DIR / f"{DATA_TAG}_scanner_state.json"
 SCANNER_SCORES_PATH = OUT_DIR / f"{DATA_TAG}_latest_scanner_scores.csv"
 NO_REENTRY_STATE_PATH = LOG_DIR / f"{DATA_TAG}_no_reentry_state.json"
 INSIDER_HOLDINGS_STATE_PATH = LOG_DIR / f"{DATA_TAG}_insider_holdings_state.json"
+PROFIT_EXIT_STATE_PATH = LOG_DIR / f"{DATA_TAG}_profit_exit_state.json"
 POSITION_MONITOR_PATH = LOG_DIR / f"{DATA_TAG}_active_position_monitor.csv"
 
 LLM_SENTIMENT_UNIVERSE_PATH = OUT_DIR / f"{DATA_TAG}_latest_llm_sentiment_universe.json"
@@ -412,6 +413,22 @@ class ScannerConfig:
     exit_learning_prob_hold_threshold: float = 0.45
     exit_learning_reversal_threshold: float = 0.60
     exit_learning_negative_ev_threshold: float = 0.0
+
+    # Order-flow-driven profit-exit overlay (see order_flow_engine.py + profit_exit_engine.py).
+    # SHADOW by default: it logs recommendations and proposed stops but submits NO orders
+    # until profit_exit_shadow_mode is turned off (requires explicit opt-in). When enforcing,
+    # it only ADDS exit rows to the existing funnel -- it never bypasses the kill switch or
+    # the existing protective stops, and it defers to any symbol they are already exiting.
+    order_flow_enabled: bool = True
+    profit_exit_enabled: bool = True
+    profit_exit_shadow_mode: bool = True
+    profit_exit_score_protect: float = 60.0
+    profit_exit_score_partial: float = 75.0
+    profit_exit_score_full: float = 90.0
+    profit_exit_partial_fraction: float = 0.50
+    profit_exit_min_confirmations: int = 3
+    profit_exit_cooldown_s: float = 120.0
+    profit_exit_persistence_cycles: int = 2
 
     # Churn control. Buys are blocked during the opening-noise window and
     # after a same-day exit, but sells/exits are always allowed.
@@ -6207,6 +6224,142 @@ class ProductionOrderExecutor:
         self.config.scanner.refresh_market_context = False
         self.config.scanner.refresh_premarket_trade_plan = False
 
+    # ------------------------------------------------------------------
+    # Order-flow-driven profit-exit overlay (shadow by default).
+    # Reuses the EXISTING execution funnel: it only produces exit-row data that
+    # run_once_from_frames submits -- no competing broker path, no bypass of the
+    # kill switch or existing protective stops.
+    # ------------------------------------------------------------------
+    def _ensure_profit_exit_engines(self) -> None:
+        if getattr(self, "_profit_exit_coordinator", None) is not None:
+            return
+        import order_flow_engine as ofe
+        import profit_exit_engine as pxe
+        sc = self.config.scanner
+        data_client = getattr(self.scanner, "data", None) if self.scanner is not None else None
+        self._order_flow_engine = ofe.OrderFlowEngine(config=ofe.OrderFlowConfig(),
+                                                     data_client=data_client)
+        pe_cfg = pxe.ProfitExitConfig(
+            score_protect=sc.profit_exit_score_protect,
+            score_partial=sc.profit_exit_score_partial,
+            score_full=sc.profit_exit_score_full,
+            partial_fraction=sc.profit_exit_partial_fraction,
+            min_confirmations=sc.profit_exit_min_confirmations,
+            persistence_cycles=sc.profit_exit_persistence_cycles,
+            cooldown_s=sc.profit_exit_cooldown_s,
+        )
+        self._profit_exit_engine = pxe.ProfitExitEngine(config=pe_cfg,
+                                                       state_path=PROFIT_EXIT_STATE_PATH)
+        self._profit_exit_coordinator = pxe.ProfitExitCoordinator(self._profit_exit_engine)
+
+    def _run_profit_exit_overlay(self, equity: float, protective_symbols: set[str]) -> pd.DataFrame:
+        """Always logs per-position exit recommendations; returns enforcement exit rows
+        ONLY when shadow mode is off. Fail-safe: any error returns no rows."""
+        cols = ["symbol", "side", "delta_shares", "delta_dollars", "price", "reason",
+                "target_weight", "current_weight", "delta_weight", "trade_confidence"]
+        empty = pd.DataFrame(columns=cols)
+        if self.scanner is None:
+            return empty
+        sc = self.config.scanner
+        positions = [p for p in self.broker.get_all_open_positions() if p.qty > 0]
+        if not positions:
+            return empty
+        self._ensure_profit_exit_engines()
+        symbols = sorted({normalize_symbol(p.symbol) for p in positions})
+        self._profit_exit_engine.prune(symbols)
+
+        snapshots: dict[str, Any] = {}
+        if sc.order_flow_enabled:
+            try:
+                snapshots = self._order_flow_engine.poll_rest(symbols, lookback_s=300)
+            except Exception as exc:  # noqa: BLE001 - never break the loop
+                print(f"[order-flow] poll failed (non-fatal): {exc}")
+
+        structure_by_symbol: dict[str, dict[str, Any]] = {}
+        atr_by_symbol: dict[str, float] = {}
+        adv_by_symbol: dict[str, float] = {}
+        entry_by_symbol = {normalize_symbol(p.symbol): to_float(p.avg_entry_price) for p in positions}
+        try:
+            bars5 = self.scanner._download_intraday_bars(symbols, 5)
+        except Exception:
+            bars5 = pd.DataFrame()
+        if bars5 is not None and not bars5.empty:
+            for sym, g in bars5.groupby("symbol", sort=False):
+                s = normalize_symbol(sym)
+                m = self.scanner._intraday_direction_metrics(s, g, 5, entry_by_symbol.get(s, 0.0))
+                structure_by_symbol[s] = {
+                    "lower_high": m.get("5m_lower_highs"),
+                    "lower_low": m.get("5m_lower_lows"),
+                    "lost_vwap": (not m.get("5m_above_vwap", True)),
+                    "failed_breakout": m.get("5m_failed_reclaim"),
+                    "below_fast_slow": bool(m.get("5m_below_fast_sma")) and bool(m.get("5m_below_slow_sma")),
+                }
+                try:
+                    col = g["atr14"] if "atr14" in g.columns else None
+                    atr_by_symbol[s] = float(col.dropna().iloc[-1]) if col is not None and col.notna().any() else 0.0
+                except Exception:
+                    atr_by_symbol[s] = 0.0
+                try:
+                    dv = (g["close"].astype(float) * g["volume"].astype(float))
+                    adv_by_symbol[s] = float(dv.mean()) * 78.0  # ~78 5-min bars/day -> daily $vol proxy
+                except Exception:
+                    adv_by_symbol[s] = 0.0
+
+        shadow = bool(sc.profit_exit_shadow_mode)
+        recs, rows = self._profit_exit_coordinator.evaluate_positions(
+            positions=positions, protective_symbols=protective_symbols,
+            flow_snapshots=snapshots, structure_by_symbol=structure_by_symbol,
+            atr_by_symbol=atr_by_symbol, adv_by_symbol=adv_by_symbol,
+            now=now_utc().timestamp(), shadow=shadow,
+            fractional_ok=sc.enable_fractional_orders,
+        )
+        self._log_profit_exit(recs, shadow)
+        if shadow or not rows:
+            return empty
+        print(f"[profit-exit:ENFORCE] adding {len(rows)} discretionary exit row(s) to the funnel")
+        return pd.DataFrame(rows, columns=cols)
+
+    def _log_profit_exit(self, recs: list[Any], shadow: bool) -> None:
+        if not recs:
+            return
+        cycle_id = run_id()
+        table = pd.DataFrame([{
+            "symbol": r.symbol, "decision": r.decision, "score": r.exit_score,
+            "pressure": r.pressure, "sell_p": r.components.get("sell_pressure"),
+            "cvd_det": r.components.get("cvd_deterioration"),
+            "exhaust": r.components.get("buyer_exhaustion"),
+            "struct": r.components.get("structure_breakdown"),
+            "giveback": r.components.get("profit_giveback"),
+            "u_plpc": round(r.unrealized_plpc, 4), "peak_plpc": round(r.peak_plpc, 4),
+            "stop": round(r.proposed_stop, 2), "conf": r.confirmation_count,
+            "net$": r.net_pnl_est, "enforce": r.enforce, "data": r.data_status,
+        } for r in recs])
+        mode = "SHADOW" if shadow else "ENFORCE"
+        print(f"[profit-exit:{mode}] {len(recs)} position(s) evaluated (data_source=IEX):")
+        try:
+            print(table.to_string(index=False))
+        except Exception:
+            pass
+        # Render the shared terminal-dashboard profit-exit panel in the sync path too.
+        try:
+            import terminal_dashboard as _td
+            panel_events = {r.symbol: {
+                "symbol": r.symbol, "decision": r.decision, "score": r.exit_score,
+                "pressure": r.pressure, "cvd": r.cvd_divergence, "exhaustion": r.buyer_exhaustion,
+                "u_plpc": r.unrealized_plpc, "peak_plpc": r.peak_plpc, "stop": r.proposed_stop,
+                "enforce": r.enforce, "shadow": shadow,
+            } for r in recs}
+            for line in _td.format_exit_panel(panel_events):
+                print(line)
+        except Exception:
+            pass
+        try:
+            save_df(table, OUT_DIR / f"{DATA_TAG}_profit_exit_recs_{cycle_id}.csv")
+        except Exception:
+            pass
+        for r in recs:
+            write_event("profit_exit_recommendation", {"shadow": shadow, **r.as_dict()})
+
     def run_cycle_from_files(self) -> tuple[pd.DataFrame, pd.DataFrame, AccountSnapshot, pd.DataFrame]:
         # Do not spend time refreshing/scanning before the market is executable.
         # Exits remain allowed once the market is open; buy-side gates are applied below.
@@ -6294,6 +6447,20 @@ class ProductionOrderExecutor:
                 # RL timing gate is applied after scanner/regime and buy-only context filters.
                 # Exits remain allowed, and the RL layer may add additional protective exits.
                 rebalance, exits = self._apply_rl_timing_gate(rebalance, exits)
+
+                # Order-flow profit-exit overlay. Runs AFTER all protective exits exist so it
+                # can defer to them (priority: kill-switch > protective stops > full > partial >
+                # protect). Shadow by default -> adds NO rows; enforcement only appends rows to
+                # the same funnel, never a separate broker path. Fail-safe.
+                if self.config.scanner.profit_exit_enabled:
+                    try:
+                        protective_syms = set(exits["symbol"].map(safe_symbol)) if not exits.empty else set()
+                        pe_rows = self._run_profit_exit_overlay(equity, protective_syms)
+                        if pe_rows is not None and not pe_rows.empty:
+                            exits = pd.concat([exits, pe_rows], ignore_index=True)
+                    except Exception as exc:  # noqa: BLE001 - overlay must never break the cycle
+                        print(f"[profit-exit] overlay failed (non-fatal): {exc}")
+                        write_event("profit_exit_overlay_error", {"error": str(exc)})
 
                 if not monitor_exits.empty:
                     exited_today = sorted(set(monitor_exits["symbol"].map(safe_symbol)))
@@ -6548,6 +6715,11 @@ def build_default_config() -> ExecutorConfig:
         insider_hold_days=int(os.getenv("INSIDER_HOLD_DAYS", "10")),
         insider_max_positions=int(os.getenv("INSIDER_MAX_POSITIONS", "5")),
         insider_min_cluster_value=float(os.getenv("INSIDER_MIN_CLUSTER_VALUE", "1000000")),
+        # Order-flow profit-exit overlay. SHADOW by default; enforcement requires the
+        # explicit opt-in PROFIT_EXIT_ENFORCE=1 (discretionary exits are never auto-enabled).
+        order_flow_enabled=os.getenv("ORDER_FLOW_ENABLED", "1").strip() != "0",
+        profit_exit_enabled=os.getenv("PROFIT_EXIT_ENABLED", "1").strip() != "0",
+        profit_exit_shadow_mode=os.getenv("PROFIT_EXIT_ENFORCE", "0").strip() != "1",
         stop_loss_pct=-0.025,
         profit_lock_trigger_pct=0.04,
         profit_giveback_pct=0.015,
