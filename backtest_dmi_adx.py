@@ -81,8 +81,10 @@ def indicators(df: pd.DataFrame, slope_lb: int) -> pd.DataFrame:
     return d
 
 
-def entry_mask(d: pd.DataFrame, variant: str, cross_lb: int) -> pd.Series:
+def entry_mask(d: pd.DataFrame, variant: str, cross_lb: int, chop_adx: float = 0.0) -> pd.Series:
     setup = (d["pdi"] > d["mdi"]) & (d["close"] > d["sma50"]) & d["sma50_up"] & d["bb_low_up"]
+    if chop_adx > 0:  # "do nothing on chop": require a trending tape (ADX >= threshold)
+        setup = setup & (d["adx"] >= chop_adx)
     if variant == "B0":
         return setup & d["mid_cross"]
     if variant == "D1":
@@ -138,8 +140,8 @@ def manage_trend(d, entry_i, entry, stop, risk, end_i, cost_side):
     return {"net": net, "R": net / (risk / entry), "mfe_R": mfe, "mae_R": mae, "reason": reason}, exit_i
 
 
-def run_dmi(d, variant, atr_mult, cross_lb, cost_side, exit_mode="bracket"):
-    mask = entry_mask(d, variant, cross_lb).values
+def run_dmi(d, variant, atr_mult, cross_lb, cost_side, exit_mode="bracket", chop_adx=0.0):
+    mask = entry_mask(d, variant, cross_lb, chop_adx).values
     rth = d["rth"].values
     dates = d["date"].values
     opens, atrs = d["open"].values, d["atr"].values
@@ -227,6 +229,7 @@ def main():
     ap.add_argument("--folds", type=int, default=4)
     ap.add_argument("--exit", choices=["bracket", "trend"], default="bracket",
                     help="bracket=ATR stop+2:1+EOD; trend=hold while slopes up, exit on flatten/DI-flip/stop (multi-day)")
+    ap.add_argument("--chop-adx", type=float, default=0.0, help="skip entries when ADX < this (do nothing on chop)")
     args = ap.parse_args()
 
     syms = trade.load_trading_universe()
@@ -240,7 +243,7 @@ def main():
         d = indicators(raw, args.slope_lb)
         b = bucket_of(sym); cost = COST_BPS[b]
         for v in variants:
-            trs = run_dga(d, cost) if v == "DGA" else run_dmi(d, v, args.atr_mult, args.cross_lb, cost, args.exit)
+            trs = run_dga(d, cost) if v == "DGA" else run_dmi(d, v, args.atr_mult, args.cross_lb, cost, args.exit, args.chop_adx)
             for t in trs:
                 t2 = dict(t); t2["symbol"] = sym; t2["bucket"] = b
                 all_trades[v].append(t2)
