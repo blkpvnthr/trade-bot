@@ -1,0 +1,39 @@
+{
+  "horizon": 5,
+  "trades_total": 253,
+  "headline": {
+    "mean_excess": 0.022997029764287035,
+    "t_stat": 2.8903953833187037,
+    "boot95": [
+      0.007428648177683719,
+      0.038994779129800525
+    ]
+  },
+  "placebo": {
+    "p_value": 0.1515,
+    "null_mean": 0.015923420898373883,
+    "null_95pct": 0.08272372131009922,
+    "draws": 2000,
+    "usable_trades": 253
+  },
+  "ic": {
+    "spearman": -0.048481623948420906,
+    "perm_p": 0.4515,
+    "n": 253
+  },
+  "lookahead": {
+    "tainted": 56,
+    "clean": 197,
+    "missing_filing_date": 0
+  },
+  "clean_subset": {
+    "n": 197,
+    "mean_excess": 0.0266430722062581,
+    "t_stat": 3.1588085650630675,
+    "boot95": [
+      0.010153495391556916,
+      0.04368704216656314
+    ]
+  },
+  "verdict": "QUARANTINE (positive OOS but one falsification test marginal; needs more data)"
+}

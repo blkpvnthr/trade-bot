@@ -25,3 +25,6 @@ daily_system_outputs/latest_llm_sentiment_universe.json
 locked_trading_universe.txt
 venv/
 .venv/
+data/sec_cache_oos/
+data/sec_form345/
+data/cache/alpaca_bars/
