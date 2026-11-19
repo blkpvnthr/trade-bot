@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-run.py
+trade.py
 
 Clean 13K-account Alpaca paper executor with built-in momentum/reversal scanner.
 
-Default behavior:
-    python run.py
+Runs with NO arguments:
+    python trade.py
+    (paper mode by default; the order-flow profit-exit engine runs in SHADOW mode.
+     No CLI flags or env vars are required. Behavior is tuned via optional env vars
+     only -- e.g. PROFIT_EXIT_ENFORCE=1, STREAMING_ENGINE=1, ALLOW_LIVE_TRADING=1.)
 Reload systemd:
     systemctl daemon-reload
 
@@ -6809,18 +6812,98 @@ def validate_and_print_execution_mode(config: "ExecutorConfig") -> None:
     print("=" * 64)
 
 
+def print_startup_banner(config: "ExecutorConfig") -> None:
+    """Concise TRADING ENGINE status panel. Reflects the auto-enabled subsystems so a
+    bare `python trade.py` makes the active configuration obvious at a glance."""
+    sc = config.scanner
+    mode = "PAPER" if config.paper else "LIVE"
+    scanner_on = "ENABLED" if getattr(sc, "enabled", False) and not getattr(sc, "insider_strategy_enabled", False) else (
+        "ENABLED" if getattr(sc, "enabled", False) else "DISABLED")
+    order_flow = "ENABLED" if getattr(sc, "order_flow_enabled", False) else "DISABLED"
+    intel_exits = "ENABLED" if getattr(sc, "profit_exit_enabled", False) else "DISABLED"
+    exit_exec = "SHADOW" if getattr(sc, "profit_exit_shadow_mode", True) else "ENFORCE"
+    risk = "ACTIVE" if config.enable_kill_switch else "LIMITED"
+    dash = "ACTIVE" if not config.enable_streaming_engine else "STREAMING"
+    print("")
+    print("TRADING ENGINE")
+    print("-" * 40)
+    print(f"Mode:                 {mode}")
+    print(f"Scanner:              {scanner_on}")
+    print(f"Order Flow:           {order_flow}")
+    print(f"Intelligent Exits:    {intel_exits}")
+    print(f"Exit Execution:       {exit_exec}")
+    print(f"Risk Controls:        {risk}")
+    print(f"Dashboard:            {dash}")
+    print("")
+    print("Status:               MONITORING")
+    print("-" * 40)
+    write_event("engine_startup", {
+        "mode": mode, "scanner": scanner_on, "order_flow": order_flow,
+        "intelligent_exits": intel_exits, "exit_execution": exit_exec,
+        "risk_controls": risk, "dashboard": dash, "status": "MONITORING",
+    })
+
+
+def _apply_cli_overrides() -> None:
+    """Optional CLI flags. With NO arguments the full engine runs in paper + shadow mode.
+    Flags are sugar that set the corresponding env vars BEFORE build_default_config(), so
+    there remains a single config source of truth and `python trade.py` needs no flags."""
+    ap = argparse.ArgumentParser(
+        prog="trade.py",
+        description="13K Alpaca paper executor. Runs with NO arguments: paper trading, "
+                    "order-flow + intelligent-exit engines enabled in SHADOW mode.")
+    ap.add_argument("--enforce-exits", action="store_true",
+                    help="leave profit-exit SHADOW mode (discretionary exits submit orders; still paper unless --live)")
+    ap.add_argument("--no-order-flow", action="store_true", help="disable the order-flow engine")
+    ap.add_argument("--no-intelligent-exits", action="store_true", help="disable the profit-exit overlay")
+    ap.add_argument("--streaming", action="store_true", help="run the async streaming engine instead of the sync loop")
+    ap.add_argument("--terminal-mode", choices=["dashboard", "full", "signals", "orders"], default=None)
+    ap.add_argument("--live", action="store_true", help="LIVE trading (ALSO requires ALLOW_LIVE_TRADING=1)")
+    args = ap.parse_args()
+    if args.enforce_exits:
+        os.environ["PROFIT_EXIT_ENFORCE"] = "1"
+    if args.no_order_flow:
+        os.environ["ORDER_FLOW_ENABLED"] = "0"
+    if args.no_intelligent_exits:
+        os.environ["PROFIT_EXIT_ENABLED"] = "0"
+    if args.streaming:
+        os.environ["STREAMING_ENGINE"] = "1"
+    if args.terminal_mode:
+        os.environ["TERMINAL_MODE"] = args.terminal_mode
+    if args.live:
+        os.environ["APCA_PAPER"] = "0"
+
+
 def main() -> None:
+    # Zero-argument startup: optional flags only translate to env overrides.
+    _apply_cli_overrides()
     config = build_default_config()
     validate_and_print_execution_mode(config)
+
     if config.enable_streaming_engine:
+        print_startup_banner(config)
         import streaming_engine
         streaming_engine.run_streaming(config)
         return
+
     threading.Thread(
-    target=launch_intraday_dataset_builder,
-    daemon=True,
-).start()
+        target=launch_intraday_dataset_builder,
+        daemon=True,
+    ).start()
     executor = ProductionOrderExecutor(config)
+
+    # Auto-initialize the order-flow + intelligent-exit engines at startup (no manual step).
+    # Lazy-init still exists as a fallback, but eager init makes "ENABLED" real on boot and
+    # surfaces any config/data-client problem immediately rather than on the first position.
+    if config.scanner.order_flow_enabled or config.scanner.profit_exit_enabled:
+        try:
+            executor._ensure_profit_exit_engines()
+            print("[engine] order-flow + intelligent-exit engines initialized "
+                  f"(exit_execution={'SHADOW' if config.scanner.profit_exit_shadow_mode else 'ENFORCE'})")
+        except Exception as exc:  # noqa: BLE001 - never block startup on the overlay
+            print(f"[engine] profit-exit engine init deferred (non-fatal): {exc}")
+
+    print_startup_banner(config)
     executor.run()
 
 
