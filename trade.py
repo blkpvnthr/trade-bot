@@ -59,7 +59,7 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 from zoneinfo import ZoneInfo
 from io import StringIO
 from pathlib import Path
@@ -128,6 +128,7 @@ KILL_SWITCH_PATH = LOG_DIR / f"{DATA_TAG}_kill_switch_state.json"
 SCANNER_STATE_PATH = LOG_DIR / f"{DATA_TAG}_scanner_state.json"
 SCANNER_SCORES_PATH = OUT_DIR / f"{DATA_TAG}_latest_scanner_scores.csv"
 NO_REENTRY_STATE_PATH = LOG_DIR / f"{DATA_TAG}_no_reentry_state.json"
+INSIDER_HOLDINGS_STATE_PATH = LOG_DIR / f"{DATA_TAG}_insider_holdings_state.json"
 POSITION_MONITOR_PATH = LOG_DIR / f"{DATA_TAG}_active_position_monitor.csv"
 
 LLM_SENTIMENT_UNIVERSE_PATH = OUT_DIR / f"{DATA_TAG}_latest_llm_sentiment_universe.json"
@@ -347,6 +348,21 @@ class ScannerConfig:
     daily_green_max_positions: int = 8
     daily_green_flatten_before_close_min: int = 5
     daily_green_reenter_after_stop: bool = False
+
+    # Insider-selection strategy (equities, long only) -- DEFAULT OFF.
+    # Buys names with recent large open-market insider BUY clusters discovered via
+    # sec_form4_feed, holds a fixed trading-day horizon, then exits. The out-of-sample
+    # 2026q2 study (backtest_outputs/INSIDER_OOS_2026Q2_REPORT.md) found this is a
+    # SELECTION signal (insider-bought names beat SPY ~+2.7-4.8% over 5-21d, bootstrap-
+    # robust) but NOT a timing edge (timing placebo fails) -- VERDICT QUARANTINE. Ships
+    # OFF; enable only for a PAPER study. Live still requires ALLOW_LIVE_TRADING=1.
+    insider_strategy_enabled: bool = False
+    insider_min_cluster_value: float = 1_000_000.0
+    insider_max_filing_age_days: int = 3
+    insider_hold_days: int = 10
+    insider_per_position_weight: float = 0.08
+    insider_max_positions: int = 5
+    insider_stop_loss_pct: float = -0.15  # wide catastrophe stop for volatile small-caps
 
     # Fractional orders: exact-dollar sizing so small accounts can buy any name.
     enable_fractional_orders: bool = True
@@ -2320,6 +2336,52 @@ def mark_no_reentry_symbol(symbol: str, reason: str = "exit") -> None:
     write_event("no_reentry_marked", {"symbol": symbol, "reason": reason, "date": today})
 
 
+# ---------------------------------------------------------------------------
+# Insider-selection holdings state: {symbol: entry_date_iso}. Drives the fixed
+# trading-day holding horizon (positions persist across cycles/days, unlike the
+# intraday daily-green strategy).
+# ---------------------------------------------------------------------------
+def load_insider_holdings() -> dict[str, str]:
+    """Map {symbol: entry_date_iso} of currently-held insider-selection positions."""
+    state = read_json_file(INSIDER_HOLDINGS_STATE_PATH, {"holdings": {}})
+    holdings = state.get("holdings", {})
+    if not isinstance(holdings, dict):
+        return {}
+    out: dict[str, str] = {}
+    for sym, val in holdings.items():
+        s = safe_symbol(sym)
+        if s and isinstance(val, str):
+            out[s] = val
+    return out
+
+
+def mark_insider_entry(symbol: str, entry_date: str) -> None:
+    """Record an insider-selection entry (first entry date wins; idempotent per symbol)."""
+    symbol = safe_symbol(symbol)
+    if not symbol:
+        return
+    state = read_json_file(INSIDER_HOLDINGS_STATE_PATH, {"holdings": {}})
+    holdings = state.get("holdings", {})
+    if not isinstance(holdings, dict):
+        holdings = {}
+    holdings.setdefault(symbol, str(entry_date))
+    state["holdings"] = holdings
+    write_json_file(INSIDER_HOLDINGS_STATE_PATH, state)
+
+
+def clear_insider_holding(symbol: str) -> None:
+    """Remove an insider-selection holding (on exit or reconciliation)."""
+    symbol = safe_symbol(symbol)
+    if not symbol:
+        return
+    state = read_json_file(INSIDER_HOLDINGS_STATE_PATH, {"holdings": {}})
+    holdings = state.get("holdings", {})
+    if isinstance(holdings, dict) and symbol in holdings:
+        del holdings[symbol]
+        state["holdings"] = holdings
+        write_json_file(INSIDER_HOLDINGS_STATE_PATH, state)
+
+
 def no_reentry_cooldown_active(symbol: str, cooldown_minutes: int) -> tuple[bool, str]:
     """Return whether a symbol is blocked by same-day / timed re-entry cooldown."""
     symbol = safe_symbol(symbol)
@@ -2752,6 +2814,150 @@ def build_daily_green_exit_rows(
             reason = exit_reason if should_exit else ""
 
         if not reason:
+            continue
+        rows.append(
+            {
+                "symbol": symbol,
+                "side": "sell",
+                "delta_shares": float(pos.qty),
+                "delta_dollars": float(pos.market_value),
+                "price": float(pos.current_price),
+                "reason": reason,
+                "target_weight": 0.0,
+                "current_weight": float(pos.market_value) / max(equity, 1e-9),
+                "delta_weight": -float(pos.market_value) / max(equity, 1e-9),
+                "trade_confidence": 1.0,
+            }
+        )
+    return rows
+
+
+# ======================================================================
+# Insider-selection strategy helpers (pure, no I/O).
+# BUY names with a recent large open-market insider BUY cluster (discovered
+# via sec_form4_feed); HOLD a fixed trading-day horizon; EXIT at horizon or a
+# wide catastrophe stop. This is the SELECTION edge validated out-of-sample
+# (see backtest_outputs/INSIDER_OOS_2026Q2_REPORT.md); the timing edge is not
+# validated, so this ships DEFAULT OFF and paper-first.
+# ======================================================================
+def insider_hold_elapsed_trading_days(entry_date: date, today: date) -> int:
+    """Approximate trading days elapsed between entry and today (weekdays only;
+    exchange holidays ignored, so this is a slight over-count that errs toward
+    exiting on time rather than holding too long)."""
+    if today <= entry_date:
+        return 0
+    days = 0
+    d = entry_date
+    while d < today:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            days += 1
+    return days
+
+
+def insider_exit_decision(
+    entry_date: date,
+    today: date,
+    current_price: float,
+    avg_entry_price: float,
+    hold_days: int,
+    stop_loss_pct: float,
+) -> tuple[bool, str]:
+    """Exit an insider-selection position on a catastrophe stop first, else when the
+    fixed holding horizon has elapsed. stop_loss_pct is negative (e.g. -0.15)."""
+    if stop_loss_pct < 0 and avg_entry_price > 0 and current_price > 0:
+        if (current_price / avg_entry_price - 1.0) <= stop_loss_pct:
+            return (True, "insider_stop_loss")
+    if insider_hold_elapsed_trading_days(entry_date, today) >= hold_days:
+        return (True, "insider_hold_horizon")
+    return (False, "")
+
+
+def build_insider_entry_rows(
+    candidate_symbols: list[str],
+    price_map: dict[str, float],
+    held_symbols: set[str],
+    holdings: dict[str, str],
+    equity: float,
+    config: "ScannerConfig",
+    executor_config: "ExecutorConfig",
+) -> list[dict[str, Any]]:
+    """Build BUY rows for eligible insider names not already held, up to the position cap.
+    `candidate_symbols` is expected pre-filtered (cluster value + filing freshness) and
+    pre-sorted by conviction (best first)."""
+    rows: list[dict[str, Any]] = []
+    slots = config.insider_max_positions - len(held_symbols)
+    if slots <= 0:
+        return rows
+    target_weight = min(config.insider_per_position_weight, executor_config.max_position_weight)
+    min_notional = build_account_risk_profile(equity).min_notional_to_trade
+    for raw_symbol in candidate_symbols:
+        symbol = normalize_symbol(raw_symbol)
+        if symbol in held_symbols or symbol in holdings:
+            continue
+        price = to_float(price_map.get(symbol))
+        if price <= 0:
+            continue
+        delta_dollars = target_weight * equity
+        if delta_dollars < min_notional:
+            continue
+        if config.enable_fractional_orders:
+            delta_shares = round(delta_dollars / price, 9) if price > 0 else 0.0
+        else:
+            delta_shares = int(delta_dollars // price)
+        if delta_shares <= 0:
+            continue
+        rows.append(
+            {
+                "symbol": symbol,
+                "side": "buy",
+                "delta_shares": delta_shares,
+                "delta_dollars": float(delta_dollars),
+                "price": float(price),
+                "market_price": float(price),
+                "entry_price": float(price),
+                "reason": "insider_selection_entry",
+                "target_weight": float(target_weight),
+                "current_weight": 0.0,
+                "delta_weight": float(target_weight),
+                "trade_confidence": 1.0,
+            }
+        )
+        if len(rows) >= slots:
+            break
+    return rows
+
+
+def build_insider_exit_rows(
+    positions: list["BrokerPosition"],
+    holdings: dict[str, str],
+    today: date,
+    config: "ScannerConfig",
+    equity: float,
+) -> list[dict[str, Any]]:
+    """Build SELL rows for insider-held positions that hit their horizon or stop. Only
+    names tracked in `holdings` are managed here (other positions are left untouched)."""
+    rows: list[dict[str, Any]] = []
+    for pos in positions:
+        if pos.qty <= 0:
+            continue
+        symbol = normalize_symbol(pos.symbol)
+        entry_iso = holdings.get(symbol)
+        if not entry_iso:
+            continue
+        try:
+            entry_date = date.fromisoformat(str(entry_iso)[:10])
+        except Exception:
+            continue
+        should_exit, reason = insider_exit_decision(
+            entry_date,
+            today,
+            to_float(pos.current_price),
+            to_float(pos.avg_entry_price),
+            config.insider_hold_days,
+            config.insider_stop_loss_pct,
+        )
+        if not should_exit:
             continue
         rows.append(
             {
@@ -3740,6 +3946,92 @@ class MomentumSetupScanner:
         self._save_state(state)
         return pd.DataFrame(rows)
 
+    def _insider_eligible_candidates(self) -> list[str]:
+        """Discover insider-buy names (sec_form4_feed, 4h-cached) and filter to those with a
+        large-enough cluster filed recently, sorted by conviction (best first)."""
+        try:
+            import sec_form4_feed as sf
+            sf.run_sec_form4_discovery()          # fail-safe; refreshes cache at most every 4h
+            cand_map = sf.load_insider_candidates()
+        except Exception as exc:
+            print(f"[insider] discovery unavailable: {exc}")
+            return []
+        today = datetime.now(ET).date()
+        scored: list[tuple[str, float, float]] = []
+        for sym, c in (cand_map or {}).items():
+            amount = to_float(c.get("insider_buy_amount"))
+            if amount < self.config.insider_min_cluster_value:
+                continue
+            fd = str(c.get("latest_filing_date") or "")[:10]
+            try:
+                age_days = (today - date.fromisoformat(fd)).days
+            except Exception:
+                continue
+            if age_days < 0 or age_days > self.config.insider_max_filing_age_days:
+                continue
+            scored.append((normalize_symbol(sym), to_float(c.get("insider_buy_score")), amount))
+        scored.sort(key=lambda t: (t[1], t[2]), reverse=True)
+        print(f"[insider] discovered={len(cand_map or {})} eligible(>=${self.config.insider_min_cluster_value:,.0f}, "
+              f"<= {self.config.insider_max_filing_age_days}d)={len(scored)}")
+        return [s for s, _, _ in scored]
+
+    def _build_insider_selection_orders(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        rebalance_cols = [
+            "symbol", "side", "delta_shares", "delta_dollars", "price", "reason",
+            "target_weight", "current_weight", "delta_weight", "trade_confidence",
+        ]
+        candidates = self._insider_eligible_candidates()
+
+        acct = self.broker.get_account_snapshot()
+        equity = max(float(acct.equity), 1.0)
+        positions = [p for p in self.broker.get_all_open_positions() if p.qty > 0]
+        held_symbols = {normalize_symbol(p.symbol) for p in positions}
+        held_prices = {normalize_symbol(p.symbol): to_float(p.current_price) for p in positions}
+        holdings = load_insider_holdings()
+        today = datetime.now(ET).date()
+
+        # Self-heal phantom holdings: a recorded entry that never became an actual position
+        # (e.g. order rejected) is cleared once past the filing-freshness grace window so it
+        # does not permanently block re-entry.
+        for sym, entry_iso in list(holdings.items()):
+            if sym in held_symbols:
+                continue
+            try:
+                entry_date = date.fromisoformat(str(entry_iso)[:10])
+            except Exception:
+                clear_insider_holding(sym)
+                holdings.pop(sym, None)
+                continue
+            if insider_hold_elapsed_trading_days(entry_date, today) >= 2:
+                clear_insider_holding(sym)
+                holdings.pop(sym, None)
+
+        # Prices for candidates (latest close); held names use the broker's current price.
+        price_map = dict(held_prices)
+        need_prices = [s for s in candidates if s not in price_map]
+        if need_prices:
+            bars = self._download_bars(need_prices)
+            for sym, (_open, close) in compute_today_open_and_price(bars).items():
+                price_map[sym] = close
+
+        exit_rows = build_insider_exit_rows(positions, holdings, today, self.config, equity)
+        entry_rows = build_insider_entry_rows(
+            candidates, price_map, held_symbols, holdings, equity, self.config, self.executor_config
+        )
+
+        # Persist state: clear exited names, record new entries (idempotent).
+        for r in exit_rows:
+            clear_insider_holding(r["symbol"])
+        for r in entry_rows:
+            mark_insider_entry(r["symbol"], today.isoformat())
+
+        rebalance = pd.DataFrame(entry_rows, columns=rebalance_cols) if entry_rows else pd.DataFrame(columns=rebalance_cols)
+        exits = pd.DataFrame(exit_rows) if exit_rows else pd.DataFrame(columns=rebalance_cols)
+        rebalance.to_csv(DEFAULT_REBALANCE_ORDERS, index=False)
+        exits.to_csv(DEFAULT_EXIT_ORDERS, index=False)
+        print(f"[insider] entries={len(rebalance)} exits={len(exits)} held={len(held_symbols)} equity={equity:.2f}")
+        return rebalance, exits, pd.DataFrame()
+
     def _build_daily_green_orders(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         rebalance_cols = [
             "symbol", "side", "delta_shares", "delta_dollars", "price", "reason",
@@ -3802,6 +4094,8 @@ class MomentumSetupScanner:
         return rebalance, exits, pd.DataFrame()
 
     def build_orders(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        if self.config.insider_strategy_enabled:
+            return self._build_insider_selection_orders()
         if self.config.daily_green_strategy_enabled:
             return self._build_daily_green_orders()
 
@@ -5156,7 +5450,8 @@ class ProductionOrderExecutor:
         Daily-green mode intentionally replaces the momentum/ML setup signal, so
         it bypasses confirm_buy_direction entirely and returns no gating data.
         """
-        if self.scanner is None or self.config.scanner.daily_green_strategy_enabled:
+        if (self.scanner is None or self.config.scanner.daily_green_strategy_enabled
+                or self.config.scanner.insider_strategy_enabled):
             return {}
         if not self.config.scanner.require_direction_confirmation_before_buy:
             return {}
@@ -5420,13 +5715,16 @@ class ProductionOrderExecutor:
             print("[orders] canceling open orders")
             self.broker.cancel_open_orders()
 
-        daily_green = self.config.scanner.daily_green_strategy_enabled
-        if daily_green:
+        # Non-scanner "simple" strategies (daily-green, insider-selection) bypass the
+        # momentum/ML exit-learning and MTF buy gates.
+        simple_strategy = (self.config.scanner.daily_green_strategy_enabled
+                           or self.config.scanner.insider_strategy_enabled)
+        if simple_strategy:
             exit_orders = exit_orders if exit_orders is not None else pd.DataFrame()
         else:
             exit_orders = self._augment_exit_orders_with_exit_learning(exit_orders if exit_orders is not None else pd.DataFrame())
         plan = self._build_order_plan(rebalance_orders, exit_orders, equity)
-        if not daily_green:
+        if not simple_strategy:
             plan = self._apply_mtf_buy_gate_to_plan(plan)
 
         # Cooldown is buy-only. Exits are always allowed so risk can be reduced immediately.
@@ -5920,13 +6218,14 @@ class ProductionOrderExecutor:
             self._write_account_equity_curve()
             return pd.DataFrame(), results, self.broker.get_account_snapshot(), pd.DataFrame([asdict(p) for p in self.broker.get_all_open_positions()])
 
-        if self.scanner is not None and self.config.scanner.daily_green_strategy_enabled:
+        if self.scanner is not None and (self.config.scanner.daily_green_strategy_enabled
+                                         or self.config.scanner.insider_strategy_enabled):
             try:
                 rebalance, exits, _scores = self.scanner.build_orders()
                 if not rebalance.empty or not exits.empty:
                     return self.run_once_from_frames(rebalance, exits)
                 cycle_id = run_id()
-                results = pd.DataFrame([{"timestamp_utc": now_utc().isoformat(), "status": "daily_green_no_orders", "message": "no green entries and no exits this cycle"}])
+                results = pd.DataFrame([{"timestamp_utc": now_utc().isoformat(), "status": "simple_strategy_no_orders", "message": "no entries and no exits this cycle"}])
                 save_df(pd.DataFrame(), LOG_DIR / f"order_plan_{cycle_id}.csv")
                 save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
                 self._write_account_equity_curve()
@@ -6218,6 +6517,10 @@ def build_default_config() -> ExecutorConfig:
 
     No command-line arguments are required.
     """
+    # INSIDER_STRATEGY=1 switches the engine to the insider-selection buy algorithm
+    # (default-OFF; QUARANTINE per the OOS study). When on, daily-green is turned off so
+    # exactly one strategy drives orders. Live still requires ALLOW_LIVE_TRADING=1.
+    _insider_on = os.getenv("INSIDER_STRATEGY", "0").strip() == "1"
     scanner_config = ScannerConfig(
         enabled=True,
         universe=None,
@@ -6240,7 +6543,11 @@ def build_default_config() -> ExecutorConfig:
         base_target_weight=0.03,
         max_target_weight=0.10,
         broad_market_scan=False,
-        daily_green_strategy_enabled=True,
+        daily_green_strategy_enabled=not _insider_on,
+        insider_strategy_enabled=_insider_on,
+        insider_hold_days=int(os.getenv("INSIDER_HOLD_DAYS", "10")),
+        insider_max_positions=int(os.getenv("INSIDER_MAX_POSITIONS", "5")),
+        insider_min_cluster_value=float(os.getenv("INSIDER_MIN_CLUSTER_VALUE", "1000000")),
         stop_loss_pct=-0.025,
         profit_lock_trigger_pct=0.04,
         profit_giveback_pct=0.015,
