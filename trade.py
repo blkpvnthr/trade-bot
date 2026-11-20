@@ -465,6 +465,15 @@ class ScannerConfig:
     di_bb_di_period: int = 14
     di_bb_bb_period: int = 20
 
+    # AMPS V2 (Adaptive Micro-Profit Scalping) -- unified intraday scalping engine (amps_v2.py).
+    # DISABLED by default; when enabled it runs SHADOW (logs entry-quality + intents, no orders).
+    # Backtest verdict (backtest_outputs/AMPS_V2_REPORT.md): REJECTED -- net-negative on this
+    # universe (symmetric MFE/MAE, target-before-stop ~0.2-0.29). Kept selectable for research.
+    amps_v2_enabled: bool = False
+    amps_v2_shadow_mode: bool = True
+    amps_v2_min_entry_quality: float = 70.0
+    amps_v2_bb_entry_policy: str = "combined"
+
     # Churn control. Buys are blocked during the opening-noise window and
     # after a same-day exit, but sells/exits are always allowed.
     no_new_positions_first_minutes: int = 10
@@ -6732,6 +6741,58 @@ class ProductionOrderExecutor:
         for r in rows:
             write_event("di_bb_signal", {"shadow": shadow, **r})
 
+    # ------------------------------------------------------------------
+    # AMPS V2 overlay (DISABLED by default; SHADOW-only). Computes the unified entry-quality
+    # score + BB-approach state + mandatory gates for held/candidate symbols and logs intents.
+    # Backtest verdict = REJECTED, so this is observability only -- it never submits orders and
+    # has no enforcement path. Uses the SAME amps_v2 engine the research backtest uses.
+    # ------------------------------------------------------------------
+    def _run_amps_v2_overlay(self, rebalance: pd.DataFrame, exits: pd.DataFrame) -> None:
+        sc = self.config.scanner
+        if self.scanner is None or not sc.amps_v2_enabled:
+            return
+        import amps_v2 as A
+        cfg = A.AmpsV2Config.from_dict({**A.AmpsV2Config().as_dict(),
+                                        "bb_entry_policy": sc.amps_v2_bb_entry_policy,
+                                        "min_entry_quality": sc.amps_v2_min_entry_quality})
+        held = {normalize_symbol(p.symbol) for p in self.broker.get_all_open_positions() if p.qty > 0}
+        candidates = (set(rebalance["symbol"].map(normalize_symbol))
+                      if rebalance is not None and not rebalance.empty else set())
+        syms = sorted(held | candidates)
+        if not syms:
+            return
+        try:
+            bars = self.scanner._download_intraday_bars(syms, 5)
+        except Exception:
+            bars = pd.DataFrame()
+        recs = []
+        if bars is not None and not bars.empty:
+            for sym, g in bars.groupby("symbol", sort=False):
+                g = g.sort_values("timestamp")
+                if len(g) < 25:
+                    continue
+                dip, dim, adx, rising = dmi_adx(g, 14)
+                adx_prev = dmi_adx(g.iloc[:-1], 14)[2] if len(g) > 16 else adx
+                close = float(g["close"].astype(float).iloc[-1])
+                bb_mid = bollinger_middle(g["close"], 20)
+                m = self.scanner._intraday_direction_metrics(normalize_symbol(sym), g, 5, 0.0)
+                vwap = float(m.get("5m_vwap") or close)
+                dist = A.bb_distance(close, bb_mid) if bb_mid == bb_mid else float("nan")
+                recs.append({"symbol": normalize_symbol(sym), "di_plus": round(dip, 1),
+                             "di_minus": round(dim, 1), "adx": round(adx, 1),
+                             "above_vwap": close > vwap, "bb_dist_bps": round(dist * 1e4, 1) if dist == dist else None,
+                             "gates_ok": bool(dip > dim and adx > cfg.min_adx and adx > adx_prev and close > vwap)})
+        if recs:
+            cycle_id = run_id()
+            print(f"[amps-v2:SHADOW] {sum(1 for r in recs if r['gates_ok'])}/{len(recs)} pass mandatory gates "
+                  f"(REJECTED by backtest; observability only)")
+            try:
+                save_df(pd.DataFrame(recs), OUT_DIR / f"{DATA_TAG}_amps_v2_signals_{cycle_id}.csv")
+            except Exception:
+                pass
+            for r in recs:
+                write_event("amps_v2_signal", {"shadow": True, **r})
+
     def run_cycle_from_files(self) -> tuple[pd.DataFrame, pd.DataFrame, AccountSnapshot, pd.DataFrame]:
         # Do not spend time refreshing/scanning before the market is executable.
         # Exits remain allowed once the market is open; buy-side gates are applied below.
@@ -6855,6 +6916,14 @@ class ProductionOrderExecutor:
                     except Exception as exc:  # noqa: BLE001 - overlay must never break the cycle
                         print(f"[di-bb] overlay failed (non-fatal): {exc}")
                         write_event("di_bb_overlay_error", {"error": str(exc)})
+
+                # AMPS V2 overlay (disabled by default; SHADOW observability only; REJECTED).
+                if self.config.scanner.amps_v2_enabled:
+                    try:
+                        self._run_amps_v2_overlay(rebalance, exits)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[amps-v2] overlay failed (non-fatal): {exc}")
+                        write_event("amps_v2_overlay_error", {"error": str(exc)})
 
                 if not monitor_exits.empty:
                     exited_today = sorted(set(monitor_exits["symbol"].map(safe_symbol)))
@@ -7121,6 +7190,8 @@ def build_default_config() -> ExecutorConfig:
         di_bb_enabled=os.getenv("DI_BB_ENABLED", "1").strip() != "0",
         di_bb_shadow_mode=os.getenv("DI_BB_ENFORCE", "0").strip() != "1",
         di_bb_timeframe_min=int(os.getenv("DI_BB_TIMEFRAME", "5")),
+        # AMPS V2: selectable, DISABLED by default (REJECTED by backtest). SHADOW only.
+        amps_v2_enabled=os.getenv("AMPS_V2", "0").strip() == "1",
         stop_loss_pct=-0.025,
         profit_lock_trigger_pct=0.04,
         profit_giveback_pct=0.015,
@@ -7224,6 +7295,7 @@ def print_startup_banner(config: "ExecutorConfig") -> None:
     buy_exec = "SHADOW" if getattr(sc, "buy_opportunity_shadow_mode", True) else "ENFORCE"
     di_bb = "ENABLED" if getattr(sc, "di_bb_enabled", False) else "DISABLED"
     di_bb_exec = "SHADOW" if getattr(sc, "di_bb_shadow_mode", True) else "ENFORCE"
+    amps = "ENABLED (SHADOW)" if getattr(sc, "amps_v2_enabled", False) else "DISABLED"
     risk = "ACTIVE" if config.enable_kill_switch else "LIMITED"
     dash = "ACTIVE" if not config.enable_streaming_engine else "STREAMING"
     print("")
@@ -7238,6 +7310,7 @@ def print_startup_banner(config: "ExecutorConfig") -> None:
     print(f"Exit Execution:       {exit_exec}")
     print(f"DI/BB Signals:        {di_bb} ({getattr(sc, 'di_bb_timeframe_min', 5)}m)")
     print(f"DI/BB Execution:      {di_bb_exec}")
+    print(f"AMPS V2:              {amps}")
     print(f"Risk Controls:        {risk}")
     print(f"Dashboard:            {dash}")
     print("")
@@ -7267,7 +7340,20 @@ def _apply_cli_overrides() -> None:
     ap.add_argument("--streaming", action="store_true", help="run the async streaming engine instead of the sync loop")
     ap.add_argument("--terminal-mode", choices=["dashboard", "full", "signals", "orders"], default=None)
     ap.add_argument("--live", action="store_true", help="LIVE trading (ALSO requires ALLOW_LIVE_TRADING=1)")
+    ap.add_argument("--strategy", default=None,
+                    help="select a strategy overlay, e.g. green-momentum-945 | amps-v2 (SHADOW/paper)")
+    ap.add_argument("--paper", action="store_true", help="paper mode (default); accepted for clarity")
+    ap.add_argument("--backtest", action="store_true", help="(no-op here) run the strategy's backtest script instead")
+    ap.add_argument("--compare-variants", action="store_true", help="(no-op here) see the strategy's backtest script")
     args = ap.parse_args()
+    strat = (args.strategy or "").strip().lower()
+    if strat in ("amps-v2", "amps_v2", "ampsv2"):
+        os.environ["AMPS_V2"] = "1"
+    if args.backtest or args.compare_variants:
+        print("[cli] --backtest/--compare-variants: run the dedicated backtest, e.g.:")
+        print("      python amps_v2_backtest.py            (AMPS V2 variant matrix)")
+        print("      python backtest_green_momentum.py     (Green Momentum V0-V5)")
+        raise SystemExit(0)
     if args.enforce_exits:
         os.environ["PROFIT_EXIT_ENFORCE"] = "1"
     if args.no_order_flow:
