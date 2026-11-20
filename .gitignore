@@ -33,3 +33,27 @@ data/cache/bars_multi_tf/
 data/cache/amps_v2_features/
 data/cache/amps_v6_daily/
 data/cache/amps_v6_daily_adj/
+
+# --- generated run artifacts / outputs (never commit) ---
+system-data/
+daily_system_outputs/
+backtest_outputs/
+backtest_cache/
+backtest_cache_newuniv/
+logs-local/
+reports/
+execution_logs/
+data/
+*_locked_trading_universe.txt
+README_PATCH.md
+
+# --- editor/runtime backups (never commit) ---
+*.bak
+*.backup
+*.pre_killswitch.bak
+
+# --- independently packaged / vendored projects (managed separately) ---
+vendor/
+tradingview-mcp/
+trader_rewrite/
+.claude/worktrees/

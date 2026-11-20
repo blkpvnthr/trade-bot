@@ -31,11 +31,15 @@ def test_load_trading_universe_parses_file(tmp_path, monkeypatch):
     assert trade.load_trading_universe() == ["AAPL", "MSFT", "NVDA"]
 
 
-def test_load_trading_universe_falls_back_when_missing(tmp_path, monkeypatch):
+def test_load_trading_universe_fails_closed_when_missing(tmp_path, monkeypatch):
+    # universe.txt is the sole trading-symbol source. A missing file must FAIL
+    # CLOSED (RuntimeError) -- there is no hard-coded fallback universe anymore.
+    import pytest
+
     monkeypatch.setattr(trade, "UNIVERSE_FILE", tmp_path / "nope.txt")
-    out = trade.load_trading_universe()
-    assert out == trade._FALLBACK_SCAN_UNIVERSE
-    assert "QQQ" in out
+    with pytest.raises(RuntimeError):
+        trade.load_trading_universe()
+    assert not hasattr(trade, "_FALLBACK_SCAN_UNIVERSE")
 
 
 def test_entry_signal():

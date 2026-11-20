@@ -62,6 +62,8 @@ from alpaca.data.historical.stock import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+import universe
+
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
@@ -96,8 +98,10 @@ WIKI_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
 
 LOOKBACK_DAYS = 520
-MAX_SYMBOLS = 1000
-CHUNK_SIZE = 20
+# MAX_SYMBOLS removed: universe.txt is the sole trading-symbol source and must
+# never be truncated. Every canonical symbol is evaluated before any ranking or
+# reduction. Batch size for Alpaca requests comes from universe.ALPACA_SYMBOL_BATCH_SIZE.
+CHUNK_SIZE = universe.ALPACA_SYMBOL_BATCH_SIZE
 TOP_N = 30
 MAX_TRAIN_EVENTS = 50_000
 MIN_MODEL_PROB = 0.45
@@ -169,6 +173,8 @@ def request_headers() -> dict[str, str]:
 # =============================================================================
 
 def get_sp500_symbols() -> list[str]:
+    """RESEARCH-ONLY. Not called by the active scanning path (universe.txt is
+    the sole trading-symbol source via get_universe())."""
     print("[setup] fetching S&P 500 symbols...")
 
     resp = requests.get(WIKI_SP500_URL, headers=request_headers(), timeout=30)
@@ -196,6 +202,8 @@ def get_sp500_symbols() -> list[str]:
 
 
 def get_nasdaq_symbols() -> list[str]:
+    """RESEARCH-ONLY. Not called by the active scanning path (universe.txt is
+    the sole trading-symbol source via get_universe())."""
     print("[setup] fetching NASDAQ-listed symbols...")
 
     resp = requests.get(NASDAQ_LISTED_URL, headers=request_headers(), timeout=30)
@@ -235,32 +243,39 @@ def get_nasdaq_symbols() -> list[str]:
 
 
 def get_universe() -> tuple[list[str], list[str]]:
-    sp500 = get_sp500_symbols()
-    nasdaq = get_nasdaq_symbols()
+    """Return ``(analysis_symbols, download_symbols)``.
 
-    symbols = list(dict.fromkeys(CORE_SYMBOLS + REGIME_SYMBOLS + sp500 + nasdaq))
-    symbols = [normalize_symbol(s) for s in symbols if s and str(s).strip()]
-    symbols = sorted(set(symbols))
+    ``analysis_symbols`` are the canonical trading candidates from
+    universe.txt -- the sole trading-symbol source. Every one of them is
+    downloaded and evaluated before any ranking or reduction; the model may
+    rank/reject candidates afterward, but nothing is truncated beforehand.
+    The former S&P 500 / NASDAQ expansion and the ``MAX_SYMBOLS`` prefix cap
+    have been removed.
 
-    if MAX_SYMBOLS is not None:
-        symbols = symbols[:MAX_SYMBOLS]
+    ``download_symbols`` is ``analysis_symbols`` plus any market-context
+    regime proxies (e.g. QQQ, VIXY) that are not themselves in universe.txt;
+    their bars are needed to compute the regime but they are NOT trading
+    candidates. A context proxy becomes a trading candidate only if it is
+    explicitly present in universe.txt.
+    """
+    analysis_symbols = universe.load_canonical_universe()
+    canonical = set(analysis_symbols)
 
-        for required in CORE_SYMBOLS + REGIME_SYMBOLS:
-            required = normalize_symbol(required)
-            if required not in symbols:
-                symbols.append(required)
+    context_proxies = [
+        normalize_symbol(s)
+        for s in REGIME_SYMBOLS
+        if normalize_symbol(s) and normalize_symbol(s) not in canonical
+    ]
+    download_symbols = list(dict.fromkeys(analysis_symbols + context_proxies))
 
-        symbols = sorted(set(symbols))
+    pd.DataFrame({"symbol": download_symbols}).to_csv(OUT_UNIVERSE, index=False)
 
-    pd.DataFrame({"symbol": symbols}).to_csv(OUT_UNIVERSE, index=False)
-
-    analysis_symbols = [s for s in symbols if s not in set(REGIME_SYMBOLS)]
-
-    print(f"[universe] analysis_symbols={len(analysis_symbols)}")
-    print(f"[universe] total_with_regime_symbols={len(symbols)}")
+    print(f"[universe] source=universe.txt analysis_symbols={len(analysis_symbols)}")
+    print(f"[universe] context_proxies(outside candidates)={context_proxies}")
+    print(f"[universe] total_with_regime_symbols={len(download_symbols)}")
     print(f"[saved] universe={OUT_UNIVERSE}")
 
-    return analysis_symbols, symbols
+    return analysis_symbols, download_symbols
 
 
 # =============================================================================
@@ -302,39 +317,37 @@ def download_daily_bars(symbols: list[str]) -> pd.DataFrame:
     end = now_utc()
     start = end - timedelta(days=LOOKBACK_DAYS)
 
-    chunks = [symbols[i:i + CHUNK_SIZE] for i in range(0, len(symbols), CHUNK_SIZE)]
-    frames: list[pd.DataFrame] = []
+    def _fetch(batch: list[str]) -> pd.DataFrame:
+        return fetch_chunk(batch, start, end)
 
-    print(f"[download] {start.date()} -> {end.date()} chunks={len(chunks)}")
+    print(f"[download] {start.date()} -> {end.date()} batch_size={CHUNK_SIZE}")
 
-    for i, chunk in enumerate(chunks, start=1):
-        print(f"[download] chunk={i}/{len(chunks)} size={len(chunk)}")
+    combined, report = universe.fetch_bars_batched(
+        _fetch,
+        symbols,
+        batch_size=CHUNK_SIZE,
+        label="download",
+    )
+    report.log_summary(label="download")
 
-        try:
-            df = fetch_chunk(chunk, start, end)
+    cov_path = OUT_RAW_BARS.with_name("alpaca_download_coverage.json")
+    try:
+        import json
 
-            if not df.empty:
-                frames.append(df)
+        cov_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+        print(f"[saved] coverage={cov_path}")
+    except OSError as exc:
+        print(f"[warning] could not write coverage diagnostics: {exc}")
 
-        except Exception as exc:
-            print(f"[warning] chunk failed size={len(chunk)} error={exc}")
-            print("[warning] retrying symbols individually...")
-
-            for sym in chunk:
-                try:
-                    df = fetch_chunk([sym], start, end)
-                    if not df.empty:
-                        frames.append(df)
-                except Exception as sym_exc:
-                    print(f"[skip] symbol={sym} error={sym_exc}")
-
-    if not frames:
-        raise RuntimeError("No data downloaded from Alpaca.")
-
-    data = pd.concat(frames, ignore_index=True)
+    if combined.empty:
+        raise RuntimeError(
+            f"No data downloaded from Alpaca "
+            f"(attempted={report.attempted_symbol_count} "
+            f"failed_batches={report.failed_batch_count})."
+        )
 
     data = (
-        data.dropna(subset=["symbol", "timestamp", "open", "high", "low", "close"])
+        combined.dropna(subset=["symbol", "timestamp", "open", "high", "low", "close"])
         .drop_duplicates(subset=["symbol", "timestamp"])
         .sort_values(["symbol", "timestamp"])
         .reset_index(drop=True)

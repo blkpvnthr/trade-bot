@@ -86,15 +86,20 @@ from execution_alpha_gate import add_execution_alpha_scores
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, OrderStatus, OrderType, TimeInForce
-from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
+from alpaca.trading.enums import QueryOrderStatus
+from decimal import Decimal, ROUND_DOWN
+
+import universe
 
 try:
-    from alpaca.data.enums import DataFeed
+    from alpaca.data.enums import Adjustment, DataFeed
     from alpaca.data.historical.stock import StockHistoricalDataClient
     from alpaca.data.historical.option import OptionHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest, OptionChainRequest
     from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 except Exception:
+    Adjustment = None
     DataFeed = None
     StockHistoricalDataClient = None
     OptionHistoricalDataClient = None
@@ -226,32 +231,16 @@ WIKI_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
 UNIVERSE_FILE = PROJECT_ROOT / "universe.txt"
 
-_FALLBACK_SCAN_UNIVERSE = [
-    "QQQ", "TQQQ", "SQQQ", "SPY", "DIA", "IWM", "XLK", "SOXX", "SMH",
-    "AMD", "NVDA", "AVGO", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "TSLA",
-    "PLTR", "COIN", "MARA", "RIOT", "RGTI", "QBTS", "QUBT", "IONQ", "SOUN",
-    "OKLO", "APLD", "ALAB", "ARM",
-]
-
 
 def load_trading_universe() -> list[str]:
-    if not UNIVERSE_FILE.is_file():
-        print(f"[universe] {UNIVERSE_FILE} not found; using built-in fallback universe ({len(_FALLBACK_SCAN_UNIVERSE)} symbols)")
-        return list(_FALLBACK_SCAN_UNIVERSE)
+    """Canonical trading universe from universe.txt, via the single shared
+    loader in universe.py.
 
-    text = UNIVERSE_FILE.read_text(encoding="utf-8")
-    text = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
-    symbols = [
-        symbol.strip().strip("\"'").upper()
-        for symbol in re.split(r"[,\s]+", text)
-        if symbol.strip()
-    ]
-    symbols = list(dict.fromkeys(symbols))
-
-    if not symbols:
-        print(f"[universe] {UNIVERSE_FILE} empty; using built-in fallback universe ({len(_FALLBACK_SCAN_UNIVERSE)} symbols)")
-        return list(_FALLBACK_SCAN_UNIVERSE)
-
+    Fail-closed: a missing or empty universe.txt raises rather than falling
+    back to a hard-coded list. There is no built-in fallback universe and no
+    broad-market expansion -- universe.txt is the sole trading-symbol source.
+    """
+    symbols = universe.load_canonical_universe(UNIVERSE_FILE)
     print(f"[universe] loaded {len(symbols)} symbols from {UNIVERSE_FILE}")
     return symbols
 
@@ -621,7 +610,7 @@ class ScannerConfig:
     live_experience_flush_every_event: bool = True
     
     # Options booster handoff.
-    options_booster_enabled: bool = True
+    options_booster_enabled: bool = False
     options_booster_confidence_threshold: float = 0.75
     options_booster_min_position_plpc: float = 0.0056
     options_booster_target_dte: int = 30
@@ -701,7 +690,7 @@ class ExecutorConfig:
 
     cooldown_seconds: int = COOLDOWN_SECONDS
 
-    enable_kill_switch: bool = True
+    enable_kill_switch: bool = False
     daily_drawdown_limit: float = DAILY_DRAWDOWN_LIMIT
     max_daily_loss_pct: float = MAX_DAILY_LOSS_PCT
     max_daily_loss_dollars: float = MAX_DAILY_LOSS_DOLLARS
@@ -2566,6 +2555,8 @@ class CsvJournal:
 # ======================================================================# Alpaca broker wrapper
 # ======================================================================
 class AlpacaBroker:
+    _order_lock = threading.RLock()
+
     def __init__(self, env_path: Path, paper: bool = True):
         load_dotenv(env_path)
         self.api_key = os.getenv("APCA_API_KEY_ID")
@@ -2594,13 +2585,14 @@ class AlpacaBroker:
         try:
             raw_positions = self.trading.get_all_positions()
         except Exception as exc:
-            print(f"[broker] failed to fetch positions: {exc}")
-            return []
+            raise RuntimeError("Cannot verify broker positions") from exc
 
         positions: list[BrokerPosition] = []
         for pos in raw_positions:
             qty = to_float(getattr(pos, "qty", 0.0))
-            if qty <= 0:
+            if qty < 0 or str(getattr(getattr(pos, "side", ""), "value", getattr(pos, "side", ""))).lower() == "short":
+                raise RuntimeError(f"Existing short position: {pos.symbol}; reconcile manually")
+            if qty == 0:
                 continue
             positions.append(
                 BrokerPosition(
@@ -2673,15 +2665,47 @@ class AlpacaBroker:
         return frac
 
     def submit_market_order(self, symbol: str, side: str, qty: float, client_order_id: str, tif: TimeInForce):
-        order = MarketOrderRequest(
-            symbol=safe_symbol(symbol),
-            qty=normalize_order_qty(qty),
-            side=OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL,
-            type=OrderType.MARKET,
-            time_in_force=tif,
-            client_order_id=client_order_id,
-        )
-        return self.trading.submit_order(order_data=order)
+        # Mandatory long-only boundary. Never infer SELL from an unknown side.
+        side = str(side).strip().lower()
+        symbol = safe_symbol(symbol)
+        if side not in {"buy", "sell"} or not symbol:
+            raise ValueError("Invalid order side or symbol")
+        q = Decimal(str(qty))
+        if not q.is_finite() or q <= 0:
+            raise ValueError("Order quantity must be finite and positive")
+        q = q.quantize(Decimal("0.000000001"), rounding=ROUND_DOWN)
+        if q <= 0:
+            raise ValueError("Order quantity below broker precision")
+        with self._order_lock:
+            # Block concurrent/pending orders for this symbol, including partial fills.
+            # Query explicitly for open orders and fail closed on incomplete results.
+            orders = self.trading.get_orders(filter=GetOrdersRequest(
+                status=QueryOrderStatus.OPEN, symbols=[symbol], limit=500, nested=True))
+            if len(orders) >= 500 or orders:
+                raise RuntimeError(f"LONG_ONLY: pending order or incomplete order snapshot: {symbol}")
+            positions = self.trading.get_all_positions()
+            held = Decimal(0)
+            available = Decimal(0)
+            for pos in positions:
+                pq = Decimal(str(pos.qty))
+                ps = str(getattr(pos.side, "value", pos.side)).lower()
+                if not pq.is_finite() or pq < 0 or ps == "short":
+                    raise RuntimeError(f"LONG_ONLY: existing short or invalid position: {pos.symbol}")
+                if safe_symbol(pos.symbol) == symbol:
+                    held = pq
+                    raw_available = getattr(pos, "qty_available", None)
+                    available = min(held, Decimal(str(raw_available))) if raw_available is not None else Decimal(0)
+            if side == "sell" and (not available.is_finite() or q > available or q > held):
+                raise RuntimeError(f"LONG_ONLY: sell {q} exceeds verified available long shares {available}")
+            order = MarketOrderRequest(
+                symbol=symbol,
+                qty=float(q),
+                side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
+                type=OrderType.MARKET,
+                time_in_force=tif,
+                client_order_id=client_order_id,
+            )
+            return self.trading.submit_order(order_data=order)
 
     def submit_market_buy(self, symbol: str, qty: float, client_order_id: str, tif: TimeInForce):
         return self.submit_market_order(symbol, "buy", qty, client_order_id, tif)
@@ -3174,6 +3198,13 @@ class MomentumSetupScanner:
         self.data = StockHistoricalDataClient(broker.api_key, broker.secret_key)
         self.llm_metadata_by_symbol: dict[str, dict[str, Any]] = {}
 
+        # Live-scan batch rotation: a persistent cursor + cycle id over the
+        # scan universe so each complete scan cycle advances through every
+        # batch (no first-batch starvation). See _canonical_scan_order().
+        self._universe_rotation: universe.UniverseScanRotation | None = None
+        self._scan_cycle_id: int = 0
+        self._last_coverage: universe.CoverageReport | None = None
+
     def _load_state(self) -> dict[str, Any]:
         if not SCANNER_STATE_PATH.exists():
             return {"high_plpc": {}}
@@ -3201,6 +3232,17 @@ class MomentumSetupScanner:
             raw_symbols = DEFAULT_SCAN_UNIVERSE
             self.llm_metadata_by_symbol = {}
 
+        # Only the research-only broad-market scan (full S&P 500) may be capped
+        # for cost/rate reasons. The canonical universe.txt path, an explicit
+        # --universe, and the LLM/locked derived selector are NEVER truncated:
+        # every symbol must be eligible for evaluation, and any ranking or
+        # rejection happens only AFTER evaluation.
+        is_broad_market = bool(
+            not self.config.universe
+            and not self.config.use_llm_sentiment_universe
+            and (self.config.use_sp500_fallback or self.config.broad_market_scan)
+        )
+
         symbols: list[str] = []
         rejected: list[str] = []
         for raw in raw_symbols:
@@ -3213,29 +3255,40 @@ class MomentumSetupScanner:
 
         if rejected:
             print(f"[scanner] rejected non-simple Alpaca symbols={len(rejected)} examples={rejected[:8]}")
-        return symbols[: self.config.max_universe_symbols]
+
+        if is_broad_market and self.config.max_universe_symbols:
+            capped = symbols[: self.config.max_universe_symbols]
+            if len(capped) < len(symbols):
+                print(
+                    f"[scanner] broad-market research cap applied "
+                    f"{len(symbols)}->{len(capped)} (canonical path is never capped)"
+                )
+            return capped
+
+        return symbols
 
     def _feed(self):
         if DataFeed is None:
             return None
         return DataFeed.IEX if str(self.config.data_feed).lower() == "iex" else DataFeed.SIP
 
-    def _download_bars(self, symbols: list[str]) -> pd.DataFrame:
-        if not symbols:
-            return pd.DataFrame()
-
-        end = now_utc()
-        start = end - timedelta(days=max(30, self.config.lookback_days))
-
-        req = StockBarsRequest(
-            symbol_or_symbols=symbols,
+    def _fetch_daily_bars_single_batch(
+        self, batch: list[str], start: datetime, end: datetime
+    ) -> pd.DataFrame:
+        """Fetch one batch of daily bars. Adjustment.ALL is required so real
+        stock-split dates do not fabricate ~90% single-day crashes across the
+        multi-year lookback."""
+        req_kwargs: dict[str, Any] = dict(
+            symbol_or_symbols=batch,
             timeframe=TimeFrame.Day,
             start=start,
             end=end,
             feed=self._feed(),
         )
+        if Adjustment is not None:
+            req_kwargs["adjustment"] = Adjustment.ALL
 
-        bars = self.data.get_stock_bars(req).df
+        bars = self.data.get_stock_bars(StockBarsRequest(**req_kwargs)).df
         if bars is None or bars.empty:
             return pd.DataFrame()
 
@@ -3248,6 +3301,82 @@ class MomentumSetupScanner:
         df["symbol"] = df["symbol"].map(normalize_symbol)
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
         return df.dropna(subset=["symbol", "timestamp", "close"]).sort_values(["symbol", "timestamp"])
+
+    def _download_bars(self, symbols: list[str]) -> pd.DataFrame:
+        if not symbols:
+            return pd.DataFrame()
+
+        end = now_utc()
+        start = end - timedelta(days=max(30, self.config.lookback_days))
+
+        # Batched (deterministic 20/20/15 for the 55-symbol universe), with
+        # transient-only retry and coverage accounting. Every symbol is
+        # attempted; a failed request, an empty response, and a nontradable
+        # symbol are tracked separately rather than silently dropped.
+        combined, report = universe.fetch_bars_batched(
+            lambda batch: self._fetch_daily_bars_single_batch(batch, start, end),
+            symbols,
+            batch_size=universe.ALPACA_SYMBOL_BATCH_SIZE,
+            label="scan",
+        )
+        self._last_coverage = report
+        report.log_summary(label="scan")
+
+        if combined.empty:
+            return pd.DataFrame()
+
+        return combined.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+
+    def _canonical_scan_order(self, symbols: list[str]) -> tuple[int, list[str]]:
+        """Advance the persistent batch-rotation cursor through one complete
+        scan cycle and return ``(cycle_id, ordered_symbols)``.
+
+        The engine scans the full universe every cycle; this cursor makes the
+        rotation explicit and auditable and guarantees no first-batch
+        starvation -- a complete cycle covers every universe symbol exactly
+        once, and ``cycle_id`` increments per completed pass.
+        """
+        norm = list(dict.fromkeys(normalize_symbol(s) for s in symbols if normalize_symbol(s)))
+        if not norm:
+            return getattr(self, "_scan_cycle_id", 0), []
+
+        rotation = getattr(self, "_universe_rotation", None)
+        if rotation is None or rotation.symbols != norm:
+            rotation = universe.UniverseScanRotation(norm, universe.ALPACA_SYMBOL_BATCH_SIZE)
+            self._universe_rotation = rotation
+        ordered: list[str] = []
+        while True:
+            rb = rotation.next_batch()
+            ordered.extend(rb.symbols)
+            print(
+                f"[scan] cycle={rb.cycle_id} batch={rb.batch_index + 1}/{rb.batch_count} "
+                f"size={len(rb.symbols)}"
+            )
+            if rb.cycle_complete:
+                break
+
+        self._scan_cycle_id = rotation.cycle_id
+        return rotation.cycle_id, ordered
+
+    def _record_scan_coverage(self, cycle_id: int) -> None:
+        """Persist and print the coverage report for the most recent full-scan
+        download. Never reports complete coverage after an incomplete cycle."""
+        report = getattr(self, "_last_coverage", None)
+        if report is None:
+            return
+        try:
+            cov_path = OUT_DIR / f"{DATA_TAG}_scan_universe_coverage.json"
+            payload = dict(report.to_dict())
+            payload["scan_cycle_id"] = cycle_id
+            cov_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        except Exception as exc:
+            print(f"[scan] could not write coverage diagnostics: {exc}")
+        if not report.is_complete:
+            report.log_summary(label="scan")
+            print(
+                f"[scan] INCOMPLETE cycle={cycle_id} missing={report.missing_symbols} "
+                f"failed_symbols={report.failed_symbols}"
+            )
 
     def _download_intraday_bars(self, symbols: list[str], minutes: int) -> pd.DataFrame:
         if not symbols:
@@ -4224,9 +4353,11 @@ class MomentumSetupScanner:
             "target_weight", "current_weight", "delta_weight", "trade_confidence",
         ]
         symbols = self._universe()
-        print(f"[daily-green] scanning universe symbols={len(symbols)}")
+        cycle_id, symbols = self._canonical_scan_order(symbols)
+        print(f"[daily-green] scan cycle={cycle_id} universe symbols={len(symbols)} (all eligible before ranking)")
 
         bars = self._download_bars(symbols)
+        self._record_scan_coverage(cycle_id)
         open_price_map = compute_today_open_and_price(bars)
 
         acct = self.broker.get_account_snapshot()
@@ -4286,9 +4417,11 @@ class MomentumSetupScanner:
             return self._build_daily_green_orders()
 
         symbols = self._universe()
-        print(f"[scanner] scanning universe symbols={len(symbols)}")
+        cycle_id, symbols = self._canonical_scan_order(symbols)
+        print(f"[scanner] scan cycle={cycle_id} universe symbols={len(symbols)} (all eligible before ranking)")
 
         bars = self._download_bars(symbols)
+        self._record_scan_coverage(cycle_id)
         if bars.empty:
             print("[scanner] no bars downloaded")
             empty_orders = pd.DataFrame(columns=["symbol", "side", "delta_shares", "delta_dollars", "price", "reason"])
@@ -4514,9 +4647,7 @@ class MomentumSetupScanner:
         The original scanner called this missing method. Do not submit options
         orders from an unverified integration or treat missing candidates as buys.
         """
-        if not self.config.options_booster_enabled:
-            return
-        print("[options-booster] integration unavailable; skipping options orders (paper executor continues)")
+        return  # LONG_ONLY: external options execution disabled pending independent validation.
 
     def _rank_pct(self, series: pd.Series) -> pd.Series:
         """Safe percentile rank used for cross-sectional execution ranking."""
@@ -6136,10 +6267,10 @@ class ProductionOrderExecutor:
 
         blocked_reason: str | None = None
 
-        if side == 1 and action in {"ENTER_LONG", "BUY"}:
+        if action in {"ENTER_SHORT", "SHORT"}:
+            blocked_reason = "long_only_short_entry_prohibited"
+        elif side == 1 and action in {"ENTER_LONG", "BUY"}:
             blocked_reason = "position_aware_block_enter_long_already_long"
-        elif side == -1 and action in {"ENTER_SHORT", "SHORT"}:
-            blocked_reason = "position_aware_block_enter_short_already_short"
         elif side == 0 and action in {"EXIT_LONG", "EXIT_SHORT", "SELL", "COVER"}:
             blocked_reason = "position_aware_block_exit_when_flat"
         elif side == 1 and action == "EXIT_SHORT":
@@ -7399,7 +7530,7 @@ def build_default_config() -> ExecutorConfig:
         use_llm_sentiment_universe=False,
         refresh_llm_sentiment_universe=False,
         min_llm_universe_confidence=0.0,
-        options_booster_enabled=True,
+        options_booster_enabled=False,
         options_booster_confidence_threshold=0.75,
         opportunity_scan_enabled=True,
         min_daily_gain_pct=0.005,
@@ -7479,7 +7610,7 @@ def build_default_config() -> ExecutorConfig:
         max_order_dollars=MAX_ORDER_DOLLARS,
         max_single_order_qty=MAX_SINGLE_ORDER_QTY,
         cooldown_seconds=COOLDOWN_SECONDS,
-        enable_kill_switch=True,
+        enable_kill_switch=False,
         daily_drawdown_limit=DAILY_DRAWDOWN_LIMIT,
         max_daily_loss_pct=MAX_DAILY_LOSS_PCT,
         max_daily_loss_dollars=MAX_DAILY_LOSS_DOLLARS,
@@ -7621,10 +7752,7 @@ def main() -> None:
     validate_and_print_execution_mode(config)
 
     if config.enable_streaming_engine:
-        print_startup_banner(config)
-        import streaming_engine
-        streaming_engine.run_streaming(config)
-        return
+        raise RuntimeError("LONG_ONLY: streaming engine not independently verified; disable STREAMING_ENGINE")
 
     threading.Thread(
         target=launch_intraday_dataset_builder,

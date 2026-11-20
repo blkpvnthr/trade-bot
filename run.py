@@ -74,6 +74,8 @@ import numpy as np
 import pandas as pd
 import requests
 
+import universe
+
 try:
     import pywt
 except Exception:
@@ -2210,12 +2212,20 @@ MAX_DAILY_LOSS_DOLLARS = 200.0
 
 WIKI_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
-DEFAULT_SCAN_UNIVERSE = [
-    "QQQ", "TQQQ", "SQQQ", "SPY", "DIA", "IWM", "XLK", "SOXX", "SMH",
-    "AMD", "NVDA", "AVGO", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "TSLA",
-    "PLTR", "COIN", "MARA", "RIOT", "RGTI", "QBTS", "QUBT", "IONQ", "SOUN",
-    "OKLO", "APLD", "ALAB", "ARM",
-]
+# universe.txt is the sole trading-symbol source, loaded via the shared
+# fail-closed loader (no hard-coded fallback list, no broad-market expansion).
+#
+# NOTE: run.py (the droplet bot) does NOT yet use the rotating batch scanner or
+# coverage accounting that were wired into trade.py (the local live engine
+# launched by start.sh). run.py still consumes the canonical universe as a flat
+# list. Migrating run.py's live loop to universe.UniverseScanRotation +
+# universe.fetch_bars_batched is a deliberately deferred follow-up; this change
+# only removes the hard-coded fallback and makes the loader fail-closed.
+DEFAULT_SCAN_UNIVERSE = universe.load_canonical_universe()
+print(
+    f"[universe] run.py loaded {len(DEFAULT_SCAN_UNIVERSE)} canonical symbols from universe.txt "
+    f"(run.py is NOT yet using the rotating batch scanner; see trade.py)"
+)
 
 
 # ======================================================================# Dataclasses
