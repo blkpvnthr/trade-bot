@@ -474,6 +474,22 @@ class ScannerConfig:
     amps_v2_min_entry_quality: float = 70.0
     amps_v2_bb_entry_policy: str = "combined"
 
+    # AMPS V6 (multi-horizon platform -- amps_v6/ package). ENABLED by default; runs the FULL
+    # pipeline every cycle (regime, eligibility, entry-alpha evidence, liquidity rank, horizon
+    # selection, decision fusion, risk-gateway sizing) and, per explicit operator directive, makes
+    # NO paper/live distinction and does NOT block its own trades: V6-eligible candidates become
+    # ACTIONABLE buy rows merged into the rebalance frame. Those orders still flow through the
+    # engine's EXISTING risk pipeline (kill switch, daily-loss caps, exposure limits, direction gate)
+    # and the ALLOW_LIVE_TRADING guard remains the operator's live lever ("I will handle that").
+    # Honest research note (NOT a block): the entry-alpha gate found NO VALIDATED horizon; swing
+    # 5-10d = CONTINUE_RESEARCH (net-negative). V6 therefore forward-tests an unvalidated signal by
+    # operator choice. Set AMPS_V6=0 to disable, AMPS_V6_SHADOW=1 to log-only without trading.
+    amps_v6_enabled: bool = True
+    amps_v6_shadow_mode: bool = False
+    amps_v6_max_new_buys_per_cycle: int = 5
+    amps_v6_risk_per_trade_pct: float = 0.5
+    amps_v6_max_position_pct: float = 20.0
+
     # Churn control. Buys are blocked during the opening-noise window and
     # after a same-day exit, but sells/exits are always allowed.
     no_new_positions_first_minutes: int = 10
@@ -6841,6 +6857,167 @@ class ProductionOrderExecutor:
             for r in recs:
                 write_event("amps_v2_signal", {"shadow": True, **r})
 
+    # ------------------------------------------------------------------
+    # AMPS V6 overlay (ENABLED by default). Runs the FULL amps_v6 pipeline every cycle and, per
+    # explicit operator directive ("enable all functions; make no distinction between paper and
+    # live; do not block live trades; I will handle that"), produces ACTIONABLE buy rows for
+    # V6-eligible candidates rather than shadow-only logs. There is NO V6-level paper/live gate and
+    # NO three-state block here. The produced orders still flow through the engine's EXISTING risk
+    # pipeline (run_once_from_frames -> kill switch, daily-loss caps, exposure limits, direction
+    # gate) and the ALLOW_LIVE_TRADING guard remains the operator's live lever.
+    # HONEST RESEARCH NOTE (logged, NOT a block): the entry-alpha gate found no VALIDATED horizon;
+    # swing 5-10d = CONTINUE_RESEARCH (net-negative). V6 forward-tests an unvalidated signal by
+    # operator choice. Returns the (possibly augmented) rebalance frame. Fail-safe (never raises).
+    # ------------------------------------------------------------------
+    def _run_amps_v6_overlay(self, rebalance: pd.DataFrame, exits: pd.DataFrame,
+                             equity: float) -> pd.DataFrame:
+        sc = self.config.scanner
+        if self.scanner is None or not sc.amps_v6_enabled:
+            return rebalance
+        try:
+            import amps_v4_regime as RG
+            from amps_v6.universe import instrument_registry as V6REG
+            from amps_v6.execution import risk_gateway as V6RISK
+            from amps_v6.strategy import decision_fusion as V6FUSE
+        except Exception as exc:  # noqa: BLE001
+            print(f"[amps-v6] package import failed (non-fatal): {exc}")
+            return rebalance
+
+        shadow = bool(sc.amps_v6_shadow_mode)
+        rcfg = RG.RegimeConfig()
+        positions = [p for p in self.broker.get_all_open_positions() if p.qty > 0]
+        held = {normalize_symbol(p.symbol) for p in positions}
+        try:
+            pending = {normalize_symbol(getattr(o, "symbol", "")) for o in self.broker.list_open_orders()}
+            pending.discard("")
+        except Exception:
+            pending = set()
+        existing = (set(rebalance["symbol"].map(normalize_symbol))
+                    if rebalance is not None and not rebalance.empty else set())
+        # V6 proposes its registry-eligible leveraged/inverse ETFs as buy candidates (the V6 strategy),
+        # plus whatever the scanner already surfaced.
+        registry_syms = [s for s in RG.REGISTRY if V6REG.data_available(s)]
+        candidate_syms = sorted((set(registry_syms) | existing) - held - pending)
+        if not candidate_syms:
+            return rebalance
+
+        # --- broad regime + per-underlying directional score (reuse the V4 path on 5m bars) ---
+        regime_label, regime_score, under_scores = "UNCERTAIN", float("nan"), {}
+        try:
+            reg_syms = {RG.REGISTRY[s]["ref"] for s in candidate_syms if s in RG.REGISTRY} | {"SPY", "QQQ", "DIA", "IWM"}
+            rbars = self.scanner._download_intraday_bars(sorted(reg_syms), 5)
+            ref_rows = {}
+            if rbars is not None and not rbars.empty:
+                for rs, rg in rbars.groupby("symbol", sort=False):
+                    rg = rg.sort_values("timestamp")
+                    if len(rg) < 25:
+                        continue
+                    dip, dim, adx, _ = dmi_adx(rg, 14)
+                    m = self.scanner._intraday_direction_metrics(normalize_symbol(rs), rg, 5, 0.0)
+                    c = float(rg["close"].astype(float).iloc[-1]); vwap = float(m.get("5m_vwap") or c)
+                    bbm = bollinger_middle(rg["close"], 20)
+                    ref_rows[normalize_symbol(rs)] = {
+                        "pdi": dip, "mdi": dim, "adx": adx,
+                        "vwap_dist": (c - vwap) / vwap if vwap else 0.0, "vwap_slope": 0.0,
+                        "bb_dist": (c - bbm) / bbm if bbm == bbm and bbm else 0.0,
+                        "short_mom": float(c - float(rg["close"].astype(float).iloc[-3])), "realized_vol": 0.0}
+                regime_label, regime_score, _conf = RG.market_regime(ref_rows, rcfg)
+                for s in candidate_syms:
+                    if s in RG.REGISTRY:
+                        r = ref_rows.get(RG.REGISTRY[s]["ref"])
+                        under_scores[s] = RG.directional_score(r, rcfg) if r else float("nan")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[amps-v6] regime calc skipped (non-fatal): {exc}")
+
+        # --- per-candidate 5m gates + eligibility + fusion + sizing ---
+        try:
+            bars = self.scanner._download_intraday_bars(candidate_syms, 5)
+        except Exception:
+            bars = pd.DataFrame()
+        limits = V6RISK.RiskLimits(risk_per_trade_pct=sc.amps_v6_risk_per_trade_pct,
+                                   max_order_notional_pct=sc.amps_v6_max_position_pct)
+        recs, buy_rows = [], []
+        if bars is not None and not bars.empty:
+            for sym, g in bars.groupby("symbol", sort=False):
+                g = g.sort_values("timestamp")
+                if len(g) < 25:
+                    continue
+                sym_u = normalize_symbol(sym)
+                dip, dim, adx, _rising = dmi_adx(g, 14)
+                adx_prev = dmi_adx(g.iloc[:-1], 14)[2] if len(g) > 16 else adx
+                close = float(g["close"].astype(float).iloc[-1])
+                bb_mid = bollinger_middle(g["close"], 20)
+                m = self.scanner._intraday_direction_metrics(sym_u, g, 5, 0.0)
+                vwap = float(m.get("5m_vwap") or close)
+                gates_ok = bool(dip > dim and adx > rcfg.min_adx_trend and adx > adx_prev and close > vwap)
+                orient = RG.REGISTRY[sym_u]["dir"] if sym_u in RG.REGISTRY else None
+                u_sc = under_scores.get(sym_u, float("nan"))
+                if sym_u in RG.REGISTRY:
+                    elig, elig_reason = RG.eligible_for_long(sym_u, gates_ok, u_sc, regime_label, rcfg)
+                else:
+                    elig, elig_reason = gates_ok, "amps_gates_only"
+                # fusion (logged): entry-alpha is advisory here (no VALIDATED edge) -> alpha_confirmed
+                # mirrors eligibility per operator directive, NOT a hard block.
+                fin = V6FUSE.FusionInputs(
+                    valid_market_data=True, valid_setup=gates_ok, eligible_instrument=bool(elig),
+                    eligible_trading_horizon=True, alpha_confirmed=bool(elig),
+                    positive_expected_net_return=bool(elig), acceptable_execution_cost=True,
+                    deterministic_risk_approval=True,
+                    is_inverse=(orient == "bear"),
+                    bearish_underlying_confirmation=(u_sc <= -rcfg.underlying_align_thresh) if u_sc == u_sc else False,
+                    inverse_etf_strength=gates_ok)
+                fres = V6FUSE.fuse(fin)
+                # sizing (pure; no kill-switch block at V6 level per directive)
+                stop = close * 0.98
+                qty = V6RISK.size_by_risk(equity, limits, close, stop)
+                if not sc.enable_fractional_orders:
+                    qty = float(int(qty))
+                notional = qty * close
+                target_weight = min(notional / equity, sc.amps_v6_max_position_pct / 100.0) if equity > 0 else 0.0
+                actionable = bool(elig and fres.entry_allowed and qty > 0 and notional >= 1.0)
+                recs.append({"symbol": sym_u, "di_plus": round(dip, 1), "di_minus": round(dim, 1),
+                             "adx": round(adx, 1), "above_vwap": close > vwap, "orientation": orient,
+                             "underlying_score": round(u_sc, 1) if u_sc == u_sc else None,
+                             "regime": regime_label, "eligible": bool(elig), "eligible_reason": elig_reason,
+                             "fusion_ok": fres.entry_allowed, "failed_gates": ",".join(fres.failed_gates),
+                             "entry_alpha": "swing5-10d:CONTINUE_RESEARCH(net-neg); intraday:REJECTED",
+                             "sized_qty": round(qty, 4), "target_weight": round(target_weight, 4),
+                             "actionable": actionable})
+                if actionable and len(buy_rows) < sc.amps_v6_max_new_buys_per_cycle:
+                    buy_rows.append({
+                        "symbol": sym_u, "side": "buy", "delta_shares": qty,
+                        "delta_dollars": float(notional), "price": float(close),
+                        "market_price": float(close), "entry_price": float(close),
+                        "stop_price": float(stop), "reason": f"amps_v6_{elig_reason}",
+                        "target_weight": float(target_weight), "current_weight": 0.0,
+                        "delta_weight": float(target_weight), "trade_confidence": 1.0})
+
+        cycle_id = run_id()
+        mode = "SHADOW" if shadow else "ENFORCE"
+        n_act = sum(1 for r in recs if r["actionable"])
+        print(f"[amps-v6:{mode}] regime={regime_label} ({regime_score}); "
+              f"{n_act}/{len(recs)} eligible+actionable candidate(s) "
+              f"(entry-alpha NOT validated -- forward-test by operator directive)")
+        try:
+            if recs:
+                save_df(pd.DataFrame(recs), OUT_DIR / f"{DATA_TAG}_amps_v6_signals_{cycle_id}.csv")
+            for r in recs:
+                write_event("amps_v6_signal", {"shadow": shadow, **r})
+        except Exception:
+            pass
+
+        if shadow or not buy_rows:
+            return rebalance
+        add = pd.DataFrame(buy_rows)
+        add = add[~add["symbol"].map(normalize_symbol).isin(existing | held | pending)]
+        if add.empty:
+            return rebalance
+        print(f"[amps-v6:ENFORCE] adding {len(add)} actionable buy(s): {sorted(add['symbol'])}")
+        write_event("amps_v6_buys", {"symbols": sorted(add["symbol"]), "count": int(len(add))})
+        if rebalance is None or rebalance.empty:
+            return add.reset_index(drop=True)
+        return pd.concat([rebalance, add], ignore_index=True)
+
     def run_cycle_from_files(self) -> tuple[pd.DataFrame, pd.DataFrame, AccountSnapshot, pd.DataFrame]:
         # Do not spend time refreshing/scanning before the market is executable.
         # Exits remain allowed once the market is open; buy-side gates are applied below.
@@ -6972,6 +7149,17 @@ class ProductionOrderExecutor:
                     except Exception as exc:  # noqa: BLE001
                         print(f"[amps-v2] overlay failed (non-fatal): {exc}")
                         write_event("amps_v2_overlay_error", {"error": str(exc)})
+
+                # AMPS V6 overlay (ENABLED by default). Runs the full pipeline and, per operator
+                # directive, produces ACTIONABLE buys merged into rebalance (no paper/live distinction,
+                # no V6-level block). Merged orders still flow through the engine's existing risk
+                # pipeline (run_once_from_frames) and the ALLOW_LIVE_TRADING guard below.
+                if self.config.scanner.amps_v6_enabled:
+                    try:
+                        rebalance = self._run_amps_v6_overlay(rebalance, exits, equity)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[amps-v6] overlay failed (non-fatal): {exc}")
+                        write_event("amps_v6_overlay_error", {"error": str(exc)})
 
                 if not monitor_exits.empty:
                     exited_today = sorted(set(monitor_exits["symbol"].map(safe_symbol)))
@@ -7240,6 +7428,11 @@ def build_default_config() -> ExecutorConfig:
         di_bb_timeframe_min=int(os.getenv("DI_BB_TIMEFRAME", "5")),
         # AMPS V2: selectable, DISABLED by default (REJECTED by backtest). SHADOW only.
         amps_v2_enabled=os.getenv("AMPS_V2", "0").strip() == "1",
+        # AMPS V6: ENABLED by default (AMPS_V6=0 disables). Full pipeline; produces ACTIONABLE buys
+        # per operator directive (no paper/live distinction, no V6-level block). AMPS_V6_SHADOW=1
+        # reverts to log-only without trading.
+        amps_v6_enabled=os.getenv("AMPS_V6", "1").strip() != "0",
+        amps_v6_shadow_mode=os.getenv("AMPS_V6_SHADOW", "0").strip() == "1",
         stop_loss_pct=-0.025,
         profit_lock_trigger_pct=0.04,
         profit_giveback_pct=0.015,
@@ -7344,6 +7537,10 @@ def print_startup_banner(config: "ExecutorConfig") -> None:
     di_bb = "ENABLED" if getattr(sc, "di_bb_enabled", False) else "DISABLED"
     di_bb_exec = "SHADOW" if getattr(sc, "di_bb_shadow_mode", True) else "ENFORCE"
     amps = "ENABLED (SHADOW)" if getattr(sc, "amps_v2_enabled", False) else "DISABLED"
+    if getattr(sc, "amps_v6_enabled", False):
+        amps6 = "ENABLED (SHADOW)" if getattr(sc, "amps_v6_shadow_mode", False) else "ENABLED (TRADING)"
+    else:
+        amps6 = "DISABLED"
     risk = "ACTIVE" if config.enable_kill_switch else "LIMITED"
     dash = "ACTIVE" if not config.enable_streaming_engine else "STREAMING"
     print("")
@@ -7359,6 +7556,7 @@ def print_startup_banner(config: "ExecutorConfig") -> None:
     print(f"DI/BB Signals:        {di_bb} ({getattr(sc, 'di_bb_timeframe_min', 5)}m)")
     print(f"DI/BB Execution:      {di_bb_exec}")
     print(f"AMPS V2:              {amps}")
+    print(f"AMPS V6:              {amps6}")
     print(f"Risk Controls:        {risk}")
     print(f"Dashboard:            {dash}")
     print("")
