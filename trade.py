@@ -6761,6 +6761,40 @@ class ProductionOrderExecutor:
         syms = sorted(held | candidates)
         if not syms:
             return
+        # V4 regime + directional eligibility (shadow): compute the broad market regime and each
+        # registry symbol's underlying-momentum alignment so eligibility is logged/testable live.
+        regime_label, regime_score, under_scores = "UNCERTAIN", float("nan"), {}
+        try:
+            import amps_v4_regime as RG
+            rcfg = RG.RegimeConfig()
+            reg_syms = {RG.REGISTRY[s]["ref"] for s in syms if s in RG.REGISTRY} | {"SPY", "QQQ", "DIA", "IWM"}
+            if reg_syms:
+                rbars = self.scanner._download_intraday_bars(sorted(reg_syms), 5)
+                ref_rows = {}
+                if rbars is not None and not rbars.empty:
+                    for rs, rg in rbars.groupby("symbol", sort=False):
+                        rg = rg.sort_values("timestamp")
+                        if len(rg) < 25:
+                            continue
+                        dip, dim, adx, _ = dmi_adx(rg, 14)
+                        m = self.scanner._intraday_direction_metrics(normalize_symbol(rs), rg, 5, 0.0)
+                        c = float(rg["close"].astype(float).iloc[-1]); vwap = float(m.get("5m_vwap") or c)
+                        bbm = bollinger_middle(rg["close"], 20)
+                        ref_rows[normalize_symbol(rs)] = {
+                            "pdi": dip, "mdi": dim, "adx": adx,
+                            "vwap_dist": (c - vwap) / vwap if vwap else 0.0,
+                            "vwap_slope": 0.0, "bb_dist": (c - bbm) / bbm if bbm == bbm and bbm else 0.0,
+                            "short_mom": float(c - float(rg["close"].astype(float).iloc[-3])),
+                            "realized_vol": 0.0}
+                    regime_label, regime_score, _conf = RG.market_regime(ref_rows, rcfg)
+                    for s in syms:
+                        if s in RG.REGISTRY:
+                            r = ref_rows.get(RG.REGISTRY[s]["ref"])
+                            under_scores[s] = RG.directional_score(r, rcfg) if r else float("nan")
+            print(f"[amps-v4:SHADOW] regime={regime_label} ({regime_score}); "
+                  f"directional eligibility logged for {len(under_scores)} registry symbols")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[amps-v4] regime calc skipped (non-fatal): {exc}")
         try:
             bars = self.scanner._download_intraday_bars(syms, 5)
         except Exception:
@@ -6778,10 +6812,24 @@ class ProductionOrderExecutor:
                 m = self.scanner._intraday_direction_metrics(normalize_symbol(sym), g, 5, 0.0)
                 vwap = float(m.get("5m_vwap") or close)
                 dist = A.bb_distance(close, bb_mid) if bb_mid == bb_mid else float("nan")
-                recs.append({"symbol": normalize_symbol(sym), "di_plus": round(dip, 1),
-                             "di_minus": round(dim, 1), "adx": round(adx, 1),
-                             "above_vwap": close > vwap, "bb_dist_bps": round(dist * 1e4, 1) if dist == dist else None,
-                             "gates_ok": bool(dip > dim and adx > cfg.min_adx and adx > adx_prev and close > vwap)})
+                sym_u = normalize_symbol(sym)
+                gates_ok = bool(dip > dim and adx > cfg.min_adx and adx > adx_prev and close > vwap)
+                # V4 directional eligibility (shadow): registry symbols need underlying alignment + regime
+                elig, elig_reason, u_sc, orient = gates_ok, "amps_gates_only", None, None
+                try:
+                    import amps_v4_regime as RG
+                    if sym_u in RG.REGISTRY:
+                        orient = RG.REGISTRY[sym_u]["dir"]
+                        u_sc = under_scores.get(sym_u, float("nan"))
+                        elig, elig_reason = RG.eligible_for_long(sym_u, gates_ok, u_sc, regime_label, RG.RegimeConfig())
+                except Exception:
+                    pass
+                recs.append({"symbol": sym_u, "di_plus": round(dip, 1), "di_minus": round(dim, 1),
+                             "adx": round(adx, 1), "above_vwap": close > vwap,
+                             "bb_dist_bps": round(dist * 1e4, 1) if dist == dist else None,
+                             "gates_ok": gates_ok, "orientation": orient,
+                             "underlying_score": round(u_sc, 1) if u_sc is not None and u_sc == u_sc else None,
+                             "regime": regime_label, "eligible": bool(elig), "eligible_reason": elig_reason})
         if recs:
             cycle_id = run_id()
             print(f"[amps-v2:SHADOW] {sum(1 for r in recs if r['gates_ok'])}/{len(recs)} pass mandatory gates "
