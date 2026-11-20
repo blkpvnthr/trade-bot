@@ -133,6 +133,8 @@ SCANNER_SCORES_PATH = OUT_DIR / f"{DATA_TAG}_latest_scanner_scores.csv"
 NO_REENTRY_STATE_PATH = LOG_DIR / f"{DATA_TAG}_no_reentry_state.json"
 INSIDER_HOLDINGS_STATE_PATH = LOG_DIR / f"{DATA_TAG}_insider_holdings_state.json"
 PROFIT_EXIT_STATE_PATH = LOG_DIR / f"{DATA_TAG}_profit_exit_state.json"
+BUY_OPPORTUNITY_STATE_PATH = LOG_DIR / f"{DATA_TAG}_buy_opportunity_state.json"
+BUY_REENTRY_STATE_PATH = LOG_DIR / f"{DATA_TAG}_buy_reentry_state.json"
 POSITION_MONITOR_PATH = LOG_DIR / f"{DATA_TAG}_active_position_monitor.csv"
 
 LLM_SENTIMENT_UNIVERSE_PATH = OUT_DIR / f"{DATA_TAG}_latest_llm_sentiment_universe.json"
@@ -432,6 +434,25 @@ class ScannerConfig:
     profit_exit_min_confirmations: int = 3
     profit_exit_cooldown_s: float = 120.0
     profit_exit_persistence_cycles: int = 2
+
+    # Order-flow BUY opportunity + entry-timing overlay (see buy_opportunity_engine.py).
+    # SHADOW by default: it ranks/times the scanner's OWN buy candidates and logs
+    # recommendations but never changes orders until buy_opportunity_shadow_mode is off
+    # (explicit opt-in). It never adds symbols the scanner rejected, never overrides risk
+    # controls/kill switch/pyramiding, and defers to any pending exit.
+    buy_opportunity_enabled: bool = True
+    buy_opportunity_shadow_mode: bool = True
+    buy_score_watch: float = 40.0
+    buy_score_setup: float = 60.0
+    buy_score_ready: float = 75.0
+    buy_score_strong: float = 90.0
+    buy_min_confirmations: int = 3
+    buy_max_spread_bps: float = 15.0
+    buy_reentry_cooldown_seconds: float = 300.0
+    buy_require_existing_entry_signal: bool = True
+    buy_require_valid_order_flow: bool = True
+    buy_persistence_cycles: int = 2
+    buy_universe_monitor_max: int = 40
 
     # Churn control. Buys are blocked during the opening-noise window and
     # after a same-day exit, but sells/exits are always allowed.
@@ -2994,6 +3015,79 @@ def build_insider_exit_rows(
             }
         )
     return rows
+
+
+# ======================================================================
+# Buy-opportunity market-structure inputs (pure; reused by the buy overlay).
+# Computes Wilder DMI/ADX + bullish-structure booleans from an intraday frame.
+# ======================================================================
+def _wilder_rma(series: pd.Series, period: int) -> pd.Series:
+    return series.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
+
+
+def dmi_adx(frame: pd.DataFrame, period: int = 14) -> tuple[float, float, float, bool]:
+    """Return (DI+, DI-, ADX, adx_rising). Neutral (0,0,0,False) if too few bars."""
+    if frame is None or len(frame) < period + 2:
+        return 0.0, 0.0, 0.0, False
+    g = frame.sort_values("timestamp")
+    h = g["high"].astype(float); l = g["low"].astype(float); c = g["close"].astype(float)
+    up = h.diff(); dn = -l.diff()
+    plus_dm = (((up > dn) & (up > 0)).astype(float)) * up.clip(lower=0)
+    minus_dm = (((dn > up) & (dn > 0)).astype(float)) * dn.clip(lower=0)
+    tr = pd.concat([(h - l), (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+    atr = _wilder_rma(tr, period).replace(0, np.nan)
+    pdi = 100 * _wilder_rma(plus_dm, period) / atr
+    mdi = 100 * _wilder_rma(minus_dm, period) / atr
+    dx = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)
+    adx = _wilder_rma(dx, period)
+    di_plus = float(pdi.iloc[-1]) if pd.notna(pdi.iloc[-1]) else 0.0
+    di_minus = float(mdi.iloc[-1]) if pd.notna(mdi.iloc[-1]) else 0.0
+    adx_now = float(adx.iloc[-1]) if pd.notna(adx.iloc[-1]) else 0.0
+    adx_prev = float(adx.iloc[-4]) if len(adx) >= 4 and pd.notna(adx.iloc[-4]) else adx_now
+    return di_plus, di_minus, adx_now, bool(adx_now > adx_prev)
+
+
+def compute_buy_structure(frame: pd.DataFrame, m: dict[str, Any],
+                          over_extension_pct: float = 0.03) -> dict[str, bool]:
+    """Bullish market-structure booleans consumed by buy_opportunity_engine. `m` is the
+    output of MomentumSetupScanner._intraday_direction_metrics for the same frame. Empty /
+    short frames return all-False (never a bullish default)."""
+    out = {k: False for k in ("higher_low", "price_stops_lower_low", "reclaimed_vwap",
+                              "reclaimed_sma50", "di_plus_over_minus", "adx_rising",
+                              "failed_breakdown_reversal", "breakout_confirmed",
+                              "above_sma50", "pulled_back", "over_extended")}
+    if frame is None or len(frame) < 5:
+        return out
+    g = frame.sort_values("timestamp")
+    c = g["close"].astype(float); h = g["high"].astype(float); l = g["low"].astype(float)
+    last = float(c.iloc[-1])
+    vwap = float(m.get("5m_vwap") or last)
+    out["reclaimed_vwap"] = bool(m.get("5m_above_vwap"))
+    lows = l.tail(min(10, len(l))).reset_index(drop=True)
+    if len(lows) >= 4:
+        out["higher_low"] = bool(lows.iloc[-1] > lows.iloc[-3])
+        out["price_stops_lower_low"] = bool(lows.iloc[-1] >= lows.iloc[-3])
+    sma50 = float(c.rolling(min(50, len(c))).mean().iloc[-1])
+    out["above_sma50"] = last >= sma50
+    out["reclaimed_sma50"] = last >= sma50
+    dip, dim, adx, adx_rising = dmi_adx(g, 14)
+    out["di_plus_over_minus"] = dip > dim and dip > 0
+    out["adx_rising"] = bool(adx_rising and adx > 15.0)
+    if len(h) >= 6:
+        resistance = float(h.iloc[:-1].tail(20).max())
+        out["breakout_confirmed"] = last >= resistance and last >= float(c.iloc[-2])
+    if len(c) >= 6:
+        support = float(l.iloc[:-1].tail(10).min())
+        out["failed_breakdown_reversal"] = (float(l.tail(3).min()) <= support
+                                            and last > support and out["reclaimed_vwap"])
+    sma_fast = float(m.get("5m_sma_fast") or last)
+    over_v = ((last - vwap) / vwap > over_extension_pct) if vwap > 0 else False
+    over_f = ((last / sma_fast - 1.0) > over_extension_pct) if sma_fast > 0 else False
+    out["over_extended"] = bool(over_v or over_f)
+    near_vwap = (abs(last - vwap) / vwap < 0.006) if vwap > 0 else False
+    recent_ret = float(m.get("5m_recent_ret") or 0.0)
+    out["pulled_back"] = bool(out["above_sma50"] and near_vwap and recent_ret < 0.002)
+    return out
 
 
 class MomentumSetupScanner:
@@ -6363,6 +6457,146 @@ class ProductionOrderExecutor:
         for r in recs:
             write_event("profit_exit_recommendation", {"shadow": shadow, **r.as_dict()})
 
+    # ------------------------------------------------------------------
+    # Order-flow BUY-opportunity overlay (shadow by default). SHARES the same
+    # order-flow engine as the exit overlay (coordinated snapshots). It ranks/times the
+    # scanner's OWN buy candidates; in enforcement it only CONFIRMS/holds back those
+    # candidates -- it never invents new symbols or overrides risk/pyramiding/kill switch.
+    # ------------------------------------------------------------------
+    def _ensure_buy_opportunity_engine(self) -> None:
+        if getattr(self, "_buy_opportunity_coordinator", None) is not None:
+            return
+        self._ensure_profit_exit_engines()  # guarantees the SHARED self._order_flow_engine
+        import buy_opportunity_engine as boe
+        sc = self.config.scanner
+        cfg = boe.BuyOpportunityConfig(
+            score_watch=sc.buy_score_watch, score_setup=sc.buy_score_setup,
+            score_ready=sc.buy_score_ready, score_strong=sc.buy_score_strong,
+            min_confirmations=sc.buy_min_confirmations, max_spread_bps=sc.buy_max_spread_bps,
+            reentry_cooldown_s=sc.buy_reentry_cooldown_seconds,
+            require_existing_entry_signal=sc.buy_require_existing_entry_signal,
+            require_valid_order_flow=sc.buy_require_valid_order_flow,
+            persistence_cycles=sc.buy_persistence_cycles)
+        self._buy_opportunity_engine = boe.BuyOpportunityEngine(cfg, state_path=BUY_OPPORTUNITY_STATE_PATH)
+        self._buy_opportunity_coordinator = boe.BuyOpportunityCoordinator(self._buy_opportunity_engine)
+
+    def _buy_reentry_blocked(self, now_ts: float, exit_symbols_this_cycle: set[str]) -> set[str]:
+        """Symbols blocked from reentry because the exit side liquidated them within the
+        cooldown. Also records this cycle's exits (restart-safe)."""
+        cooldown = self.config.scanner.buy_reentry_cooldown_seconds
+        state = read_json_file(BUY_REENTRY_STATE_PATH, {"exits": {}})
+        recent = state.get("exits", {}) if isinstance(state.get("exits"), dict) else {}
+        blocked = {s for s, ts in recent.items() if now_ts - float(ts) < cooldown}
+        for s in exit_symbols_this_cycle:
+            recent[str(s).upper()] = now_ts
+        recent = {s: ts for s, ts in recent.items() if now_ts - float(ts) < max(cooldown * 3, 3600)}
+        state["exits"] = recent
+        write_json_file(BUY_REENTRY_STATE_PATH, state)
+        return blocked
+
+    def _run_buy_opportunity_overlay(self, rebalance: pd.DataFrame, exits: pd.DataFrame,
+                                     equity: float) -> pd.DataFrame:
+        """Always logs buy-opportunity recommendations. Returns the rebalance UNCHANGED in
+        shadow mode; in enforcement, returns rebalance filtered to order-flow-CONFIRMED
+        candidates (improves entry timing, never adds symbols). Fail-safe."""
+        sc = self.config.scanner
+        if self.scanner is None or not sc.buy_opportunity_enabled:
+            return rebalance
+        self._ensure_buy_opportunity_engine()
+
+        positions = [p for p in self.broker.get_all_open_positions() if p.qty > 0]
+        held = {normalize_symbol(p.symbol) for p in positions}
+        try:
+            pending = {normalize_symbol(getattr(o, "symbol", "")) for o in self.broker.list_open_orders()}
+            pending.discard("")
+        except Exception:
+            pending = set()
+        candidates = (set(rebalance["symbol"].map(normalize_symbol))
+                      if rebalance is not None and not rebalance.empty else set())
+        try:
+            universe = [normalize_symbol(s) for s in (self.scanner._universe() or [])]
+        except Exception:
+            universe = []
+        pending_exit = (set(exits["symbol"].map(safe_symbol))
+                        if exits is not None and not exits.empty else set())
+        now_ts = now_utc().timestamp()
+        reentry_block = self._buy_reentry_blocked(now_ts, pending_exit)
+
+        monitored: dict[str, Any] = {}
+        if sc.order_flow_enabled:
+            priority_groups = [sorted(held), sorted(pending), sorted(candidates), universe]
+            try:
+                monitored = self._order_flow_engine.poll_universe(
+                    priority_groups, lookback_s=300, max_symbols=sc.buy_universe_monitor_max)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[buy-opp] universe poll failed (non-fatal): {exc}")
+        monitored_syms = sorted(monitored.keys())
+        self._buy_opportunity_engine.prune(monitored_syms)
+
+        structure_by_symbol: dict[str, dict[str, Any]] = {}
+        if monitored_syms:
+            try:
+                bars5 = self.scanner._download_intraday_bars(monitored_syms, 5)
+            except Exception:
+                bars5 = pd.DataFrame()
+            if bars5 is not None and not bars5.empty:
+                for sym, g in bars5.groupby("symbol", sort=False):
+                    s = normalize_symbol(sym)
+                    m = self.scanner._intraday_direction_metrics(s, g, 5, 0.0)
+                    structure_by_symbol[s] = compute_buy_structure(g, m)
+
+        shadow = bool(sc.buy_opportunity_shadow_mode)
+        recs, confirmed = self._buy_opportunity_coordinator.evaluate(
+            monitored, structure_by_symbol, scanner_candidates=candidates,
+            scanner_eligible=candidates, held=held, pending_exit=pending_exit,
+            reentry_block=reentry_block, now=now_ts, shadow=shadow)
+        self._log_buy_opportunity(recs, shadow)
+
+        if shadow or rebalance is None or rebalance.empty:
+            return rebalance
+        before = len(rebalance)
+        gated = rebalance[rebalance["symbol"].map(normalize_symbol).isin(confirmed)].copy()
+        print(f"[buy-opp:ENFORCE] confirmed {len(gated)}/{before} buy candidate(s): {sorted(confirmed)}")
+        write_event("buy_opportunity_gate", {"before": before, "confirmed": sorted(confirmed)})
+        return gated
+
+    def _log_buy_opportunity(self, recs: list[Any], shadow: bool) -> None:
+        if not recs:
+            return
+        cycle_id = run_id()
+        ranked = sorted(recs, key=lambda r: r.buy_score, reverse=True)
+        table = pd.DataFrame([{
+            "symbol": r.symbol, "score": round(r.buy_score, 1), "decision": r.decision,
+            "setup": r.setup, "pressure": r.pressure,
+            "buy_p": r.components.get("buy_pressure"), "cvd_impr": r.components.get("cvd_improvement"),
+            "sell_exh": r.components.get("seller_exhaustion"), "struct": r.components.get("bullish_structure"),
+            "entry_q": r.components.get("entry_quality"), "conf": r.confirmation_count,
+            "spread": r.spread_bps, "elig": r.scanner_eligible, "enforce": r.enforce, "data": r.data_status,
+        } for r in ranked])
+        mode = "SHADOW" if shadow else "ENFORCE"
+        print(f"[buy-opp:{mode}] {len(recs)} symbol(s) monitored (data_source=IEX):")
+        try:
+            print(table.head(15).to_string(index=False))
+        except Exception:
+            pass
+        try:
+            import terminal_dashboard as _td
+            panel_events = {r.symbol: {
+                "symbol": r.symbol, "score": r.buy_score, "decision": r.decision, "setup": r.setup,
+                "pressure": r.pressure, "cvd_trend": r.cvd_trend, "seller_exhaustion": r.seller_exhaustion,
+                "scanner_eligible": r.scanner_eligible, "enforce": r.enforce, "shadow": shadow,
+            } for r in ranked}
+            for line in _td.format_buy_panel(panel_events):
+                print(line)
+        except Exception:
+            pass
+        try:
+            save_df(table, OUT_DIR / f"{DATA_TAG}_buy_opportunity_recs_{cycle_id}.csv")
+        except Exception:
+            pass
+        for r in recs:
+            write_event("buy_opportunity_recommendation", {"shadow": shadow, **r.as_dict()})
+
     def run_cycle_from_files(self) -> tuple[pd.DataFrame, pd.DataFrame, AccountSnapshot, pd.DataFrame]:
         # Do not spend time refreshing/scanning before the market is executable.
         # Exits remain allowed once the market is open; buy-side gates are applied below.
@@ -6464,6 +6698,16 @@ class ProductionOrderExecutor:
                     except Exception as exc:  # noqa: BLE001 - overlay must never break the cycle
                         print(f"[profit-exit] overlay failed (non-fatal): {exc}")
                         write_event("profit_exit_overlay_error", {"error": str(exc)})
+
+                # Order-flow BUY-opportunity overlay. Runs AFTER exits are finalized so it can
+                # coordinate (defer to pending exits, reentry cooldowns). Shadow by default ->
+                # rebalance unchanged; enforcement only CONFIRMS/holds back scanner buys.
+                if self.config.scanner.buy_opportunity_enabled:
+                    try:
+                        rebalance = self._run_buy_opportunity_overlay(rebalance, exits, equity)
+                    except Exception as exc:  # noqa: BLE001 - overlay must never break the cycle
+                        print(f"[buy-opp] overlay failed (non-fatal): {exc}")
+                        write_event("buy_opportunity_overlay_error", {"error": str(exc)})
 
                 if not monitor_exits.empty:
                     exited_today = sorted(set(monitor_exits["symbol"].map(safe_symbol)))
@@ -6723,6 +6967,9 @@ def build_default_config() -> ExecutorConfig:
         order_flow_enabled=os.getenv("ORDER_FLOW_ENABLED", "1").strip() != "0",
         profit_exit_enabled=os.getenv("PROFIT_EXIT_ENABLED", "1").strip() != "0",
         profit_exit_shadow_mode=os.getenv("PROFIT_EXIT_ENFORCE", "0").strip() != "1",
+        # Buy-opportunity overlay. SHADOW unless BUY_OPPORTUNITY_ENFORCE=1 (explicit opt-in).
+        buy_opportunity_enabled=os.getenv("BUY_OPPORTUNITY_ENABLED", "1").strip() != "0",
+        buy_opportunity_shadow_mode=os.getenv("BUY_OPPORTUNITY_ENFORCE", "0").strip() != "1",
         stop_loss_pct=-0.025,
         profit_lock_trigger_pct=0.04,
         profit_giveback_pct=0.015,
@@ -6822,6 +7069,8 @@ def print_startup_banner(config: "ExecutorConfig") -> None:
     order_flow = "ENABLED" if getattr(sc, "order_flow_enabled", False) else "DISABLED"
     intel_exits = "ENABLED" if getattr(sc, "profit_exit_enabled", False) else "DISABLED"
     exit_exec = "SHADOW" if getattr(sc, "profit_exit_shadow_mode", True) else "ENFORCE"
+    buy_opp = "ENABLED" if getattr(sc, "buy_opportunity_enabled", False) else "DISABLED"
+    buy_exec = "SHADOW" if getattr(sc, "buy_opportunity_shadow_mode", True) else "ENFORCE"
     risk = "ACTIVE" if config.enable_kill_switch else "LIMITED"
     dash = "ACTIVE" if not config.enable_streaming_engine else "STREAMING"
     print("")
@@ -6830,6 +7079,8 @@ def print_startup_banner(config: "ExecutorConfig") -> None:
     print(f"Mode:                 {mode}")
     print(f"Scanner:              {scanner_on}")
     print(f"Order Flow:           {order_flow}")
+    print(f"Buy Opportunity:      {buy_opp}")
+    print(f"Buy Execution:        {buy_exec}")
     print(f"Intelligent Exits:    {intel_exits}")
     print(f"Exit Execution:       {exit_exec}")
     print(f"Risk Controls:        {risk}")
@@ -6839,6 +7090,7 @@ def print_startup_banner(config: "ExecutorConfig") -> None:
     print("-" * 40)
     write_event("engine_startup", {
         "mode": mode, "scanner": scanner_on, "order_flow": order_flow,
+        "buy_opportunity": buy_opp, "buy_execution": buy_exec,
         "intelligent_exits": intel_exits, "exit_execution": exit_exec,
         "risk_controls": risk, "dashboard": dash, "status": "MONITORING",
     })
@@ -6902,6 +7154,13 @@ def main() -> None:
                   f"(exit_execution={'SHADOW' if config.scanner.profit_exit_shadow_mode else 'ENFORCE'})")
         except Exception as exc:  # noqa: BLE001 - never block startup on the overlay
             print(f"[engine] profit-exit engine init deferred (non-fatal): {exc}")
+    if config.scanner.buy_opportunity_enabled:
+        try:
+            executor._ensure_buy_opportunity_engine()
+            print("[engine] buy-opportunity engine initialized "
+                  f"(buy_execution={'SHADOW' if config.scanner.buy_opportunity_shadow_mode else 'ENFORCE'})")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[engine] buy-opportunity engine init deferred (non-fatal): {exc}")
 
     print_startup_banner(config)
     executor.run()

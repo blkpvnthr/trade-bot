@@ -62,6 +62,7 @@ class OrderFlowConfig:
     min_trades_for_signal: int = 8          # below this -> INSUFFICIENT_DATA
     wide_spread_bps: float = 25.0           # above this -> illiquid/caution
     out_of_order_tolerance_s: float = 2.0   # accept slightly-late events up to this lag
+    max_subscriptions: int = 40             # cap on symbols polled per cycle (IEX fair-use)
 
 
 # ======================================================================
@@ -96,6 +97,8 @@ class OrderFlowSnapshot:
     delta_300s: float = 0.0
     cvd: float = 0.0
     cvd_peak: float = 0.0
+    cvd_trough: float = 0.0
+    cvd_trend: float = 0.0                    # [-1,1] direction of CVD over the window
     executed_imbalance: float = 0.0          # [-1,1] (buy-sell)/(buy+sell) over 60s
     buy_sell_ratio: float = 1.0
     quote_imbalance: float = 0.0             # [-1,1] (bidsz-asksz)/(bidsz+asksz) L1
@@ -105,11 +108,14 @@ class OrderFlowSnapshot:
     pressure: str = "NEUTRAL"                # STRONG_BUY|BUY|NEUTRAL|SELL|STRONG_SELL
     pressure_score: float = 0.0              # [-1,1] (+ buy, - sell)
 
-    # interpretable [0,1] signals consumed by the exit engine
+    # interpretable [0,1] signals consumed by the exit engine (sell-side) and the
+    # buy-opportunity engine (buy-side). All normalized; missing data -> 0 (never bullish).
     sell_pressure: float = 0.0
     buy_pressure: float = 0.0
     cvd_deterioration: float = 0.0
     buyer_exhaustion: float = 0.0
+    cvd_improvement: float = 0.0             # buy-side mirror of cvd_deterioration
+    seller_exhaustion: float = 0.0          # buy-side mirror of buyer_exhaustion
 
     def as_dict(self) -> dict[str, Any]:
         from dataclasses import asdict
@@ -283,6 +289,61 @@ def norm_buyer_exhaustion(cvd_div: float, delta_10s: float, delta_60s: float,
     return max(0.0, min(1.0, 0.5 * diverge + 0.3 * decel + 0.2 * ratio_weak))
 
 
+# -- buy-side mirrors (consumed by buy_opportunity_engine.py) -----------------------
+def norm_buy_pressure(executed_imb: float, q_imb: float, delta_60s: float, buy_vol: float,
+                      sell_vol: float) -> float:
+    """[0,1]: 0 = all selling, 1 = heavy buying. Mirror of norm_sell_pressure."""
+    buy_share = 0.0
+    tot = buy_vol + sell_vol
+    if tot > 0:
+        buy_share = buy_vol / tot
+    s = 0.6 * buy_share + 0.25 * (0.5 + 0.5 * q_imb) + 0.15 * (1.0 if delta_60s > 0 else 0.0)
+    return max(0.0, min(1.0, s))
+
+
+def norm_cvd_improvement(cvd: float, cvd_trough: float, delta_30s: float, delta_300s: float) -> float:
+    """[0,1]: how far CVD has RECOVERED from its trough + near-term delta turning positive.
+    Mirror of norm_cvd_deterioration."""
+    recovery = 0.0
+    denom = max(abs(cvd_trough), 1.0)
+    if cvd_trough < 0 and cvd > cvd_trough:
+        recovery = min(1.0, (cvd - cvd_trough) / denom)
+    turn = 0.0
+    if delta_300s < 0 and delta_30s > 0:          # flow flipped positive vs a selling trend
+        turn = min(1.0, abs(delta_30s) / max(abs(delta_300s), 1.0))
+    elif delta_30s > 0:
+        turn = 0.5
+    return max(0.0, min(1.0, 0.65 * recovery + 0.35 * turn))
+
+
+def norm_seller_exhaustion(cvd_div: float, delta_10s: float, delta_60s: float,
+                           buy_sell_r: float) -> float:
+    """[0,1]: price dropping but SELLING is drying up. Combines bullish CVD divergence
+    (price down, CVD up -> cvd_div>0), selling deceleration, and a rising buy/sell ratio.
+    Mirror of norm_buyer_exhaustion."""
+    diverge = max(0.0, cvd_div)   # only bullish divergence contributes
+    decel = 0.0
+    avg60 = delta_60s / 6.0       # per-10s average over the 60s window (negative when selling)
+    if avg60 < 0:                 # only meaningful when net selling
+        decel = max(0.0, min(1.0, 1.0 - (delta_10s / avg60))) if delta_10s > avg60 else 0.0
+    ratio_strong = 0.0
+    if math.isfinite(buy_sell_r) and buy_sell_r > 1.0:
+        ratio_strong = min(1.0, buy_sell_r - 1.0)
+    return max(0.0, min(1.0, 0.5 * diverge + 0.3 * decel + 0.2 * ratio_strong))
+
+
+def cvd_trend_direction(cvd_series: Sequence[Tuple[float, float]], now: float,
+                        window_s: float) -> float:
+    """[-1,1] normalized direction of CVD over the window (positive = accumulating)."""
+    lo = now - window_s
+    pts = [(t, v) for t, v in cvd_series if t >= lo]
+    if len(pts) < 2:
+        return 0.0
+    c0, c1 = pts[0][1], pts[-1][1]
+    rng = max(abs(c1), abs(c0), 1.0)
+    return max(-1.0, min(1.0, (c1 - c0) / rng))
+
+
 def classify_liquidity(spread_bps: Optional[float], wide_bps: float) -> str:
     if spread_bps is None:
         return "unknown"
@@ -314,6 +375,7 @@ class SymbolOrderFlow:
         self._price: Deque[Tuple[float, float]] = deque(maxlen=self.cfg.max_trades)
         self._cvd_running = 0.0
         self._cvd_peak = 0.0
+        self._cvd_trough = 0.0
         self._last_tick_sign = 0
         self._last_trade_ts: Optional[float] = None
         self._last_quote_ts: Optional[float] = None
@@ -353,6 +415,7 @@ class SymbolOrderFlow:
         self._trades.append((ts, sign, float(size)))
         self._cvd_running += sign * float(size)
         self._cvd_peak = max(self._cvd_peak, self._cvd_running)
+        self._cvd_trough = min(self._cvd_trough, self._cvd_running)
         self._cvd.append((ts, self._cvd_running))
         self._price.append((ts, float(price)))
         self._last_trade_ts = max(ts, self._last_trade_ts or ts)
@@ -400,6 +463,8 @@ class SymbolOrderFlow:
         snap.buy_sell_ratio = buy_sell_ratio(snap.buy_vol_60s, snap.sell_vol_60s)
         snap.cvd = self._cvd_running
         snap.cvd_peak = self._cvd_peak
+        snap.cvd_trough = self._cvd_trough
+        snap.cvd_trend = cvd_trend_direction(list(self._cvd), now, self.cfg.cvd_window_s)
         snap.cvd_divergence = cvd_divergence(list(self._price), list(self._cvd), now,
                                              self.cfg.divergence_lookback_s)
         snap.divergence_flag = ("bearish" if snap.cvd_divergence < -0.05
@@ -409,11 +474,16 @@ class SymbolOrderFlow:
 
         snap.sell_pressure = norm_sell_pressure(snap.executed_imbalance, snap.quote_imbalance,
                                                 snap.delta_60s, snap.buy_vol_60s, snap.sell_vol_60s)
-        snap.buy_pressure = max(0.0, min(1.0, 0.5 + 0.5 * snap.pressure_score))
+        snap.buy_pressure = norm_buy_pressure(snap.executed_imbalance, snap.quote_imbalance,
+                                              snap.delta_60s, snap.buy_vol_60s, snap.sell_vol_60s)
         snap.cvd_deterioration = norm_cvd_deterioration(snap.cvd, snap.cvd_peak,
                                                         snap.delta_30s, snap.delta_300s)
         snap.buyer_exhaustion = norm_buyer_exhaustion(snap.cvd_divergence, snap.delta_10s,
                                                      snap.delta_60s, snap.buy_sell_ratio)
+        snap.cvd_improvement = norm_cvd_improvement(snap.cvd, snap.cvd_trough,
+                                                    snap.delta_30s, snap.delta_300s)
+        snap.seller_exhaustion = norm_seller_exhaustion(snap.cvd_divergence, snap.delta_10s,
+                                                        snap.delta_60s, snap.buy_sell_ratio)
         if not stale:
             snap.status, snap.is_stale, snap.ok = "OK", False, True
         return snap
@@ -433,6 +503,48 @@ class OrderFlowEngine:
         self.cfg = config or OrderFlowConfig()
         self.data_client = data_client
         self._symbols: dict[str, SymbolOrderFlow] = {}
+        self._rotation_offset = 0            # round-robin cursor for lower-priority overflow
+
+    def select_priority_symbols(self, priority_groups: Sequence[Sequence[str]],
+                                max_symbols: Optional[int] = None) -> list[str]:
+        """Pick which symbols to subscribe/poll this cycle, honoring the priority order
+        (positions > pending > candidates > universe). Higher-priority groups are always
+        kept; the remaining budget is filled from lower-priority symbols, ROTATING across
+        calls so coverage is fair and sparse symbols are not misrepresented as covered.
+        """
+        cap = max_symbols if max_symbols is not None else self.cfg.max_subscriptions
+        selected: list[str] = []
+        seen: set[str] = set()
+        overflow: list[str] = []
+        for gi, group in enumerate(priority_groups):
+            for raw in group:
+                s = str(raw).upper().strip()
+                if not s or s in seen:
+                    continue
+                seen.add(s)
+                # The first two groups (positions, pending) are mandatory; never rotate them out.
+                if gi <= 1 and len(selected) < cap:
+                    selected.append(s)
+                else:
+                    overflow.append(s)
+        free = max(0, cap - len(selected))
+        if overflow and free > 0:
+            n = len(overflow)
+            off = self._rotation_offset % n
+            rotated = overflow[off:] + overflow[:off]
+            selected.extend(rotated[:free])
+            self._rotation_offset = (self._rotation_offset + free) % n
+        return selected[:cap]
+
+    def poll_universe(self, priority_groups: Sequence[Sequence[str]], lookback_s: int = 300,
+                      max_symbols: Optional[int] = None) -> dict[str, OrderFlowSnapshot]:
+        """Prioritized universe poll. Returns snapshots ONLY for the symbols actually
+        subscribed this cycle (un-polled symbols are intentionally absent -- never
+        fabricated as covered)."""
+        chosen = self.select_priority_symbols(priority_groups, max_symbols)
+        if not chosen:
+            return {}
+        return self.poll_rest(chosen, lookback_s=lookback_s)
 
     def _sym(self, symbol: str) -> SymbolOrderFlow:
         s = symbol.upper()

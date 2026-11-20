@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 CATEGORIES = (
     "DATA", "SCAN", "TREND", "TV", "SIGNAL", "DECISION",
     "RISK", "ORDER", "ACK", "FILL", "CANCEL", "REJECT", "ERROR",
-    "FLOW", "EXIT",
+    "FLOW", "EXIT", "BUY",
 )
 CRITICAL_CATEGORIES = frozenset(
     {"SIGNAL", "DECISION", "RISK", "ORDER", "ACK", "FILL", "CANCEL", "REJECT", "ERROR", "EXIT"}
@@ -39,7 +39,7 @@ _COLOR = {
     "SIGNAL": "\033[36m", "DECISION": "\033[33m", "RISK": "\033[31m",
     "ORDER": "\033[34m", "ACK": "\033[34m", "FILL": "\033[32m",
     "CANCEL": "\033[33m", "REJECT": "\033[31m", "ERROR": "\033[91m",
-    "FLOW": "\033[96m", "EXIT": "\033[93m",
+    "FLOW": "\033[96m", "EXIT": "\033[93m", "BUY": "\033[92m",
 }
 _RESET = "\033[0m"
 
@@ -71,6 +71,43 @@ def format_exit_panel(exit_events: dict) -> list[str]:
             f"{str(ev.get('pressure','?')):<11} {float(ev.get('cvd',0)):>7.1f} "
             f"{float(ev.get('exhaustion',0)):>4.2f} {float(ev.get('u_plpc',0))*100:>6.2f} "
             f"{float(ev.get('peak_plpc',0))*100:>6.2f} {float(ev.get('stop',0)):>8.2f} {mode:<7}")
+    return lines
+
+
+_BUY_DECISION_COLOR = {
+    "NO_BUY": "\033[90m", "WATCH": "\033[36m", "BUY_SETUP": "\033[33m",
+    "BUY_READY": "\033[92m", "STRONG_BUY_CONFIRMATION": "\033[1;92m",
+    "INSUFFICIENT_DATA": "\033[90m",
+}
+_PRESSURE_LABEL = {
+    "STRONG_BUY": "STRONG BUY", "BUY": "BUYING", "NEUTRAL": "NEUTRAL",
+    "SELL": "SELLING", "STRONG_SELL": "STRONG SELL",
+}
+
+
+def format_buy_panel(buy_events: dict, top: int = 8) -> list[str]:
+    """Render the BUY OPPORTUNITY MONITOR from the latest BUY event per symbol.
+
+    Each event carries: symbol, score, decision, setup, pressure, cvd_trend,
+    seller_exhaustion, scanner_eligible, enforce/shadow. IEX-only data scope.
+    """
+    if not buy_events:
+        return []
+    shadow = any(ev.get("shadow", True) for ev in buy_events.values())
+    lines = ["", "BUY OPPORTUNITY MONITOR", "-" * 50,
+             f"{'SYMBOL':<7} {'SCORE':>5} {'PRESSURE':<11} {'SETUP':<10} {'DECISION':<24} {'ELIG':<4}"]
+    ranked = sorted(buy_events.items(), key=lambda kv: float(kv[1].get("score", 0)), reverse=True)
+    for sym, ev in ranked[:top]:
+        dec = str(ev.get("decision", "?"))
+        color = _BUY_DECISION_COLOR.get(dec, "")
+        pressure = _PRESSURE_LABEL.get(str(ev.get("pressure", "NEUTRAL")), str(ev.get("pressure", "?")))
+        setup = str(ev.get("setup", "NONE"))
+        elig = "yes" if ev.get("scanner_eligible") else "no"
+        lines.append(
+            f"{color}{sym:<7} {float(ev.get('score',0)):>5.0f} {pressure:<11} "
+            f"{setup:<10} {dec:<24}{_RESET} {elig:<4}")
+    lines.append("-" * 50)
+    lines.append(f"Mode: {'SHADOW' if shadow else 'ENFORCE'}    Feed: IEX")
     return lines
 
 
@@ -165,6 +202,7 @@ class TerminalRenderer:
         self.dashboard_interval = dashboard_interval
         self.recent: deque = deque(maxlen=feed_tail)
         self.exit_panel: dict[str, dict] = {}  # latest EXIT event per symbol
+        self.buy_panel: dict[str, dict] = {}   # latest BUY event per symbol
         self._running = True
 
     def stop(self) -> None:
@@ -194,6 +232,8 @@ class TerminalRenderer:
               f"dropped_display={of['dropped_display']} dropped_audit={of['dropped_audit']}")
         for line in format_exit_panel(self.exit_panel):
             print(line)
+        for line in format_buy_panel(self.buy_panel):
+            print(line)
         for line in list(self.recent):
             print("  " + line)
         print("=" * 72)
@@ -207,6 +247,8 @@ class TerminalRenderer:
                 ev = None
             if ev is not None and ev.get("category") == "EXIT" and ev.get("symbol"):
                 self.exit_panel[str(ev["symbol"])] = ev  # keep latest per symbol for the panel
+            if ev is not None and ev.get("category") == "BUY" and ev.get("symbol"):
+                self.buy_panel[str(ev["symbol"])] = ev
             if ev is not None and should_display(self.mode, ev.get("category", "")):
                 line = self.format_event(ev)
                 if self.mode == "dashboard":
