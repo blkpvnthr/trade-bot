@@ -37,10 +37,12 @@ def test_55_symbols_produce_20_20_15():
     assert [len(b) for b in batches] == [20, 20, 15]
 
 
-def test_real_universe_txt_is_55_and_batches_20_20_15():
+def test_real_universe_txt_is_54_and_batches_20_20_14():
+    # BNOX (Bionomics ADS) was delisted/INACTIVE on Alpaca (zero bars) and removed
+    # 2026-11-20; the canonical tradable universe is now 54 names.
     syms = universe.load_canonical_universe()
-    assert len(syms) == 55
-    assert [len(b) for b in universe.iter_symbol_batches(syms, 20)] == [20, 20, 15]
+    assert len(syms) == 54
+    assert [len(b) for b in universe.iter_symbol_batches(syms, 20)] == [20, 20, 14]
 
 
 def test_every_symbol_appears_exactly_once_order_preserved():

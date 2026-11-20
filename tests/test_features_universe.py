@@ -22,7 +22,7 @@ import universe
 def test_download_universe_equals_canonical_universe_txt(tmp_path):
     result = feat.get_download_universe(out_path=tmp_path / "u.csv")
     assert result == universe.load_canonical_universe()
-    assert len(result) == 55
+    assert len(result) == 54
 
 
 def test_default_path_does_not_call_sp500_or_nasdaq(monkeypatch, tmp_path):
@@ -46,9 +46,9 @@ def test_default_path_does_not_call_sp500_or_nasdaq(monkeypatch, tmp_path):
 
 
 def test_no_max_symbols_truncation():
-    # The old MAX_SYMBOLS=30 cap is gone entirely; all 55 symbols survive.
+    # The old MAX_SYMBOLS=30 cap is gone entirely; all 54 symbols survive.
     assert not hasattr(feat, "MAX_SYMBOLS")
-    assert len(feat.get_download_universe()) == 55
+    assert len(feat.get_download_universe()) == 54
 
 
 def test_order_preserved_and_deduped(tmp_path):
