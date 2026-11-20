@@ -454,6 +454,17 @@ class ScannerConfig:
     buy_persistence_cycles: int = 2
     buy_universe_monitor_max: int = 40
 
+    # DI/Bollinger technical signal overlay (experimental; see backtest_di_bb.py).
+    # ENTRY: DI+ > DI- AND close > BB-middle(20). EXIT: DI- > DI+ AND close < BB-middle(20),
+    # on a COMPLETED candle of di_bb_timeframe_min. SHADOW by default -- it logs entry/exit
+    # signals and never changes orders until di_bb_shadow_mode is off (explicit opt-in). It
+    # never overrides risk/kill switch/pyramiding and defers to pending exits.
+    di_bb_enabled: bool = True
+    di_bb_shadow_mode: bool = True
+    di_bb_timeframe_min: int = 5
+    di_bb_di_period: int = 14
+    di_bb_bb_period: int = 20
+
     # Churn control. Buys are blocked during the opening-noise window and
     # after a same-day exit, but sells/exits are always allowed.
     no_new_positions_first_minutes: int = 10
@@ -3088,6 +3099,42 @@ def compute_buy_structure(frame: pd.DataFrame, m: dict[str, Any],
     recent_ret = float(m.get("5m_recent_ret") or 0.0)
     out["pulled_back"] = bool(out["above_sma50"] and near_vwap and recent_ret < 0.002)
     return out
+
+
+# ======================================================================
+# DI / Bollinger technical signal (pure; experimental). ENTRY: DI+ > DI- AND
+# close > BB-middle(20). EXIT: DI- > DI+ AND close < BB-middle(20). Evaluated on a
+# COMPLETED candle; no ADX/order-flow thresholds as mandatory conditions.
+# ======================================================================
+def bollinger_middle(closes: pd.Series, period: int = 20) -> float:
+    """20-period Bollinger middle line (SMA) at the last bar; NaN -> None."""
+    if closes is None or len(closes) < period:
+        return float("nan")
+    return float(closes.astype(float).rolling(period).mean().iloc[-1])
+
+
+def di_bb_entry_signal(plus_di: float, minus_di: float, close: float, bb_mid: float) -> bool:
+    return bool(plus_di > minus_di and close > bb_mid)
+
+
+def di_bb_exit_signal(plus_di: float, minus_di: float, close: float, bb_mid: float) -> bool:
+    return bool(minus_di > plus_di and close < bb_mid)
+
+
+def di_bb_signal_for_frame(frame: pd.DataFrame, di_period: int = 14, bb_period: int = 20) -> dict[str, Any]:
+    """Compute DI+/DI-, BB-middle and the entry/exit signals on the LAST COMPLETED candle
+    of `frame`. Returns {} if there are too few bars. Reuses the production dmi_adx()."""
+    if frame is None or len(frame) < max(di_period + 2, bb_period + 1):
+        return {}
+    dip, dim, _adx, _rising = dmi_adx(frame, di_period)
+    g = frame.sort_values("timestamp")
+    close = float(g["close"].astype(float).iloc[-1])
+    bb_mid = bollinger_middle(g["close"], bb_period)
+    if bb_mid != bb_mid:  # NaN guard -> no signal (never treat missing as bullish)
+        return {}
+    return {"plus_di": dip, "minus_di": dim, "close": close, "bb_mid": bb_mid,
+            "entry": di_bb_entry_signal(dip, dim, close, bb_mid),
+            "exit": di_bb_exit_signal(dip, dim, close, bb_mid)}
 
 
 class MomentumSetupScanner:
@@ -6597,6 +6644,94 @@ class ProductionOrderExecutor:
         for r in recs:
             write_event("buy_opportunity_recommendation", {"shadow": shadow, **r.as_dict()})
 
+    # ------------------------------------------------------------------
+    # DI/Bollinger technical-signal overlay (shadow by default, experimental).
+    # ENTRY DI+>DI- & close>BB-mid ; EXIT DI-<... on a completed candle. In enforcement it
+    # gates the scanner's buys to entry-signal symbols and adds DI/BB exit rows via the ONE
+    # existing funnel -- never overrides risk/kill switch/pyramiding; defers to pending exits.
+    # ------------------------------------------------------------------
+    def _run_di_bb_overlay(self, rebalance: pd.DataFrame, exits: pd.DataFrame,
+                           equity: float) -> tuple[pd.DataFrame, Optional[pd.DataFrame]]:
+        sc = self.config.scanner
+        if self.scanner is None or not sc.di_bb_enabled:
+            return rebalance, None
+        tf = int(sc.di_bb_timeframe_min)
+        positions = [p for p in self.broker.get_all_open_positions() if p.qty > 0]
+        held = {normalize_symbol(p.symbol) for p in positions}
+        candidates = (set(rebalance["symbol"].map(normalize_symbol))
+                      if rebalance is not None and not rebalance.empty else set())
+        pending_exit = (set(exits["symbol"].map(safe_symbol))
+                        if exits is not None and not exits.empty else set())
+        syms = sorted(held | candidates)
+        if not syms:
+            return rebalance, None
+        try:
+            bars = self.scanner._download_intraday_bars(syms, tf)
+        except Exception:
+            bars = pd.DataFrame()
+        sigs: dict[str, dict[str, Any]] = {}
+        if bars is not None and not bars.empty:
+            for sym, g in bars.groupby("symbol", sort=False):
+                s = normalize_symbol(sym)
+                sig = di_bb_signal_for_frame(g, sc.di_bb_di_period, sc.di_bb_bb_period)
+                if sig:
+                    sigs[s] = sig
+        shadow = bool(sc.di_bb_shadow_mode)
+        self._log_di_bb(sigs, held, candidates, shadow, tf)
+        if shadow:
+            return rebalance, None
+        # ENFORCE: add DI/BB exit rows for held names flashing exit (not already exiting);
+        # gate the scanner's buys to names flashing a DI/BB entry.
+        cols = ["symbol", "side", "delta_shares", "delta_dollars", "price", "reason",
+                "target_weight", "current_weight", "delta_weight", "trade_confidence"]
+        exit_rows = []
+        for p in positions:
+            s = normalize_symbol(p.symbol)
+            if s in pending_exit:
+                continue
+            if sigs.get(s, {}).get("exit"):
+                mv = float(p.market_value); px = float(p.current_price)
+                exit_rows.append({"symbol": s, "side": "sell", "delta_shares": float(p.qty),
+                                  "delta_dollars": mv, "price": px, "reason": "di_bb_exit",
+                                  "target_weight": 0.0, "current_weight": mv / max(equity, 1e-9),
+                                  "delta_weight": -mv / max(equity, 1e-9), "trade_confidence": 1.0})
+        if rebalance is not None and not rebalance.empty:
+            entry_syms = {s for s, v in sigs.items() if v.get("entry")}
+            before = len(rebalance)
+            rebalance = rebalance[rebalance["symbol"].map(normalize_symbol).isin(entry_syms)].copy()
+            print(f"[di-bb:ENFORCE] kept {len(rebalance)}/{before} DI/BB-entry buys; {len(exit_rows)} DI/BB exits")
+            write_event("di_bb_gate", {"kept": len(rebalance), "before": before, "exits": len(exit_rows)})
+        out_exits = pd.DataFrame(exit_rows, columns=cols) if exit_rows else None
+        return rebalance, out_exits
+
+    def _log_di_bb(self, sigs: dict[str, dict], held: set, candidates: set,
+                   shadow: bool, tf: int) -> None:
+        if not sigs:
+            return
+        cycle_id = run_id()
+        rows = []
+        for s, v in sigs.items():
+            action = "ENTRY" if v["entry"] else ("EXIT" if v["exit"] else "FLAT")
+            rows.append({"symbol": s, "tf_min": tf, "action": action,
+                         "plus_di": round(v["plus_di"], 2), "minus_di": round(v["minus_di"], 2),
+                         "close": round(v["close"], 4), "bb_mid": round(v["bb_mid"], 4),
+                         "held": s in held, "candidate": s in candidates})
+        table = pd.DataFrame(rows)
+        mode = "SHADOW" if shadow else "ENFORCE"
+        active = table[table["action"] != "FLAT"]
+        print(f"[di-bb:{mode}] {tf}m signals: {len(active)} active / {len(table)} monitored")
+        try:
+            if not active.empty:
+                print(active.to_string(index=False))
+        except Exception:
+            pass
+        try:
+            save_df(table, OUT_DIR / f"{DATA_TAG}_di_bb_signals_{cycle_id}.csv")
+        except Exception:
+            pass
+        for r in rows:
+            write_event("di_bb_signal", {"shadow": shadow, **r})
+
     def run_cycle_from_files(self) -> tuple[pd.DataFrame, pd.DataFrame, AccountSnapshot, pd.DataFrame]:
         # Do not spend time refreshing/scanning before the market is executable.
         # Exits remain allowed once the market is open; buy-side gates are applied below.
@@ -6708,6 +6843,18 @@ class ProductionOrderExecutor:
                     except Exception as exc:  # noqa: BLE001 - overlay must never break the cycle
                         print(f"[buy-opp] overlay failed (non-fatal): {exc}")
                         write_event("buy_opportunity_overlay_error", {"error": str(exc)})
+
+                # DI/Bollinger technical overlay. Shadow by default -> logs signals only; in
+                # enforcement it gates buys to DI/BB-entry names and adds DI/BB exit rows to
+                # the same funnel. Runs last so it sees the final rebalance/exits.
+                if self.config.scanner.di_bb_enabled:
+                    try:
+                        rebalance, dibb_exits = self._run_di_bb_overlay(rebalance, exits, equity)
+                        if dibb_exits is not None and not dibb_exits.empty:
+                            exits = pd.concat([exits, dibb_exits], ignore_index=True)
+                    except Exception as exc:  # noqa: BLE001 - overlay must never break the cycle
+                        print(f"[di-bb] overlay failed (non-fatal): {exc}")
+                        write_event("di_bb_overlay_error", {"error": str(exc)})
 
                 if not monitor_exits.empty:
                     exited_today = sorted(set(monitor_exits["symbol"].map(safe_symbol)))
@@ -6970,6 +7117,10 @@ def build_default_config() -> ExecutorConfig:
         # Buy-opportunity overlay. SHADOW unless BUY_OPPORTUNITY_ENFORCE=1 (explicit opt-in).
         buy_opportunity_enabled=os.getenv("BUY_OPPORTUNITY_ENABLED", "1").strip() != "0",
         buy_opportunity_shadow_mode=os.getenv("BUY_OPPORTUNITY_ENFORCE", "0").strip() != "1",
+        # DI/Bollinger technical overlay. SHADOW unless DI_BB_ENFORCE=1 (explicit opt-in).
+        di_bb_enabled=os.getenv("DI_BB_ENABLED", "1").strip() != "0",
+        di_bb_shadow_mode=os.getenv("DI_BB_ENFORCE", "0").strip() != "1",
+        di_bb_timeframe_min=int(os.getenv("DI_BB_TIMEFRAME", "5")),
         stop_loss_pct=-0.025,
         profit_lock_trigger_pct=0.04,
         profit_giveback_pct=0.015,
@@ -7071,6 +7222,8 @@ def print_startup_banner(config: "ExecutorConfig") -> None:
     exit_exec = "SHADOW" if getattr(sc, "profit_exit_shadow_mode", True) else "ENFORCE"
     buy_opp = "ENABLED" if getattr(sc, "buy_opportunity_enabled", False) else "DISABLED"
     buy_exec = "SHADOW" if getattr(sc, "buy_opportunity_shadow_mode", True) else "ENFORCE"
+    di_bb = "ENABLED" if getattr(sc, "di_bb_enabled", False) else "DISABLED"
+    di_bb_exec = "SHADOW" if getattr(sc, "di_bb_shadow_mode", True) else "ENFORCE"
     risk = "ACTIVE" if config.enable_kill_switch else "LIMITED"
     dash = "ACTIVE" if not config.enable_streaming_engine else "STREAMING"
     print("")
@@ -7083,6 +7236,8 @@ def print_startup_banner(config: "ExecutorConfig") -> None:
     print(f"Buy Execution:        {buy_exec}")
     print(f"Intelligent Exits:    {intel_exits}")
     print(f"Exit Execution:       {exit_exec}")
+    print(f"DI/BB Signals:        {di_bb} ({getattr(sc, 'di_bb_timeframe_min', 5)}m)")
+    print(f"DI/BB Execution:      {di_bb_exec}")
     print(f"Risk Controls:        {risk}")
     print(f"Dashboard:            {dash}")
     print("")
@@ -7092,6 +7247,7 @@ def print_startup_banner(config: "ExecutorConfig") -> None:
         "mode": mode, "scanner": scanner_on, "order_flow": order_flow,
         "buy_opportunity": buy_opp, "buy_execution": buy_exec,
         "intelligent_exits": intel_exits, "exit_execution": exit_exec,
+        "di_bb_signals": di_bb, "di_bb_execution": di_bb_exec,
         "risk_controls": risk, "dashboard": dash, "status": "MONITORING",
     })
 
