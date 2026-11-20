@@ -56,7 +56,7 @@ OUT_DIR = PROJECT_ROOT / "system-data" / f"{TODAY_TAG}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 INPUT_PATH = OUT_DIR / f"{TODAY_TAG}_daily_features.csv"
-MODEL_SCRIPT_PATH = PROJECT_ROOT / "model.py"
+MODEL_SCRIPT_PATH = PROJECT_ROOT / "features.py"
 
 MARKET_CONTEXT_PATH = OUT_DIR / f"{TODAY_TAG}_market_context.json"
 PREMARKET_TRADE_PLAN_PATH = OUT_DIR / f"{TODAY_TAG}_premarket_trade_plan.json"
@@ -182,11 +182,11 @@ def run_model_py_if_needed() -> None:
         print(output[-4000:])
 
     if proc.returncode != 0:
-        raise RuntimeError(f"model.py failed with code {proc.returncode}")
+        raise RuntimeError(f"features.py failed with code {proc.returncode}")
 
     if not INPUT_PATH.exists():
         raise FileNotFoundError(
-            f"{INPUT_PATH} still not found after running model.py."
+            f"{INPUT_PATH} still not found after running features.py."
         )
 
 

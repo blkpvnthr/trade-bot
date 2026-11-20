@@ -51,7 +51,7 @@ EXECUTION_LOG_DIR = PROJECT_ROOT / "execution_logs" / TODAY_TAG
 LLM_UNIVERSE_PATH = PROJECT_ROOT / f"{TODAY_TAG}_latest_llm_sentiment_universe.json"
 LOCKED_UNIVERSE_PATH = PROJECT_ROOT / f"{TODAY_TAG}_locked_trading_universe.txt"
 
-MARKET_CONTEXT_PATH = DAILY_OUTPUT_DIR / f"{TODAY_TAG}_market_context.json"
+MARKET_CONTEXT_PATH = OUT_DIR / f"{TODAY_TAG}_market_context.json"
 
 DAILY_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 EXECUTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -65,7 +65,7 @@ OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_MARKET_CONTEXT_TIMEOUT_SECONDS"
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MARKET_CONTEXT_MAX_RETRIES", "1"))
 MARKET_CONTEXT_DISABLE_OPENAI = os.getenv("MARKET_CONTEXT_DISABLE_OPENAI", "0").lower() in {"1", "true", "yes"}
 MARKET_CONTEXT_FAIL_OPENAI_CLOSED = os.getenv("MARKET_CONTEXT_FAIL_OPENAI_CLOSED", "0").lower() in {"1", "true", "yes"}
-SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
+from market_news import search_news
 ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower().strip()
 ALPACA_OPTIONS_MAX_CHAIN_CONTRACTS = int(os.getenv("ALPACA_OPTIONS_MAX_CHAIN_CONTRACTS", "800"))
 ALPACA_OPTIONS_MIN_DTE = int(os.getenv("ALPACA_OPTIONS_MIN_DTE", "7"))
@@ -563,60 +563,8 @@ def key_etf_risk_context() -> dict[str, Any]:
 # SerpApi Context
 # =============================================================================
 
-def serpapi_search(query: str, tbm: str | None = None) -> list[dict[str, Any]]:
-    if not SERPAPI_KEY:
-        return []
-
-    params = {
-        "api_key": SERPAPI_KEY,
-        "engine": "google",
-        "q": query,
-        "num": MAX_SEARCH_RESULTS,
-        "hl": "en",
-        "gl": "us",
-    }
-
-    if tbm:
-        params["tbm"] = tbm
-
-    try:
-        resp = requests.get("https://serpapi.com/search.json", params=params, timeout=25)
-        resp.raise_for_status()
-        data = resp.json()
-
-        results: list[dict[str, Any]] = []
-
-        for item in data.get("news_results", [])[:MAX_SEARCH_RESULTS]:
-            results.append(
-                {
-                    "title": item.get("title"),
-                    "source": item.get("source"),
-                    "date": item.get("date"),
-                    "snippet": item.get("snippet"),
-                    "link": item.get("link"),
-                    "query": query,
-                    "type": "news",
-                }
-            )
-
-        for item in data.get("organic_results", [])[:MAX_SEARCH_RESULTS]:
-            results.append(
-                {
-                    "title": item.get("title"),
-                    "source": item.get("source"),
-                    "date": item.get("date"),
-                    "snippet": item.get("snippet"),
-                    "link": item.get("link"),
-                    "query": query,
-                    "type": "organic",
-                }
-            )
-
-        return results[:MAX_SEARCH_RESULTS]
-
-    except Exception as exc:
-        print(f"[serpapi] failed query={query}: {exc}")
-        return []
+def rss_search(query: str, tbm: str | None = None) -> list[dict[str, Any]]:
+    return search_news(query, limit=MAX_SEARCH_RESULTS)
 
 
 def collect_serpapi_context() -> dict[str, Any]:
@@ -637,13 +585,13 @@ def collect_serpapi_context() -> dict[str, Any]:
     results = {}
 
     for key, query in queries.items():
-        results[key] = serpapi_search(query, tbm="nws" if key == "previous_day_market_news" else None)
+        results[key] = rss_search(query, tbm="nws" if key == "previous_day_market_news" else None)
 
     return {
         "date": date,
         "queries": queries,
         "results": results,
-        "source": "serpapi" if SERPAPI_KEY else "not_configured",
+        "source": "google_news_rss",
     }
 
 
@@ -921,7 +869,7 @@ def classify_with_openai(raw_context: dict[str, Any]) -> dict[str, Any]:
     prompt = f"""
 You are a strict market context classifier for an automated trading system.
 
-Analyze the supplied market data, futures, sector strength, key ETF risk signals, SerpApi search results, calendar context, and options put/call data.
+Analyze the supplied market data, futures, sector strength, key ETF risk signals, RSS news results, calendar context, and options put/call data.
 
 Return ONLY valid JSON.
 
@@ -1133,7 +1081,7 @@ def build_market_context() -> dict[str, Any]:
         "data_sources": {
             "alpaca": bool(get_alpaca_client()),
             "yfinance": True,
-            "serpapi": bool(SERPAPI_KEY),
+            "rss_news": True,
             "openai": bool(os.getenv("OPENAI_API_KEY")),
             "alpaca_options": bool(get_alpaca_option_client()),
         },

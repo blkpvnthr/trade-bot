@@ -57,3 +57,6 @@ vendor/
 tradingview-mcp/
 trader_rewrite/
 .claude/worktrees/
+
+# embedded external-research clone (separate git repo)
+rl_strategy_meta_agent/external_research/oqts/

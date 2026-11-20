@@ -80,10 +80,8 @@ def load_candidates() -> pd.DataFrame:
             df["symbol"] = df["symbol"].map(norm)
             return df.drop_duplicates("symbol").reset_index(drop=True)
 
-    raise FileNotFoundError(
-        "No candidate file found. Expected one of: "
-        f"{MODEL_PLAN_PATH}, {BREAKOUT_CANDIDATES_PATH}, {SCANNER_SCORES_PATH}"
-    )
+    print("[rebalancer] no candidate file; no new buys will be generated")
+    return pd.DataFrame(columns=["symbol"])
 
 
 def get_account_and_positions() -> tuple[object, pd.DataFrame]:
@@ -220,6 +218,11 @@ def main() -> None:
     print("===== PORTFOLIO REBALANCER =====")
 
     raw_candidates = load_candidates()
+    if raw_candidates.empty:
+        pd.DataFrame(columns=["symbol", "side", "delta_shares", "delta_dollars", "price", "reason"]).to_csv(REBALANCE_OUT, index=False)
+        # Do not overwrite exit orders: independent risk exits must remain available.
+        print("[rebalancer] no candidates; wrote empty buy plan, preserved existing exits")
+        return
     candidates = ensure_optimizer_columns(raw_candidates)
 
     account, positions = get_account_and_positions()
