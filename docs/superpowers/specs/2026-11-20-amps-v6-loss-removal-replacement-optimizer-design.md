@@ -1,393 +1,294 @@
 # AMPS V6 — Automatic Loss-Removal & Replacement Optimizer
 
 **Date:** 2026-11-20
-**Status:** Approved design (Phase 1 detailed; Phase 2 outlined)
-**Author:** QuantumQuant Trader + Claude
+**Status:** DESIGN — awaiting user review
+**Scope:** Integrate a continuous loss-removal + replacement optimizer into the **active** AMPS V6 live engine.
+
+---
+
+## 0. Decisions (from brainstorming)
+
+| # | Decision | Choice |
+|---|----------|--------|
+| 1 | Alpaca environment | **Both PAPER and LIVE in parallel**, with strict state isolation built from day one |
+| 2 | −0.5% protection | **Broker-native stop at Alpaca + continuous engine monitor backstop** (defense in depth) |
+| 3 | Seller-exhaustion depth | **Add L1-computable microstructure primitives** (microprice, absorption, bid-replenishment, volume-climax); iceberg/L2 marked UNAVAILABLE (IEX has no L2) |
+| 4 | Delivery | **Full spec in one integrated change** |
 
 ---
 
 ## 1. Objective
 
-Integrate an automatic loss-removal and replacement optimizer into the active AMPS V6
-trading engine.
-
-Continuously monitor every open position. When its **canonical Total P/L (%)** reaches or
-falls at/below **−0.5%**, close it deterministically, then search `universe.txt` for a
-superior replacement that demonstrates: confirmed seller exhaustion, positive momentum,
-DI+ > DI−, price above the Bollinger middle line, `ALPHA_CONFIRMED`, positive net
-expected return after costs, positive marginal contribution to portfolio Sharpe, and
-deterministic risk approval. If no candidate satisfies **every** requirement, hold cash —
-never force a replacement to remain invested.
-
-This document records the design decisions, the as-built codebase reality that reshapes the
-original spec, the detailed Phase 1 design, and the Phase 2 outline.
+Continuously monitor every open position. When its **canonical Total P/L (%)** reaches or falls below **−0.5%**, deterministically close it, then search `universe.txt` for a superior replacement that demonstrates **all** of: confirmed seller exhaustion; positive momentum; DI+ > DI−; price above the Bollinger middle line; `ALPHA_CONFIRMED`; positive expected return after costs; positive marginal contribution to portfolio Sharpe; and deterministic risk approval. If no candidate satisfies every requirement, **hold cash** — never force a replacement.
 
 ---
 
-## 2. Codebase reality (findings that reshape the spec)
+## 2. Reality vs. the written spec (what the codebase actually is)
 
-Six parallel exploration passes established the following ground truth.
+The written spec assumes richer infrastructure than exists on the **live** path. Confirmed by exploration:
 
-### 2.1 What already exists and is reusable
+1. **No canonical "Total P/L (%)" exists anywhere** (repo-wide grep = 0). The broker exposes only gross `unrealized_pl` / `unrealized_plpc` / `cost_basis`. There is **no lifecycle realized-P&L-across-reductions, no cost/slippage/financing** accounting. → We build a new **lifecycle ledger** and a single canonical calculation.
+2. **The `amps_v6/` full pipeline is dormant.** `trade.py`'s `ProductionOrderExecutor` (the live engine) only imports three V6 primitives: `instrument_registry`, `risk_gateway`, `decision_fusion` (via `_run_amps_v6_overlay`, `trade.py:7003`). `pipeline.py`, `position_manager.py`, `order_state_machine.py`, `exit_stack.py`, `allocator.py` exist but are **not** on the live path. We reuse the dormant pieces where sound, and wire them into the live path through trade.py's own funnels.
+3. **The active execution gateway is `AlpacaBroker` (`trade.py:2557`): market-order-only, long-only, no reduce-only, no bracket/stop, no reconciliation beyond fill polling.** → We extend it with stop orders, order query/reconciliation, and pending-order cancellation.
+4. **No PAPER/LIVE state isolation today** (`paper` from `APCA_PAPER`; per-day-tagged files; no namespaced locks/cursors/state). → All new state is **environment-namespaced**.
+5. **Reusable today:** `order_flow_engine` already computes `seller_exhaustion`, CVD divergence, executed/quote imbalance, spread, pressure (`OrderFlowSnapshot`). `trade.py` already has the completed-5m `di_bb_signal_for_frame`, `dmi_adx`, `bollinger_middle`. `universe.load_canonical_universe` / `UniverseScanRotation` / `classify_symbol().exposure_group`. `costs.py` (bps cost model), `metrics.sharpe_ratio`, `portfolio_optimizer.build_shrinkage_covariance` / `solve_covariance_aware_weights`.
 
-- **Deterministic-authority-vs-advisory split is foundational.** `amps_v6/__init__.py:8-10`
-  states agents analyze/recommend/veto only; only a deterministic execution gateway may
-  talk to the broker; protective exits run independently of any agent or LLM.
-- **Exit stack is a non-vetoable priority ladder.** `amps_v6/risk/exit_stack.py:56-93` is a
-  short-circuit ladder; the exit path (`amps_v6/pipeline.py:169-183 manage_position`) reads
-  **zero** agent output. Account-level dominating checks sit at the top (`:60-66`).
-- **Seller-exhaustion machinery mostly exists.** `order_flow_engine.py:319 norm_seller_exhaustion`
-  plus CVD / executed-imbalance / quote-imbalance / `cvd_divergence` snapshot fields, consumed
-  by `buy_opportunity_engine.py:187 count_buy_confirmations` (a 10-confirmation
-  seller-exhaustion→buy scorer) and `buy_opportunity_engine.py:119 buy_score`.
-- **Momentum + alpha gates exist.** `trade.py:3088 dmi_adx` (Wilder DI+/DI−/ADX on completed
-  bars), `trade.py:3158 bollinger_middle`, `trade.py:3173 di_bb_signal_for_frame` (last
-  completed candle). `ALPHA_CONFIRMED` is a well-defined enum returned by
-  `amps_v6/alpha/entry_alpha.py:149 decide()` (constant at `:24`, confirmed branch `:165`).
-- **Sharpe + cost primitives exist.** `metrics.py:54 sharpe_ratio` (corrected: daily excess
-  return mean / std × √periods). Per-bucket cost bps in `backtest_dmi_adx.py:39`
-  (majors 1.0 / equities 3.0 / lev-ETF 6.0 per side); generic model in `costs.py`.
-- **Order lifecycle primitives exist.** `amps_v6/execution/order_state_machine.py` has a full
-  `OrderState` enum (`:22-43`), legal `TRANSITIONS` (`:49-74`), `RECONCILIATION_REQUIRED`,
-  `create()` idempotency guard (`:100-102`), `resubmittable()` (`:133-137`),
-  `needs_reconciliation()` (`:130`).
-- **Canonical universe loader is fail-closed.** `universe.py:277 load_canonical_universe`
-  (raises on missing/empty, no fallback); `universe.py:637 UniverseScanRotation`
-  (deterministic 20/20/15 batching over the 55-symbol `universe.txt`).
-
-### 2.2 Gaps vs the spec (the real work)
-
-1. **The "active position manager" / "active execution gateway" named by the spec do not
-   exist as the spec imagines.** The clean `amps_v6` position manager / exit stack / order
-   state machine are **not wired into the live loop**. Live trading runs through
-   `trade.py:4978 ProductionOrderExecutor` using broker `unrealized_plpc`, with a
-   hand-rolled, **entry-only** V6 overlay (`trade.py:7003 _run_amps_v6_overlay`) that
-   bypasses `amps_v6/pipeline.py`.
-2. **No canonical Total P/L.** Three divergent per-position return formulas exist, none net
-   of costs, none accumulating lifecycle P/L:
-   - (A) `price/avg_entry − 1` — `amps_v6/execution/position_manager.py:46`, `exit_stack.py:70`.
-   - (B) broker `unrealized_plpc` passed through verbatim — `trade.py` (many sites).
-   - (C) `(current_price − avg_entry)/avg_entry` — `profit_exit_engine.py:331`.
-3. **No execution gateway.** The "gateway" referenced throughout is an empty slot. Submission
-   is market-orders-only (`alpaca_executor.py:912`), **client_order_id is non-idempotent**
-   (embeds a run timestamp — `alpaca_executor.py:706-710`, `trade.py:5677`), **no
-   pre-submission persistence**, **no reconciliation driver**, **no broker-native protective
-   orders** (no stop/bracket/OCO).
-4. **PAPER and LIVE state is shared.** All state/log files are keyed by date only, never by
-   mode (`alpaca_executor.py:76`; the `amps_v6_*.json` paths at fixed locations). A paper run
-   and a live run on the same day collide on kill-switch, order/position state, cursors, and
-   audit ids. The spec explicitly forbids this.
-5. **No marginal / delta-Sharpe optimizer.** `portfolio_optimizer.py` is score-weighting;
-   `amps_v6/strategy/allocator.py` is heuristic weight. Neither uses covariance or a
-   portfolio-Sharpe objective. A covariance-aware API is **specified by
-   `tests/test_portfolio_optimizer_covariance.py` but not implemented** — a clean extension
-   point for Phase 2.
-6. **No position state machine** (`HELD → EXIT_REQUIRED → …`). Only an order state machine
-   exists.
-7. **Batch rotation cursor is in-process-only** (`trade.py:3204`), resets on restart; only
-   the coverage report is persisted. `amps_v6/persistence/` is empty.
-8. **Missing microstructure primitives** for seller exhaustion: absorption, microprice,
-   bid-replenishment, volume-climax, spread *dynamics* (change over time), persistence across
-   windows. `failed_breakdown` exists in `trade.py:3141`, not in the order-flow engine.
-
-**Conclusion:** a substantial part of the spec is *building the canonical P/L and
-execution-gateway foundation* that the feature then sits on. That motivates the phasing below.
+### Live-path hook points (confirmed)
+- **Exits** → the `exits` funnel assembled in `run_cycle_from_files` (`trade.py:7204–7274`, alongside `monitor_active_positions` / `_run_profit_exit_overlay` / `_run_di_bb_overlay`), then `run_once_from_frames`. Exits take **no agent input** → structurally un-vetoable.
+- **Replacement buys** → the `rebalance` funnel (exactly how `_run_amps_v6_overlay` injects buys, `trade.py:7118–7150`), then the shared risk pipeline + `ALLOW_LIVE_TRADING` guard.
+- **Position source of truth** → `broker.get_all_open_positions()` → `BrokerPosition` (`trade.py:254`).
 
 ---
 
-## 3. Decisions
+## 3. Canonical Total P/L (%) — the foundation
 
-| # | Decision | Choice | Rationale |
-|---|----------|--------|-----------|
-| D1 | Integration architecture | **Fully wire the `amps_v6` pipeline into the live engine** (end state), replacing the hand-rolled overlay. Phase 1 wires the **exit path** (`manage_position`); Phase 2 completes the **entry path** (`evaluate_entry`) for replacement entries. | Most correct long-term; gives one canonical path for P/L, exits, and audit. User-selected. |
-| D2 | First deliverable | **Deterministic loss-removal spine** (canonical Total P/L + `TOTAL_PL_STOP` + execution gateway + paper/live isolation + audit + tests). Phase 2 = replacement optimizer. | Pure risk-control half; independently valuable and safe; matches the spec's "exits before replacement" priority. User-selected. |
-| D3 | Operating posture | **Paper endpoint; everything armed.** Phase 1: the −0.5% stop **submits real reduce-only exits** in paper. Phase 2: the replacement optimizer **submits buys** in paper. Going LIVE requires explicit flags. | User-selected. Arming in *paper* is consistent with CLAUDE.md falsification-first — it generates forward paper-trading evidence required before any live arming of the (unvalidated) replacement edge. |
-
-### Research-integrity notes (binding)
-
-- The −0.5% stop is a **pure risk control**, not an alpha claim; arming it is unconditionally sound.
-- The replacement premise (seller exhaustion + momentum → better net Sharpe) is an
-  **unvalidated edge**. Per CLAUDE.md and the spec's own caution, we will **not** claim seller
-  exhaustion guarantees a reversal or that forced replacement improves Sharpe without
-  net-of-cost out-of-sample and operational evidence. Phase 2 ships armed **in paper only**;
-  live arming of replacement is a separate, evidence-gated decision.
-
----
-
-## 4. Phase 1 — Detailed design
-
-### 4.1 Canonical Total P/L (one calculation, used everywhere)
-
-New module **`amps_v6/execution/canonical_pl.py`**.
+### 3.1 Formula (single definition, used everywhere)
 
 ```
 position_total_pl =
-      realized_pnl_for_position_lifecycle
-    + current_unrealized_pnl
-    − entry_costs
-    − realized_exit_costs
-    − estimated_remaining_exit_costs
-    − realized_slippage
-    − applicable_financing_costs
+      realized_pnl_gross_for_lifecycle          # Σ over reductions (exit_px − avg_entry_at_reduction)·qty
+    + current_unrealized_pnl_gross              # (valid_mark − avg_entry)·remaining_qty
+    − entry_costs                               # Σ entry-side commissions + regulatory fees
+    − realized_exit_costs                       # Σ exit-side commissions + fees realized so far
+    − estimated_remaining_exit_costs            # cost-model estimate to liquidate remaining_qty
+    − realized_slippage                         # Σ |fill_px − reference_px|·qty (entry + exit)
+    − applicable_financing_costs                # borrow/overnight financing (0 default for long cash)
 
 total_pl_pct = position_total_pl / original_position_lifecycle_cost_basis
 ```
 
-- **Denominator = original lifecycle cost basis** = Σ(entry notional) + entry costs across the
-  whole lifecycle (initial open + additions). It is **monotonic — never reset on partial
-  reductions**, so earlier losses cannot be hidden.
-- **Validity-gated:** the calculation returns a typed `TotalPL` result whose state is one of
-  `VALID | UNAVAILABLE | UNKNOWN`. It returns **a number only when the quote is valid**;
-  stale / crossed / future-dated / malformed quotes yield `UNAVAILABLE`/`UNKNOWN` and
-  **cannot fabricate a trigger**. It uses the **current valid bid** for the liquidation
-  estimate and records quote age.
-- **Quote guard** (`amps_v6/execution/quote_guard.py` or inline): validates `bid > 0`,
-  `ask ≥ bid`, `age ≤ max_quote_age_s`, timestamp not in the future →
-  `VALID | STALE | CROSSED | FUTURE | MALFORMED`.
-- **Reconciliation inputs:** broker quantity, broker average entry price, internal fill
-  ledger, realized-P&L ledger, current executable quote, pending orders. Broker is source of
-  truth for qty/avg; the internal ledger owns costs/slippage/financing.
-- **Single source of truth:** the exit stack, `terminal_dashboard.py`, the position manager,
-  the risk engine, the audit trail, and (Phase 2) the optimizer all call this function. The
-  three divergent formulas are replaced at their decision/display points.
+- `original_position_lifecycle_cost_basis` = **Σ of all buy-fill notionals over the lifecycle** (opening + adds). It is **fixed at the cumulative capital deployed and never reduced by partial sells** — this is what prevents a partial reduction from hiding earlier losses.
+- Lifecycle begins at the **initial opening fill** and includes additions, partial fills, partial reductions, commissions, slippage, current unrealized P&L, realized P&L, and pending quantity.
+- Costs: use `costs.TransactionCostConfig` (default `BASELINE_COSTS`: spread 10 / slippage 5 / commission 1 / impact 10 bps) for `estimated_remaining_exit_costs` and expectancy; realized costs/slippage come from fills.
 
-**Interface (sketch):**
+### 3.2 Canonical module: `amps_v6/state/lifecycle_ledger.py`
 
-```python
-@dataclass
-class TotalPL:
-    state: str                 # "VALID" | "UNAVAILABLE" | "UNKNOWN"
-    position_total_pl: float    # dollars
-    total_pl_pct: float | None  # None unless state == VALID
-    realized_pnl: float
-    unrealized_pnl: float
-    entry_costs: float
-    realized_exit_costs: float
-    estimated_remaining_exit_costs: float
-    realized_slippage: float
-    financing_costs: float
-    cost_basis: float
-    bid: float | None
-    quote_age_s: float | None
-    reason: str
+- `@dataclass FillEvent` — `ts, symbol, side, qty, price, reference_price, commission, fees, client_order_id`.
+- `@dataclass PositionLifecycle` — accumulates fills; derives `qty`, `avg_entry`, `realized_pnl_gross`, `entry_costs`, `realized_exit_costs`, `realized_slippage`, `original_cost_basis`, `pending_qty`, `financing_accrued`. Methods: `apply_fill(FillEvent)`, `apply_financing(amount)`.
+- `@dataclass CanonicalPnL` — the canonical snapshot: `symbol, position_total_pl, total_pl_pct, realized_pnl, unrealized_pnl, costs_breakdown, cost_basis, qty, avg_entry, mark, quote_age_s, valid: bool, status: "OK"|"UNKNOWN"|"STALE"|"CROSSED"|"MALFORMED"`.
+- `compute_canonical_pnl(lifecycle, quote, cost_cfg, now, max_quote_age_s) -> CanonicalPnL` — **pure**, the one place the formula lives.
+- `LifecycleLedger` — manages `{symbol: PositionLifecycle}`; `reconcile(broker_position, executable_quote, pending_orders)`; env-namespaced persistence (`save`/`load`).
 
-def compute_total_pl(position, quote, cost_model, financing_fn, *, now, max_quote_age_s) -> TotalPL: ...
+### 3.3 Validation — what may NOT trigger the rule
+
+The −0.5% rule triggers **only** on a valid canonical computation. The quote is rejected (→ `status != OK`, `valid=False`) when it is **stale** (`age > max_quote_age_s`), **crossed** (`bid ≥ ask`), **future-dated** (`ts > now + skew`), or **malformed** (NaN / ≤0 / missing). Explicitly forbidden trigger sources: previous-close return, daily account return, raw last-trade price, portfolio-wide P&L, gross-unrealized-excluding-costs, an agent's estimated P&L, stale/crossed/future/malformed quotes.
+
+When `valid=False`: the rule **does not fire** (no fabricated trigger) and **existing protection is preserved** (broker-native stop stays in place). Satisfies test #6.
+
+### 3.4 Reconciliation
+
+Reconcile against **broker qty, broker avg entry, internal fill ledger, realized-P&L ledger, current executable quote, pending orders**. Broker qty/avg is adopted as truth on divergence; the discrepancy is flagged and the ledger corrected. Pending exit/increase orders adjust effective exposure.
+
+---
+
+## 4. Deterministic exit authority (−0.5%)
+
+### 4.1 Trigger
+
+`total_pl_pct <= -0.005` (canonical, valid). `−0.49%` no-trigger; `−0.50%` triggers; `−0.51%` triggers. The threshold is **fixed and may not be widened, ignored, or vetoed by any analytical agent.**
+
+### 4.2 Exit-stack extension (`amps_v6/risk/exit_stack.py`)
+
+- `ExitConfig`: add `total_pl_exit_threshold: float = -0.005`.
+- `ExitContext`: add `total_pl_pct: float = 0.0`, `total_pl_valid: bool = False`.
+- `evaluate(...)`: add `TOTAL_PL_STOP_BREACHED` at **priority 85** — above per-position `HARD_STOP` (80), below account-level `DAILY_LOSS_SHUTDOWN`(90)/`DRAWDOWN_SHUTDOWN`(95)/`EMERGENCY_LIQUIDATION`(100). Fires iff `total_pl_valid and total_pl_pct <= total_pl_exit_threshold`.
+
+Because the exit stack takes no agent input (proven invariant), this is **structurally un-vetoable** by Market-Regime / Trend / Breakout / Defensive-Inverse / Order-Book / Entry-Alpha agents, the portfolio optimizer, the RL policy, or any LLM. Other deterministic rules (HARD_STOP, ATR_STOP, account-level) may still close a position **earlier**.
+
+### 4.3 Exit event
+
+On breach emit `TOTAL_PL_STOP_BREACHED` carrying: symbol, position ID, quantity, average entry price, lifecycle cost basis, realized P&L, unrealized P&L, costs, Total P/L, Total P/L (%), threshold, current valid bid, estimated liquidation price, quote age, regime, timestamp, brokerage environment. Recorded via `decision_trace` + the structured `[position-exit]` log (§12).
+
+---
+
+## 5. Exit execution
+
+Sequence after a breach (orchestrated by `ReplacementStateMachine` + extended `AlpacaBroker`):
+
+1. Set position state `EXIT_REQUIRED`.
+2. Block additional exposure to the symbol (suppress new buys/increases).
+3. Cancel pending entry/increase orders for the symbol (`AlpacaBroker.cancel_open_orders` filtered to buys).
+4. Preserve or safely replace protective orders (keep the broker-native stop until the market exit confirms; cancel-and-replace only atomically).
+5. Create a **reduce-only** exit intent (`OrderIntent.reduce_only=True`, new field).
+6. Route through the execution gateway (never bypass it).
+7. Persist the intent **before** broker submission.
+8. Unique **idempotent** `client_order_id`.
+9. Reconcile broker acknowledgment.
+10. Process partial fills until flat.
+11. Treat timeouts as **UNKNOWN**, not failed (reuse `OrderState.RECONCILIATION_REQUIRED`).
+12. Query broker state before any retry (`resubmittable()` guard — only from `RISK_APPROVED`).
+13. Record final realized Total P/L and execution costs (fills → ledger).
+
+A gap/fast market can realize a loss worse than −0.5%; **record both the trigger value and the realized value** (`[position-exit] trigger_total_pl_pct=… realized_total_pl_pct=… slippage_bps=…`).
+
+---
+
+## 6. Broker-native protection (decision #2)
+
+After every entry fill:
+
+1. Reconcile filled qty + average price (ledger).
+2. Compute the −0.5% protection level from canonical cost basis.
+3. **Create a broker-native stop/stop-limit SELL at Alpaca** when the order+execution policy supports it (new `AlpacaBroker.submit_stop_order`), reduce-only in effect (sell ≤ held qty).
+4. Adjust protection after partial fills or reductions (cancel/replace the stop to track qty and the −0.5% level).
+5. **Confirm the protective order exists at the broker** (`AlpacaBroker.get_order` / open-orders query) — `Position.protective_order_state` ∈ `NONE|PENDING|ACTIVE|MISSING`.
+6. **Never declare protected on local state alone** — only after broker confirmation (`ACTIVE`).
+7. The continuous engine monitor (§4) is a **redundant backstop**: if the broker stop is `MISSING` or the −0.5% canonical trigger fires first, the engine emits the reduce-only market exit.
+
+The `PROTECTION_VERIFIED` terminal state requires a broker-confirmed protective order on the replacement.
+
+---
+
+## 7. Replacement timing & state machine
+
+Do **not** evaluate or submit a replacement until: the exit fill is broker-confirmed; exited qty is zero; unresolved exit orders are reconciled; actual proceeds are known; buying power is refreshed; canonical portfolio state is consistent.
+
+### `amps_v6/execution/replacement_state_machine.py`
+
+States: `HELD → EXIT_REQUIRED → EXIT_SUBMITTED → EXIT_PARTIALLY_FILLED → EXIT_FILLED → REPLACEMENT_EVALUATION → (REPLACEMENT_APPROVED | CASH_HELD) → REPLACEMENT_SUBMITTED → REPLACEMENT_PARTIALLY_FILLED → REPLACEMENT_FILLED → PROTECTION_VERIFIED`.
+
+- Env-namespaced JSON persistence; **restart restores unresolved state** (test #28).
+- Per-symbol idempotent `client_order_id`s for exit and replacement legs (test #27).
+- Order-level lifecycle delegated to the existing `amps_v6 OrderStateMachine` (idempotency, partial fills, RECONCILIATION_REQUIRED).
+
+---
+
+## 8. Replacement universe & eligibility
+
+### 8.1 Pool
+
+Built **only** from `universe.txt` via `universe.load_canonical_universe()`. **No** S&P/Nasdaq constituents, **no** `bullish_*.csv`, **no** hard-coded fallback, **no** symbols outside `universe.txt`.
+
+**Exclude:** the exited symbol during cooldown; stale/missing data; nontradable; broker-restricted; regime-incompatible; expired signals; unacceptable spreads; insufficient liquidity; concentration-limit names; prohibited leveraged/inverse overlap (`classify_symbol().exposure_group`); non-`ALPHA_CONFIRMED`; nonpositive net expectancy.
+
+### 8.2 The 19-point eligibility gate (all must be true)
+
+1. In `universe.txt`. 2. Not under cooldown. 3. Current/valid data. 4. Seller-exhaustion score passes. 5. Seller-exhaustion persistence passes. 6. Required independent confirmations pass. 7. DI+ > DI−. 8. Price > Bollinger middle. 9. Completed-bar positive momentum. 10. Entry Alpha = `ALPHA_CONFIRMED`. 11. Expected net return > 0 after costs. 12. Marginal portfolio-Sharpe improvement > minimum. 13. Regime permits exposure. 14. Liquidity/spread pass. 15. Concentration/covariance pass. 16. Effective leveraged/inverse exposure valid. 17. Deterministic risk approves. 18. Brokerage account permits. 19. Signal still valid at submission.
+
+Reuses `decision_fusion.fuse()` (conjunction, with `positive_expected_net_return` + `acceptable_execution_cost` + inverse/swing gate blocks) and `risk_gateway.evaluate()` for the deterministic gates.
+
+---
+
+## 9. Seller-exhaustion scorer (decision #3)
+
+### `amps_v6/alpha/seller_exhaustion.py`
+
+Consumes a **window series** of `OrderFlowSnapshot`s (persistence) plus new L1 primitives. Evidence categories (independent): price absorption, failed lower low, executed-flow improvement, declining sell intensity, order-flow reversal, CVD divergence, bid replenishment, spread stabilization, microprice improvement, volume climax, failed breakdown. Iceberg/L2-stacked → **UNAVAILABLE** (no L2 on IEX).
+
+- Normalized score **0..1** from available **independent** categories.
+- Require: `AMPS_SELLER_EXHAUSTION_MIN_SCORE`, `AMPS_SELLER_EXHAUSTION_MIN_CONFIRMATIONS` independent confirmations, `AMPS_SELLER_EXHAUSTION_PERSISTENCE_WINDOWS` persistence, current/valid data.
+- **Return `UNAVAILABLE`** when required microstructure data is missing/stale (snapshot `status ∈ {INSUFFICIENT_DATA, STALE}`). Never fabricate a neutral/positive state.
+- Do **not** confirm from one print / one quote / one transient imbalance / an unfinished bar / missing order-flow / stale data (tests #16, #17).
+
+### `order_flow_engine.py` additions (L1-computable)
+
+Pure functions + snapshot fields: `microprice(bid, ask, bid_size, ask_size)`, `absorption_score(...)` (aggressive sell volume vs realized downside), `bid_replenishment_score(...)` (bid-size recovery after sell executions), `volume_climax_score(...)` (sell-vol spike then decline near support). Keep IEX caveat; mark L2-only categories unavailable.
+
+---
+
+## 10. Positive-momentum gate
+
+### `amps_v6/strategy/momentum_gate.py`
+
+**Mandatory (completed bars only):** (1) DI+ > DI− on completed 5m; (2) price > completed-5m Bollinger middle; (3) latest completed momentum bar closes above the previous completed bar. Reuses `trade.di_bb_signal_for_frame` / `dmi_adx` / `bollinger_middle`.
+
+**Additional confirmation** — configurable subset (min count) of: ROC>0; MACD hist positive/rising; RSI rising; price>VWAP; VWAP slope>0; SMA5>SMA20; positive 1m return; positive 5m return; positive relative strength; volume confirmation; reclaimed support; reclaimed opening-range level.
+
+**Timeframes:** 1–60 s order flow/absorption/CVD/spread/microprice; 1 m exhaustion timing + initial reversal; **5 m required DI+/DI− + BB-middle**; 15 m higher-TF confirmation + contradiction detection. Record timeframe disagreement → reduce confidence.
+
+Seller exhaustion alone does **not** qualify (test #11); positive momentum alone does **not** qualify (test #12).
+
+---
+
+## 11. Portfolio optimizer (marginal Sharpe) & sizing
+
+### `amps_v6/portfolio/marginal_sharpe.py`
+
+For every qualifying candidate `j`:
+
+```
+replacement_delta_sharpe[j] =
+    expected_sharpe(portfolio_after_candidate_j) − expected_sharpe(portfolio_after_exit_to_cash)
 ```
 
-### 4.2 Lifecycle cost ledger on positions
+Inputs: expected return; forecast uncertainty; covariance with holdings; portfolio volatility; realized loss from the stopped position; entry+exit costs; spread; slippage; market impact; turnover; concentration; sector/factor overlap; effective ETF leverage; regime; remaining session time; overnight eligibility; remaining risk budget; buying power. Reuses `portfolio_optimizer.build_shrinkage_covariance`, `metrics.sharpe_ratio`, `costs`.
 
-Extend **`amps_v6/execution/position_manager.py`** `Position` + `apply_fill`:
+**Rank by `delta_sharpe`.** Do **not** rank solely by seller-exhaustion score, momentum score, % change, volume, model confidence, standalone Sharpe, or raw expected return (tests #19, #20).
 
-- New fields: `entry_costs`, `realized_exit_costs`, `realized_slippage`, `financing_costs`,
-  `lifecycle_cost_basis` (monotonic).
-- `apply_fill` accrues entry costs on buys, exit costs + realized slippage on sells, and
-  financing via a pluggable `financing_fn` (0 for cash/non-margin; accrued for
-  leveraged/overnight per policy).
-- Cost model: `costs.py` + the per-bucket bps (equity 3 / lev-ETF 6 / majors 1), bucketed via
-  `backtest_dmi_adx.py:42 bucket_of` / `universe.py classify_symbol`.
-- Implement the declared-but-unused `pending_qty`.
+**Cash is valid** (test #21): if no candidate passes every gate → hold proceeds as cash, emit `NO_QUALIFYING_REPLACEMENT`, continue the 55-symbol scan, reconsider later. Never force a replacement.
 
-### 4.3 `TOTAL_PL_STOP_BREACHED` exit authority
+**Sizing:** optimizer proposes a target weight from marginal Sharpe / volatility / covariance / liquidity / current exposure / concentration / effective leverage / remaining loss budget / buying power / costs — **not** auto-invest all proceeds. Deterministic risk may reduce or reject the weight.
 
-Extend **`amps_v6/risk/exit_stack.py`**:
+### Multiple simultaneous stop-outs
 
-- `ExitConfig.total_pl_stop_pct: float = -0.005` (new field).
-- `ExitContext.total_pl_pct: float | None` + `ExitContext.total_pl_valid: bool` (new fields).
-- New rule at the **top of the ladder** (priority ~97: above `DRAWDOWN_SHUTDOWN` 95 and
-  `DAILY_LOSS_SHUTDOWN` 90, below `EMERGENCY_LIQUIDATION` 100):
-
-  ```python
-  if ctx.total_pl_valid and ctx.total_pl_pct is not None and ctx.total_pl_pct <= cfg.total_pl_stop_pct:
-      return ExitDecision("EXIT", "TOTAL_PL_STOP_BREACHED", 97)
-  ```
-
-- Comparison is `<=`: −0.49% does **not** trigger; exactly −0.50% triggers; −0.51% triggers.
-- **Fail-closed:** invalid data never triggers (and never suppresses an otherwise-valid
-  trigger). The threshold may not be widened, ignored, or vetoed.
-- **Non-vetoable by construction:** `manage_position`/`exit_stack.evaluate` take no agent
-  input. Agents may annotate the trace; they cannot prevent the exit.
-
-### 4.4 Execution gateway (new)
-
-New module **`amps_v6/execution/execution_gateway.py`** — the only component that
-submits/cancels/replaces orders for this subsystem.
-
-- **Deterministic idempotent `client_order_id`** = stable hash of
-  `symbol + side + qty + position/intent id + session date + mode` (no timestamp).
-  `OrderStateMachine.create()` refuses duplicates for the same cid.
-- **Write-ahead persistence:** persist the intent + `OrderRecord` **before** broker submit,
-  under a mode-namespaced path.
-- **Reduce-only exit routing:** the deterministic risk gateway rejects non-buy sides, so
-  exits route through this gateway. Reuses `AlpacaBroker.submit_order` (`trade.py:2708`) with
-  its long-only / available-qty guard; marks the order reduce-only / sell.
-- **State-machine drive:** advance on ack / partial / fill. **Timeouts → `RECONCILIATION_REQUIRED`
-  (UNKNOWN, not failed).** A reconciliation driver resolves `needs_reconciliation()` by
-  querying broker state **before any retry**. Processes partial fills until the position is
-  flat. Records final realized Total P/L + execution costs (trigger value *and* realized value
-  — a gap/fast market may realize worse than −0.5%).
-- **Broker-native protection:** after an entry fill, reconcile filled qty/avg, compute the
-  −0.5% protection level, and **create or verify a broker-native stop when the order type &
-  execution policy support it**; confirm it exists at the broker; adjust after partial fills /
-  reductions; **never declare a position protected from local state alone.** Where native
-  protection is unsupported, the engine-monitored canonical-P/L stop is the documented
-  backstop.
-  *(Phase 1 scope note: the new subsystem does not open positions until Phase 2, so in Phase 1
-  the protection logic attaches to positions opened by the existing engine paths — the scanner
-  and the hand-rolled entry overlay. The subsystem monitors **every** open position regardless
-  of origin.)*
-
-### 4.5 Position state machine (exit half)
-
-New `PositionState` enum (Phase 1 subset):
-`HELD → EXIT_REQUIRED → EXIT_SUBMITTED → EXIT_PARTIALLY_FILLED → EXIT_FILLED`.
-(Replacement states `REPLACEMENT_EVALUATION → REPLACEMENT_APPROVED | CASH_HELD →
-REPLACEMENT_SUBMITTED → REPLACEMENT_PARTIALLY_FILLED → REPLACEMENT_FILLED → PROTECTION_VERIFIED`
-added in Phase 2.)
-
-On a threshold breach: set `EXIT_REQUIRED`; **block additional exposure** to the symbol;
-**cancel pending entry/increase orders** for it; preserve or safely replace protective orders;
-create a reduce-only exit intent; route it through the gateway.
-
-### 4.6 Paper/live isolation
-
-New **`amps_v6/configuration/runtime_env.py`**:
-
-- One source of truth for mode (`paper | live`), resolving today's ambiguity (`APCA_PAPER`,
-  `ALLOW_LIVE_TRADING`, `TradingClient(paper=…)`, `.env` base-url) into a single resolved
-  value with an explicit precedence rule.
-- **Mode-namespaced paths** for all new state/locks/cursors/audit (e.g.
-  `logs/execution/<paper|live>/…`).
-- **Per-mode executor lock** so paper and live never share executor locks, position/order
-  state, reconciliation files, runtime cursors, or audit ids.
-- Legacy date-keyed files are left untouched to limit blast radius; the new subsystem is
-  isolated.
-
-### 4.7 Live-loop wiring (full pipeline — exit path)
-
-Wire **`amps_v6/pipeline.manage_position`** into `trade.py:7152 run_cycle_from_files()` in the
-exit-assembly window — after `exits = pd.concat([monitor_exits, scanner_exits])`
-(`trade.py:7214`) and before `run_once_from_frames(rebalance, exits)` (`trade.py:7300`).
-
-**Continuous-engine priority order** (events processed in this order):
-1. Broker events
-2. Reconciliation
-3. Existing protective orders
-4. Total P/L (%) ≤ −0.5% exits
-5. Other deterministic risk exits
-6. Position deterioration exits
-7. Replacement evaluation *(Phase 2)*
-8. New candidate entries
-9. Ordinary universe scanning
-
-A stop event may interrupt normal rotation; the scan resumes from the persisted batch cursor
-(cursor persistence added here so restart/interrupt resumes correctly).
-
-For each open position, the step reconciles canonical state, computes canonical Total P/L,
-runs the exit stack (now including `TOTAL_PL_STOP`), and routes any `EXIT` through the new
-gateway.
-
-### 4.8 Versioned configuration
-
-Centralized versioned AMPS settings (a dataclass with a `config_version` field + env binding
-following the `trade.py:7565` pattern). Phase 1 active settings:
-
-| Setting | Default | Phase |
-|---------|---------|-------|
-| `AMPS_TOTAL_PL_EXIT_THRESHOLD` | `-0.005` | 1 (active) |
-| `AMPS_STOP_ARMED` | `1` | 1 (active) |
-| `APCA_PAPER` | `1` | 1 (active) |
-| `ALLOW_LIVE_TRADING` | `0` | 1 (active) |
-| `AMPS_MAX_QUOTE_AGE_S` | `10` | 1 (active) |
-| `AMPS_EXITED_SYMBOL_COOLDOWN_SECONDS` | `900` | 1 (register on exit; consumed P2) |
-| `AMPS_SELLER_EXHAUSTION_MIN_SCORE` | `0.60` | 2 (declared, inert) |
-| `AMPS_SELLER_EXHAUSTION_MIN_CONFIRMATIONS` | `3` | 2 (declared, inert) |
-| `AMPS_SELLER_EXHAUSTION_PERSISTENCE_WINDOWS` | `3` | 2 (declared, inert) |
-| `AMPS_REPLACEMENT_MIN_SHARPE_IMPROVEMENT` | `0.02` | 2 (declared, inert) |
-| `AMPS_MAX_REPLACEMENTS_PER_CYCLE` | `2` | 2 (declared, inert) |
-| `AMPS_MAX_SYMBOL_REPLACEMENTS_PER_SESSION` | `2` | 2 (declared, inert) |
-| `AMPS_REPLACEMENT_ARMED` | `0` | 2 (declared, inert) |
-
-Proposed defaults for the "configurable" items are starting points to be tuned/falsified in
-Phase 2, not validated values.
-
-### 4.9 Audit & diagnostics
-
-Emit the spec's `[position-exit]` diagnostics on breach and on exit fill, including the full
-breach payload (symbol, position id, qty, avg entry, lifecycle cost basis, realized P&L,
-unrealized P&L, costs, Total P/L, Total P/L (%), threshold, current valid bid, estimated
-liquidation price, quote age, regime, timestamp, brokerage environment). Append to
-`amps_v6/monitoring/decision_trace.py` JSONL (mode-namespaced). Record both the **trigger**
-Total P/L (%) and the **realized** Total P/L (%) plus slippage bps. Every action leaves an
-audit record.
+Process every required exit → reconcile fills → refresh cash/BP → recompute exposure/covariance → evaluate the canonical universe **once** → one **joint** replacement optimization → prevent BP double-allocation (test #22) → respect turnover + replacement limits.
 
 ---
 
-## 5. Phase 1 test matrix (TDD)
+## 12. Anti-churn, continuous-engine priority, isolation, config, diagnostics
 
-Phase 1 implements these of the spec's 31 tests:
+### Anti-churn (`amps_v6/execution/anti_churn.py`)
+Exited-symbol cooldown; max replacements/cycle; max replacements/symbol/session; min marginal-Sharpe improvement; signal expiration; rebalance hysteresis; turnover budget; spread/slippage limits; no-chase boundaries. **Cooldowns may block reentry but never block a protective exit** (tests #23, #24). Env-namespaced persistence.
 
-| # | Test | Covered in P1 |
-|---|------|---------------|
-| 1 | −0.49% does not trigger | ✅ |
-| 2 | Exactly −0.50% triggers | ✅ |
-| 3 | −0.51% triggers | ✅ |
-| 4 | Entry and exit costs affect Total P/L | ✅ |
-| 5 | Partial reductions do not hide lifecycle losses | ✅ |
-| 6 | Stale valuation data cannot fabricate a trigger | ✅ |
-| 7 | Analytical agents cannot veto the exit | ✅ |
-| 8 | Pending increase orders cancelled before exit | ✅ |
-| 9 | Partial fills remain unresolved until flat | ✅ |
-| 24 | Cooldown never blocks an exit | ✅ |
-| 27 | Idempotency prevents duplicate exit orders | ✅ |
-| 28 | Restart restores unresolved (exit) state | ✅ |
-| 30 | PAPER and LIVE state remain isolated | ✅ |
-| 31 | Every action has a complete audit trail | ✅ |
-| — | Broker-native protection created/verified/adjusted | ✅ (added) |
-| 10 | Replacement waits for confirmed exit proceeds | exit-side half in P1; full in P2 |
-| 11–23, 25–26, 29 | Replacement-specific | Phase 2 |
+### Continuous-engine priority (into `trade.py` `run_cycle_from_files`)
+1. Broker events → 2. Reconciliation → 3. Existing protective orders → 4. Total P/L ≤ −0.5% exits → 5. Other deterministic risk exits → 6. Position-deterioration exits → 7. Replacement evaluation → 8. New candidate entries → 9. Ordinary universe scanning. A stop event may interrupt rotation; **resume from the persisted batch cursor** afterward (persist `UniverseScanRotation`, test #29).
 
----
+### PAPER/LIVE isolation (decision #1)
+PAPER and LIVE must **not** share executor locks, position state, order state, reconciliation files, runtime cursors, or audit identifiers. Every new state/ledger/cursor/audit path is suffixed by environment (`…_paper` / `…_live`), derived from the resolved endpoint+credentials. Credential-routed execution: live endpoint+creds → live orders; paper endpoint+creds → paper orders (test #30). Also fix `portfolio_rebalancer.py`'s hardcoded `paper=True` to route from the endpoint.
 
-## 6. Phase 2 — outline (not implemented now)
+### Config (`amps_v6/configuration/replacement_config.py`)
+Versioned dataclass `ReplacementConfig` (with `config_version`), env-overridable via the ALL-CAPS names, defaults:
 
-- **Seller-exhaustion** new primitives (absorption, microprice, bid-replenishment,
-  volume-climax, spread dynamics) + normalized 0–1 score + min-score / min-confirmations /
-  persistence-across-windows gating; `UNAVAILABLE` when microstructure data is missing (never
-  a fabricated neutral/positive state).
-- **Positive-momentum gate:** DI+ > DI−, price above BB middle, completed-bar momentum close
-  above the previous completed bar, plus a configurable confirmation subset — reusing
-  `trade.py dmi_adx` / `bollinger_middle` / `di_bb_signal_for_frame` / `mtf_gate` /
-  `buy_opportunity_engine`.
-- **`ALPHA_CONFIRMED`** mandatory gate via `amps_v6/alpha/entry_alpha.decide()`.
-- **Marginal-Sharpe optimizer:**
-  `replacement_delta_sharpe[j] = sharpe(portfolio_after_candidate_j) − sharpe(portfolio_after_exit_to_cash)`
-  using `metrics.sharpe_ratio` + the covariance-aware API sketched in
-  `tests/test_portfolio_optimizer_covariance.py`. Rank by marginal Sharpe, not by raw
-  score/momentum/%/volume/confidence/standalone Sharpe.
-- **Replacement state machine**, anti-churn (cooldown, per-cycle & per-session caps, min
-  marginal-Sharpe improvement, signal expiration, hysteresis, turnover budget, spread/slippage
-  limits, no-chase).
-- **Joint multi-stop-out optimization** (one joint replacement pass; no buying-power
-  double-allocation).
-- **Cash is valid:** emit `NO_QUALIFYING_REPLACEMENT`, hold cash, continue the 55-symbol scan.
-- **Full `evaluate_entry` pipeline wiring** for replacement entries.
-- Tests 10–23, 25–26, 29.
+| Setting | Default |
+|---|---|
+| `AMPS_TOTAL_PL_EXIT_THRESHOLD` | `-0.005` (fixed) |
+| `AMPS_SELLER_EXHAUSTION_MIN_SCORE` | `0.60` |
+| `AMPS_SELLER_EXHAUSTION_MIN_CONFIRMATIONS` | `3` |
+| `AMPS_SELLER_EXHAUSTION_PERSISTENCE_WINDOWS` | `3` |
+| `AMPS_REPLACEMENT_MIN_SHARPE_IMPROVEMENT` | `0.05` |
+| `AMPS_EXITED_SYMBOL_COOLDOWN_SECONDS` | `1800` |
+| `AMPS_MAX_REPLACEMENTS_PER_CYCLE` | `2` |
+| `AMPS_MAX_SYMBOL_REPLACEMENTS_PER_SESSION` | `2` |
+| momentum min-confirmations | `2` |
+| cost model | `costs.BASELINE_COSTS` |
+
+### Diagnostics (exact formats)
+`[position-exit]` breach/fill lines; `[replacement]` approved/cash lines — per the spec's examples. Every action recorded via `decision_trace` + a structured audit log (test #31). **Final report** covers: positions ≤ −0.5%; trigger vs realized Total P/L; exit costs/slippage; seller-exhaustion candidates; momentum confirmations; DI+/DI− + Bollinger status; Entry-Alpha rejections; portfolio-Sharpe rejections; risk rejections; replacements executed; cash decisions; replacement turnover; projected vs realized Sharpe effect; unresolved exits/replacements; confirmation that all orders used the execution gateway.
 
 ---
 
-## 7. Scope guardrails (do not modify)
+## 13. Module inventory
 
-`.claude/worktrees/`, `trader_rewrite/`, `vendor/`, `tradingview-mcp/`, backup files
-(`*.bak`, `*.backup`, `trade.py.pre_killswitch.bak`, etc.), generated datasets, historical
-backtest outputs, and unrelated research programs. Preserve all existing staged, unstaged,
-and untracked work.
+**New**
+- `amps_v6/configuration/replacement_config.py`
+- `amps_v6/state/lifecycle_ledger.py` (canonical Total P/L)
+- `amps_v6/alpha/seller_exhaustion.py`
+- `amps_v6/strategy/momentum_gate.py`
+- `amps_v6/portfolio/marginal_sharpe.py`
+- `amps_v6/portfolio/replacement_optimizer.py` (orchestrator)
+- `amps_v6/execution/replacement_state_machine.py`
+- `amps_v6/execution/anti_churn.py`
+
+**Extended**
+- `amps_v6/risk/exit_stack.py` — `TOTAL_PL_STOP_BREACHED` + total-P/L context
+- `amps_v6/execution/order_intent.py` — `reduce_only`
+- `order_flow_engine.py` — microprice / absorption / bid-replenishment / volume-climax
+- `universe.py` — persist the rotation cursor (env-namespaced)
+- `portfolio_rebalancer.py` — endpoint-routed paper/live (remove hardcoded `paper=True`)
+- `trade.py` — `AlpacaBroker` stop orders + order query/reconcile + pending-buy cancel; `ProductionOrderExecutor` loss-removal/replacement step + priority ordering + ledger feeding + env-namespaced state
+
+**Untouched (hard constraint):** `.claude/worktrees/`, `trader_rewrite/`, `vendor/`, `tradingview-mcp/`, `*.bak`/`*.backup`, generated datasets, historical backtest outputs, unrelated research programs. Preserve all staged/unstaged/untracked work.
 
 ---
 
-## 8. Non-goals (Phase 1)
+## 14. Test plan (31 required) → `tests/test_amps_v6_loss_removal_replacement.py` (+ focused companions)
 
-- No replacement screening, optimizer, or buys (Phase 2).
-- No new alpha claims; the −0.5% stop is risk control only.
-- No change to the legacy date-keyed file layout (new subsystem is mode-namespaced
-  alongside it).
-- No live trading by default (`ALLOW_LIVE_TRADING=0`).
+Pure/offline (ledger, canonical P/L, exit stack, seller-exhaustion, momentum, marginal Sharpe, eligibility, state machine, anti-churn, isolation); broker interactions via fakes (as in existing `_Broker`/`_Scanner` tests).
+
+1 −0.49% no-trigger · 2 −0.50% triggers · 3 −0.51% triggers · 4 entry+exit costs affect Total P/L · 5 partial reductions don't hide lifecycle losses · 6 stale data can't fabricate a trigger · 7 agents can't veto the exit · 8 pending increase orders cancelled before exit · 9 partial fills unresolved until flat · 10 replacement waits for confirmed proceeds · 11 exhaustion w/o momentum rejected · 12 momentum w/o exhaustion rejected · 13 DI+ ≤ DI− rejected · 14 price ≤ BB middle rejected · 15 unfinished bars can't confirm momentum · 16 missing order-flow → UNAVAILABLE · 17 single transient imbalance can't confirm · 18 ALPHA_CONFIRMED mandatory · 19 Sharpe-reducing candidate rejected · 20 diversifier wins despite lower standalone return · 21 cash when none qualify · 22 multi-exit no BP double-spend · 23 cooldown blocks reentry · 24 cooldown never blocks exit · 25 leveraged/inverse exposure constrained · 26 broker restriction blocks replacement · 27 idempotency prevents duplicate orders · 28 restart restores unresolved replacement state · 29 rotation resumes after replacement · 30 PAPER/LIVE state isolated · 31 complete audit trail.
+
+---
+
+## 15. Non-claims (CLAUDE.md discipline)
+
+This design does **not** claim seller exhaustion guarantees a reversal, nor that forced replacement improves Sharpe. Any such claim requires net-of-cost, out-of-sample, and operational evidence. The −0.5% deterministic exit is a **risk control**, not an alpha claim; the replacement optimizer only acts on candidates that independently pass every falsification gate, and cash is always a valid outcome.
