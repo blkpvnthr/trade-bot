@@ -21,11 +21,16 @@ from market_scan.health import STATUS_DISABLED, STATUS_HEALTHY, DynamicUniverseR
 
 
 def _scanner_stub(paper=True):
+    # Mirror the REAL MomentumSetupScanner attribute layout: self.config is a
+    # ScannerConfig (NO `paper`); paper/live lives on self.executor_config
+    # (ExecutorConfig). A stub that puts `paper` on config would mask the bug
+    # where _dynamic_entry_universe mistakenly read self.config.paper.
     s = object.__new__(trade.MomentumSetupScanner)
     s.config = SimpleNamespace(
-        paper=paper, universe=None, use_llm_sentiment_universe=False,
+        universe=None, use_llm_sentiment_universe=False,
         use_sp500_fallback=False, broad_market_scan=False, max_universe_symbols=500,
     )
+    s.executor_config = SimpleNamespace(paper=paper)
     s.llm_metadata_by_symbol = {}
     return s
 
@@ -140,6 +145,26 @@ def test_loss_removal_can_be_disabled_by_env(monkeypatch):
     e = _exec_with_positions([_pos("A", -0.02)])
     out = e._augment_exit_orders_with_loss_removal(pd.DataFrame())
     assert out.empty
+
+
+def test_loss_removal_fully_exits_fractional_position(monkeypatch):
+    # Regression: int() truncation would skip a sub-1-share loser entirely.
+    monkeypatch.setattr(trade, "mark_no_reentry_symbol", lambda *a, **k: None)
+    monkeypatch.setattr(trade, "write_event", lambda *a, **k: None)
+    e = _exec_with_positions([_pos("A", -0.02, qty=0.7)])
+    out = e._augment_exit_orders_with_loss_removal(pd.DataFrame())
+    assert set(out["symbol"]) == {"A"}                       # NOT skipped
+    assert abs(float(out.iloc[0]["delta_shares"]) - 0.7) < 1e-9  # FULL fractional qty
+
+
+def test_loss_removal_positive_threshold_typo_does_not_liquidate(monkeypatch):
+    # Regression: a positive MARKET_SCAN_LOSS_THRESHOLD must NOT liquidate winners.
+    monkeypatch.setenv("MARKET_SCAN_LOSS_THRESHOLD", "0.5")
+    monkeypatch.setattr(trade, "mark_no_reentry_symbol", lambda *a, **k: None)
+    monkeypatch.setattr(trade, "write_event", lambda *a, **k: None)
+    e = _exec_with_positions([_pos("WIN", 0.03), _pos("SMALL", -0.002), _pos("REAL", -0.02)])
+    out = e._augment_exit_orders_with_loss_removal(pd.DataFrame())
+    assert set(out["symbol"]) == {"REAL"}       # only the true -0.5%+ loser
 
 
 def test_loss_removal_independent_of_scanner_health(monkeypatch):

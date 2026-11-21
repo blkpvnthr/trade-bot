@@ -734,6 +734,20 @@ class OrderFlowEngine:
             self._symbols[s] = SymbolOrderFlow(s, self.cfg)
         return self._symbols[s]
 
+    def prune(self, keep: Iterable[str]) -> int:
+        """Evict per-symbol accumulators for symbols not in ``keep``.
+
+        A long-running stream rotates thousands of distinct symbols through a
+        single engine; without eviction ``_symbols`` grows unbounded. Callers
+        pass the currently-relevant set (subscribed ∪ positions ∪ references).
+        Returns the number of symbols evicted.
+        """
+        keep_set = {str(s).upper() for s in keep}
+        drop = [s for s in self._symbols if s not in keep_set]
+        for s in drop:
+            del self._symbols[s]
+        return len(drop)
+
     # ---- direct ingestion (for stream handlers or tests) ----
     def ingest_trade(self, symbol: str, ts: float, price: float, size: float, trade_id: Any = None) -> None:
         self._sym(symbol).on_trade(ts, price, size, trade_id)

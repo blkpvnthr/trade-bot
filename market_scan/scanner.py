@@ -95,6 +95,14 @@ class MarketScanner:
         self._connected = False
         self._errors: list[str] = []
         self._hist_client: Any = None
+        # Cached daily ADV/ADDV/price, refreshed on the discovery cadence (NOT
+        # per rank tick) so the ~3s rank loop never makes a blocking REST call.
+        self._daily_stats: dict[str, dict] = {}
+        # Accumulated per-symbol scores (symbol -> (score, eligible, ts)) so the
+        # PUBLISHED entry universe is the stable top-N across rotation, decoupled
+        # from the rotating subscription window that only covers part of the
+        # discovered universe each tick.
+        self._scored: dict[str, tuple] = {}
 
     # ------------------------------------------------------------------ setup
     def _make_stream(self):
@@ -182,6 +190,13 @@ class MarketScanner:
             self._log(f"[market-scan] {len(plan.dropped)} candidate(s) dropped this cycle (cap)")
 
         subscribed = list(plan.target)
+        # Evict order-flow accumulators for symbols that rotated out of coverage
+        # (bounds memory over a long session); always keep monitoring symbols.
+        try:
+            self.ofe.prune(set(subscribed) | self._monitoring_union(positions, pending))
+        except Exception:  # noqa: BLE001
+            pass
+
         try:
             feats = self.feature_provider(subscribed, now) or {}
         except Exception as exc:  # noqa: BLE001
@@ -191,7 +206,24 @@ class MarketScanner:
         market_ctx = self._market_context(feats)
         rank_inputs = [feats[s] for s in entry_pool if s in feats]
         ranked = ranking_mod.rank(rank_inputs, config=self.config, market=market_ctx)
-        eligible = [r.symbol for r in ranked if r.eligible][: self.config.target_universe_size]
+
+        # Accumulate this tick's scores, then publish the STABLE top-N eligible
+        # from the accumulated pool (not just this rotating window) so the
+        # published universe.txt membership does not flicker every ~3s.
+        for r in ranked:
+            self._scored[r.symbol] = (r.score, r.eligible, now)
+        discovered_set = set(entry_pool)
+        stale_before = now - 2.0 * max(1.0, self.config.discovery_interval_seconds)
+        self._scored = {
+            s: v for s, v in self._scored.items()
+            if s in discovered_set and v[2] >= stale_before
+        }
+        eligible = [
+            s for s, _v in sorted(
+                ((s, v) for s, v in self._scored.items() if v[1]),
+                key=lambda kv: kv[1][0], reverse=True,
+            )
+        ][: self.config.target_universe_size]
 
         health = self._health(now, plan, market_ctx, positions, pending, feats)
         try:
@@ -249,7 +281,17 @@ class MarketScanner:
     # ------------------------------------------------------------------- loop
     async def run(self) -> None:
         import asyncio
+        loop = asyncio.get_running_loop()
         sleep = self._sleep_fn or asyncio.sleep
+
+        async def _offload(fn, *a):
+            # Run blocking I/O (web discovery, REST daily-stats) off the event
+            # loop so the websocket _run_forever() task is never starved.
+            try:
+                await loop.run_in_executor(None, fn, *a)
+            except Exception as exc:  # noqa: BLE001
+                self._errors.append(f"offload {getattr(fn, '__name__', fn)}: {exc}")
+
         # Kick off the websocket run in the background (reconnects itself).
         stream_task = None
         try:
@@ -257,12 +299,14 @@ class MarketScanner:
         except Exception as exc:  # noqa: BLE001
             self._errors.append(f"stream start: {exc}")
 
-        self._discovery_tick(self._now())
+        await _offload(self._discovery_tick, self._now())
+        await _offload(self._refresh_daily_stats)
         try:
             while not self._stopped:
                 now = self._now()
                 if now - self._last_discovery >= self.config.discovery_interval_seconds:
-                    self._discovery_tick(now)
+                    await _offload(self._discovery_tick, now)
+                    await _offload(self._refresh_daily_stats)
                 await self._rank_tick(now)
                 maybe = sleep(self.config.rank_refresh_seconds)
                 if maybe is not None and hasattr(maybe, "__await__"):
@@ -297,7 +341,9 @@ class MarketScanner:
         raises); symbols lacking data simply get sparse features (and fail the
         liquidity gate -> excluded, never fabricated as eligible)."""
         out: dict[str, CandidateFeatures] = {}
-        daily = self._fetch_daily_stats(symbols)
+        # Read the cached daily stats (refreshed off-loop on the discovery
+        # cadence); NEVER make a blocking REST call from the hot rank loop.
+        daily = self._daily_stats
         for s in symbols:
             snap = None
             try:
@@ -327,6 +373,21 @@ class MarketScanner:
                 bb_mid_dist=d.get("bb_mid_dist"),
             )
         return out
+
+    def _refresh_daily_stats(self) -> None:
+        """Refresh the cached daily ADV/ADDV/price for the discovered universe.
+
+        Blocking (REST); called off the event loop via run_in_executor on the
+        discovery cadence only, so the ~3s rank loop stays non-blocking. Updates
+        incrementally and never raises.
+        """
+        try:
+            syms = list(self._discovered)[: max(1, 5 * self.config.max_subscriptions)]
+            stats = self._fetch_daily_stats(syms)
+            if stats:
+                self._daily_stats = stats
+        except Exception as exc:  # noqa: BLE001
+            self._errors.append(f"daily refresh: {exc}")
 
     def _historical(self):
         if self._hist_client is None:

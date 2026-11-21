@@ -46,18 +46,40 @@ class SingleInstanceLock:
         self._held = False
 
     def acquire(self) -> bool:
+        """Atomically acquire the lock.
+
+        Uses an exclusive create (``O_CREAT|O_EXCL``) so two processes starting
+        in the same window cannot both win (the TOCTOU a plain exists()+write
+        would allow). If a lock file already exists, it is taken over only when
+        its recorded pid is not alive. (A SIGKILL'd holder whose pid is later
+        reused by an unrelated process is a documented residual limitation.)
+        """
+        payload = json.dumps({"pid": os.getpid(), "ts": 0.0})
         try:
-            if self.path.exists():
-                try:
-                    data = json.loads(self.path.read_text(encoding="utf-8"))
-                    pid = int(data.get("pid", -1))
-                except (ValueError, OSError, TypeError):
-                    pid = -1
-                if _pid_alive(pid):
-                    return False  # a live instance holds it
-            self._write()
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            try:
+                os.write(fd, payload.encode("utf-8"))
+            finally:
+                os.close(fd)
             self._held = True
             return True
+        except FileExistsError:
+            # A lock file exists: take it over only if the holder is dead.
+            try:
+                data = json.loads(self.path.read_text(encoding="utf-8"))
+                pid = int(data.get("pid", -1))
+            except (ValueError, OSError, TypeError):
+                pid = -1
+            if _pid_alive(pid):
+                return False
+            try:
+                self._write()  # holder is dead -> reclaim the stale lock
+                self._held = True
+                return True
+            except OSError as exc:
+                logger.warning("scanner lock reclaim failed: %s", exc)
+                return False
         except OSError as exc:
             logger.warning("scanner lock acquire failed: %s", exc)
             return False

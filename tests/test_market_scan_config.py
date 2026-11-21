@@ -76,6 +76,18 @@ def test_bad_numeric_env_falls_back_to_default(monkeypatch):
     assert c.target_universe_size == 30  # default preserved, no crash
 
 
+def test_loss_threshold_clamped_strictly_negative(monkeypatch):
+    # A positive/zero typo must coerce to the locked default, not invert the gate.
+    monkeypatch.setenv("MARKET_SCAN_LOSS_THRESHOLD", "0.5")
+    assert MarketScanConfig.from_env().loss_removal_threshold == -0.005
+    monkeypatch.setenv("MARKET_SCAN_LOSS_THRESHOLD", "0")
+    assert MarketScanConfig.from_env().loss_removal_threshold == -0.005
+    monkeypatch.setenv("MARKET_SCAN_LOSS_THRESHOLD", "-0.01")
+    assert MarketScanConfig.from_env().loss_removal_threshold == -0.01
+    monkeypatch.setenv("MARKET_SCAN_LOSS_THRESHOLD", "-5")  # floored at -100%
+    assert MarketScanConfig.from_env().loss_removal_threshold == -1.0
+
+
 def test_data_feed_never_silently_sip(monkeypatch):
     # The scanner is IEX-exclusive for equities; a SIP override is coerced back.
     monkeypatch.setenv("MARKET_SCAN_DATA_FEED", "sip")

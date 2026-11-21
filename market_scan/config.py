@@ -84,6 +84,14 @@ class MarketScanConfig:
         self.data_feed = "iex"
         self.max_subscriptions = max(1, int(self.max_subscriptions))
         self.target_universe_size = max(1, int(self.target_universe_size))
+        # The loss-removal threshold must be strictly negative (a decimal
+        # fraction, e.g. -0.005). A zero/positive value (operator typo like
+        # "0.5") would invert the gate into a full-book liquidation, so coerce
+        # it back to the locked default and floor it at -100%.
+        thr = float(self.loss_removal_threshold)
+        if not (thr < 0.0):
+            thr = -0.005
+        self.loss_removal_threshold = max(-1.0, thr)
 
     @classmethod
     def from_env(cls) -> "MarketScanConfig":

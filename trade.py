@@ -3285,7 +3285,9 @@ class MomentumSetupScanner:
         try:
             import market_scan
             cfg = market_scan.MarketScanConfig.from_env()
-            mode = "paper" if self.config.paper else "live"
+            # paper/live lives on ExecutorConfig (self.executor_config), NOT on
+            # the ScannerConfig stored as self.config.
+            mode = "paper" if self.executor_config.paper else "live"
             res = market_scan.load_entry_universe(
                 enabled=cfg.enabled, mode=mode,
                 max_age_seconds=cfg.universe_max_age_seconds,
@@ -5595,6 +5597,11 @@ class ProductionOrderExecutor:
             threshold = float(MarketScanConfig.from_env().loss_removal_threshold)
         except Exception:  # noqa: BLE001 - fall back to the locked default
             threshold = -0.005
+        # Defense in depth: a positive/zero threshold (operator typo) would turn
+        # the gate into a full-book liquidation. Force it strictly negative.
+        if not (threshold < 0.0):
+            print(f"[loss-removal] ignoring non-negative threshold {threshold}; using -0.005")
+            threshold = -0.005
 
         exits = exit_orders.copy() if exit_orders is not None else pd.DataFrame()
         existing = (set(exits["symbol"].map(safe_symbol))
@@ -5613,7 +5620,11 @@ class ProductionOrderExecutor:
             plpc = to_float(getattr(pos, "unrealized_plpc", 0.0), 0.0)
             if plpc > threshold:
                 continue
-            qty = int(max(0, to_float(pos.qty, 0.0)))
+            # FULL exit, fractional-aware: never truncate with int(), or a
+            # sub-1-share losing position would be skipped entirely and a
+            # fractional stub would be stranded (partial exit). Sell the entire
+            # position quantity (rounded to the engine's fractional precision).
+            qty = round(to_float(pos.qty, 0.0), 9)
             if qty <= 0:
                 continue
             price = to_float(pos.current_price, to_float(pos.avg_entry_price, 0.0))

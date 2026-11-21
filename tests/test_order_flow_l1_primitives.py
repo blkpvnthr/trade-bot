@@ -112,6 +112,16 @@ def test_snapshot_populates_l1_fields_without_breaking_existing():
     assert snap.absorption > 0.0
 
 
+def test_prune_evicts_unkept_symbols_bounds_memory():
+    e = ofe.OrderFlowEngine()
+    for s in ("A", "B", "C"):
+        e.ingest_trade(s, 1_000_000.0, 10.0, 5.0)
+    assert set(e._symbols) == {"A", "B", "C"}
+    evicted = e.prune({"B"})
+    assert evicted == 2
+    assert set(e._symbols) == {"B"}
+
+
 def test_snapshot_as_dict_roundtrips_new_fields():
     sf = ofe.SymbolOrderFlow("ZZ")
     d = sf.snapshot(now=1_000_000.0).as_dict()
