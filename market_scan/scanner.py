@@ -92,7 +92,8 @@ class MarketScanner:
         self._stopped = False
         self._last_discovery = 0.0
         self._force_publish = False
-        self._connected = False
+        self._subscribe_ok = False   # last apply_subscriptions() succeeded
+        self._last_plan: Any = None
         self._errors: list[str] = []
         self._hist_client: Any = None
         # Cached daily ADV/ADDV/price, refreshed on the discovery cadence (NOT
@@ -107,7 +108,7 @@ class MarketScanner:
     # ------------------------------------------------------------------ setup
     def _make_stream(self):
         from market_scan.stream_client import StreamClient
-        return StreamClient(
+        sc = StreamClient(
             api_key=getattr(self.broker, "api_key", None),
             secret_key=getattr(self.broker, "secret_key", None),
             feed=self.config.data_feed,
@@ -116,6 +117,8 @@ class MarketScanner:
             reconnect=self.config.auto_reconnect,
             log_fn=self._log,
         )
+        sc._now_fn = self._now_fn  # share the clock so is_live() is consistent
+        return sc
 
     def _now(self) -> float:
         if self._now_fn is not None:
@@ -179,15 +182,25 @@ class MarketScanner:
 
         priority_groups = [positions, pending, refs, entry_pool]
         plan = self.sub_mgr.plan(priority_groups)
+        self._last_plan = plan
         try:
             await self.stream.apply_subscriptions(to_add=plan.to_add, to_remove=plan.to_remove)
             self.sub_mgr.commit(plan)
-            self._connected = True
+            self._subscribe_ok = True
         except Exception as exc:  # noqa: BLE001
             self._errors.append(f"subscribe: {exc}")
-            self._connected = False
-        if plan.dropped:
-            self._log(f"[market-scan] {len(plan.dropped)} candidate(s) dropped this cycle (cap)")
+            self._subscribe_ok = False
+        # Explicit subscription-overflow policy: a dropped MANDATORY symbol
+        # (position/pending/reference) is a loud warning + recorded error; a
+        # dropped candidate is routine rotation under the cap.
+        if plan.mandatory_dropped:
+            msg = (f"[market-scan] SUBSCRIPTION OVERFLOW: cap={self.config.max_subscriptions} "
+                   f"exceeded; dropped mandatory {plan.mandatory_dropped} "
+                   f"(position exits remain safe via REST reconciliation)")
+            self._log(msg)
+            self._errors.append(msg)
+        elif plan.dropped:
+            self._log(f"[market-scan] {len(plan.dropped)} candidate(s) rotated out this cycle (cap)")
 
         subscribed = list(plan.target)
         # Evict order-flow accumulators for symbols that rotated out of coverage
@@ -207,16 +220,20 @@ class MarketScanner:
         rank_inputs = [feats[s] for s in entry_pool if s in feats]
         ranked = ranking_mod.rank(rank_inputs, config=self.config, market=market_ctx)
 
-        # Accumulate this tick's scores, then publish the STABLE top-N eligible
-        # from the accumulated pool (not just this rotating window) so the
-        # published universe.txt membership does not flicker every ~3s.
+        # Accumulate scores so the published universe is the STABLE top-N across
+        # rotation (not just this 3s window). BUT only record a score when the
+        # candidate's OWN market data is fresh, and expire scores whose data has
+        # not been refreshed within candidate_score_ttl_s -- a historical score
+        # sitting in the rotation cache must never keep a stale candidate live.
         for r in ranked:
-            self._scored[r.symbol] = (r.score, r.eligible, now)
+            if self._candidate_fresh(feats.get(r.symbol), now):
+                self._scored[r.symbol] = (r.score, r.eligible, now)
+            # stale-data candidate: leave any prior entry to expire naturally
         discovered_set = set(entry_pool)
-        stale_before = now - 2.0 * max(1.0, self.config.discovery_interval_seconds)
+        ttl = max(1.0, self.config.candidate_score_ttl_s)
         self._scored = {
             s: v for s, v in self._scored.items()
-            if s in discovered_set and v[2] >= stale_before
+            if s in discovered_set and (now - v[2]) <= ttl
         }
         eligible = [
             s for s, _v in sorted(
@@ -249,29 +266,68 @@ class MarketScanner:
         return MarketContext(regime_label=label, regime_score=sc, spy_score=spy,
                              qqq_score=qqq, cfg=self._regime_cfg)
 
-    def _market_data_fresh(self, feats: dict) -> bool:
-        ages: list[float] = []
-        for cf in feats.values():
-            snap = getattr(cf, "snapshot", None)
-            age = getattr(snap, "last_trade_age_s", None) if snap is not None else None
-            if isinstance(age, (int, float)):
-                ages.append(age)
-        if not ages:
-            return False  # no live ticks yet -> not fresh -> fail-closed for entries
-        return min(ages) <= self.config.max_quote_age_seconds
+    def _candidate_fresh(self, cf: Any, now: float) -> bool:
+        """Candidate-SPECIFIC freshness: this symbol's own quote AND trade must
+        be recent. Never infer a candidate's freshness from other symbols."""
+        snap = getattr(cf, "snapshot", None) if cf is not None else None
+        if snap is None:
+            return False
+        q = getattr(snap, "last_quote_age_s", None)
+        t = getattr(snap, "last_trade_age_s", None)
+        maxage = self.config.max_quote_age_seconds
+        if not isinstance(q, (int, float)) or q > maxage:
+            return False
+        if not isinstance(t, (int, float)) or t > maxage:
+            return False
+        return True
+
+    def _references_fresh(self, feats: dict, now: float) -> bool:
+        """Overall session data health = the MARKET REFERENCES are fresh (so the
+        regime read is valid). Requires at least one primary reference (SPY/QQQ)
+        to have fresh data -- NOT the freshest symbol anywhere in the universe."""
+        for r in ("SPY", "QQQ"):
+            if self._candidate_fresh(feats.get(r), now):
+                return True
+        return False
+
+    def _stream_live(self, now: float) -> bool:
+        """Real websocket readiness: the stream must have DELIVERED a message
+        recently. Subscription registration alone is not connectivity."""
+        is_live = getattr(self.stream, "is_live", None)
+        if callable(is_live):
+            try:
+                return bool(is_live(now, self.config.stream_live_staleness_s))
+            except Exception:  # noqa: BLE001
+                return False
+        # Fallback for stream stubs without is_live: subscription success proxy.
+        return bool(self._subscribe_ok)
 
     def _health(self, now, plan, market_ctx, positions, pending, feats) -> dict:
-        data_fresh = self._market_data_fresh(feats)
-        status = STATUS_HEALTHY if (self._connected and data_fresh) else STATUS_UNHEALTHY
+        live = self._stream_live(now)
+        refs_fresh = self._references_fresh(feats, now)
+        # Healthy requires an actually-live stream AND fresh reference data. Each
+        # PUBLISHED candidate is separately gated on its own freshness (so a
+        # fresh reference never vouches for a stale candidate).
+        status = STATUS_HEALTHY if (self._subscribe_ok and live and refs_fresh) else STATUS_UNHEALTHY
+        if not self._subscribe_ok:
+            conn = "disconnected"
+        elif live:
+            conn = "connected"
+        else:
+            conn = "connecting"  # subscribed, no inbound data yet
         return {
             "scanner_status": status,
-            "market_data_fresh": data_fresh,
-            "connection_status": "connected" if self._connected else "disconnected",
+            "market_data_fresh": refs_fresh,
+            "stream_live": live,
+            "connection_status": conn,
             "regime": market_ctx.regime_label,
             "regime_score": round(market_ctx.regime_score, 2),
             "discovered_count": len(self._discovered),
             "active_subscriptions": plan.active,
             "available_subscriptions": plan.available,
+            "subscription_cap": self.config.max_subscriptions,
+            "subscription_overflow": bool(plan.overflow),
+            "mandatory_dropped": list(plan.mandatory_dropped),
             "monitoring_count": len(self._monitoring_union(positions, pending)),
             "last_discovery_at": self._last_discovery,
             "errors": self._errors[-10:],
@@ -324,7 +380,7 @@ class MarketScanner:
         try:
             await self.stream.run()
         except Exception as exc:  # noqa: BLE001
-            self._connected = False
+            self._subscribe_ok = False
             self._errors.append(f"stream: {exc}")
 
     def stop(self) -> None:

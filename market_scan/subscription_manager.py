@@ -19,10 +19,12 @@ from dataclasses import dataclass, field
 
 @dataclass
 class SubscriptionPlan:
-    target: list[str] = field(default_factory=list)   # desired subscribed set (<= cap, + mandatory)
+    target: list[str] = field(default_factory=list)   # desired subscribed set, STRICTLY <= cap
     to_add: list[str] = field(default_factory=list)    # target - current
     to_remove: list[str] = field(default_factory=list)  # current - target
-    dropped: list[str] = field(default_factory=list)    # lower-priority symbols that didn't fit
+    dropped: list[str] = field(default_factory=list)    # symbols that did not fit the cap
+    mandatory_dropped: list[str] = field(default_factory=list)  # mandatory symbols dropped (loud warn)
+    overflow: bool = False                              # True if anything was dropped for the cap
     active: int = 0
     available: int = 0
 
@@ -38,8 +40,16 @@ class SubscriptionManager:
         cap = self.max_subscriptions
         selected: list[str] = []
         seen: set[str] = set()
-        overflow: list[str] = []
+        candidates: list[str] = []
+        mandatory_dropped: list[str] = []
 
+        # Mandatory groups (positions > pending > references) are filled FIRST in
+        # strict priority order, but NEVER past the cap -- the configured cap is
+        # a hard provider limit and must not be silently exceeded. Anything that
+        # does not fit is reported (mandatory_dropped) for a loud warning. (Open
+        # position EXIT risk is handled by the executor's REST reconciliation, so
+        # a position not on the stream only loses an order-flow exit *signal*,
+        # never a risk control.)
         for gi, group in enumerate(priority_groups or []):
             mandatory = gi < self.mandatory_groups
             for raw in group or []:
@@ -48,36 +58,38 @@ class SubscriptionManager:
                     continue
                 seen.add(s)
                 if mandatory:
-                    # Mandatory symbols are ALWAYS kept, even past the soft cap.
-                    selected.append(s)
+                    if len(selected) < cap:
+                        selected.append(s)
+                    else:
+                        mandatory_dropped.append(s)
                 else:
-                    overflow.append(s)
+                    candidates.append(s)
 
         free = max(0, cap - len(selected))
-        dropped: list[str] = []
-        if overflow:
+        dropped: list[str] = list(mandatory_dropped)
+        if candidates:
             if free > 0:
-                n = len(overflow)
+                n = len(candidates)
                 off = self._rotation % n
-                rotated = overflow[off:] + overflow[:off]
-                chosen = rotated[:free]
-                dropped = rotated[free:]
-                selected.extend(chosen)
+                rotated = candidates[off:] + candidates[:off]
+                selected.extend(rotated[:free])
+                dropped.extend(rotated[free:])
                 self._rotation = (self._rotation + free) % n
             else:
-                dropped = list(overflow)
+                dropped.extend(candidates)
 
-        target = list(dict.fromkeys(selected))
+        target = list(dict.fromkeys(selected))[:cap]
         tset = set(target)
-        plan = SubscriptionPlan(
+        return SubscriptionPlan(
             target=target,
             to_add=[s for s in target if s not in self._current],
             to_remove=[s for s in self._current if s not in tset],
             dropped=dropped,
+            mandatory_dropped=mandatory_dropped,
+            overflow=bool(dropped),
             active=len(target),
             available=max(0, cap - len(target)),
         )
-        return plan
 
     def commit(self, plan: SubscriptionPlan) -> None:
         """Record ``plan.target`` as the now-subscribed set (call after the

@@ -58,6 +58,9 @@ class MarketScanConfig:
     # --- universe sizing / freshness ---
     target_universe_size: int = 30            # up to N published
     universe_max_age_seconds: float = 15.0    # hot-reload freshness ceiling
+    candidate_score_ttl_s: float = 45.0       # expire a candidate score if its data
+                                              # has not been refreshed within this window
+    stream_live_staleness_s: float = 20.0     # no inbound message within this -> not live
 
     # --- eligibility thresholds ---
     min_price: float = 5.0

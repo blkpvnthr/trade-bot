@@ -58,8 +58,17 @@ class StreamClient:
         self.backoff_max = backoff_max
         self._sleep_fn = sleep_fn
         self._log = log_fn or (lambda m: logger.info(m))
+        self._now_fn = None
         self._stream: Any = None
         self._subscribed: set[str] = set()
+        self._last_message_ts: float | None = None
+        self._messages: int = 0
+
+    def _now(self) -> float:
+        if self._now_fn is not None:
+            return self._now_fn()
+        import time
+        return time.time()
 
     @property
     def subscribed(self) -> set[str]:
@@ -67,7 +76,34 @@ class StreamClient:
 
     @property
     def connected(self) -> bool:
+        """A stream OBJECT exists (subscription may be registered). NOT proof of
+        live data -- use :meth:`is_live` for that."""
         return self._stream is not None
+
+    @property
+    def received_any(self) -> bool:
+        return self._messages > 0
+
+    @property
+    def last_message_ts(self) -> float | None:
+        return self._last_message_ts
+
+    def is_live(self, now: float | None = None, max_staleness_s: float = 20.0) -> bool:
+        """True only if the websocket has actually DELIVERED a message recently.
+
+        Successful subscription registration is NOT connectivity: a subscribe()
+        call succeeds locally before (or even without) the socket delivering a
+        single tick. Readiness requires a real inbound message within
+        ``max_staleness_s``.
+        """
+        if self._last_message_ts is None:
+            return False
+        t = now if now is not None else self._now()
+        return (t - self._last_message_ts) <= max_staleness_s
+
+    def _mark_message(self) -> None:
+        self._messages += 1
+        self._last_message_ts = self._now()
 
     def connect(self) -> None:
         """Create the stream (idempotent) and (re)register handlers for the
@@ -97,6 +133,7 @@ class StreamClient:
 
     async def _handle_trade(self, data: Any) -> None:
         try:
+            self._mark_message()
             sym = str(getattr(data, "symbol", "")).upper()
             price = float(getattr(data, "price", 0.0) or 0.0)
             size = float(getattr(data, "size", 0.0) or 0.0)
@@ -108,6 +145,7 @@ class StreamClient:
 
     async def _handle_quote(self, data: Any) -> None:
         try:
+            self._mark_message()
             sym = str(getattr(data, "symbol", "")).upper()
             bid = float(getattr(data, "bid_price", 0.0) or 0.0)
             ask = float(getattr(data, "ask_price", 0.0) or 0.0)

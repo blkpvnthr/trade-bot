@@ -16,12 +16,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from market_scan.subscription_manager import SubscriptionManager
 
 
-def test_positions_and_pending_always_kept_even_over_soft_budget():
+def test_mandatory_kept_by_priority_but_cap_never_silently_exceeded():
     m = SubscriptionManager(max_subscriptions=3, mandatory_groups=2)
     plan = m.plan([["AAA", "BBB"], ["CCC", "DDD"], ["EEE"], ["FFF", "GGG"]])
-    # positions(AAA,BBB)+pending(CCC,DDD) = 4 mandatory > cap 3, all still kept
-    for s in ("AAA", "BBB", "CCC", "DDD"):
-        assert s in plan.target
+    # positions(AAA,BBB)+pending(CCC,DDD) = 4 mandatory > cap 3: STRICT cap, the
+    # lowest-priority mandatory (DDD) is dropped and reported (not silent).
+    assert len(plan.target) == 3
+    assert {"AAA", "BBB", "CCC"} <= set(plan.target)   # highest priority kept
+    assert "DDD" in plan.mandatory_dropped
+    assert plan.overflow is True
 
 
 def test_cap_respected_for_non_mandatory():
