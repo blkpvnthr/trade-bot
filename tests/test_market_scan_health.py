@@ -127,6 +127,16 @@ def test_live_context_write_is_atomic_and_round_trips(tmp_path):
     assert leftovers == []
 
 
+def test_zero_eligible_candidates_blocks_entries_even_if_healthy(tmp_path):
+    upath, cpath = _publish(tmp_path, ["NVDA", "AMD"])
+    ctx = read_live_context(cpath)
+    ctx["entry_eligible_count"] = 0  # scanner healthy but nothing qualifies
+    write_live_context(cpath, ctx)
+    res = _load(upath, cpath)
+    assert res.symbols == []
+    assert res.state == STATUS_HEALTHY  # not a fault — just nothing to enter
+
+
 def test_read_live_context_malformed_returns_none(tmp_path):
     cpath = tmp_path / "live_context.json"
     cpath.write_text("{not json", encoding="utf-8")

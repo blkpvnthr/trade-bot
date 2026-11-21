@@ -180,6 +180,18 @@ def load_dynamic_universe(
                 universe_age_seconds=file_age, context_age_seconds=ctx_age,
             )
 
+    # Even a healthy scanner may have zero entry-eligible candidates (e.g. the
+    # published file is only a floor / everything failed eligibility). Block new
+    # entries in that case without flagging the scanner unhealthy.
+    eligible = ctx.get("entry_eligible_count")
+    if not isinstance(eligible, int):
+        eligible = len(symbols)
+    if eligible < 1:
+        return DynamicUniverseResult(
+            [], STATUS_HEALTHY, "no eligible entry candidates",
+            universe_age_seconds=file_age, context_age_seconds=ctx_age,
+        )
+
     return DynamicUniverseResult(
         symbols, STATUS_HEALTHY, "ok",
         universe_age_seconds=file_age, context_age_seconds=ctx_age,
