@@ -1,4 +1,20 @@
-"""Read-only asynchronous Alpaca scanner. Run alongside daily market_analyzer.py."""
+"""RESEARCH / DIAGNOSTIC asynchronous Alpaca scanner — NOT the production scanner.
+
+The authoritative PRODUCTION market scanner is ``market_scan.scanner.MarketScanner``,
+started in-process by ``trade.py`` (``market_scan.start_market_scanner``). This
+module is a standalone, read-only raw-websocket analyzer retained only for
+research/diagnostics; it publishes to ``market_scan/research/`` (see
+``market_scan.paths.research_output_dir``) so it NEVER competes with the
+production scanner for the canonical ``market_scan/live_context_<mode>.json``
+market-context files. It places no orders and is not launched by any production
+deploy config. Run manually from the repo root:
+
+    python -m market_scan.stream_market_analyzer
+
+Its incremental-subscription capability (update_symbols / compute_subscription_delta)
+and subscription-confirmation reconciliation are mirrored in the production
+scanner's StreamClient; keep the two in sync if you extend either.
+"""
 import asyncio, json, math, time
 from types import SimpleNamespace
 from collections import deque
