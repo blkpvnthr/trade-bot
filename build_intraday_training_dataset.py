@@ -66,7 +66,37 @@ GIVEBACK_THRESHOLD = float(os.getenv("EXIT_LABEL_GIVEBACK_PCT", "0.004"))
 CUT_LOSER_THRESHOLD = float(os.getenv("EXIT_LABEL_CUT_LOSER_PCT", "-0.006"))
 CONTINUATION_THRESHOLD = float(os.getenv("EXIT_LABEL_CONTINUATION_PCT", "0.002"))
 
-DEFAULT_SYMBOLS = pd.read_csv("data/bullish_2026-05-13.csv")["Symbol"].to_list()
+def _default_symbols() -> list[str]:
+    """Resolve the default working universe without hard-failing at import.
+
+    Prefers the canonical trading universe (universe.txt -- the single source of
+    trading symbols), then the newest legacy ``data/bullish_*.csv`` snapshot
+    (resolved from the project root), then a minimal built-in list. The old code
+    read a hard-coded, cwd-relative, date-stamped CSV, which crashed the intraday
+    dataset builder at import whenever that file was absent.
+    """
+    # 1) canonical universe
+    try:
+        from universe import load_canonical_universe
+        syms = load_canonical_universe(PROJECT_ROOT / "universe.txt")
+        if syms:
+            return syms
+    except Exception:  # noqa: BLE001
+        pass
+    # 2) newest legacy bullish snapshot under data/
+    try:
+        snaps = sorted((PROJECT_ROOT / "data").glob("bullish_*.csv"), reverse=True)
+        if snaps:
+            syms = pd.read_csv(snaps[0])["Symbol"].dropna().astype(str).str.upper().tolist()
+            if syms:
+                return syms
+    except Exception:  # noqa: BLE001
+        pass
+    # 3) minimal built-in fallback (broad liquid ETFs/leaders)
+    return ["SPY", "QQQ", "DIA", "IWM", "AAPL", "NVDA", "MSFT", "AMD", "TSLA", "AVGO"]
+
+
+DEFAULT_SYMBOLS = _default_symbols()
 
 # ============================================================================
 # Helpers
