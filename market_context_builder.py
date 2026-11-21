@@ -14,7 +14,8 @@ import pandas as pd
 import requests
 import yfinance as yf
 from dotenv import load_dotenv
-from openai import OpenAI
+# No external LLM SDK: the market-context classifier is deterministic and
+# rules-based (see classify_market_context), so the engine needs no API key.
 
 try:
     from alpaca.data.enums import DataFeed
@@ -60,11 +61,10 @@ EXECUTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
 # Config
 # =============================================================================
 
-OPENAI_MODEL = os.getenv("OPENAI_MARKET_CONTEXT_MODEL", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"))
-OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_MARKET_CONTEXT_TIMEOUT_SECONDS", "30"))
-OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MARKET_CONTEXT_MAX_RETRIES", "1"))
-MARKET_CONTEXT_DISABLE_OPENAI = os.getenv("MARKET_CONTEXT_DISABLE_OPENAI", "0").lower() in {"1", "true", "yes"}
-MARKET_CONTEXT_FAIL_OPENAI_CLOSED = os.getenv("MARKET_CONTEXT_FAIL_OPENAI_CLOSED", "0").lower() in {"1", "true", "yes"}
+# Market-context classifier: deterministic, rules-based (no external LLM API).
+# The engine runs with no API key and makes no network LLM call. The classifier
+# name is surfaced in the payload for observability.
+CLASSIFIER_NAME = "deterministic_rules"
 from market_news import search_news
 ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex").lower().strip()
 ALPACA_OPTIONS_MAX_CHAIN_CONTRACTS = int(os.getenv("ALPACA_OPTIONS_MAX_CHAIN_CONTRACTS", "800"))
@@ -851,120 +851,26 @@ def validate_event_flags(classification: dict[str, Any]) -> dict[str, Any]:
     return classification
 
 
-def classify_with_openai(raw_context: dict[str, Any]) -> dict[str, Any]:
-    api_key = os.getenv("OPENAI_API_KEY")
+def _stamp_classification(result: dict[str, Any], source: str) -> dict[str, Any]:
+    """Tag a classification with its source + timestamp (never silently guess)."""
+    if isinstance(result, dict):
+        result.setdefault("classification_source", source)
+        result.setdefault("classified_at", pd.Timestamp.now(tz="UTC").isoformat())
+    return result
 
-    if not api_key:
-        return fallback_classification(raw_context, "OPENAI_API_KEY missing")
 
-    if MARKET_CONTEXT_DISABLE_OPENAI:
-        return fallback_classification(raw_context, "MARKET_CONTEXT_DISABLE_OPENAI enabled")
+def classify_market_context(raw_context: dict[str, Any]) -> dict[str, Any]:
+    """Classify the market context deterministically from the raw signals.
 
-    client = OpenAI(
-        api_key=api_key,
-        timeout=OPENAI_TIMEOUT_SECONDS,
-        max_retries=OPENAI_MAX_RETRIES,
-    )
-
-    prompt = f"""
-You are a strict market context classifier for an automated trading system.
-
-Analyze the supplied market data, futures, sector strength, key ETF risk signals, RSS news results, calendar context, and options put/call data.
-
-Return ONLY valid JSON.
-
-Required schema:
-{{
-  "overall_market_bias": "bullish | bearish | mixed | risk_off",
-  "trade_permission": "normal | cautious | halt_new_buys",
-  "risk_level": "low | medium | high",
-  "summary": "brief summary",
-  "decision_reasons": ["reason 1", "reason 2"],
-  "event_evidence": {{
-    "fed_events_today": [],
-    "jobs_report_today": [],
-    "inflation_report_today": [],
-    "pce_report_today": [],
-    "opec_events_today": [],
-    "presidential_trade_speech_today": []
-  }},
-  "event_flags": {{
-    "fed_events_today": false,
-    "opec_events_today": false,
-    "jobs_report_today": false,
-    "inflation_report_today": false,
-    "pce_report_today": false,
-    "presidential_trade_speech_today": false,
-    "major_earnings_today": false
-  }},
-  "sector_context_summary": {{
-    "leading_sectors": [],
-    "lagging_sectors": [],
-    "sector_rotation_bias": "risk_on_growth | defensive | cyclical_value | mixed"
-  }},
-  "key_etf_context_summary": {{
-    "risk_signal_bias": "risk_on | risk_off | cautious | mixed",
-    "risk_flags": []
-  }},
-  "news_context_summary": {{
-    "previous_day_market_news": [],
-    "scheduled_market_events_today": [],
-    "earnings_today": []
-  }}
-}}
-
-Strict event-evidence rules:
-- Only set an event flag true if event_evidence for that exact flag contains at least one specific supporting result.
-- Each evidence item must include title, source, date, link, and why_it_matters.
-- A generic result like "economic calendar today" is not enough.
-- If a result says CPI, PPI, PCE, jobs, Fed, OPEC, or an earnings event is scheduled for a future date, do NOT mark it true for today.
-- For jobs_report_today, require explicit language like "jobs report today", "nonfarm payrolls today", "unemployment report today", "jobless claims today", or a dated official/economic-calendar result.
-- For fed_events_today, require explicit mention of "Powell speaks today", "Fed speaker today", "FOMC today", or "Federal Reserve announcement today".
-- For inflation_report_today, require explicit mention of CPI/PPI/inflation data being released today.
-- For pce_report_today, require explicit mention of PCE price index data being released today.
-- If evidence is ambiguous, set the flag false and explain uncertainty in decision_reasons.
-- Missing data should increase caution, but must not create fake event flags.
-
-Market interpretation rules:
-- Sector strength: identify whether money is rotating into growth, defensive, cyclical/value, or mixed leadership.
-- SPY and QQQ indicate broad market and growth/tech direction.
-- VXX rising means volatility/risk stress.
-- TLT falling can indicate rate pressure.
-- UUP rising can indicate dollar/liquidity pressure.
-- Be conservative around confirmed Fed, CPI, PPI, PCE, jobs reports, OPEC, or presidential trade/tariff events.
-- If futures are sharply negative or VIX/VXX is rising hard, use cautious or halt_new_buys.
-- If SPY/QQQ are weak, VXX is rising, and futures are negative, use halt_new_buys.
-- If sector rotation is risk_on_growth, SPY/QQQ are constructive, and no major macro event is confirmed, normal is allowed.
-- If risk is unclear, trade_permission should be cautious.
-
-Raw context:
-{json.dumps(safe_json(raw_context), separators=(",", ":"))}
-""".strip()
-
-    try:
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Return only valid JSON. No markdown. Do not infer events without evidence.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-            max_tokens=2600,
-        )
-
-        content = response.choices[0].message.content or "{}"
-        parsed = json.loads(content)
-        return validate_event_flags(parsed)
-
-    except Exception as exc:
-        msg = f"OpenAI classification failed: {exc}"
-        print(f"[market-context] {msg}; using fallback classification")
-        if MARKET_CONTEXT_FAIL_OPENAI_CLOSED:
-            raise RuntimeError(msg) from exc
-        return fallback_classification(raw_context, msg)
+    No external LLM API: the classification is produced by the rules-based
+    :func:`fallback_classification` (overnight futures / sector strength / key-ETF
+    risk), then validated for event-flag integrity and tagged with its source and
+    timestamp. The trading engine runs with no API key and makes no network LLM
+    call. Event flags are only set when :func:`validate_event_flags` finds
+    explicit supporting evidence, so no events are ever fabricated.
+    """
+    result = fallback_classification(raw_context, "deterministic rules classifier")
+    return _stamp_classification(validate_event_flags(result), "rules")
 
 
 def fallback_classification(raw_context: dict[str, Any], reason: str) -> dict[str, Any]:
@@ -1082,13 +988,13 @@ def build_market_context() -> dict[str, Any]:
             "alpaca": bool(get_alpaca_client()),
             "yfinance": True,
             "rss_news": True,
-            "openai": bool(os.getenv("OPENAI_API_KEY")),
+            "classifier": CLASSIFIER_NAME,
             "alpaca_options": bool(get_alpaca_option_client()),
         },
     }
 
     try:
-        classification = validate_event_flags(classify_with_openai(raw_context))
+        classification = classify_market_context(raw_context)
     except Exception as exc:
         print(f"[market-context] classifier failed hard; using fallback: {exc}")
         classification = validate_event_flags(fallback_classification(raw_context, f"classifier hard failure: {exc}"))
@@ -1105,7 +1011,7 @@ def build_market_context() -> dict[str, Any]:
         "sector_context_summary": classification.get("sector_context_summary", {}),
         "key_etf_context_summary": classification.get("key_etf_context_summary", {}),
         "news_context_summary": classification.get("news_context_summary", {}),
-        "classifier_model": OPENAI_MODEL,
+        "classifier_model": CLASSIFIER_NAME,
     }
 
     write_json(MARKET_CONTEXT_PATH, payload)
