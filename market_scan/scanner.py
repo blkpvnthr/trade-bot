@@ -104,6 +104,10 @@ class MarketScanner:
         # from the rotating subscription window that only covers part of the
         # discovered universe each tick.
         self._scored: dict[str, tuple] = {}
+        # Shared immutable position/pending snapshot (refreshed off-loop) so the
+        # rank tick never polls the broker directly (decoupled from the heartbeat).
+        self._pos_cache: tuple = ((), (), 0.0)
+        self._last_pos_refresh: float = 0.0
 
     # ------------------------------------------------------------------ setup
     def _make_stream(self):
@@ -127,7 +131,16 @@ class MarketScanner:
         return time.time()
 
     # -------------------------------------------------------------- monitoring
-    def _open_symbols(self) -> tuple[list[str], list[str]]:
+    def _refresh_positions_snapshot(self) -> None:
+        """Refresh the shared, immutable position/pending snapshot.
+
+        Blocking broker reads; called OFF the event loop on position_refresh_s
+        cadence (not every ~3s rank tick) so the scanner does not redundantly
+        poll -- or contend on -- the shared broker/TradingClient used by the
+        execution heartbeat. Open-position EXIT risk is unaffected: the executor
+        reconciles positions itself via REST; this snapshot only feeds the
+        scanner's monitoring/subscription set and order-flow signals.
+        """
         positions: list[str] = []
         pending: list[str] = []
         try:
@@ -142,7 +155,21 @@ class MarketScanner:
                        if getattr(o, "symbol", None)]
         except Exception as exc:  # noqa: BLE001
             self._errors.append(f"pending: {exc}")
-        return positions, pending
+        # Immutable tuples so readers can never mutate the shared snapshot.
+        self._pos_cache = (tuple(positions), tuple(pending), self._now())
+
+    def _open_symbols(self) -> tuple[list[str], list[str]]:
+        """Return the cached (positions, pending) snapshot -- NO per-tick broker
+        call. The snapshot is refreshed off-loop by
+        :meth:`_refresh_positions_snapshot` (seeded once before run()'s loop). A
+        single lazy seed covers the cold-cache case; steady-state rank ticks never
+        poll the broker. Returns copies so callers cannot mutate shared state.
+        """
+        positions, pending, ts = self._pos_cache
+        if ts == 0.0:  # cold cache (e.g. a direct rank tick before run() seeded it)
+            self._refresh_positions_snapshot()
+            positions, pending, ts = self._pos_cache
+        return list(positions), list(pending)
 
     def _monitoring_union(self, positions, pending) -> set[str]:
         return set(positions) | set(pending) | {s.upper() for s in self.config.market_refs}
@@ -392,11 +419,18 @@ class MarketScanner:
         except Exception as exc:  # noqa: BLE001
             self._errors.append(f"stream start: {exc}")
 
+        await _offload(self._refresh_positions_snapshot)
+        self._last_pos_refresh = self._now()
         await _offload(self._discovery_tick, self._now())
         await _offload(self._refresh_daily_stats)
         try:
             while not self._stopped:
                 now = self._now()
+                # Refresh the shared position snapshot off-loop on its own
+                # (slower) cadence -- not on every rank tick.
+                if now - self._last_pos_refresh >= self.config.position_refresh_s:
+                    await _offload(self._refresh_positions_snapshot)
+                    self._last_pos_refresh = now
                 if now - self._last_discovery >= self.config.discovery_interval_seconds:
                     await _offload(self._discovery_tick, now)
                     await _offload(self._refresh_daily_stats)

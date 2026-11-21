@@ -21,7 +21,13 @@ import asyncio
 
 import universe
 from market_scan.config import MarketScanConfig
-from market_scan.health import read_live_context
+from market_scan.health import (
+    STATUS_HEALTHY,
+    load_dynamic_universe,
+    read_live_context,
+    write_live_context,
+)
+from market_scan.publisher import UniversePublisher
 from market_scan.ranking import CandidateFeatures
 from market_scan.scanner import MarketScanner
 from market_scan.stream_client import StreamClient
@@ -207,3 +213,108 @@ def test_candidates_rotate_within_free_budget():
     p2 = m.plan(groups)
     chosen2 = [s for s in p2.target if s.startswith("C")]
     assert chosen2 != chosen1   # rotation advanced
+
+
+# ====================================================================== #10
+# Publication consistency: concurrent reads, interrupted publish, restart.
+# ======================================================================
+def test_concurrent_writes_and_reads_never_tear(tmp_path):
+    import threading
+    import time
+    upath = tmp_path / "universe.txt"
+    universe.write_canonical_universe(["A", "B"], upath)
+    stop = {"v": False}
+    errors = []
+
+    def writer():
+        i = 0
+        while not stop["v"]:
+            try:
+                universe.write_canonical_universe([f"S{i % 5}", "Z"], upath)
+            except Exception as e:  # noqa: BLE001
+                errors.append(("writer", repr(e)))
+            i += 1
+
+    def reader():
+        while not stop["v"]:
+            try:
+                got = universe.load_canonical_universe(upath)
+                if not got:
+                    errors.append(("empty", got))
+            except Exception as e:  # noqa: BLE001 - a torn/empty read would raise here
+                errors.append(("reader", repr(e)))
+
+    threads = [threading.Thread(target=writer),
+               threading.Thread(target=reader), threading.Thread(target=reader)]
+    for t in threads:
+        t.start()
+    time.sleep(0.3)
+    stop["v"] = True
+    for t in threads:
+        t.join()
+    assert not errors, errors[:5]   # atomic os.replace -> never torn/empty
+
+
+def test_interrupted_publish_half_update_blocks_entries(tmp_path):
+    # universe.txt updated to new membership but live_context not yet (crash
+    # between the two atomic writes) -> mismatch -> fail-safe block (even after
+    # the single retry, since the on-disk state is persistently inconsistent).
+    import os
+    upath = tmp_path / "universe.txt"
+    cpath = tmp_path / "live_context.json"
+    universe.write_canonical_universe(["A", "B", "C"], upath)
+    os.utime(upath, (1000.0, 1000.0))
+    write_live_context(cpath, {"scanner_status": STATUS_HEALTHY, "enabled": True,
+                               "updated_at": 1000.0, "universe": ["A", "B"],
+                               "market_data_fresh": True, "entry_eligible_count": 2})
+    res = load_dynamic_universe(universe_path=upath, context_path=cpath,
+                                enabled=True, now=1000.5)
+    assert res.symbols == []
+
+
+def test_restart_recovery_reseeds_from_disk_and_republishes(tmp_path):
+    cfg = MarketScanConfig()
+    up, cp = tmp_path / "universe.txt", tmp_path / "live_context.json"
+    p1 = UniversePublisher(up, cp, cfg, mode="paper")
+    p1.publish(["A", "B"], now=1000.0, health={"market_data_fresh": True})
+    # restart: a brand-new publisher instance on the same paths
+    p2 = UniversePublisher(up, cp, cfg, mode="paper")
+    p2.publish(["A", "B", "C"], now=1003.0, health={"market_data_fresh": True})
+    assert universe.load_canonical_universe(up) == ["A", "B", "C"]
+    res = load_dynamic_universe(universe_path=up, context_path=cp, enabled=True, now=1004.0)
+    assert res.state == STATUS_HEALTHY and res.symbols == ["A", "B", "C"]
+
+
+# ====================================================================== #3
+# Scanner must not redundantly poll the shared broker on every rank tick.
+# ======================================================================
+def test_rank_tick_does_not_repoll_broker_each_tick(tmp_path):
+    calls = {"pos": 0, "pend": 0}
+
+    class _CountBroker:
+        api_key = "k"
+        secret_key = "s"
+
+        def get_all_open_positions(self):
+            calls["pos"] += 1
+            return []
+
+        def list_open_orders(self):
+            calls["pend"] += 1
+            return []
+
+    es = SimpleNamespace(broker=_CountBroker(), config=SimpleNamespace(paper=True))
+    ms = MarketScanner(
+        es, MarketScanConfig(), universe_path=tmp_path / "u.txt",
+        context_path=tmp_path / "c.json", stream_client=_FakeStreamLive(True),
+        feature_provider=lambda syms, now: {s: _feat(s, _snap()) for s in syms},
+        discovery_fn=lambda **k: SimpleNamespace(symbols=["NVDA", "SPY", "QQQ"],
+                                                 equities=[], etfs=[], error=None, source_counts={}))
+    ms._discovered = ["NVDA", "SPY", "QQQ"]
+    ms._refresh_positions_snapshot()        # off-loop seed (1 read each)
+    base_pos, base_pend = calls["pos"], calls["pend"]
+    assert base_pos == 1 and base_pend == 1
+    for i in range(5):
+        asyncio.run(ms._rank_tick(1000.0 + i))
+    assert calls["pos"] == base_pos         # 5 rank ticks -> ZERO extra broker polls
+    assert calls["pend"] == base_pend

@@ -89,6 +89,9 @@ def _file_mtime(path: Path) -> float | None:
         return None
 
 
+_MISMATCH_REASON = "universe.txt/metadata membership mismatch"
+
+
 def load_dynamic_universe(
     *,
     universe_path: str | Path,
@@ -104,7 +107,32 @@ def load_dynamic_universe(
     unreadable). Only returns a non-empty, descending-rank universe when the
     scanner is enabled AND the published metadata reports healthy AND the file
     and metadata are fresh and consistent.
+
+    universe.txt and live_context.json are each written atomically but not
+    jointly, so a read that races a publish can momentarily observe one updated
+    and the other not (a membership mismatch). That always fails SAFE (blocks
+    entries), but to avoid a spurious one-cycle block we re-read both files once
+    on a mismatch to ride out the sub-millisecond interleave; a genuine,
+    persistent inconsistency still blocks.
     """
+    res = _eval_dynamic_universe(
+        universe_path=universe_path, context_path=context_path,
+        enabled=enabled, now=now, max_age_seconds=max_age_seconds)
+    if res.reason == _MISMATCH_REASON:
+        res = _eval_dynamic_universe(
+            universe_path=universe_path, context_path=context_path,
+            enabled=enabled, now=now, max_age_seconds=max_age_seconds)
+    return res
+
+
+def _eval_dynamic_universe(
+    *,
+    universe_path: str | Path,
+    context_path: str | Path,
+    enabled: bool,
+    now: float,
+    max_age_seconds: float = 15.0,
+) -> DynamicUniverseResult:
     upath = Path(universe_path)
     cpath = Path(context_path)
 
@@ -176,7 +204,7 @@ def load_dynamic_universe(
     if isinstance(ctx_universe, list):
         if {str(s).upper() for s in ctx_universe} != {s.upper() for s in symbols}:
             return DynamicUniverseResult(
-                [], STATUS_UNHEALTHY, "universe.txt/metadata membership mismatch",
+                [], STATUS_UNHEALTHY, _MISMATCH_REASON,
                 universe_age_seconds=file_age, context_age_seconds=ctx_age,
             )
 
