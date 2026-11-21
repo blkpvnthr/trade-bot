@@ -1,5 +1,7 @@
 
-## 12:29 | fix/13K-post-merge-integration
-Implemented incremental websocket subscription updates (update_symbols, compute_subscription_delta) in stream_market_analyzer.py w/ pkg-relative imports & 8 tests; identified scanner.py consolidation requirement for unified market-scan architecture.
-## 13:20 | fix/13K-post-merge-integration
-Cleared security audit: scanner.py init-order consolidation (now_fn DI w/ stream_client.py) + test_market_scan_startup.py regress tests—no vulns.
+## 13:31 | fix/13K-post-merge-integration
+
+Replaced OpenAI with Claude (Anthropic Messages API) in `market_context_builder.py`; hardened JSON parsing with truncation detection, retries, explicit fallback to rules classifier on all failures (never fabricates); added source/timestamp tracking; lazy SDK import allows graceful degradation until ANTHROPIC_API_KEY is set.
+## 13:44 | fix/13K-post-merge-integration
+
+Hardened import (SDK-missing → rules), added SDK-missing test (10 tests, 612 passed), committed fb755bf, ran smoke test verifying fallback.
