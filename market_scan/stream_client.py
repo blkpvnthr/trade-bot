@@ -45,6 +45,7 @@ class StreamClient:
         backoff_base: float = 1.0,
         backoff_max: float = 30.0,
         sleep_fn=None,
+        now_fn=None,
         log_fn: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.api_key = api_key
@@ -57,8 +58,8 @@ class StreamClient:
         self.backoff_base = backoff_base
         self.backoff_max = backoff_max
         self._sleep_fn = sleep_fn
+        self._now_fn = now_fn
         self._log = log_fn or (lambda m: logger.info(m))
-        self._now_fn = None
         self._stream: Any = None
         self._subscribed: set[str] = set()
         self._last_message_ts: float | None = None

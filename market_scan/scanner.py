@@ -69,6 +69,11 @@ class MarketScanner:
         exec_cfg = getattr(executor, "config", None)
         self.mode = "paper" if getattr(exec_cfg, "paper", True) else "live"
         self._log = log_fn or (lambda m: logger.info(m))
+        # Clock/timers MUST be set before any collaborator that reads them
+        # (e.g. _make_stream shares _now_fn with the StreamClient). Initialize
+        # them first to avoid constructor initialization-order bugs.
+        self._now_fn = now_fn
+        self._sleep_fn = sleep_fn
 
         self.ofe = OrderFlowEngine(OrderFlowConfig(
             windows_s=tuple(config.order_flow_windows_s),
@@ -87,8 +92,6 @@ class MarketScanner:
         self.feature_provider = feature_provider or self._default_features
         self.discovery_fn = discovery_fn or discovery_mod.discover_us_listed
 
-        self._now_fn = now_fn
-        self._sleep_fn = sleep_fn
         self._regime_cfg = amps_v4_regime.RegimeConfig()
 
         self._discovered: list[str] = []
@@ -119,7 +122,7 @@ class MarketScanner:
     # ------------------------------------------------------------------ setup
     def _make_stream(self):
         from market_scan.stream_client import StreamClient
-        sc = StreamClient(
+        return StreamClient(
             api_key=getattr(self.broker, "api_key", None),
             secret_key=getattr(self.broker, "secret_key", None),
             feed=self.config.data_feed,
@@ -127,9 +130,8 @@ class MarketScanner:
             on_quote=self.ofe.ingest_quote,
             reconnect=self.config.auto_reconnect,
             log_fn=self._log,
+            now_fn=self._now_fn,   # share the clock via explicit DI (is_live consistency)
         )
-        sc._now_fn = self._now_fn  # share the clock so is_live() is consistent
-        return sc
 
     def _now(self) -> float:
         if self._now_fn is not None:
