@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import random
 import re
+import tempfile
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -296,6 +297,68 @@ def load_canonical_universe(path: str | Path = UNIVERSE_TXT) -> list[str]:
             f"Canonical trading universe is empty (fail-closed): {p}"
         )
     return symbols
+
+
+def write_canonical_universe(
+    symbols: Sequence[str],
+    path: str | Path = UNIVERSE_TXT,
+    *,
+    min_symbols: int = 1,
+) -> list[str]:
+    """Atomically rewrite universe.txt with ``symbols`` in the given order.
+
+    This is the single writer counterpart to :func:`load_canonical_universe`.
+    The real-time scanner calls it to republish the ranked trading universe,
+    so it is engineered to be safe against the loader's fail-closed contract:
+
+      * symbols are normalized (:func:`normalize_symbol`) and de-duplicated,
+        first occurrence wins, preserving the caller's (descending-rank) order;
+      * it refuses to write fewer than ``min_symbols`` usable symbols, raising
+        ``ValueError`` -- it never produces an empty file the loader would then
+        reject (and it leaves any pre-existing good file untouched on refusal);
+      * the write is atomic: content goes to a uniquely-named temp file in the
+        *same directory*, is flushed+fsync'd, then ``os.replace``'d onto
+        ``path`` so no reader ever observes a torn or empty file mid-write.
+
+    The on-disk format matches the existing universe.txt (a single line of
+    quoted, comma-separated tokens) so it round-trips through
+    :func:`load_canonical_universe` and every existing consumer. Returns the
+    normalized list actually written.
+    """
+    normalized = list(
+        dict.fromkeys(
+            normalize_symbol(sym) for sym in symbols if normalize_symbol(sym)
+        )
+    )
+    if len(normalized) < max(1, int(min_symbols)):
+        raise ValueError(
+            "refusing to write universe.txt with "
+            f"{len(normalized)} symbol(s) (min_symbols={min_symbols}); "
+            "the loader is fail-closed on empty/short universes"
+        )
+
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    content = ", ".join(f"'{sym}'" for sym in normalized) + "\n"
+
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(p.parent), prefix=".universe.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, p)
+    except BaseException:
+        # Never leave a temp artifact behind, and never touch the live file
+        # on failure.
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    return normalized
 
 
 # ----------------------------------------------------------------------

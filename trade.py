@@ -3229,7 +3229,11 @@ class MomentumSetupScanner:
             raw_symbols = get_sp500_fallback_symbols()
             self.llm_metadata_by_symbol = {}
         else:
-            raw_symbols = DEFAULT_SCAN_UNIVERSE
+            # Hot-reloaded, scanner-authoritative ENTRY universe. Fail-closed:
+            # returns [] (block new entries) when the real-time scanner is
+            # disabled, unhealthy, stale, inconsistent, or has no eligible
+            # candidates. Exits/monitoring/risk are NEVER gated by this.
+            raw_symbols = self._dynamic_entry_universe()
             self.llm_metadata_by_symbol = {}
 
         # Only the research-only broad-market scan (full S&P 500) may be capped
@@ -3266,6 +3270,39 @@ class MomentumSetupScanner:
             return capped
 
         return symbols
+
+    def _dynamic_entry_universe(self) -> list[str]:
+        """Resolve the hot-reloaded, scanner-authoritative ENTRY universe.
+
+        Honors the three operational states (disabled / enabled-unhealthy /
+        enabled-healthy). Returns [] to BLOCK new entries whenever the scanner
+        is not demonstrably healthy and fresh -- it never silently reverts to a
+        static universe, and it never affects exits, monitoring, or risk (those
+        are driven entirely by broker positions). Any unexpected error also
+        fails closed (block entries) with a loud log rather than crashing the
+        trading loop.
+        """
+        try:
+            import market_scan
+            cfg = market_scan.MarketScanConfig.from_env()
+            # paper/live lives on ExecutorConfig (self.executor_config), NOT on
+            # the ScannerConfig stored as self.config.
+            mode = "paper" if self.executor_config.paper else "live"
+            res = market_scan.load_entry_universe(
+                enabled=cfg.enabled, mode=mode,
+                max_age_seconds=cfg.universe_max_age_seconds,
+            )
+            prev = getattr(self, "_last_scan_state", None)
+            if res.state != prev or res.reason != getattr(self, "_last_scan_reason", None):
+                print(f"[market-scan] entry universe: state={res.state} "
+                      f"n={len(res.symbols)} reason={res.reason}")
+                self._last_scan_state = res.state
+                self._last_scan_reason = res.reason
+            return list(res.symbols)
+        except Exception as exc:  # noqa: BLE001 - fail closed for ENTRIES, never crash the loop
+            print(f"[market-scan] dynamic entry universe unavailable; "
+                  f"BLOCKING new entries (fail-closed): {exc}")
+            return []
 
     def _feed(self):
         if DataFeed is None:
@@ -5536,6 +5573,242 @@ class ProductionOrderExecutor:
 
         return {"action": "HOLD", "reason": f"exit_learning_hold:plpc={plpc:.3%}:ev15={ev15:.3%}", "confidence": 0.50}
 
+    def _loss_removal_enabled_threshold(self) -> tuple[bool, float]:
+        """Return (enabled, threshold) for the monitor-based loss removal.
+
+        Threshold is forced strictly negative (an operator typo like "0.5" would
+        otherwise invert the gate into a full-book liquidation).
+        """
+        enabled = os.getenv("MARKET_SCAN_LOSS_REMOVAL", "1").strip() != "0"
+        try:
+            from market_scan.config import MarketScanConfig
+            threshold = float(MarketScanConfig.from_env().loss_removal_threshold)
+        except Exception:  # noqa: BLE001 - locked default
+            threshold = -0.005
+        if not (threshold < 0.0):
+            print(f"[loss-removal] ignoring non-negative threshold {threshold}; using -0.005")
+            threshold = -0.005
+        return enabled, threshold
+
+    def _positions_below_loss_threshold(self, positions, threshold: float) -> list[str]:
+        """Symbols whose unrealized_plpc is at/below ``threshold`` (decimal)."""
+        out: list[str] = []
+        for pos in positions or []:
+            sym = safe_symbol(getattr(pos, "symbol", None))
+            if not sym:
+                continue
+            plpc = to_float(getattr(pos, "unrealized_plpc", 0.0), 0.0)
+            if plpc <= threshold:
+                out.append(sym)
+        return out
+
+    def _augment_exit_orders_with_loss_removal(self, exit_orders: pd.DataFrame | None) -> pd.DataFrame:
+        """Monitor-based -0.5% loss removal.
+
+        Appends a FULL-exit SELL for every open position whose broker-reported
+        ``unrealized_plpc`` (decimal fraction) is at/below the configured
+        threshold (-0.005 = -0.5%). It runs independently of scanner health (a
+        stale/unavailable universe.txt blocks REPLACEMENTS, never the loss EXIT)
+        and is **un-overridable by STRATEGY signals** -- no bullish momentum,
+        strategy conflict, or minimum-hold may suppress it.
+
+        It is NOT, and must not be, un-overridable by the deliberate emergency
+        kill switch: when the daily kill switch has halted execution,
+        run_once_from_frames returns before this augment runs and the suppression
+        is logged explicitly (see the kill-switch branch) -- the emergency halt
+        is a higher-level risk control and is never silently bypassed.
+
+        The stopped-out symbol is marked no-reentry so freed capital redeploys to
+        a DIFFERENT, independently confirmed candidate via the existing entry/
+        rebalance pipeline, not back into the loser the same day. Designed to
+        serve as the SECONDARY backstop once the broker-native resting stop lands
+        on amps-v6-loss-removal-optimizer.
+        """
+        enabled, threshold = self._loss_removal_enabled_threshold()
+        if not enabled:
+            return exit_orders if exit_orders is not None else pd.DataFrame()
+
+        exits = exit_orders.copy() if exit_orders is not None else pd.DataFrame()
+        existing = (set(exits["symbol"].map(safe_symbol))
+                    if not exits.empty and "symbol" in exits.columns else set())
+        rows: list[dict[str, Any]] = []
+        try:
+            positions = self.broker.get_all_open_positions()
+        except Exception as exc:  # noqa: BLE001 - never let reconciliation break the loop
+            print(f"[loss-removal] position read failed: {exc}")
+            return exits
+
+        for pos in positions:
+            symbol = safe_symbol(pos.symbol)
+            if not symbol or symbol in existing:
+                continue
+            plpc = to_float(getattr(pos, "unrealized_plpc", 0.0), 0.0)
+            if plpc > threshold:
+                continue
+            # FULL exit, fractional-aware: never truncate with int(), or a
+            # sub-1-share losing position would be skipped entirely and a
+            # fractional stub would be stranded (partial exit). Sell the entire
+            # position quantity (rounded to the engine's fractional precision).
+            qty = round(to_float(pos.qty, 0.0), 9)
+            if qty <= 0:
+                continue
+            price = to_float(pos.current_price, to_float(pos.avg_entry_price, 0.0))
+            if price <= 0:
+                continue
+            reason = f"market_scan_loss_removal:plpc={plpc:.3%}:thr={threshold:.3%}"
+            rows.append({
+                "symbol": symbol,
+                "side": "sell",
+                "delta_shares": qty,
+                "delta_dollars": qty * price,
+                "price": price,
+                "reason": reason,
+                "target_weight": 0.0,
+                "current_weight": 0.0,
+                "delta_weight": 0.0,
+                "trade_confidence": 0.99,
+                "exit_reason": reason,
+                "exit_model_action": "EXIT",
+            })
+            # Prevent immediate re-entry into the stopped-out name (same trading
+            # day); a fresh, independently confirmed setup on another symbol is
+            # redeployed through the normal entry pipeline.
+            try:
+                mark_no_reentry_symbol(symbol, reason="loss_removal_-0.5pct")
+            except Exception:  # noqa: BLE001
+                pass
+            # Register a freed slot awaiting a gated replacement (filled on a
+            # later cycle once the close is CONFIRMED, i.e. the symbol is flat).
+            self._pending_replacements = getattr(self, "_pending_replacements", set())
+            self._pending_replacements.add(symbol)
+            write_event("market_scan_loss_removal",
+                        {"symbol": symbol, "plpc": plpc, "threshold": threshold, "qty": qty})
+
+        if rows:
+            print(f"[loss-removal] -0.5% exits triggered: "
+                  f"{', '.join(r['symbol'] for r in rows)}")
+            exits = pd.concat([exits, pd.DataFrame(rows)], ignore_index=True)
+        return exits
+
+    def _read_scanner_replacement_candidates(self) -> list[dict]:
+        """Read the scanner's published, gate-eligible replacement candidates --
+        ONLY when the scanner is enabled, healthy, and fresh (else []).
+
+        The gates (seller exhaustion, momentum, DI+ > DI-, >BB-mid, >VWAP,
+        liquidity, regime) are evaluated scanner-side; this returns that
+        authorized list in descending rank. Universe membership alone never
+        authorizes a replacement.
+        """
+        try:
+            import market_scan
+            from market_scan.health import read_live_context
+            from market_scan.scanner import _live_context_path
+            cfg = market_scan.MarketScanConfig.from_env()
+            if not (cfg.enabled and cfg.replace_enabled):
+                return []
+            mode = "paper" if self.config.paper else "live"
+            # Reuse the same fail-closed health gate used for entries.
+            res = market_scan.load_entry_universe(
+                enabled=cfg.enabled, mode=mode,
+                max_age_seconds=cfg.universe_max_age_seconds)
+            if res.state != "healthy":
+                return []
+            ctx = read_live_context(_live_context_path(mode)) or {}
+            cands = ctx.get("replacement_candidates") or []
+            return [c for c in cands if isinstance(c, dict) and c.get("symbol")]
+        except Exception as exc:  # noqa: BLE001 - replacement is best-effort, never fatal
+            print(f"[replacement] candidate read failed (holding cash): {exc}")
+            return []
+
+    def _augment_rebalance_with_replacements(self, rebalance_orders: pd.DataFrame | None,
+                                             equity: float) -> pd.DataFrame:
+        """Emit gated replacement BUYs for slots freed by a confirmed -0.5% close.
+
+        One replacement per freed slot, only after the loser is CONFIRMED flat
+        (no longer an open position). Candidates come from the scanner's
+        gate-eligible list (Section-9 gates already applied); the BUY then flows
+        through _build_order_plan so all execution/portfolio-risk gates, sizing,
+        cooldown, no-reentry, and the kill switch apply. If nothing qualifies the
+        slot stays in cash (never forced). No duplicate order path: replacement
+        rows are ordinary rebalance BUYs.
+        """
+        rebal = rebalance_orders.copy() if rebalance_orders is not None else pd.DataFrame()
+        pending = getattr(self, "_pending_replacements", set())
+        if not pending:
+            return rebal
+
+        try:
+            held = {safe_symbol(p.symbol) for p in self.broker.get_all_open_positions()}
+            open_orders = self.broker.list_open_orders()
+            pending_syms = {safe_symbol(getattr(o, "symbol", None)) for o in (open_orders or [])}
+        except Exception as exc:  # noqa: BLE001
+            print(f"[replacement] broker reconciliation failed (holding cash): {exc}")
+            return rebal
+
+        # A freed slot = a loss-removed symbol that is now CONFIRMED closed (flat).
+        freed = [s for s in list(pending) if s not in held]
+        if not freed:
+            return rebal
+
+        no_reentry = load_no_reentry_symbols()
+        already = (set(rebal["symbol"].map(safe_symbol))
+                   if not rebal.empty and "symbol" in rebal.columns else set())
+        exclude = held | pending_syms | no_reentry | already | set(pending)
+
+        candidates = self._read_scanner_replacement_candidates()
+        target_weight = float(getattr(self.config.scanner, "base_target_weight", 0.03) or 0.03)
+        chosen: set[str] = set()
+        rows: list[dict[str, Any]] = []
+
+        for loser in freed:
+            # Attempt exactly one replacement per freed slot, then clear it
+            # (never retry forever; cash is a valid outcome).
+            self._pending_replacements.discard(loser)
+            pick = None
+            for c in candidates:
+                sym = safe_symbol(c.get("symbol"))
+                price = to_float(c.get("price"), 0.0)
+                if not sym or sym in exclude or sym in chosen or price <= 0:
+                    continue
+                pick = (sym, price)
+                break
+            if pick is None:
+                print(f"[replacement] no eligible candidate for freed slot {loser}; holding cash")
+                continue
+            sym, price = pick
+            chosen.add(sym)
+            delta_dollars = max(0.0, target_weight * max(equity, 0.0))
+            if delta_dollars <= 0:
+                continue
+            if self.config.scanner.enable_fractional_orders:
+                delta_shares = round(delta_dollars / price, 9) if price > 0 else 0.0
+            else:
+                delta_shares = float(int(delta_dollars // price)) if price > 0 else 0.0
+            if delta_shares <= 0:
+                continue
+            rows.append({
+                "symbol": sym,
+                "side": "buy",
+                "delta_shares": delta_shares,
+                "delta_dollars": float(delta_dollars),
+                "price": float(price),
+                "market_price": float(price),
+                "entry_price": float(price),
+                "reason": f"market_scan_replacement:for={loser}",
+                "target_weight": float(target_weight),
+                "current_weight": 0.0,
+                "delta_weight": float(target_weight),
+                "trade_confidence": 0.9,
+            })
+            write_event("market_scan_replacement",
+                        {"replacement": sym, "for": loser, "price": price})
+
+        if rows:
+            print(f"[replacement] gated replacement BUYs: "
+                  f"{', '.join(r['symbol'] for r in rows)}")
+            rebal = pd.concat([rebal, pd.DataFrame(rows)], ignore_index=True)
+        return rebal
+
     def _augment_exit_orders_with_exit_learning(self, exit_orders: pd.DataFrame | None) -> pd.DataFrame:
         if self.scanner is None or not self.config.scanner.exit_learning_enabled:
             return exit_orders if exit_orders is not None else pd.DataFrame()
@@ -6022,6 +6295,23 @@ class ProductionOrderExecutor:
         allowed, kill_reason, daily_return = self._kill_switch_allows_execution(equity)
         if not allowed:
             print(f"[kill-switch] execution blocked: {kill_reason}")
+            # EXPLICIT (non-silent) resolution of the kill-switch vs loss-removal
+            # conflict: the emergency halt is a higher-level risk control and
+            # wins, but any positions that the -0.5% loss-removal WOULD have
+            # exited are logged + audited so the suppression is never silent.
+            try:
+                ls_enabled, ls_threshold = self._loss_removal_enabled_threshold()
+                if ls_enabled:
+                    suppressed = self._positions_below_loss_threshold(
+                        self.broker.get_all_open_positions(), ls_threshold)
+                    if suppressed:
+                        print(f"[kill-switch] EMERGENCY HALT is suppressing -0.5% "
+                              f"loss-removal for {suppressed} (halt takes precedence)")
+                        write_event("kill_switch_suppressed_loss_removal",
+                                    {"symbols": suppressed, "threshold": ls_threshold,
+                                     "kill_reason": kill_reason})
+            except Exception as exc:  # noqa: BLE001 - logging must never break the halt
+                print(f"[kill-switch] loss-removal suppression log failed: {exc}")
             results = pd.DataFrame([{"timestamp_utc": now_utc().isoformat(), "status": "skipped_kill_switch", "message": kill_reason, "daily_return": daily_return}])
             save_df(pd.DataFrame(), LOG_DIR / f"order_plan_{cycle_id}.csv")
             save_df(results, LOG_DIR / f"order_results_{cycle_id}.csv")
@@ -6040,6 +6330,14 @@ class ProductionOrderExecutor:
             exit_orders = exit_orders if exit_orders is not None else pd.DataFrame()
         else:
             exit_orders = self._augment_exit_orders_with_exit_learning(exit_orders if exit_orders is not None else pd.DataFrame())
+        # The -0.5% monitor-based loss removal is un-overridable and applies to
+        # EVERY strategy (incl. daily-green/insider, which bypass exit-learning).
+        exit_orders = self._augment_exit_orders_with_loss_removal(exit_orders)
+        # Gated replacement BUYs for freed-up slots after a confirmed loss-removal
+        # close. Flows through _build_order_plan below -> all execution-risk gates
+        # apply; the Section-9 entry gates are enforced by the scanner's published
+        # per-candidate eligibility (no competing optimizer).
+        rebalance_orders = self._augment_rebalance_with_replacements(rebalance_orders, equity)
         plan = self._build_order_plan(rebalance_orders, exit_orders, equity)
         if not simple_strategy:
             plan = self._apply_mtf_buy_gate_to_plan(plan)
@@ -7317,7 +7615,38 @@ class ProductionOrderExecutor:
             f"[executor] heartbeat | equity=${acct.equity:,.2f} | "
             f"cash=${acct.cash:,.2f} | buying_power=${acct.buying_power:,.2f} | gross={gross:.2%}"
         )
+        self._print_scanner_panel(now_ts)
         self.last_heartbeat_time = now_ts
+
+    def _print_scanner_panel(self, now_ts: float) -> None:
+        """One throttled scanner status line per heartbeat (never per-quote)."""
+        try:
+            import market_scan
+            from market_scan.health import read_live_context
+            from market_scan.scanner import _live_context_path
+            mode = "paper" if self.config.paper else "live"
+            enabled = market_scan.MarketScanConfig.from_env().enabled
+            if not enabled:
+                print("[market-scan] status=DISABLED | new entries blocked")
+                return
+            ctx = read_live_context(_live_context_path(mode))
+            if ctx is None:
+                print("[market-scan] status=STARTING/NO-CONTEXT | new entries blocked")
+                return
+            age = now_ts - float(ctx.get("updated_at", 0.0) or 0.0)
+            eligible = ctx.get("entry_eligible_count", 0)
+            permit = "PERMIT" if (ctx.get("scanner_status") == "healthy" and eligible) else "BLOCK"
+            print(
+                "[market-scan] "
+                f"status={ctx.get('scanner_status','?')} conn={ctx.get('connection_status','?')} "
+                f"regime={ctx.get('regime','?')} universe={ctx.get('universe_size',0)} "
+                f"eligible={eligible} subs={ctx.get('active_subscriptions',0)}/"
+                f"{int(ctx.get('active_subscriptions',0)) + int(ctx.get('available_subscriptions',0))} "
+                f"discovered={ctx.get('discovered_count',0)} age={age:.1f}s "
+                f"entries={permit} errs={ctx.get('error_count',0)}"
+            )
+        except Exception as exc:  # noqa: BLE001 - dashboard must never break the loop
+            print(f"[market-scan] status unavailable: {exc}")
 
     def run(self) -> None:
         print("[executor] 13K account executor starting")
@@ -7778,8 +8107,33 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001
             print(f"[engine] buy-opportunity engine init deferred (non-fatal): {exc}")
 
+    # Auto-start the real-time IEX market scanner (default ON; MARKET_SCAN_ENABLED=0
+    # disables it). It runs in its own daemon thread, shares the executor's broker/
+    # credentials/mode, continuously republishes the authoritative universe.txt, and
+    # is hot-reloaded by _dynamic_entry_universe(). A scanner fault only blocks NEW
+    # entries -- it never impedes exits, monitoring, or risk. Prevents a second IEX
+    # websocket via a single-instance lock.
+    scan_handle = None
+    try:
+        import market_scan
+        scan_handle = market_scan.start_market_scanner(executor)
+        if scan_handle is not None:
+            print("[market-scan] real-time IEX scanner started (daemon thread)")
+        else:
+            print("[market-scan] scanner not started (disabled or already running)")
+    except Exception as exc:  # noqa: BLE001 - never block the engine on scanner init
+        print(f"[market-scan] scanner init failed (non-fatal; new entries fail-closed): {exc}")
+
     print_startup_banner(config)
-    executor.run()
+    try:
+        executor.run()
+    finally:
+        if scan_handle is not None:
+            try:
+                scan_handle.stop(timeout=5.0)
+                print("[market-scan] scanner stopped")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[market-scan] scanner stop error: {exc}")
 
 
 if __name__ == "__main__":

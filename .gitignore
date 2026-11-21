@@ -60,3 +60,7 @@ trader_rewrite/
 
 # embedded external-research clone (separate git repo)
 rl_strategy_meta_agent/external_research/oqts/
+
+# market scanner runtime artifacts
+market_scan/live_context*.json
+market_scan/scanner.lock
