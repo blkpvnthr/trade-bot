@@ -111,6 +111,10 @@ class MarketScanner:
         # rank tick never polls the broker directly (decoupled from the heartbeat).
         self._pos_cache: tuple = ((), (), 0.0)
         self._last_pos_refresh: float = 0.0
+        # Subscription reconciliation state.
+        self._ref_miss_ticks: int = 0      # consecutive ticks a reference lacked fresh data
+        self._was_live: bool = False       # for detecting reconnect recovery
+        self._last_reconcile: dict = {}
 
     # ------------------------------------------------------------------ setup
     def _make_stream(self):
@@ -246,6 +250,41 @@ class MarketScanner:
             self._errors.append(f"features: {exc}")
             feats = {}
 
+        # ---- subscription reconciliation ----
+        # active/confirmed = requested symbols actually DELIVERING fresh data;
+        # warmed = active AND enough history for indicators (snapshot.ok). A
+        # candidate never becomes eligible unless confirmed+warmed+fresh (enforced
+        # by the scoring gate below). References must keep delivering or we fail
+        # closed + force a bounded reconnect.
+        requested = set(subscribed)
+        refset = {r.upper() for r in self.config.market_refs}
+        active = {s for s in requested if self._candidate_fresh(feats.get(s), now)}
+        warmed = {s for s in active
+                  if getattr(getattr(feats.get(s), "snapshot", None), "ok", False)}
+        refs_missing = sorted(r for r in refset if r in requested and r not in active)
+        live = self._stream_live(now)
+        # Reconnect recovery: when the stream (re)comes alive, drop accumulated
+        # scores so no PRE-GAP stale candidate stays eligible until it re-confirms.
+        if live and not self._was_live:
+            self._scored.clear()
+        self._was_live = live
+        if refs_missing:
+            self._ref_miss_ticks += 1
+            if self._ref_miss_ticks >= max(1, self.config.max_ref_miss_ticks):
+                self._log(f"[market-scan] references missing data {refs_missing} for "
+                          f"{self._ref_miss_ticks} ticks; forcing stream reconnect")
+                try:
+                    self.stream.request_reconnect()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._scored.clear()      # reconnect must not leave stale candidates eligible
+                self._ref_miss_ticks = 0
+        else:
+            self._ref_miss_ticks = 0
+        self._last_reconcile = dict(requested=len(requested), active=len(active),
+                                    warmed=len(warmed), missing=len(requested - active),
+                                    refs_missing=refs_missing)
+
         market_ctx = self._market_context(feats)
         rank_inputs = [feats[s] for s in entry_pool if s in feats]
         ranked = ranking_mod.rank(rank_inputs, config=self.config, market=market_ctx)
@@ -256,9 +295,12 @@ class MarketScanner:
         # not been refreshed within candidate_score_ttl_s -- a historical score
         # sitting in the rotation cache must never keep a stale candidate live.
         for r in ranked:
-            if self._candidate_fresh(feats.get(r.symbol), now):
+            cf = feats.get(r.symbol)
+            # Eligible only when CONFIRMED+WARMED+FRESH: fresh data AND the
+            # order-flow snapshot has enough history for indicators (snapshot.ok).
+            if self._candidate_fresh(cf, now) and getattr(getattr(cf, "snapshot", None), "ok", False):
                 self._scored[r.symbol] = (r.score, r.eligible, now)
-            # stale-data candidate: leave any prior entry to expire naturally
+            # stale/unwarmed candidate: leave any prior entry to expire naturally
         discovered_set = set(entry_pool)
         ttl = max(1.0, self.config.candidate_score_ttl_s)
         self._scored = {
@@ -273,6 +315,8 @@ class MarketScanner:
         ][: self.config.target_universe_size]
 
         health = self._health(now, plan, market_ctx, positions, pending, feats)
+        health["reconcile"] = dict(self._last_reconcile)
+        health["reconnect_requests"] = int(getattr(self.stream, "reconnect_requests", 0))
         # Publish per-candidate REPLACEMENT eligibility (the Section-9 gates) so
         # the live engine can emit a gated replacement BUY without recomputing or
         # duplicating the optimizer. Rank order preserved; only all-gates-pass

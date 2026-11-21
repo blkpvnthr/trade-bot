@@ -63,6 +63,7 @@ class StreamClient:
         self._subscribed: set[str] = set()
         self._last_message_ts: float | None = None
         self._messages: int = 0
+        self.reconnect_requests: int = 0   # reconciliation-forced reconnects (observability)
 
     def _now(self) -> float:
         if self._now_fn is not None:
@@ -195,3 +196,19 @@ class StreamClient:
                     close()
             except Exception as exc:  # noqa: BLE001
                 self._log(f"stream stop error: {exc}")
+
+    def request_reconnect(self) -> None:
+        """Force a reconnect: close the current socket so run()'s loop treats it
+        as a drop and reconnects (bounded by backoff). Used when reconciliation
+        detects the stream is not delivering REFERENCE data despite a nominally
+        open socket. On reconnect, connect() re-registers + re-subscribes the
+        current symbol set."""
+        self.reconnect_requests += 1
+        stream = self._stream
+        if stream is not None:
+            try:
+                close = getattr(stream, "stop", None) or getattr(stream, "close", None)
+                if close:
+                    close()
+            except Exception as exc:  # noqa: BLE001
+                self._log(f"request_reconnect error: {exc}")
