@@ -35,14 +35,17 @@ from order_flow_engine import OrderFlowConfig, OrderFlowEngine
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_UNIVERSE_PATH = PROJECT_ROOT / "universe.txt"
+from market_scan import paths as _paths
+
+PROJECT_ROOT = _paths.PROJECT_ROOT
+DEFAULT_UNIVERSE_PATH = _paths.universe_path()
 
 
 def _live_context_path(mode: str) -> Path:
-    # Namespace by mode so a paper scanner and a live scanner in the same
-    # checkout never clobber each other's health metadata (locked decision #1).
-    return Path(__file__).resolve().parent / f"live_context_{mode}.json"
+    # Canonical, cwd-independent market-context path (single source of truth in
+    # market_scan.paths). Namespaced by mode so a paper scanner and a live
+    # scanner in the same checkout never clobber each other (locked decision #1).
+    return _paths.live_context_path(mode)
 
 
 class MarketScanner:

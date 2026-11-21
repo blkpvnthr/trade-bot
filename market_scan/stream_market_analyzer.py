@@ -7,6 +7,7 @@ import pandas as pd
 import websockets
 from market_scan.live_market_analyzer import Alpaca, atomic
 from market_scan.market_analyzer import discover, INVERSE, BULL, SECTORS
+from market_scan import paths as _paths
 
 REFS=list(dict.fromkeys(['SPY','QQQ','DIA','IWM']+list(INVERSE.values())+list(BULL.values())))
 
@@ -200,7 +201,7 @@ def main():
     a = SimpleNamespace(feed='iex', max_symbols=MAX_SYMBOLS,
                         pool=MAX_SYMBOLS-len(REFS), top=30,
                         refresh=3, rediscover=300, max_spread=.001,
-                        output=str(Path(__file__).resolve().parent / 'market_scan'))
+                        output=str(_paths.research_output_dir()))
     if a.pool <= 0:
         raise RuntimeError('IEX subscription budget exhausted by references')
     asyncio.run(run(a))
