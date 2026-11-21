@@ -243,6 +243,12 @@ class MarketScanner:
         ][: self.config.target_universe_size]
 
         health = self._health(now, plan, market_ctx, positions, pending, feats)
+        # Publish per-candidate REPLACEMENT eligibility (the Section-9 gates) so
+        # the live engine can emit a gated replacement BUY without recomputing or
+        # duplicating the optimizer. Rank order preserved; only all-gates-pass
+        # candidates are listed.
+        health["replacement_candidates"] = self._replacement_candidates(
+            eligible, feats, market_ctx)
         try:
             self.publisher.publish(eligible, now=now, force_rewrite=self._force_publish,
                                    health=health)
@@ -265,6 +271,37 @@ class MarketScanner:
         sc = 0.0 if (score != score) else float(score)
         return MarketContext(regime_label=label, regime_score=sc, spy_score=spy,
                              qqq_score=qqq, cfg=self._regime_cfg)
+
+    def _replacement_candidates(self, eligible, feats, market_ctx) -> list[dict]:
+        """Section-9 per-candidate replacement eligibility, in rank order.
+
+        Evaluates the gates (seller exhaustion, positive momentum, DI+ > DI-,
+        price > BB-mid, price > VWAP, liquidity, regime alignment) from live
+        features and lists only all-gates-pass candidates so the engine's
+        replacement BUY is authorized by the gates, not by universe membership.
+        """
+        from market_scan.replacement import eligibility_from_features
+        out: list[dict] = []
+        for sym in eligible:
+            f = feats.get(sym)
+            if f is None:
+                continue
+            e = eligibility_from_features(f, market_ctx, self.config)
+            if e.eligible:
+                out.append({
+                    "symbol": sym,
+                    "price": getattr(f, "price", None),
+                    "gates": {
+                        "seller_exhaustion": e.seller_exhaustion,
+                        "positive_momentum": e.positive_momentum,
+                        "di_plus_gt_minus": e.di_plus_gt_minus,
+                        "above_bb_mid": e.above_bb_mid,
+                        "above_vwap": e.above_vwap,
+                        "liquidity_ok": e.liquidity_ok,
+                        "regime_aligned": e.regime_aligned,
+                    },
+                })
+        return out
 
     def _candidate_fresh(self, cf: Any, now: float) -> bool:
         """Candidate-SPECIFIC freshness: this symbol's own quote AND trade must

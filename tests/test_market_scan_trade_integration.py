@@ -167,6 +167,98 @@ def test_loss_removal_positive_threshold_typo_does_not_liquidate(monkeypatch):
     assert set(out["symbol"]) == {"REAL"}       # only the true -0.5%+ loser
 
 
+# ---- #7 gated replacement path (verify Section-9 gates reach the order path) ----
+def _repl_exec(positions=(), pending=(), paper=True):
+    e = object.__new__(trade.ProductionOrderExecutor)
+    e.broker = SimpleNamespace(
+        get_all_open_positions=lambda: [
+            SimpleNamespace(symbol=s, qty=1, market_value=50.0, current_price=50.0)
+            for s in positions],
+        list_open_orders=lambda: [SimpleNamespace(symbol=s) for s in pending])
+    e.config = SimpleNamespace(
+        paper=paper,
+        scanner=SimpleNamespace(base_target_weight=0.03, enable_fractional_orders=True))
+    e._pending_replacements = set()
+    return e
+
+
+def test_replacement_requires_confirmed_close(monkeypatch):
+    monkeypatch.setattr(trade, "load_no_reentry_symbols", lambda: set())
+    monkeypatch.setattr(trade, "write_event", lambda *a, **k: None)
+    e = _repl_exec(positions=["LOSER"])          # LOSER still OPEN (not flat)
+    e._pending_replacements = {"LOSER"}
+    e._read_scanner_replacement_candidates = lambda: [{"symbol": "NEW", "price": 50.0, "gates": {}}]
+    out = e._augment_rebalance_with_replacements(pd.DataFrame(), equity=10000.0)
+    assert out.empty                              # no replacement until close confirmed
+    assert "LOSER" in e._pending_replacements
+
+
+def test_replacement_emitted_after_confirmed_close(monkeypatch):
+    monkeypatch.setattr(trade, "load_no_reentry_symbols", lambda: set())
+    monkeypatch.setattr(trade, "write_event", lambda *a, **k: None)
+    e = _repl_exec(positions=[])                  # LOSER now FLAT
+    e._pending_replacements = {"LOSER"}
+    e._read_scanner_replacement_candidates = lambda: [{"symbol": "NEW", "price": 50.0, "gates": {}}]
+    out = e._augment_rebalance_with_replacements(pd.DataFrame(), equity=10000.0)
+    assert list(out["symbol"]) == ["NEW"] and list(out["side"]) == ["buy"]
+    assert "LOSER" not in e._pending_replacements  # slot consumed (one attempt)
+
+
+def test_replacement_holds_cash_when_nothing_gate_eligible(monkeypatch):
+    monkeypatch.setattr(trade, "load_no_reentry_symbols", lambda: set())
+    monkeypatch.setattr(trade, "write_event", lambda *a, **k: None)
+    e = _repl_exec(positions=[])
+    e._pending_replacements = {"LOSER"}
+    e._read_scanner_replacement_candidates = lambda: []   # none pass the gates
+    out = e._augment_rebalance_with_replacements(pd.DataFrame(), equity=10000.0)
+    assert out.empty                              # cash, never forced
+    assert "LOSER" not in e._pending_replacements
+
+
+def test_replacement_excludes_held_pending_and_no_reentry(monkeypatch):
+    monkeypatch.setattr(trade, "load_no_reentry_symbols", lambda: {"NR"})
+    monkeypatch.setattr(trade, "write_event", lambda *a, **k: None)
+    e = _repl_exec(positions=["HELD"], pending=["PEND"])
+    e._pending_replacements = {"LOSER"}
+    e._read_scanner_replacement_candidates = lambda: [
+        {"symbol": "HELD", "price": 50.0}, {"symbol": "PEND", "price": 50.0},
+        {"symbol": "NR", "price": 50.0}, {"symbol": "GOOD", "price": 50.0}]
+    out = e._augment_rebalance_with_replacements(pd.DataFrame(), equity=10000.0)
+    assert list(out["symbol"]) == ["GOOD"]        # skips held/pending/no-reentry
+
+
+def test_read_replacement_candidates_blocked_when_scanner_unhealthy(monkeypatch):
+    from market_scan.health import DynamicUniverseResult
+    monkeypatch.setattr(market_scan, "load_entry_universe",
+                        lambda **k: DynamicUniverseResult([], "unhealthy", "stale"))
+    e = _repl_exec()
+    assert e._read_scanner_replacement_candidates() == []  # gates unavailable -> cash
+
+
+def test_read_replacement_candidates_blocked_when_replace_disabled(monkeypatch):
+    monkeypatch.setenv("MARKET_SCAN_REPLACE_ENABLED", "0")
+    e = _repl_exec()
+    assert e._read_scanner_replacement_candidates() == []
+
+
+# ---- #8 kill-switch conflict resolution (explicit, not silent) ----
+def test_positions_below_loss_threshold_identified_for_suppression_logging():
+    e = _exec_with_positions([])
+    positions = [_pos("A", -0.02), _pos("B", -0.004), _pos("C", -0.006), _pos("D", 0.01)]
+    below = set(e._positions_below_loss_threshold(positions, -0.005))
+    assert below == {"A", "C"}   # the ones the halt is suppressing
+
+
+def test_loss_removal_threshold_helper_clamps_and_toggles(monkeypatch):
+    e = _exec_with_positions([])
+    monkeypatch.delenv("MARKET_SCAN_LOSS_REMOVAL", raising=False)
+    monkeypatch.setenv("MARKET_SCAN_LOSS_THRESHOLD", "0.5")  # typo
+    enabled, thr = e._loss_removal_enabled_threshold()
+    assert enabled is True and thr == -0.005               # clamped
+    monkeypatch.setenv("MARKET_SCAN_LOSS_REMOVAL", "0")
+    assert e._loss_removal_enabled_threshold()[0] is False
+
+
 def test_loss_removal_independent_of_scanner_health(monkeypatch):
     # loss exit must fire even if the scanner module/universe is broken
     monkeypatch.setattr(trade, "mark_no_reentry_symbol", lambda *a, **k: None)
