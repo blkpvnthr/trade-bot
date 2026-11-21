@@ -13,3 +13,5 @@ Created isolated worktree feat/unified-trading-engine @ 151aa3c; trade1.py basel
 Built mkt_scan/ pkg (1,881 LoC, 10 modules, fresh); 13 commits (10 integration + 3 corrective addressing 11 verified issues); hot-reload universe.txt, −0.5% loss-removal w/ gated replacement, broker-snapshot caching, subscription-cap enforcement, candidate-freshness validation; 480 tests pass, 0 regressions; merged → 13K-development (53f285e..798fcbc ff), pushed to origin.
 ## 10:58 | worktrees-market-scanner
 Confirmed -0.5% exit-replace flow (live equity, unrealized P/L trigger, strict seller-exhaustion gating on replacements); 2 caveats documented (cycle latency ~30s, tight gating → frequent cash holds); user approved planned improvements to relax gating + add dedicated fast monitor.
+## 11:58 | fix/13K-post-merge-integration
+Autonomous post-merge repair: restored dry-run broker, sector mapping, model leakage prevention, covariance optimizer via 4 parallelized agents; corrected stale assertions, fixed collection error, 65+ tests green, walk-forward (45 failures) pending.
