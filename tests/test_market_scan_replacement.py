@@ -74,12 +74,27 @@ def test_eligibility_all_gates_pass():
     assert e.eligible is True
 
 
-def test_eligibility_requires_seller_exhaustion():
+def test_eligibility_seller_exhaustion_relaxed_by_default():
+    # Default policy (relaxed): seller exhaustion is NOT required, so a candidate
+    # passing the trend/structure/regime gates is eligible without it.
     f = _good_feat()
     f.snapshot = SimpleNamespace(ok=True, buy_pressure=0.7, seller_exhaustion=0.0,
                                  seller_exhaustion_l1=0.0, cvd_trend=0.3,
                                  last_trade_age_s=1.0)
-    assert eligibility_from_features(f, MKT, CFG).eligible is False
+    assert eligibility_from_features(f, MKT, CFG).eligible is True
+
+
+def test_eligibility_requires_seller_exhaustion_when_configured_strict():
+    strict = MarketScanConfig(replacement_require_seller_exhaustion=True)
+    f = _good_feat()
+    f.snapshot = SimpleNamespace(ok=True, buy_pressure=0.7, seller_exhaustion=0.0,
+                                 seller_exhaustion_l1=0.0, cvd_trend=0.3,
+                                 last_trade_age_s=1.0)
+    assert eligibility_from_features(f, MKT, strict).eligible is False
+    # ... but the OTHER gates still bind even in relaxed mode:
+    g = _good_feat()
+    g.directional_row = dict(g.directional_row, pdi=5, mdi=40)   # DI fails
+    assert eligibility_from_features(g, MKT, CFG).eligible is False
 
 
 def test_eligibility_requires_di_plus_over_minus():

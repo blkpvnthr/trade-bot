@@ -314,7 +314,9 @@ class MarketScanner:
             if f is None:
                 continue
             e = eligibility_from_features(f, market_ctx, self.config)
-            if e.eligible:
+            # Publish on the SCANNER-side subset (momentum/liquidity/regime/±SE);
+            # the engine enforces DI+/DI-/BB-mid/VWAP via confirm_buy_direction.
+            if e.scanner_side_eligible:
                 out.append({
                     "symbol": sym,
                     "price": getattr(f, "price", None),

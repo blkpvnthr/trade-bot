@@ -5023,6 +5023,12 @@ class ProductionOrderExecutor:
         self.account_history: list[dict[str, Any]] = []
         self._last_morning_refresh_date: str | None = None
         self._rl_validation_cache: dict[str, Any] | None = None
+        # Symbols stopped out by -0.5% loss removal awaiting a gated replacement.
+        # Shared between the main cycle and the fast loss-removal monitor thread;
+        # mutated under _pending_replacements_lock (set ops are GIL-safe but the
+        # lock makes read-copy-modify sequences explicit).
+        self._pending_replacements: set[str] = set()
+        self._pending_replacements_lock = threading.RLock()
 
     def _in_cooldown(self) -> bool:
         return (time.time() - self.last_order_time) < self.config.cooldown_seconds
@@ -5602,6 +5608,104 @@ class ProductionOrderExecutor:
                 out.append(sym)
         return out
 
+    def _ensure_pending_replacements(self) -> "threading.RLock":
+        """Lazily ensure the pending-replacement set + lock exist.
+
+        __init__ creates them eagerly for real executors; this defensive path
+        covers partially-constructed executors (e.g. object.__new__ in tests) and
+        is single-threaded there, so the first-creation race only matters in
+        production, where __init__ has already run.
+        """
+        if not hasattr(self, "_pending_replacements_lock"):
+            self._pending_replacements_lock = threading.RLock()
+        if not hasattr(self, "_pending_replacements"):
+            self._pending_replacements = set()
+        return self._pending_replacements_lock
+
+    def _loss_removal_monitor_tick(self) -> int:
+        """One fast protective-exit pass: SELL any position at/below -0.5%.
+
+        Runs in a dedicated monitor thread BETWEEN the slower execution cycles so
+        a fast move past the threshold is caught sooner than the poll cadence.
+        Reuses the broker's lock-serialized, duplicate-blocking submit; honors the
+        emergency kill switch (read-only) and market hours; marks no-reentry and
+        registers a pending replacement for the main cycle to redeploy. Returns
+        the count of protective exits submitted. Never raises.
+        """
+        try:
+            enabled, threshold = self._loss_removal_enabled_threshold()
+            if not enabled:
+                return 0
+            try:
+                if not self.broker.get_clock_info().get("is_open"):
+                    return 0  # never submit outside regular hours
+            except Exception as exc:  # noqa: BLE001
+                print(f"[loss-monitor] clock check failed: {exc}")
+                return 0
+            try:
+                positions = self.broker.get_all_open_positions()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[loss-monitor] position read failed: {exc}")
+                return 0
+            breached = self._positions_below_loss_threshold(positions, threshold)
+            if not breached:
+                return 0
+            # Emergency halt precedence (explicit, read-only -- the monitor honors
+            # but never triggers/writes the kill state; that is the cycle's job).
+            if self.config.enable_kill_switch:
+                try:
+                    if self._read_kill_state().get("kill_triggered"):
+                        print(f"[loss-monitor] EMERGENCY HALT suppressing protective "
+                              f"exits for {breached}")
+                        write_event("kill_switch_suppressed_loss_removal",
+                                    {"symbols": breached, "threshold": threshold,
+                                     "source": "loss_monitor"})
+                        return 0
+                except Exception:  # noqa: BLE001
+                    pass
+            pos_by_sym = {safe_symbol(getattr(p, "symbol", None)): p for p in positions}
+            submitted = 0
+            for symbol in breached:
+                pos = pos_by_sym.get(symbol)
+                if pos is None:
+                    continue
+                try:
+                    if self.broker.has_open_order_for_symbol(symbol):
+                        continue  # an exit is already in flight (dedup)
+                except Exception:  # noqa: BLE001
+                    pass
+                qty = round(to_float(pos.qty, 0.0), 9)
+                if qty <= 0:
+                    continue
+                cid = f"{self.config.order_tag_prefix}_{run_id()}_lossmon_{symbol}_sell"[:48]
+                try:
+                    self.broker.submit_market_sell(symbol, qty, cid, self.config.time_in_force)
+                except Exception as exc:  # noqa: BLE001 - pending/short/etc. -> skip, retry next tick
+                    print(f"[loss-monitor] protective sell {symbol} deferred: {exc}")
+                    continue
+                try:
+                    mark_no_reentry_symbol(symbol, reason="loss_removal_monitor")
+                except Exception:  # noqa: BLE001
+                    pass
+                with self._ensure_pending_replacements():
+                    self._pending_replacements.add(symbol)
+                plpc = to_float(getattr(pos, "unrealized_plpc", 0.0), 0.0)
+                write_event("market_scan_loss_monitor_exit",
+                            {"symbol": symbol, "plpc": plpc, "threshold": threshold, "qty": qty})
+                print(f"[loss-monitor] protective exit {symbol} plpc={plpc:.3%} (fast monitor)")
+                submitted += 1
+            return submitted
+        except Exception as exc:  # noqa: BLE001 - a monitor fault must never crash the engine
+            print(f"[loss-monitor] tick error: {exc}")
+            return 0
+
+    def _loss_removal_monitor_loop(self, stop_event: "threading.Event", interval: float) -> None:
+        """Run :meth:`_loss_removal_monitor_tick` every ``interval`` seconds until
+        ``stop_event`` is set (interruptible)."""
+        while not stop_event.is_set():
+            self._loss_removal_monitor_tick()
+            stop_event.wait(max(0.5, float(interval)))
+
     def _augment_exit_orders_with_loss_removal(self, exit_orders: pd.DataFrame | None) -> pd.DataFrame:
         """Monitor-based -0.5% loss removal.
 
@@ -5679,8 +5783,8 @@ class ProductionOrderExecutor:
                 pass
             # Register a freed slot awaiting a gated replacement (filled on a
             # later cycle once the close is CONFIRMED, i.e. the symbol is flat).
-            self._pending_replacements = getattr(self, "_pending_replacements", set())
-            self._pending_replacements.add(symbol)
+            with self._ensure_pending_replacements():
+                self._pending_replacements.add(symbol)
             write_event("market_scan_loss_removal",
                         {"symbol": symbol, "plpc": plpc, "threshold": threshold, "qty": qty})
 
@@ -5720,6 +5824,30 @@ class ProductionOrderExecutor:
             print(f"[replacement] candidate read failed (holding cash): {exc}")
             return []
 
+    def _confirm_replacement_directions(self, symbols: list[str]) -> set[str]:
+        """Apply the engine's directional entry gate (DI+ > DI-, > VWAP, no
+        lower-low, multi-timeframe structure) to replacement candidates via the
+        SAME confirm_buy_direction used for normal entries -- with fresh intraday
+        bars, so DI/BB/VWAP are enforced on real data and never duplicated.
+
+        Returns the subset of ``symbols`` the engine confirms. Fail-safe: if the
+        scanner/confirmation is unavailable, returns an empty set (hold cash)
+        rather than letting an unconfirmed replacement through.
+        """
+        syms = [safe_symbol(s) for s in symbols if safe_symbol(s)]
+        if not syms or self.scanner is None:
+            return set()
+        try:
+            df = self.scanner.confirm_buy_direction(syms)
+            if df is None or df.empty or "symbol" not in df.columns:
+                return set()
+            col = "direction_confirmed"
+            return {safe_symbol(r["symbol"]) for _, r in df.iterrows()
+                    if col not in df.columns or bool(r.get(col))}
+        except Exception as exc:  # noqa: BLE001 - never force an unconfirmed replacement
+            print(f"[replacement] direction confirmation failed (holding cash): {exc}")
+            return set()
+
     def _augment_rebalance_with_replacements(self, rebalance_orders: pd.DataFrame | None,
                                              equity: float) -> pd.DataFrame:
         """Emit gated replacement BUYs for slots freed by a confirmed -0.5% close.
@@ -5733,7 +5861,8 @@ class ProductionOrderExecutor:
         rows are ordinary rebalance BUYs.
         """
         rebal = rebalance_orders.copy() if rebalance_orders is not None else pd.DataFrame()
-        pending = getattr(self, "_pending_replacements", set())
+        with self._ensure_pending_replacements():
+            pending = set(self._pending_replacements)
         if not pending:
             return rebal
 
@@ -5756,6 +5885,14 @@ class ProductionOrderExecutor:
         exclude = held | pending_syms | no_reentry | already | set(pending)
 
         candidates = self._read_scanner_replacement_candidates()
+        # Enforce the engine's own directional gates (DI+ > DI-, > session VWAP,
+        # multi-timeframe structure) on the candidate POOL via confirm_buy_direction
+        # -- the exact gate normal entries use, with fresh intraday bars. This is
+        # where the DI/BB/VWAP requirements are actually applied to replacements
+        # (the scanner pre-filters only momentum/liquidity/regime/±seller-exhaustion).
+        pool_syms = [safe_symbol(c.get("symbol")) for c in candidates if c.get("symbol")]
+        confirmed = self._confirm_replacement_directions(
+            [s for s in pool_syms if s and s not in exclude])
         target_weight = float(getattr(self.config.scanner, "base_target_weight", 0.03) or 0.03)
         chosen: set[str] = set()
         rows: list[dict[str, Any]] = []
@@ -5763,12 +5900,15 @@ class ProductionOrderExecutor:
         for loser in freed:
             # Attempt exactly one replacement per freed slot, then clear it
             # (never retry forever; cash is a valid outcome).
-            self._pending_replacements.discard(loser)
+            with self._ensure_pending_replacements():
+                self._pending_replacements.discard(loser)
             pick = None
             for c in candidates:
                 sym = safe_symbol(c.get("symbol"))
                 price = to_float(c.get("price"), 0.0)
                 if not sym or sym in exclude or sym in chosen or price <= 0:
+                    continue
+                if sym not in confirmed:   # DI/BB/VWAP/structure not confirmed by the engine
                     continue
                 pick = (sym, price)
                 break
@@ -8124,10 +8264,31 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001 - never block the engine on scanner init
         print(f"[market-scan] scanner init failed (non-fatal; new entries fail-closed): {exc}")
 
+    # Fast dedicated -0.5% loss-removal monitor: catches a breach between the
+    # slower execution cycles (default every 5s; MARKET_SCAN_LOSS_MONITOR=0 to
+    # disable). The cycle-based loss-removal remains as a redundant backstop.
+    loss_monitor_stop = None
+    loss_monitor_thread = None
+    try:
+        ls_enabled, _ = executor._loss_removal_enabled_threshold()
+        fast = os.getenv("MARKET_SCAN_LOSS_MONITOR", "1").strip() != "0"
+        interval = float(os.getenv("MARKET_SCAN_LOSS_MONITOR_SECONDS", "5") or 5)
+        if ls_enabled and fast:
+            loss_monitor_stop = threading.Event()
+            loss_monitor_thread = threading.Thread(
+                target=executor._loss_removal_monitor_loop,
+                args=(loss_monitor_stop, interval), name="loss-monitor", daemon=True)
+            loss_monitor_thread.start()
+            print(f"[loss-monitor] fast -0.5% protective monitor started (every {interval:.0f}s)")
+    except Exception as exc:  # noqa: BLE001 - cycle-based loss-removal still active
+        print(f"[loss-monitor] start failed (non-fatal): {exc}")
+
     print_startup_banner(config)
     try:
         executor.run()
     finally:
+        if loss_monitor_stop is not None:
+            loss_monitor_stop.set()
         if scan_handle is not None:
             try:
                 scan_handle.stop(timeout=5.0)

@@ -50,19 +50,11 @@ class ReplacementEligibility:
     liquidity_ok: bool = False
     regime_aligned: bool = False
     risk_ok: bool = True            # existing engine risk gates applied downstream
+    require_seller_exhaustion: bool = True  # whether seller_exhaustion is MANDATORY
     reason: str = ""
 
-    @property
-    def eligible(self) -> bool:
-        return all([
-            self.seller_exhaustion, self.positive_momentum, self.di_plus_gt_minus,
-            self.above_bb_mid, self.above_vwap, self.liquidity_ok,
-            self.regime_aligned, self.risk_ok,
-        ])
-
-    def failing(self) -> list[str]:
+    def _required_checks(self) -> dict[str, bool]:
         checks = {
-            "seller_exhaustion": self.seller_exhaustion,
             "positive_momentum": self.positive_momentum,
             "di_plus_gt_minus": self.di_plus_gt_minus,
             "above_bb_mid": self.above_bb_mid,
@@ -71,7 +63,28 @@ class ReplacementEligibility:
             "regime_aligned": self.regime_aligned,
             "risk_ok": self.risk_ok,
         }
-        return [k for k, v in checks.items() if not v]
+        if self.require_seller_exhaustion:
+            checks["seller_exhaustion"] = self.seller_exhaustion
+        return checks
+
+    @property
+    def eligible(self) -> bool:
+        return all(self._required_checks().values())
+
+    @property
+    def scanner_side_eligible(self) -> bool:
+        """The subset of gates the SCANNER can evaluate from its features:
+        momentum + liquidity + regime (+ seller exhaustion if required). The
+        directional gates (DI+ > DI-, > BB-mid, > VWAP) are deferred to the engine
+        (confirm_buy_direction) at order time, where fresh intraday bars exist --
+        so they are never duplicated or approximated scanner-side."""
+        checks = [self.positive_momentum, self.liquidity_ok, self.regime_aligned, self.risk_ok]
+        if self.require_seller_exhaustion:
+            checks.append(self.seller_exhaustion)
+        return all(checks)
+
+    def failing(self) -> list[str]:
+        return [k for k, v in self._required_checks().items() if not v]
 
 
 def _as_float(x: Any) -> Optional[float]:
@@ -135,6 +148,8 @@ def eligibility_from_features(features: Any, market: MarketContext,
     dir_sign = _direction_sign(getattr(features, "symbol", ""))
 
     e = ReplacementEligibility()
+    e.require_seller_exhaustion = bool(
+        getattr(config, "replacement_require_seller_exhaustion", True))
     e.seller_exhaustion = se >= SELLER_EXHAUSTION_MIN
     e.positive_momentum = (short_mom > 0.0) or (momentum_flow > 0.5)
     e.di_plus_gt_minus = (pdi is not None and mdi is not None and pdi > mdi)

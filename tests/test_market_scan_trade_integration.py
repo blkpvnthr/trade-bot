@@ -97,8 +97,11 @@ def _pos(sym, plpc, qty=10, price=50.0):
 
 
 def _exec_with_positions(positions):
+    import threading as _t
     e = object.__new__(trade.ProductionOrderExecutor)
     e.broker = SimpleNamespace(get_all_open_positions=lambda: positions)
+    e._pending_replacements = set()
+    e._pending_replacements_lock = _t.RLock()
     return e
 
 
@@ -168,7 +171,7 @@ def test_loss_removal_positive_threshold_typo_does_not_liquidate(monkeypatch):
 
 
 # ---- #7 gated replacement path (verify Section-9 gates reach the order path) ----
-def _repl_exec(positions=(), pending=(), paper=True):
+def _repl_exec(positions=(), pending=(), paper=True, confirm=None):
     e = object.__new__(trade.ProductionOrderExecutor)
     e.broker = SimpleNamespace(
         get_all_open_positions=lambda: [
@@ -178,7 +181,17 @@ def _repl_exec(positions=(), pending=(), paper=True):
     e.config = SimpleNamespace(
         paper=paper,
         scanner=SimpleNamespace(base_target_weight=0.03, enable_fractional_orders=True))
+    # The engine's directional gate (DI/VWAP/structure) used for replacements.
+    # Default confirms everything; pass confirm=set(...) to restrict.
+    def _cbd(syms):
+        syms = list(syms)
+        ok = set(syms) if confirm is None else set(confirm)
+        return pd.DataFrame({"symbol": syms,
+                             "direction_confirmed": [s in ok for s in syms]})
+    e.scanner = SimpleNamespace(confirm_buy_direction=_cbd)
+    import threading as _t
     e._pending_replacements = set()
+    e._pending_replacements_lock = _t.RLock()
     return e
 
 
@@ -227,6 +240,24 @@ def test_replacement_excludes_held_pending_and_no_reentry(monkeypatch):
     assert list(out["symbol"]) == ["GOOD"]        # skips held/pending/no-reentry
 
 
+def test_replacement_requires_engine_direction_confirmation(monkeypatch):
+    # DI/BB/VWAP are enforced via the engine's confirm_buy_direction: a candidate
+    # the engine does NOT confirm is skipped (cash), even if the scanner published it.
+    monkeypatch.setattr(trade, "load_no_reentry_symbols", lambda: set())
+    monkeypatch.setattr(trade, "write_event", lambda *a, **k: None)
+    e = _repl_exec(positions=[], confirm=set())  # engine confirms NOTHING
+    e._pending_replacements = {"LOSER"}
+    e._read_scanner_replacement_candidates = lambda: [{"symbol": "NEW", "price": 50.0}]
+    out = e._augment_rebalance_with_replacements(pd.DataFrame(), equity=10000.0)
+    assert out.empty                               # unconfirmed -> cash
+    # and when the engine DOES confirm it, the replacement is emitted:
+    e2 = _repl_exec(positions=[], confirm={"NEW"})
+    e2._pending_replacements = {"LOSER"}
+    e2._read_scanner_replacement_candidates = lambda: [{"symbol": "NEW", "price": 50.0}]
+    out2 = e2._augment_rebalance_with_replacements(pd.DataFrame(), equity=10000.0)
+    assert list(out2["symbol"]) == ["NEW"]
+
+
 def test_read_replacement_candidates_blocked_when_scanner_unhealthy(monkeypatch):
     from market_scan.health import DynamicUniverseResult
     monkeypatch.setattr(market_scan, "load_entry_universe",
@@ -239,6 +270,92 @@ def test_read_replacement_candidates_blocked_when_replace_disabled(monkeypatch):
     monkeypatch.setenv("MARKET_SCAN_REPLACE_ENABLED", "0")
     e = _repl_exec()
     assert e._read_scanner_replacement_candidates() == []
+
+
+# ---- fast dedicated -0.5% loss-removal monitor ----
+import threading as _threading  # noqa: E402
+
+
+class _MonBroker:
+    def __init__(self, positions=(), open_order_syms=(), is_open=True):
+        self._pos = list(positions)
+        self._oo = set(open_order_syms)
+        self._is_open = is_open
+        self.sold = []
+
+    def get_clock_info(self):
+        return {"is_open": self._is_open}
+
+    def get_all_open_positions(self):
+        return list(self._pos)
+
+    def has_open_order_for_symbol(self, s):
+        return s in self._oo
+
+    def submit_market_sell(self, symbol, qty, cid, tif):
+        self.sold.append((symbol, qty))
+        return SimpleNamespace(status="accepted")
+
+
+def _mon_exec(broker, enable_kill=False):
+    e = object.__new__(trade.ProductionOrderExecutor)
+    e.broker = broker
+    e.config = SimpleNamespace(order_tag_prefix="qq", time_in_force="day",
+                               enable_kill_switch=enable_kill)
+    e._pending_replacements = set()
+    e._pending_replacements_lock = _threading.RLock()
+    return e
+
+
+def _mon_patch(monkeypatch):
+    monkeypatch.delenv("MARKET_SCAN_LOSS_REMOVAL", raising=False)
+    monkeypatch.setattr(trade, "mark_no_reentry_symbol", lambda *a, **k: None)
+    monkeypatch.setattr(trade, "write_event", lambda *a, **k: None)
+    monkeypatch.setattr(trade, "run_id", lambda: "rid")
+
+
+def test_fast_monitor_submits_protective_exit(monkeypatch):
+    _mon_patch(monkeypatch)
+    b = _MonBroker(positions=[_pos("A", -0.02, qty=3), _pos("B", -0.001, qty=2)])
+    e = _mon_exec(b)
+    n = e._loss_removal_monitor_tick()
+    assert n == 1 and b.sold == [("A", 3.0)]      # only the <= -0.5% name
+    assert "A" in e._pending_replacements          # registered for replacement
+
+
+def test_fast_monitor_fractional_full_exit(monkeypatch):
+    _mon_patch(monkeypatch)
+    b = _MonBroker(positions=[_pos("A", -0.02, qty=0.7)])
+    e = _mon_exec(b)
+    e._loss_removal_monitor_tick()
+    assert b.sold == [("A", 0.7)]                   # full fractional qty
+
+
+def test_fast_monitor_skips_when_market_closed(monkeypatch):
+    _mon_patch(monkeypatch)
+    b = _MonBroker(positions=[_pos("A", -0.02)], is_open=False)
+    assert _mon_exec(b)._loss_removal_monitor_tick() == 0 and b.sold == []
+
+
+def test_fast_monitor_dedups_when_open_order_exists(monkeypatch):
+    _mon_patch(monkeypatch)
+    b = _MonBroker(positions=[_pos("A", -0.02)], open_order_syms=["A"])
+    assert _mon_exec(b)._loss_removal_monitor_tick() == 0 and b.sold == []
+
+
+def test_fast_monitor_disabled_by_env(monkeypatch):
+    _mon_patch(monkeypatch)
+    monkeypatch.setenv("MARKET_SCAN_LOSS_REMOVAL", "0")
+    b = _MonBroker(positions=[_pos("A", -0.02)])
+    assert _mon_exec(b)._loss_removal_monitor_tick() == 0 and b.sold == []
+
+
+def test_fast_monitor_honors_triggered_kill_switch(monkeypatch):
+    _mon_patch(monkeypatch)
+    b = _MonBroker(positions=[_pos("A", -0.02)])
+    e = _mon_exec(b, enable_kill=True)
+    e._read_kill_state = lambda: {"kill_triggered": True}
+    assert e._loss_removal_monitor_tick() == 0 and b.sold == []  # halt wins
 
 
 # ---- #8 kill-switch conflict resolution (explicit, not silent) ----

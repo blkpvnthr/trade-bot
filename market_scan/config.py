@@ -78,6 +78,11 @@ class MarketScanConfig:
 
     # --- loss-removal / replacement ---
     loss_removal_threshold: float = -0.005    # decimal fraction (-0.5%)
+    # Replacement gating: require momentum + DI+>DI- + >BB-mid + >VWAP + liquidity
+    # + regime for every replacement. Seller exhaustion is OPTIONAL (default OFF)
+    # so stopped-out capital is redeployed more readily into the best-ranked
+    # trend/structure-confirmed candidate; set 1 to also require it.
+    replacement_require_seller_exhaustion: bool = False
 
     # --- always-monitored market references ---
     market_refs: tuple[str, ...] = ("SPY", "QQQ", "DIA", "IWM")
@@ -124,5 +129,8 @@ class MarketScanConfig:
             max_subscriptions=_env_int("MARKET_SCAN_MAX_SUBSCRIPTIONS", 30),
             loss_removal_threshold=_env_float(
                 "MARKET_SCAN_LOSS_THRESHOLD", -0.005
+            ),
+            replacement_require_seller_exhaustion=_env_flag(
+                "MARKET_SCAN_REQUIRE_SELLER_EXHAUSTION", False
             ),
         )
