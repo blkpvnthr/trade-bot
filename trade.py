@@ -3229,7 +3229,11 @@ class MomentumSetupScanner:
             raw_symbols = get_sp500_fallback_symbols()
             self.llm_metadata_by_symbol = {}
         else:
-            raw_symbols = DEFAULT_SCAN_UNIVERSE
+            # Hot-reloaded, scanner-authoritative ENTRY universe. Fail-closed:
+            # returns [] (block new entries) when the real-time scanner is
+            # disabled, unhealthy, stale, inconsistent, or has no eligible
+            # candidates. Exits/monitoring/risk are NEVER gated by this.
+            raw_symbols = self._dynamic_entry_universe()
             self.llm_metadata_by_symbol = {}
 
         # Only the research-only broad-market scan (full S&P 500) may be capped
@@ -3266,6 +3270,37 @@ class MomentumSetupScanner:
             return capped
 
         return symbols
+
+    def _dynamic_entry_universe(self) -> list[str]:
+        """Resolve the hot-reloaded, scanner-authoritative ENTRY universe.
+
+        Honors the three operational states (disabled / enabled-unhealthy /
+        enabled-healthy). Returns [] to BLOCK new entries whenever the scanner
+        is not demonstrably healthy and fresh -- it never silently reverts to a
+        static universe, and it never affects exits, monitoring, or risk (those
+        are driven entirely by broker positions). Any unexpected error also
+        fails closed (block entries) with a loud log rather than crashing the
+        trading loop.
+        """
+        try:
+            import market_scan
+            cfg = market_scan.MarketScanConfig.from_env()
+            mode = "paper" if self.config.paper else "live"
+            res = market_scan.load_entry_universe(
+                enabled=cfg.enabled, mode=mode,
+                max_age_seconds=cfg.universe_max_age_seconds,
+            )
+            prev = getattr(self, "_last_scan_state", None)
+            if res.state != prev or res.reason != getattr(self, "_last_scan_reason", None):
+                print(f"[market-scan] entry universe: state={res.state} "
+                      f"n={len(res.symbols)} reason={res.reason}")
+                self._last_scan_state = res.state
+                self._last_scan_reason = res.reason
+            return list(res.symbols)
+        except Exception as exc:  # noqa: BLE001 - fail closed for ENTRIES, never crash the loop
+            print(f"[market-scan] dynamic entry universe unavailable; "
+                  f"BLOCKING new entries (fail-closed): {exc}")
+            return []
 
     def _feed(self):
         if DataFeed is None:
@@ -5536,6 +5571,85 @@ class ProductionOrderExecutor:
 
         return {"action": "HOLD", "reason": f"exit_learning_hold:plpc={plpc:.3%}:ev15={ev15:.3%}", "confidence": 0.50}
 
+    def _augment_exit_orders_with_loss_removal(self, exit_orders: pd.DataFrame | None) -> pd.DataFrame:
+        """Monitor-based -0.5% loss removal (un-overridable; all strategies).
+
+        Appends a FULL-exit SELL for every open position whose broker-reported
+        ``unrealized_plpc`` (decimal fraction) is at/below the configured
+        threshold (-0.005 = -0.5%). This runs independently of scanner health --
+        a stale/empty/unavailable universe.txt blocks REPLACEMENTS, never the
+        loss-triggered EXIT -- and no bullish signal, strategy conflict, or
+        minimum-hold may suppress it. The stopped-out symbol is marked
+        no-reentry so freed capital is redeployed to a DIFFERENT, independently
+        confirmed candidate (via the existing entry/rebalance pipeline) rather
+        than re-entering the loser the same day.
+
+        Designed to later serve as the SECONDARY backstop once the broker-native
+        resting stop lands on amps-v6-loss-removal-optimizer.
+        """
+        try:
+            import os as _os
+            if _os.getenv("MARKET_SCAN_LOSS_REMOVAL", "1").strip() == "0":
+                return exit_orders if exit_orders is not None else pd.DataFrame()
+            from market_scan.config import MarketScanConfig
+            threshold = float(MarketScanConfig.from_env().loss_removal_threshold)
+        except Exception:  # noqa: BLE001 - fall back to the locked default
+            threshold = -0.005
+
+        exits = exit_orders.copy() if exit_orders is not None else pd.DataFrame()
+        existing = (set(exits["symbol"].map(safe_symbol))
+                    if not exits.empty and "symbol" in exits.columns else set())
+        rows: list[dict[str, Any]] = []
+        try:
+            positions = self.broker.get_all_open_positions()
+        except Exception as exc:  # noqa: BLE001 - never let reconciliation break the loop
+            print(f"[loss-removal] position read failed: {exc}")
+            return exits
+
+        for pos in positions:
+            symbol = safe_symbol(pos.symbol)
+            if not symbol or symbol in existing:
+                continue
+            plpc = to_float(getattr(pos, "unrealized_plpc", 0.0), 0.0)
+            if plpc > threshold:
+                continue
+            qty = int(max(0, to_float(pos.qty, 0.0)))
+            if qty <= 0:
+                continue
+            price = to_float(pos.current_price, to_float(pos.avg_entry_price, 0.0))
+            if price <= 0:
+                continue
+            reason = f"market_scan_loss_removal:plpc={plpc:.3%}:thr={threshold:.3%}"
+            rows.append({
+                "symbol": symbol,
+                "side": "sell",
+                "delta_shares": qty,
+                "delta_dollars": qty * price,
+                "price": price,
+                "reason": reason,
+                "target_weight": 0.0,
+                "current_weight": 0.0,
+                "delta_weight": 0.0,
+                "trade_confidence": 0.99,
+                "exit_reason": reason,
+                "exit_model_action": "EXIT",
+            })
+            # Prevent immediate re-entry into the stopped-out name (same trading
+            # day); a fresh, independently confirmed setup on another symbol is
+            # redeployed through the normal entry pipeline.
+            try:
+                mark_no_reentry_symbol(symbol, reason="loss_removal_-0.5pct")
+            except Exception:  # noqa: BLE001
+                pass
+            write_event("market_scan_loss_removal",
+                        {"symbol": symbol, "plpc": plpc, "threshold": threshold, "qty": qty})
+
+        if rows:
+            print(f"[loss-removal] -0.5% exits triggered: "
+                  f"{', '.join(r['symbol'] for r in rows)}")
+            exits = pd.concat([exits, pd.DataFrame(rows)], ignore_index=True)
+        return exits
+
     def _augment_exit_orders_with_exit_learning(self, exit_orders: pd.DataFrame | None) -> pd.DataFrame:
         if self.scanner is None or not self.config.scanner.exit_learning_enabled:
             return exit_orders if exit_orders is not None else pd.DataFrame()
@@ -6040,6 +6154,9 @@ class ProductionOrderExecutor:
             exit_orders = exit_orders if exit_orders is not None else pd.DataFrame()
         else:
             exit_orders = self._augment_exit_orders_with_exit_learning(exit_orders if exit_orders is not None else pd.DataFrame())
+        # The -0.5% monitor-based loss removal is un-overridable and applies to
+        # EVERY strategy (incl. daily-green/insider, which bypass exit-learning).
+        exit_orders = self._augment_exit_orders_with_loss_removal(exit_orders)
         plan = self._build_order_plan(rebalance_orders, exit_orders, equity)
         if not simple_strategy:
             plan = self._apply_mtf_buy_gate_to_plan(plan)
@@ -7317,7 +7434,38 @@ class ProductionOrderExecutor:
             f"[executor] heartbeat | equity=${acct.equity:,.2f} | "
             f"cash=${acct.cash:,.2f} | buying_power=${acct.buying_power:,.2f} | gross={gross:.2%}"
         )
+        self._print_scanner_panel(now_ts)
         self.last_heartbeat_time = now_ts
+
+    def _print_scanner_panel(self, now_ts: float) -> None:
+        """One throttled scanner status line per heartbeat (never per-quote)."""
+        try:
+            import market_scan
+            from market_scan.health import read_live_context
+            from market_scan.scanner import _live_context_path
+            mode = "paper" if self.config.paper else "live"
+            enabled = market_scan.MarketScanConfig.from_env().enabled
+            if not enabled:
+                print("[market-scan] status=DISABLED | new entries blocked")
+                return
+            ctx = read_live_context(_live_context_path(mode))
+            if ctx is None:
+                print("[market-scan] status=STARTING/NO-CONTEXT | new entries blocked")
+                return
+            age = now_ts - float(ctx.get("updated_at", 0.0) or 0.0)
+            eligible = ctx.get("entry_eligible_count", 0)
+            permit = "PERMIT" if (ctx.get("scanner_status") == "healthy" and eligible) else "BLOCK"
+            print(
+                "[market-scan] "
+                f"status={ctx.get('scanner_status','?')} conn={ctx.get('connection_status','?')} "
+                f"regime={ctx.get('regime','?')} universe={ctx.get('universe_size',0)} "
+                f"eligible={eligible} subs={ctx.get('active_subscriptions',0)}/"
+                f"{int(ctx.get('active_subscriptions',0)) + int(ctx.get('available_subscriptions',0))} "
+                f"discovered={ctx.get('discovered_count',0)} age={age:.1f}s "
+                f"entries={permit} errs={ctx.get('error_count',0)}"
+            )
+        except Exception as exc:  # noqa: BLE001 - dashboard must never break the loop
+            print(f"[market-scan] status unavailable: {exc}")
 
     def run(self) -> None:
         print("[executor] 13K account executor starting")
@@ -7778,8 +7926,33 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001
             print(f"[engine] buy-opportunity engine init deferred (non-fatal): {exc}")
 
+    # Auto-start the real-time IEX market scanner (default ON; MARKET_SCAN_ENABLED=0
+    # disables it). It runs in its own daemon thread, shares the executor's broker/
+    # credentials/mode, continuously republishes the authoritative universe.txt, and
+    # is hot-reloaded by _dynamic_entry_universe(). A scanner fault only blocks NEW
+    # entries -- it never impedes exits, monitoring, or risk. Prevents a second IEX
+    # websocket via a single-instance lock.
+    scan_handle = None
+    try:
+        import market_scan
+        scan_handle = market_scan.start_market_scanner(executor)
+        if scan_handle is not None:
+            print("[market-scan] real-time IEX scanner started (daemon thread)")
+        else:
+            print("[market-scan] scanner not started (disabled or already running)")
+    except Exception as exc:  # noqa: BLE001 - never block the engine on scanner init
+        print(f"[market-scan] scanner init failed (non-fatal; new entries fail-closed): {exc}")
+
     print_startup_banner(config)
-    executor.run()
+    try:
+        executor.run()
+    finally:
+        if scan_handle is not None:
+            try:
+                scan_handle.stop(timeout=5.0)
+                print("[market-scan] scanner stopped")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[market-scan] scanner stop error: {exc}")
 
 
 if __name__ == "__main__":
