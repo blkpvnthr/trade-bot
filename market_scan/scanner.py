@@ -1,0 +1,386 @@
+"""MarketScanner — the in-process real-time IEX scanner orchestrator.
+
+Owns a single IEX websocket (via StreamClient) feeding one OrderFlowEngine,
+runs a ranking tick (~3s) and a broader discovery tick (~300s), maintains the
+MONITORING union (open positions + pending orders + market references) that is
+always subscribed and never pruned, ranks the discovered ENTRY candidates
+(context-only proxies excluded), and publishes the authoritative universe.txt +
+live_context.json through the UniversePublisher.
+
+Heavy/external collaborators (broker, stream, feature computation, discovery,
+clock, sleep) are injectable so the orchestration logic is unit-tested with
+fakes and no sockets/network. The default feature provider computes ADV/ADDV/
+price from Alpaca IEX daily bars + microstructure from the live order-flow
+snapshot; it is fail-safe and validated by live connectivity testing, not unit
+tests. The engine's own entry gates re-verify every candidate at entry time, so
+the ranking need not replicate the engine's exact DMI/VWAP/Bollinger math.
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+import amps_v4_regime
+import universe
+from market_scan import discovery as discovery_mod
+from market_scan import ranking as ranking_mod
+from market_scan.config import MarketScanConfig
+from market_scan.health import STATUS_HEALTHY, STATUS_UNHEALTHY
+from market_scan.publisher import UniversePublisher
+from market_scan.ranking import CandidateFeatures, MarketContext
+from market_scan.subscription_manager import SubscriptionManager
+from order_flow_engine import OrderFlowConfig, OrderFlowEngine
+
+logger = logging.getLogger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_UNIVERSE_PATH = PROJECT_ROOT / "universe.txt"
+
+
+def _live_context_path(mode: str) -> Path:
+    # Namespace by mode so a paper scanner and a live scanner in the same
+    # checkout never clobber each other's health metadata (locked decision #1).
+    return Path(__file__).resolve().parent / f"live_context_{mode}.json"
+
+
+class MarketScanner:
+    def __init__(
+        self,
+        executor: Any,
+        config: MarketScanConfig,
+        *,
+        universe_path: str | Path | None = None,
+        context_path: str | Path | None = None,
+        stream_client: Any = None,
+        feature_provider: Optional[Callable[[list[str], float], dict]] = None,
+        discovery_fn: Optional[Callable[..., Any]] = None,
+        sleep_fn=None,
+        now_fn=None,
+        log_fn: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        self.executor = executor
+        self.broker = getattr(executor, "broker", None)
+        self.config = config
+        exec_cfg = getattr(executor, "config", None)
+        self.mode = "paper" if getattr(exec_cfg, "paper", True) else "live"
+        self._log = log_fn or (lambda m: logger.info(m))
+
+        self.ofe = OrderFlowEngine(OrderFlowConfig(
+            windows_s=tuple(config.order_flow_windows_s),
+            max_subscriptions=config.max_subscriptions,
+            stale_quote_s=config.max_quote_age_seconds,
+        ))
+        # positions, pending, references all mandatory (never rotated out).
+        self.sub_mgr = SubscriptionManager(config.max_subscriptions, mandatory_groups=3)
+        self.publisher = UniversePublisher(
+            universe_path or DEFAULT_UNIVERSE_PATH,
+            context_path or _live_context_path(self.mode),
+            config,
+            mode=self.mode,
+        )
+        self.stream = stream_client if stream_client is not None else self._make_stream()
+        self.feature_provider = feature_provider or self._default_features
+        self.discovery_fn = discovery_fn or discovery_mod.discover_us_listed
+
+        self._now_fn = now_fn
+        self._sleep_fn = sleep_fn
+        self._regime_cfg = amps_v4_regime.RegimeConfig()
+
+        self._discovered: list[str] = []
+        self._stopped = False
+        self._last_discovery = 0.0
+        self._force_publish = False
+        self._connected = False
+        self._errors: list[str] = []
+        self._hist_client: Any = None
+
+    # ------------------------------------------------------------------ setup
+    def _make_stream(self):
+        from market_scan.stream_client import StreamClient
+        return StreamClient(
+            api_key=getattr(self.broker, "api_key", None),
+            secret_key=getattr(self.broker, "secret_key", None),
+            feed=self.config.data_feed,
+            on_trade=self.ofe.ingest_trade,
+            on_quote=self.ofe.ingest_quote,
+            reconnect=self.config.auto_reconnect,
+            log_fn=self._log,
+        )
+
+    def _now(self) -> float:
+        if self._now_fn is not None:
+            return self._now_fn()
+        import time
+        return time.time()
+
+    # -------------------------------------------------------------- monitoring
+    def _open_symbols(self) -> tuple[list[str], list[str]]:
+        positions: list[str] = []
+        pending: list[str] = []
+        try:
+            positions = [str(getattr(p, "symbol", "")).upper()
+                         for p in (self.broker.get_all_open_positions() or [])
+                         if getattr(p, "symbol", None)]
+        except Exception as exc:  # noqa: BLE001
+            self._errors.append(f"positions: {exc}")
+        try:
+            pending = [str(getattr(o, "symbol", "")).upper()
+                       for o in (self.broker.list_open_orders() or [])
+                       if getattr(o, "symbol", None)]
+        except Exception as exc:  # noqa: BLE001
+            self._errors.append(f"pending: {exc}")
+        return positions, pending
+
+    def _monitoring_union(self, positions, pending) -> set[str]:
+        return set(positions) | set(pending) | {s.upper() for s in self.config.market_refs}
+
+    def _entry_candidates(self) -> list[str]:
+        proxies = {s.upper() for s in self.config.market_refs}
+        seen: set[str] = set()
+        out: list[str] = []
+        for s in self._discovered:
+            su = str(s).upper()
+            if su in proxies or su in seen:
+                continue
+            seen.add(su)
+            out.append(su)
+        return out
+
+    # ------------------------------------------------------------------ ticks
+    def _discovery_tick(self, now: float) -> None:
+        positions, pending = self._open_symbols()
+        extra = sorted(self._monitoring_union(positions, pending))
+        try:
+            res = self.discovery_fn(extra=extra)
+            symbols = list(getattr(res, "symbols", []) or [])
+            if symbols:
+                self._discovered = symbols
+            if getattr(res, "error", None):
+                self._errors.append(f"discovery: {res.error}")
+        except Exception as exc:  # noqa: BLE001 - never kill the loop on discovery
+            self._errors.append(f"discovery: {exc}")
+        self._last_discovery = now
+        self._force_publish = True  # refresh the published rank order on discovery
+
+    async def _rank_tick(self, now: float) -> None:
+        positions, pending = self._open_symbols()
+        refs = [s.upper() for s in self.config.market_refs]
+        entry_pool = self._entry_candidates()
+
+        priority_groups = [positions, pending, refs, entry_pool]
+        plan = self.sub_mgr.plan(priority_groups)
+        try:
+            await self.stream.apply_subscriptions(to_add=plan.to_add, to_remove=plan.to_remove)
+            self.sub_mgr.commit(plan)
+            self._connected = True
+        except Exception as exc:  # noqa: BLE001
+            self._errors.append(f"subscribe: {exc}")
+            self._connected = False
+        if plan.dropped:
+            self._log(f"[market-scan] {len(plan.dropped)} candidate(s) dropped this cycle (cap)")
+
+        subscribed = list(plan.target)
+        try:
+            feats = self.feature_provider(subscribed, now) or {}
+        except Exception as exc:  # noqa: BLE001
+            self._errors.append(f"features: {exc}")
+            feats = {}
+
+        market_ctx = self._market_context(feats)
+        rank_inputs = [feats[s] for s in entry_pool if s in feats]
+        ranked = ranking_mod.rank(rank_inputs, config=self.config, market=market_ctx)
+        eligible = [r.symbol for r in ranked if r.eligible][: self.config.target_universe_size]
+
+        health = self._health(now, plan, market_ctx, positions, pending, feats)
+        try:
+            self.publisher.publish(eligible, now=now, force_rewrite=self._force_publish,
+                                   health=health)
+        except Exception as exc:  # noqa: BLE001
+            self._errors.append(f"publish: {exc}")
+        self._force_publish = False
+
+    # ---------------------------------------------------------------- context
+    def _market_context(self, feats: dict) -> MarketContext:
+        ref_rows: dict[str, dict] = {}
+        for r in ("SPY", "QQQ", "DIA", "IWM"):
+            cf = feats.get(r)
+            if cf is not None and getattr(cf, "directional_row", None):
+                ref_rows[r] = cf.directional_row
+        label, score, _conf = amps_v4_regime.market_regime(ref_rows, self._regime_cfg)
+        spy = amps_v4_regime.directional_score(ref_rows.get("SPY", {}), self._regime_cfg) if "SPY" in ref_rows else 0.0
+        qqq = amps_v4_regime.directional_score(ref_rows.get("QQQ", {}), self._regime_cfg) if "QQQ" in ref_rows else 0.0
+        spy = 0.0 if spy != spy else spy
+        qqq = 0.0 if qqq != qqq else qqq
+        sc = 0.0 if (score != score) else float(score)
+        return MarketContext(regime_label=label, regime_score=sc, spy_score=spy,
+                             qqq_score=qqq, cfg=self._regime_cfg)
+
+    def _market_data_fresh(self, feats: dict) -> bool:
+        ages: list[float] = []
+        for cf in feats.values():
+            snap = getattr(cf, "snapshot", None)
+            age = getattr(snap, "last_trade_age_s", None) if snap is not None else None
+            if isinstance(age, (int, float)):
+                ages.append(age)
+        if not ages:
+            return False  # no live ticks yet -> not fresh -> fail-closed for entries
+        return min(ages) <= self.config.max_quote_age_seconds
+
+    def _health(self, now, plan, market_ctx, positions, pending, feats) -> dict:
+        data_fresh = self._market_data_fresh(feats)
+        status = STATUS_HEALTHY if (self._connected and data_fresh) else STATUS_UNHEALTHY
+        return {
+            "scanner_status": status,
+            "market_data_fresh": data_fresh,
+            "connection_status": "connected" if self._connected else "disconnected",
+            "regime": market_ctx.regime_label,
+            "regime_score": round(market_ctx.regime_score, 2),
+            "discovered_count": len(self._discovered),
+            "active_subscriptions": plan.active,
+            "available_subscriptions": plan.available,
+            "monitoring_count": len(self._monitoring_union(positions, pending)),
+            "last_discovery_at": self._last_discovery,
+            "errors": self._errors[-10:],
+            "error_count": len(self._errors),
+        }
+
+    # ------------------------------------------------------------------- loop
+    async def run(self) -> None:
+        import asyncio
+        sleep = self._sleep_fn or asyncio.sleep
+        # Kick off the websocket run in the background (reconnects itself).
+        stream_task = None
+        try:
+            stream_task = asyncio.create_task(self._run_stream())
+        except Exception as exc:  # noqa: BLE001
+            self._errors.append(f"stream start: {exc}")
+
+        self._discovery_tick(self._now())
+        try:
+            while not self._stopped:
+                now = self._now()
+                if now - self._last_discovery >= self.config.discovery_interval_seconds:
+                    self._discovery_tick(now)
+                await self._rank_tick(now)
+                maybe = sleep(self.config.rank_refresh_seconds)
+                if maybe is not None and hasattr(maybe, "__await__"):
+                    await maybe
+        finally:
+            self._stopped = True
+            try:
+                self.stream.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            if stream_task is not None:
+                stream_task.cancel()
+
+    async def _run_stream(self) -> None:
+        try:
+            await self.stream.run()
+        except Exception as exc:  # noqa: BLE001
+            self._connected = False
+            self._errors.append(f"stream: {exc}")
+
+    def stop(self) -> None:
+        self._stopped = True
+        try:
+            self.stream.stop()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # -------------------------------------------------- default feature provider
+    def _default_features(self, symbols: list[str], now: float) -> dict:
+        """Best-effort live features: ADV/ADDV/price from IEX daily bars +
+        microstructure from the live order-flow snapshot. Fail-safe (never
+        raises); symbols lacking data simply get sparse features (and fail the
+        liquidity gate -> excluded, never fabricated as eligible)."""
+        out: dict[str, CandidateFeatures] = {}
+        daily = self._fetch_daily_stats(symbols)
+        for s in symbols:
+            snap = None
+            try:
+                snap = self.ofe.snapshot(s, now)
+            except Exception:  # noqa: BLE001
+                snap = None
+            d = daily.get(s, {})
+            spread_pct = None
+            quote_age = None
+            if snap is not None and getattr(snap, "mid", None) and getattr(snap, "spread", None):
+                try:
+                    spread_pct = float(snap.spread) / float(snap.mid) if snap.mid else None
+                except Exception:  # noqa: BLE001
+                    spread_pct = None
+                quote_age = getattr(snap, "last_quote_age_s", None)
+            out[s] = CandidateFeatures(
+                symbol=s,
+                price=d.get("price"),
+                avg_daily_volume=d.get("adv"),
+                avg_daily_dollar_volume=d.get("addv"),
+                rel_volume=d.get("rel_volume"),
+                spread_pct=spread_pct,
+                quote_age_s=quote_age,
+                directional_row=d.get("directional_row", {}),
+                snapshot=snap,
+                vwap_dist=d.get("vwap_dist"),
+                bb_mid_dist=d.get("bb_mid_dist"),
+            )
+        return out
+
+    def _historical(self):
+        if self._hist_client is None:
+            try:
+                from alpaca.data.historical import StockHistoricalDataClient
+                self._hist_client = StockHistoricalDataClient(
+                    self.broker.api_key, self.broker.secret_key)
+            except Exception as exc:  # noqa: BLE001
+                self._errors.append(f"hist client: {exc}")
+                self._hist_client = None
+        return self._hist_client
+
+    def _fetch_daily_stats(self, symbols: list[str]) -> dict:
+        """20-day ADV/ADDV/last-price from IEX daily bars. Fail-safe -> {}."""
+        client = self._historical()
+        if client is None or not symbols:
+            return {}
+        try:
+            from datetime import datetime, timedelta, timezone
+            from alpaca.data.requests import StockBarsRequest
+            from alpaca.data.timeframe import TimeFrame
+            try:
+                from alpaca.data.enums import DataFeed
+                feed = DataFeed.IEX
+            except Exception:  # noqa: BLE001
+                feed = None
+            start = datetime.now(timezone.utc) - timedelta(days=40)
+            kwargs: dict[str, Any] = {"symbol_or_symbols": list(symbols),
+                                      "timeframe": TimeFrame.Day, "start": start}
+            if feed is not None:
+                kwargs["feed"] = feed
+            resp = client.get_stock_bars(StockBarsRequest(**kwargs))
+            data = getattr(resp, "data", resp) or {}
+            stats: dict[str, dict] = {}
+            for sym in symbols:
+                bars = data.get(sym) or data.get(sym.upper()) or []
+                closes = [float(getattr(b, "close", 0.0) or 0.0) for b in bars]
+                vols = [float(getattr(b, "volume", 0.0) or 0.0) for b in bars]
+                if not closes:
+                    continue
+                window_v = vols[-20:] if len(vols) >= 1 else vols
+                window_c = closes[-20:] if len(closes) >= 1 else closes
+                adv = sum(window_v) / len(window_v) if window_v else 0.0
+                addv = (sum(c * v for c, v in zip(window_c, window_v)) / len(window_v)
+                        if window_v else 0.0)
+                price = closes[-1]
+                short_mom = (closes[-1] - closes[-6]) / closes[-6] if len(closes) >= 6 and closes[-6] else 0.0
+                rel_volume = (vols[-1] / adv) if adv > 0 else 1.0
+                stats[sym] = {
+                    "price": price, "adv": adv, "addv": addv,
+                    "rel_volume": rel_volume,
+                    "directional_row": {"short_mom": short_mom},
+                }
+            return stats
+        except Exception as exc:  # noqa: BLE001
+            self._errors.append(f"daily stats: {exc}")
+            return {}
