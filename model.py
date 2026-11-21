@@ -101,6 +101,26 @@ RANDOM_STATE = 42
 TEST_SIZE = 0.25
 TRADING_UNIVERSE_SIZE = 30
 
+# -----------------------------------------------------------------------------
+# Leakage controls for the chronological split.
+#
+# The supervised target (``explosive_continuation_label``) is built from forward
+# returns spanning up to 5 trading sessions (``future_return_5d``). A naive
+# chronological split with a zero-width boundary therefore lets a training row
+# whose label "reaches" across the split peek at test-period price action --
+# classic look-ahead leakage.
+#
+# EMBARGO_DAYS purges a gap of trading sessions between the end of the training
+# window and the start of the evaluation window so that no training label's
+# forward-return horizon can overlap the evaluation period. It must be at least
+# as large as the longest forward-label horizon (5 sessions for the 5-day label).
+#
+# HOLDOUT_DAYS reserves the most recent trading sessions as a final, untouched
+# holdout that is never used for fitting, calibration, threshold selection, or
+# hyperparameter search.
+EMBARGO_DAYS = 5
+HOLDOUT_DAYS = 60
+
 FUTURE_RET_1D = "future_return_1d"
 FUTURE_RET_3D = "future_return_3d"
 FUTURE_RET_5D = "future_return_5d"
@@ -154,7 +174,27 @@ MAX_OPEN_LONGS = 8
 
 # Regime routing.
 REGIME_SYMBOLS = {"SPY", "QQQ", "IWM", "VIXY"}
-CORE_SYMBOLS = pd.read_csv("data/bullish_2026-05-13.csv")["Symbol"].to_list()
+
+CORE_SYMBOLS_PATH = PROJECT_ROOT / "data" / "bullish_2026-05-13.csv"
+
+
+def _load_core_symbols(path: Path = CORE_SYMBOLS_PATH) -> list[str]:
+    """Load the core bullish universe lazily.
+
+    The core-symbol CSV is an optional, deployment-specific artifact. Reading it
+    at import time previously crashed any consumer (including the test suite)
+    whenever the file was absent. We now degrade gracefully to an empty list so
+    the module always imports cleanly; downstream membership checks simply treat
+    no symbol as "core" when the file is missing.
+    """
+    try:
+        return pd.read_csv(path)["Symbol"].astype(str).str.upper().str.strip().to_list()
+    except Exception as exc:  # FileNotFoundError, missing column, parse error, ...
+        print(f"[model] core-symbol file unavailable ({path}): {exc}; using empty core universe")
+        return []
+
+
+CORE_SYMBOLS = _load_core_symbols()
 INVERSE_HEDGE_SYMBOLS = {"SQQQ", "SH", "PSQ", "DOG", "VIXY"}
 
 
@@ -964,23 +1004,105 @@ def get_feature_columns(df: pd.DataFrame) -> list[str]:
     return keep
 
 
-def time_split(df: pd.DataFrame, test_size: float = TEST_SIZE):
+def time_split(
+    df: pd.DataFrame,
+    test_size: float = TEST_SIZE,
+    embargo_days: int = EMBARGO_DAYS,
+) -> tuple[pd.DataFrame, pd.DataFrame, Any]:
+    """Purged, embargoed chronological train/test split.
+
+    The split is strictly ordered in time: every training timestamp precedes
+    every evaluation timestamp. ``embargo_days`` trading sessions immediately
+    before the evaluation window are *purged* from training so that no training
+    row's forward-return label (up to a 5-session horizon) can overlap the
+    evaluation period -- eliminating look-ahead leakage across the boundary.
+
+    Args:
+        df: Frame with a ``timestamp`` column.
+        test_size: Fraction of unique trading sessions reserved for evaluation.
+        embargo_days: Number of trading sessions to purge between the train end
+            and the test start. ``0`` reproduces the legacy adjacent split.
+
+    Returns:
+        ``(train_df, test_df, split_date)`` where ``split_date`` is the first
+        evaluation timestamp. The gap of ``embargo_days`` sessions that sits
+        between the last training session and ``split_date`` belongs to neither
+        frame.
+    """
     dates = sorted(df["timestamp"].dropna().unique())
 
     if len(dates) < 10:
         raise ValueError("Not enough unique timestamps for time split.")
 
+    embargo_days = max(0, int(embargo_days))
+
     split_idx = int(len(dates) * (1 - test_size))
     split_idx = max(1, min(split_idx, len(dates) - 1))
     split_date = dates[split_idx]
 
-    train_df = df[df["timestamp"] < split_date].copy()
+    # The last training session sits ``embargo_days`` sessions before the first
+    # evaluation session; the sessions in between are purged from both splits.
+    train_end_idx = split_idx - 1 - embargo_days
+    if train_end_idx < 0:
+        raise ValueError(
+            f"embargo_days={embargo_days} leaves no training sessions before the "
+            f"test window (split_idx={split_idx})."
+        )
+    train_end_date = dates[train_end_idx]
+
+    train_df = df[df["timestamp"] <= train_end_date].copy()
     test_df = df[df["timestamp"] >= split_date].copy()
 
     if train_df.empty or test_df.empty:
         raise ValueError("Train/test split produced empty frame.")
 
     return train_df, test_df, split_date
+
+
+def carve_final_holdout(
+    df: pd.DataFrame,
+    holdout_days: int = HOLDOUT_DAYS,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Reserve the most recent ``holdout_days`` trading sessions as a final holdout.
+
+    The returned ``holdout_df`` is a strictly later, disjoint slice of trading
+    sessions than ``working_df``. The holdout is meant to be locked away from all
+    model development -- fitting, scaling, calibration, threshold selection and
+    hyperparameter search happen only on ``working_df`` -- and consulted exactly
+    once, at the very end, as an honest out-of-sample read.
+
+    Args:
+        df: Frame with a ``timestamp`` column.
+        holdout_days: Number of most-recent unique trading sessions to isolate.
+
+    Returns:
+        ``(working_df, holdout_df)``.
+
+    Raises:
+        ValueError: If ``holdout_days`` is non-positive, or if the history is too
+            short to leave any working sessions before the holdout.
+    """
+    holdout_days = int(holdout_days)
+    if holdout_days <= 0:
+        raise ValueError("holdout_days must be a positive integer.")
+
+    dates = sorted(df["timestamp"].dropna().unique())
+
+    if len(dates) <= holdout_days:
+        raise ValueError(
+            f"Insufficient history: need more than holdout_days={holdout_days} "
+            f"unique trading sessions, found {len(dates)}."
+        )
+
+    holdout_start_date = dates[-holdout_days]
+
+    working_df = df[df["timestamp"] < holdout_start_date].copy()
+    holdout_df = df[df["timestamp"] >= holdout_start_date].copy()
+
+    if working_df.empty or holdout_df.empty:
+        raise ValueError("Holdout carve produced an empty frame.")
+
+    return working_df, holdout_df
 
 
 # =============================================================================
@@ -1067,22 +1189,102 @@ def find_best_threshold(y_true: pd.Series, proba: np.ndarray) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
+def select_calibrated_threshold(
+    train_df: pd.DataFrame,
+    feature_cols: list[str],
+    test_size: float = TEST_SIZE,
+    embargo_days: int = EMBARGO_DAYS,
+    model: Pipeline | None = None,
+    target_label: str = TARGET_LABEL,
+) -> tuple[pd.DataFrame, float]:
+    """Select a decision threshold using *training data only*.
+
+    This is the core leakage fix for threshold calibration. The decision
+    threshold must never be chosen on the data later reported as out-of-sample
+    performance. Instead we carve a purged, embargoed chronological validation
+    slice from *inside* ``train_df``, fit a model on the earlier portion, score
+    the later (calibration) portion, and pick the threshold there.
+
+    Because the function only ever receives ``train_df``, it is structurally
+    incapable of touching the evaluation/holdout rows. The computation is fully
+    deterministic (fixed ``random_state``), so repeated calls on identical
+    training data return identical thresholds.
+
+    Args:
+        train_df: Training frame (must contain ``timestamp``, ``feature_cols``
+            and ``target_label``).
+        feature_cols: Model input columns.
+        test_size: Fraction of the training sessions used as the inner
+            calibration window.
+        embargo_days: Sessions purged between the inner fit and inner
+            calibration windows (same leakage control as :func:`time_split`).
+        model: Optional pre-built estimator; defaults to :func:`build_model`.
+        target_label: Name of the binary label column.
+
+    Returns:
+        ``(threshold_table, selected_threshold)``.
+    """
+    inner_fit_df, inner_cal_df, _ = time_split(
+        train_df,
+        test_size=test_size,
+        embargo_days=embargo_days,
+    )
+
+    X_fit = inner_fit_df[feature_cols]
+    y_fit = inner_fit_df[target_label].astype(int)
+
+    X_cal = inner_cal_df[feature_cols]
+    y_cal = inner_cal_df[target_label].astype(int)
+
+    if model is None:
+        model = build_model()
+
+    model.fit(X_fit, y_fit)
+    cal_proba = model.predict_proba(X_cal)[:, 1]
+
+    threshold_table = find_best_threshold(y_cal, cal_proba)
+    selected_threshold = float(threshold_table.iloc[0]["threshold"])
+
+    return threshold_table, selected_threshold
+
+
 def evaluate_model(
     model: Pipeline,
     X_test: pd.DataFrame,
     y_test: pd.Series,
-) -> tuple[pd.DataFrame, pd.DataFrame, float, float]:
+    selected_threshold: float | None = None,
+    threshold_table: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame | None, float, float]:
+    """Evaluate ``model`` on held-out data using a *pre-selected* threshold.
+
+    The decision threshold must be supplied (calibrated on training data via
+    :func:`select_calibrated_threshold`); it is never recomputed on
+    ``y_test``/``proba`` here, which would leak the evaluation labels into the
+    very metric reported as out-of-sample.
+
+    For backward compatibility, if ``selected_threshold`` is ``None`` the
+    function falls back to the legacy behaviour of deriving a threshold from the
+    evaluation data (and emits a warning). Production callers must pass an
+    explicit, training-calibrated threshold.
+    """
     proba = model.predict_proba(X_test)[:, 1]
 
-    threshold_table = find_best_threshold(y_test, proba)
+    if selected_threshold is None:
+        print(
+            "[evaluate_model] WARNING: no training-calibrated threshold supplied; "
+            "falling back to legacy evaluation-set threshold selection (leaky)."
+        )
+        threshold_table = find_best_threshold(y_test, proba)
+        selected_threshold = float(threshold_table.iloc[0]["threshold"])
 
-    selected_threshold = float(threshold_table.iloc[0]["threshold"])
+    selected_threshold = float(selected_threshold)
     entry_threshold = max(selected_threshold, MIN_ENTRY_PROBABILITY)
 
     pred = (proba >= selected_threshold).astype(int)
 
-    print("\n===== THRESHOLD TABLE =====")
-    print(threshold_table.head(15).to_string(index=False))
+    if threshold_table is not None:
+        print("\n===== THRESHOLD TABLE =====")
+        print(threshold_table.head(15).to_string(index=False))
 
     print("\n===== MODEL EVALUATION =====")
     print(f"selected_threshold={selected_threshold:.2f}")
@@ -1564,7 +1766,23 @@ def main() -> None:
     if trainable.empty:
         raise RuntimeError("No trainable rows after filters.")
 
-    feature_cols = get_feature_columns(trainable)
+    # Isolate a final, untouched holdout of the most recent trading sessions.
+    # Development (fitting, scaling, calibration, threshold selection) only ever
+    # sees ``working_df``; ``final_holdout_df`` is reserved for an honest, final
+    # out-of-sample read by downstream tooling. Degrade gracefully when the
+    # available history is too short to reserve a holdout.
+    try:
+        working_df, final_holdout_df = carve_final_holdout(trainable)
+        print(
+            f"[holdout] working_sessions={working_df['timestamp'].nunique():,} "
+            f"final_holdout_sessions={final_holdout_df['timestamp'].nunique():,} "
+            f"(holdout_days={HOLDOUT_DAYS})"
+        )
+    except ValueError as exc:
+        print(f"[holdout] skipping final holdout carve: {exc}")
+        working_df = trainable
+
+    feature_cols = get_feature_columns(working_df)
 
     print(f"[data] rows={len(df):,}")
     print(f"[data] trainable_rows={len(trainable):,}")
@@ -1581,17 +1799,29 @@ def main() -> None:
     )
     print(f"[target] positive_rate={trainable[TARGET_LABEL].mean():.2%}")
 
-    train_df, test_df, split_date = time_split(trainable)
+    train_df, test_df, split_date = time_split(working_df, embargo_days=EMBARGO_DAYS)
 
     print(f"[split] train rows={len(train_df):,}")
     print(f"[split] test rows={len(test_df):,}")
     print(f"[split] split_date={split_date}")
+    print(f"[split] embargo_days={EMBARGO_DAYS} (purged between train and test)")
 
     X_train = train_df[feature_cols]
     y_train = train_df[TARGET_LABEL].astype(int)
 
     X_test = test_df[feature_cols]
     y_test = test_df[TARGET_LABEL].astype(int)
+
+    # Calibrate the decision threshold on TRAINING data only, via a purged inner
+    # chronological validation split. The evaluation labels (y_test) are never
+    # consulted when choosing the threshold.
+    print("[calibrate] selecting decision threshold on training data only...")
+    threshold_table, selected_threshold = select_calibrated_threshold(
+        train_df,
+        feature_cols,
+        embargo_days=EMBARGO_DAYS,
+    )
+    print(f"[calibrate] training-calibrated threshold={selected_threshold:.2f}")
 
     model = build_model()
 
@@ -1602,6 +1832,8 @@ def main() -> None:
         model=model,
         X_test=X_test,
         y_test=y_test,
+        selected_threshold=selected_threshold,
+        threshold_table=threshold_table,
     )
 
     base_cols = [

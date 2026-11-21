@@ -21,8 +21,11 @@ import universe
 
 def test_download_universe_equals_canonical_universe_txt(tmp_path):
     result = feat.get_download_universe(out_path=tmp_path / "u.csv")
-    assert result == universe.load_canonical_universe()
-    assert len(result) == 54
+    canonical = universe.load_canonical_universe()
+    assert result == canonical
+    # The download universe is EXACTLY the canonical universe.txt -- its size is
+    # whatever the (scanner-republished) file holds, not a hardcoded count.
+    assert len(result) == len(canonical) and len(result) >= 1
 
 
 def test_default_path_does_not_call_sp500_or_nasdaq(monkeypatch, tmp_path):
@@ -46,9 +49,10 @@ def test_default_path_does_not_call_sp500_or_nasdaq(monkeypatch, tmp_path):
 
 
 def test_no_max_symbols_truncation():
-    # The old MAX_SYMBOLS=30 cap is gone entirely; all 54 symbols survive.
+    # The old MAX_SYMBOLS=30 cap is gone entirely; ALL canonical symbols survive
+    # (no artificial truncation), regardless of the current universe.txt size.
     assert not hasattr(feat, "MAX_SYMBOLS")
-    assert len(feat.get_download_universe()) == 54
+    assert len(feat.get_download_universe()) == len(universe.load_canonical_universe())
 
 
 def test_order_preserved_and_deduped(tmp_path):

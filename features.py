@@ -67,11 +67,23 @@ def get_headers() -> dict[str, str]:
     }
 
 
-def get_sp500() -> list[str]:
-    """RESEARCH-ONLY. Not called by the active trading/feature/scanning path
-    (universe.txt is the sole source). Retained for explicit ad-hoc broad
-    dataset construction via get_download_universe(include_nasdaq=True)."""
-    print("[setup] fetching S&P 500 symbols...")
+def get_sp500_table() -> pd.DataFrame:
+    """RESEARCH-ONLY. Fetch and parse the Wikipedia S&P 500 constituents table.
+
+    Returns the full DataFrame with a normalized ``Symbol`` column (``.`` -> ``-``,
+    upper-cased, e.g. ``brk.b`` -> ``BRK-B``) and the Wikipedia GICS classification
+    columns preserved verbatim -- notably ``GICS Sector`` -- so callers can derive
+    sector groupings. Rows are de-duplicated on ``Symbol`` (first occurrence wins).
+
+    This is the single Wikipedia S&P 500 parser; :func:`get_sp500` and
+    :func:`get_sp500_sector_map` both delegate here. Like them it is NOT part of
+    the active trading/feature/scanning path (universe.txt is the sole trading
+    source); it exists only to (a) source GICS sectors for exposure-group
+    classification and (b) back the explicit, research-only broad-universe escape
+    hatch (``get_download_universe(include_nasdaq=True)``). It never expands the
+    executable trading universe.
+    """
+    print("[setup] fetching S&P 500 table (symbols + GICS sectors)...")
 
     resp = requests.get(WIKI_SP500_URL, headers=get_headers(), timeout=30)
     resp.raise_for_status()
@@ -86,17 +98,62 @@ def get_sp500() -> list[str]:
     if "Symbol" not in df.columns:
         raise RuntimeError("Wikipedia S&P 500 table does not contain a Symbol column.")
 
-    symbols = (
-        df["Symbol"]
-        .astype(str)
-        .map(normalize_symbol)
-        .tolist()
-    )
+    df["Symbol"] = df["Symbol"].astype(str).map(normalize_symbol)
+    df = df[df["Symbol"].ne("") & df["Symbol"].ne("NAN")].copy()
+    df = df.drop_duplicates(subset=["Symbol"], keep="first").reset_index(drop=True)
 
-    symbols = sorted(set(s for s in symbols if s and s != "NAN"))
+    return df
+
+
+def get_sp500() -> list[str]:
+    """RESEARCH-ONLY. Not called by the active trading/feature/scanning path
+    (universe.txt is the sole source). Retained for explicit ad-hoc broad
+    dataset construction via get_download_universe(include_nasdaq=True).
+
+    Returns the sorted, de-duplicated list of normalized S&P 500 symbols,
+    delegating to :func:`get_sp500_table` so the symbol set stays consistent
+    with the sector map."""
+    df = get_sp500_table()
+
+    symbols = sorted(set(s for s in df["Symbol"].tolist() if s and s != "NAN"))
 
     print(f"[setup] S&P 500 symbols={len(symbols)}")
     return symbols
+
+
+def get_sp500_sector_map() -> dict[str, str]:
+    """RESEARCH-ONLY. Return ``{normalized_symbol: GICS Sector}`` from Wikipedia.
+
+    Parses the S&P 500 table via :func:`get_sp500_table` and maps each symbol to
+    its ``GICS Sector``. Degrades gracefully: if the table has no ``GICS Sector``
+    column (older/variant snapshots), it returns an empty dict rather than
+    raising, so a missing column reads as "no sector info available". Rows with a
+    blank/NaN sector are skipped; first occurrence of a symbol wins.
+
+    This is the sector source that ``universe.register_equity_sectors()`` can
+    inject for covariance-aware exposure-group classification. It is a present-day
+    snapshot applied retroactively (same documented limitation as index
+    membership) and -- like every helper in this group -- never expands the
+    executable trading universe (universe.txt remains the sole trading source).
+    """
+    df = get_sp500_table()
+
+    if "GICS Sector" not in df.columns:
+        return {}
+
+    sector_map: dict[str, str] = {}
+    for sym, sector in zip(df["Symbol"].tolist(), df["GICS Sector"].tolist()):
+        sym = normalize_symbol(sym)
+        if not sym or sym == "NAN":
+            continue
+        if sector is None or pd.isna(sector):
+            continue
+        sector_str = str(sector).strip()
+        if not sector_str or sector_str.upper() == "NAN":
+            continue
+        sector_map.setdefault(sym, sector_str)
+
+    return sector_map
 
 
 def get_nasdaq_constituents() -> list[str]:

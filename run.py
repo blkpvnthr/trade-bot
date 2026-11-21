@@ -90,7 +90,7 @@ from execution_alpha_gate import add_execution_alpha_scores
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, OrderStatus, OrderType, TimeInForce
-from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
 
 try:
     from alpaca.trading.requests import TrailingStopOrderRequest
@@ -2614,6 +2614,10 @@ class ScannerConfig:
 class ExecutorConfig:
     paper: bool = True
     live: bool = False
+    # Dry-run safety gate: when True, the broker short-circuits every order
+    # mutation (never reaches Alpaca). Must be EXPLICIT (default False) so a bare
+    # ExecutorConfig()/normal paper/live run never silently stops submitting.
+    dry_run: bool = False
 
     poll_once: bool = False
     poll_seconds: int = POLL_SECONDS
@@ -4760,10 +4764,29 @@ def submit_trailing_stop_after_entry(
 
 # ======================================================================# Alpaca broker wrapper
 # ======================================================================
+@dataclass
+class _DryRunOrder:
+    """Sentinel returned instead of submitting to the broker when dry_run=True.
+
+    Mimics the fields downstream code reads from a real Alpaca order while making
+    it unmistakable that NOTHING was sent to the broker.
+    """
+    symbol: str
+    side: str
+    qty: float
+    order_type: str
+    client_order_id: str = ""
+    limit_price: Optional[float] = None
+    status: str = "dry_run_not_submitted"
+
+
 class AlpacaBroker:
-    def __init__(self, env_path: Path, paper: bool = True):
+    def __init__(self, env_path: Path, paper: bool = True, dry_run: bool = False):
         load_dotenv(env_path, override=True)
         self.paper = bool(paper)
+        # Dry-run intercepts every broker mutation BEFORE it reaches Alpaca.
+        self.dry_run = bool(dry_run)
+        self.dry_run_order_attempts = 0
         self.api_key = os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY_ID")
         self.secret_key = os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_API_SECRET_KEY")
 
@@ -4775,6 +4798,18 @@ class AlpacaBroker:
             secret_key=self.secret_key,
             paper=self.paper,
         )
+
+    def _dry_run_intercept(self, symbol: str, side: str, qty: float, order_type: str,
+                           client_order_id: str = "", limit_price: Optional[float] = None) -> _DryRunOrder:
+        """Record and short-circuit a would-be broker mutation (no network call)."""
+        self.dry_run_order_attempts += 1
+        order = _DryRunOrder(
+            symbol=safe_symbol(symbol), side=str(side).lower(), qty=qty,
+            order_type=order_type, client_order_id=client_order_id, limit_price=limit_price,
+        )
+        print(f"[dry-run] intercepted {order_type} {order.side} {order.qty} {order.symbol} "
+              f"(attempt #{self.dry_run_order_attempts}); NOT submitted")
+        return order
 
     def get_account_snapshot(self) -> AccountSnapshot:
         try:
@@ -4847,6 +4882,10 @@ class AlpacaBroker:
         return False
 
     def cancel_open_orders(self) -> None:
+        if self.dry_run:
+            self.dry_run_order_attempts += 1
+            print("[dry-run] intercepted cancel_open_orders; NOT submitted")
+            return
         self.trading.cancel_orders()
 
     def get_clock_info(self) -> dict[str, Any]:
@@ -4859,6 +4898,8 @@ class AlpacaBroker:
         }
 
     def submit_market_order(self, symbol: str, side: str, qty: int, client_order_id: str, tif: TimeInForce):
+        if self.dry_run:
+            return self._dry_run_intercept(symbol, side, qty, "market", client_order_id)
         order = MarketOrderRequest(
             symbol=safe_symbol(symbol),
             qty=int(qty),
@@ -4874,6 +4915,28 @@ class AlpacaBroker:
 
     def submit_market_sell(self, symbol: str, qty: int, client_order_id: str, tif: TimeInForce):
         return self.submit_market_order(symbol, "sell", qty, client_order_id, tif)
+
+    def submit_limit_order(self, symbol: str, side: str, qty: int, limit_price: float,
+                           client_order_id: str, tif: TimeInForce):
+        if self.dry_run:
+            return self._dry_run_intercept(symbol, side, qty, "limit", client_order_id,
+                                           limit_price=float(limit_price))
+        order = LimitOrderRequest(
+            symbol=safe_symbol(symbol),
+            qty=int(qty),
+            side=OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL,
+            type=OrderType.LIMIT,
+            time_in_force=tif,
+            limit_price=float(limit_price),
+            client_order_id=client_order_id,
+        )
+        return self.trading.submit_order(order_data=order)
+
+    def submit_limit_buy(self, symbol: str, qty: int, limit_price: float, client_order_id: str, tif: TimeInForce):
+        return self.submit_limit_order(symbol, "buy", qty, limit_price, client_order_id, tif)
+
+    def submit_limit_sell(self, symbol: str, qty: int, limit_price: float, client_order_id: str, tif: TimeInForce):
+        return self.submit_limit_order(symbol, "sell", qty, limit_price, client_order_id, tif)
 
     def get_order_by_id(self, order_id: str):
         return self.trading.get_order_by_id(order_id)

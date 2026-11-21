@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import math
 import os
 
 import matplotlib.pyplot as plt
@@ -48,6 +49,9 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from sklearn.metrics import precision_score, recall_score, roc_auc_score
+
+import costs
+import metrics
 
 
 # =============================================================================
@@ -253,9 +257,79 @@ CAPITAL_STATE_THRESHOLD_ADDON = {
 }
 
 
-# Slippage.
-ENTRY_SLIPPAGE_BPS = 5
-EXIT_SLIPPAGE_BPS = 5
+# Transaction costs.
+# Sourced from the shared, single-source-of-truth cost model in costs.py so a
+# reported Sharpe reflects one consistent, named cost regime rather than an
+# ad-hoc slippage-only assumption. Each side (entry/exit) carries one-way
+# slippage plus HALF of the round-trip commission; a full round trip therefore
+# equals 2x slippage + full commission + 2x market impact.
+ENTRY_SLIPPAGE_BPS = costs.BASELINE_COSTS.slippage_bps
+EXIT_SLIPPAGE_BPS = costs.BASELINE_COSTS.slippage_bps
+ENTRY_COMMISSION_BPS = costs.BASELINE_COSTS.commission_bps / 2.0
+EXIT_COMMISSION_BPS = costs.BASELINE_COSTS.commission_bps / 2.0
+
+
+def _entry_cost_bps(notional: float, average_dollar_volume: float,
+                    config: costs.TransactionCostConfig = costs.BASELINE_COSTS) -> float:
+    """One-way entry cost in bps: slippage + half round-trip commission + a
+    size-dependent (square-root) market-impact term from the shared cost model."""
+    return float(
+        ENTRY_SLIPPAGE_BPS
+        + ENTRY_COMMISSION_BPS
+        + costs.market_impact_bps(notional, average_dollar_volume, config)
+    )
+
+
+def _exit_cost_bps(notional: float, average_dollar_volume: float,
+                   config: costs.TransactionCostConfig = costs.BASELINE_COSTS) -> float:
+    """One-way exit cost in bps: slippage + half round-trip commission + impact."""
+    return float(
+        EXIT_SLIPPAGE_BPS
+        + EXIT_COMMISSION_BPS
+        + costs.market_impact_bps(notional, average_dollar_volume, config)
+    )
+
+
+# Risk-free rate used as the Sharpe/Sortino numerator benchmark. Kept at 0.0 so
+# reported ratios are directly comparable to the historical (RF-naive) series;
+# pass a date-appropriate rate to metrics.* at the call site to override.
+RISK_FREE_RATE_ANNUAL = 0.0
+
+# =============================================================================
+# Experimental feature flags (default OFF -- preserve existing behavior)
+# =============================================================================
+
+# Objective 1: purged/embargoed walk-forward windowing. FUTURE_RET_5D is a
+# 5-trading-day-forward label, so the embargo between train and test must be at
+# least that long to prevent label leakage across the split.
+EMBARGO_DAYS = 5
+
+# Objective 2: risk-adjusted ranking / single-score sizing.
+RISK_ADJUSTED_RANKING_ENABLED = False
+
+# Objective 2: turnover controls (min-hold soft-exit gating + edge-over-cost bar).
+TURNOVER_CONTROLS_ENABLED = False
+MIN_HOLD_BARS_SOFT_EXIT = 3
+# Minimum expected edge (in ATR-normalized / probability units) a candidate must
+# clear before entry when turnover controls are active. Default 0.0 is a no-op.
+MIN_EDGE_OVER_COST_ATR = 0.0
+
+# Soft, model-opinion-based exits that turnover controls may suppress before the
+# minimum hold is met. Hard, structural exits (target hit, time stop, profit
+# lock, early-failure) are never gated.
+SOFT_EXIT_REASONS = {
+    "EXIT_MODEL_FAILURE",
+    "EXIT_EDGE_DECAY",
+    "EXIT_MOMENTUM_FAILURE",
+    "EXIT_TIME_DECAY",
+}
+
+# Objective 2: gradual (interpolated) vol/drawdown exposure scaling.
+GRADUAL_VOL_DD_SCALING_ENABLED = False
+
+# Objective 2: cost-aware, risk-normalized (ATR) target label.
+RISK_AWARE_TARGET_ENABLED = False
+RISK_AWARE_MIN_EDGE_ATR = 1.0
 
 DROP_MACRO_DOMINANT_FEATURES = {
     "spy_return_1d",
@@ -289,6 +363,7 @@ LEAKAGE_COLUMNS = {
     "multi_bar_continuation_label",
     "explosive_continuation_label",
     TARGET_LABEL,
+    "risk_adjusted_edge_5d",
     "future_return_rank_5d",
     "future_return_rank_3d",
     "future_return_score",
@@ -757,6 +832,49 @@ def make_target(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
+
+def make_target_risk_aware(df: pd.DataFrame) -> pd.DataFrame:
+    """Cost-aware, risk-normalized supervised target (Objective 2).
+
+    The fixed-percentage make_target() applies the same return threshold to
+    every symbol, so a 0.3% move counts the same for a sleepy 0.1%-ATR name as
+    for a 2%-ATR mover -- for the volatile name that move is just noise. This
+    version instead scores the 5-day forward return in units of the symbol's own
+    ATR (``risk_adjusted_edge_5d = future_return_5d / atr_pct``) and labels a row
+    positive only when:
+
+      * the forward move does not fail immediately (``future_return_1d`` holds),
+      * the forward 5-day return is actually positive, and
+      * the risk-adjusted edge clears ``RISK_AWARE_MIN_EDGE_ATR`` ATR multiples.
+
+    ``risk_adjusted_edge_5d`` and ``TARGET_LABEL`` are both forward-looking and
+    therefore registered in LEAKAGE_COLUMNS so they can never leak into features.
+    """
+    df = df.copy()
+
+    if FUTURE_RET_5D not in df.columns:
+        df[FUTURE_RET_5D] = numeric_series(df, FUTURE_RET_1D)
+
+    future1 = numeric_series(df, FUTURE_RET_1D)
+    future5 = numeric_series(df, FUTURE_RET_5D)
+    atr = numeric_series(df, "atr_pct").replace(0.0, np.nan)
+
+    # Risk-adjusted edge: forward 5-day return normalized by the symbol's own
+    # volatility (ATR). Non-positive/unknown ATR -> 0.0 (no measurable edge).
+    df["risk_adjusted_edge_5d"] = (future5 / atr).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    no_immediate_failure = future1 > -0.020
+    positive_forward = future5 > 0.0
+    clears_bar = df["risk_adjusted_edge_5d"] >= RISK_AWARE_MIN_EDGE_ATR
+    tradable = numeric_series(df, "tradable_symbol") == 1
+
+    df[TARGET_LABEL] = (
+        no_immediate_failure & positive_forward & clears_bar & tradable
+    ).astype(int)
+
+    return df
+
+
 def add_market_correlation_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Adds rolling market-correlation features used by the risk layer.
@@ -968,7 +1086,10 @@ def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
     df = add_market_correlation_features(df)
     df = add_price_indicator_interaction_features(df)
     df = add_momentum_state(df)
-    df = make_target(df)
+    if RISK_AWARE_TARGET_ENABLED:
+        df = make_target_risk_aware(df)
+    else:
+        df = make_target(df)
     return df.replace([np.inf, -np.inf], np.nan)
 
 
@@ -1256,20 +1377,55 @@ def build_model() -> SequenceTransformerClassifier:
     return SequenceTransformerClassifier()
 
 
-def make_windows(unique_dates: list[pd.Timestamp]) -> list[tuple[int, np.ndarray, np.ndarray]]:
+def get_final_holdout_dates(dates, holdout_days: int) -> pd.DatetimeIndex:
+    """The most-recent ``holdout_days`` sessions, reserved as a final, never-fit
+    holdout. Returns an empty index when there is insufficient history to carve
+    out a holdout of the requested length."""
+    dates = list(dates)
+    if holdout_days <= 0 or len(dates) < holdout_days:
+        return pd.DatetimeIndex([])
+    return pd.DatetimeIndex(dates[-holdout_days:])
+
+
+def usable_dates_excluding_holdout(dates, holdout_days: int) -> list:
+    """All sessions except the final holdout tail. Walk-forward windows are only
+    ever built over these, so the holdout is never touched during fitting."""
+    dates = list(dates)
+    holdout = get_final_holdout_dates(dates, holdout_days)
+    if len(holdout) == 0:
+        return dates
+    return dates[:-holdout_days]
+
+
+def make_windows(
+    dates,
+    embargo_days: int = EMBARGO_DAYS,
+    holdout_days: int = 0,
+) -> list[tuple[int, list, list]]:
+    """Purged/embargoed, stepped walk-forward windows.
+
+    Between each train block and its test block an ``embargo_days`` gap is purged
+    (included in neither side) so that a label with up to that many forward
+    trading days cannot leak across the split. The original implementation left a
+    zero-day gap (adjacent train/test), which is reproduced exactly by passing
+    ``embargo_days=0``. The final ``holdout_days`` sessions are excluded entirely.
+    """
+    usable = usable_dates_excluding_holdout(dates, holdout_days)
+
     windows = []
     start = 0
     window_id = 0
 
     while True:
         train_start = start
-        train_end = train_start + TRAIN_DAYS
-        test_end = train_end + TEST_DAYS
-        if test_end > len(unique_dates):
+        train_end = train_start + TRAIN_DAYS            # exclusive
+        test_start = train_end + embargo_days
+        test_end = test_start + TEST_DAYS
+        if test_end > len(usable):
             break
 
-        train_dates = np.array(unique_dates[train_start:train_end])
-        test_dates = np.array(unique_dates[train_end:test_end])
+        train_dates = usable[train_start:train_end]
+        test_dates = usable[test_start:test_end]
         windows.append((window_id, train_dates, test_dates))
         window_id += 1
         start += STEP_DAYS
@@ -1309,9 +1465,63 @@ def capital_state(equity: float, high_water_mark: float) -> str:
     return "NORMAL"
 
 
-def regime_gross_exposure(regime: str, cap_state: str) -> float:
+def capital_preservation_multiplier_gradual(equity: float, high_water_mark: float) -> float:
+    """Continuous (piecewise-linear) version of CAPITAL_PRESERVATION_GROSS_MULT.
+
+    The discrete step function jumps abruptly as the equity/high-water-mark ratio
+    crosses a threshold. This interpolates the SAME anchor points -- so it agrees
+    exactly with the discrete multiplier at each threshold ratio -- but varies
+    smoothly in between, avoiding a cliff in gross exposure for a sub-basis-point
+    change in drawdown. Clamped to the endpoints: full KILL below the kill ratio,
+    full exposure at/above the high-water mark.
+    """
+    if high_water_mark <= 0:
+        return 1.0
+    ratio = equity / high_water_mark
+    xp = [EQUITY_KILL, EQUITY_DEFENSIVE, EQUITY_RECOVERY, 1.0]
+    fp = [
+        CAPITAL_PRESERVATION_GROSS_MULT["KILL"],
+        CAPITAL_PRESERVATION_GROSS_MULT["DEFENSIVE"],
+        CAPITAL_PRESERVATION_GROSS_MULT["RECOVERY"],
+        CAPITAL_PRESERVATION_GROSS_MULT["NORMAL"],
+    ]
+    return float(np.interp(ratio, xp, fp))
+
+
+def realized_vol_exposure_scaler(
+    daily_returns,
+    target_vol: float = 0.20,
+    min_obs: int = 10,
+    periods_per_year: int = 252,
+) -> float:
+    """Volatility-targeting exposure scaler, capped at 1.0.
+
+    Scales exposure DOWN when realized volatility exceeds the target, but never
+    UP (per Objective 2 priority 7: no leveraging up to chase a vol target).
+    Returns a neutral 1.0 with insufficient history or (near-)zero realized vol.
+    """
+    if daily_returns is None:
+        return 1.0
+    arr = pd.Series(daily_returns, dtype=float).dropna()
+    if len(arr) < min_obs:
+        return 1.0
+    realized = float(arr.std(ddof=1) * math.sqrt(periods_per_year))
+    if not np.isfinite(realized) or realized <= 1e-12:
+        return 1.0
+    return float(min(1.0, target_vol / realized))
+
+
+def regime_gross_exposure(
+    regime: str,
+    cap_state: str,
+    equity: float | None = None,
+    high_water_mark: float | None = None,
+) -> float:
     base = REGIME_GROSS_EXPOSURE.get(regime, 0.45)
-    mult = CAPITAL_PRESERVATION_GROSS_MULT.get(cap_state, 1.0)
+    if GRADUAL_VOL_DD_SCALING_ENABLED and equity is not None and high_water_mark is not None:
+        mult = capital_preservation_multiplier_gradual(equity, high_water_mark)
+    else:
+        mult = CAPITAL_PRESERVATION_GROSS_MULT.get(cap_state, 1.0)
     return base * mult
 
 
@@ -1550,6 +1760,121 @@ def build_weight_plan(candidates: pd.DataFrame, equity: float, high_water_mark: 
     return filtered[filtered["target_weight"] > 0].copy()
 
 
+def _base_eligibility_mask(day: pd.DataFrame) -> pd.Series:
+    """Shared liquidity / tradability eligibility gates used by both the default
+    and risk-adjusted entry paths."""
+    return (
+        (numeric_series(day, "tradable_symbol") == 1)
+        & (numeric_series(day, "close") >= MIN_PRICE)
+        & (numeric_series(day, "avg_dollar_volume20") >= MIN_AVG_DOLLAR_VOLUME20)
+        & (numeric_series(day, "relative_volume_20") >= MIN_RELATIVE_VOLUME)
+        & (numeric_series(day, "range_expansion") >= MIN_RANGE_EXPANSION)
+    )
+
+
+def score_entry_candidates_risk_adjusted(
+    day: pd.DataFrame,
+    equity: float,
+    high_water_mark: float,
+    calibration=None,
+) -> pd.DataFrame:
+    """Rank entry candidates by a single risk-adjusted score (Objective 2).
+
+    Rather than blending volume, breakout and momentum sub-scores, this path
+    collapses the edge to ONE channel: the (optionally calibrated) model
+    probability. ``risk_adjusted_score`` equals the raw probability when no
+    calibrator is supplied, or ``calibration.predict(prob)`` when one is. The
+    same shared liquidity/tradability gates apply. When turnover controls are
+    active, an edge-over-cost bar (``MIN_EDGE_OVER_COST_ATR``) additionally
+    filters out candidates whose expected edge does not clear it.
+    """
+    if day is None or day.empty:
+        return pd.DataFrame()
+
+    base = day[_base_eligibility_mask(day)].copy()
+    if base.empty:
+        return base
+
+    prob = numeric_series(base, "explosive_alpha_probability").astype(float)
+    if calibration is not None:
+        score = np.asarray(calibration.predict(prob.values), dtype=float)
+    else:
+        score = prob.values
+    base["risk_adjusted_score"] = score
+
+    if TURNOVER_CONTROLS_ENABLED:
+        base = base[base["risk_adjusted_score"] >= MIN_EDGE_OVER_COST_ATR].copy()
+
+    return base
+
+
+def build_weight_plan_risk_adjusted(
+    scored: pd.DataFrame,
+    equity: float,
+    high_water_mark: float,
+) -> pd.DataFrame:
+    """Size positions purely in proportion to ``risk_adjusted_score`` (Objective
+    2), so selection and weight are driven by the single edge score rather than
+    by volume or a multi-factor blend. Weights are normalized to the regime/
+    capital-state gross-exposure cap (bounded by BASE_MAX_GROSS_EXPOSURE)."""
+    if scored is None or scored.empty:
+        return pd.DataFrame()
+
+    regime = str(scored["market_regime"].iloc[0]) if "market_regime" in scored.columns else "CHOP_NEUTRAL"
+    cap_state = capital_state(equity, high_water_mark)
+    gross_cap = min(
+        regime_gross_exposure(regime, cap_state, equity=equity, high_water_mark=high_water_mark),
+        BASE_MAX_GROSS_EXPOSURE,
+    )
+    max_entries = regime_new_entries(regime, cap_state)
+    if gross_cap <= 0 or max_entries <= 0:
+        return pd.DataFrame()
+
+    plan = scored.copy().sort_values("risk_adjusted_score", ascending=False).head(max_entries)
+    scores = pd.to_numeric(plan["risk_adjusted_score"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    total = float(scores.sum())
+    if total <= 0:
+        return pd.DataFrame()
+
+    plan["target_weight"] = scores / total * gross_cap
+    plan["capital_state"] = cap_state
+    plan["regime_gross_cap"] = gross_cap
+    plan["sizing_method"] = "RISK_ADJUSTED_SINGLE_SCORE"
+
+    return plan[plan["target_weight"] > 0].copy()
+
+
+def fit_edge_calibration(df: pd.DataFrame, feature_cols: list[str], min_samples: int = 500):
+    """Fit an isotonic probability->edge calibrator on realized labels.
+
+    Returns an object exposing ``predict`` (the calibrator), or None when there
+    is insufficient history, no usable features, a single-class label, or no
+    model-probability column to calibrate. Calibration is only applied forward
+    (never on the period it was fit on)."""
+    if df is None or df.empty:
+        return None
+    if not feature_cols:
+        return None
+    if TARGET_LABEL not in df.columns or len(df) < min_samples:
+        return None
+    if "explosive_alpha_probability" not in df.columns:
+        return None
+
+    y = pd.to_numeric(df[TARGET_LABEL], errors="coerce").fillna(0).astype(int)
+    if y.nunique() < 2:
+        return None
+
+    try:
+        from sklearn.isotonic import IsotonicRegression
+
+        prob = pd.to_numeric(df["explosive_alpha_probability"], errors="coerce").fillna(0.0).values
+        iso = IsotonicRegression(out_of_bounds="clip")
+        iso.fit(prob, y.values)
+        return iso
+    except Exception:
+        return None
+
+
 def get_entry_candidates(
     day: pd.DataFrame,
     available_slots: int,
@@ -1572,6 +1897,22 @@ def get_entry_candidates(
 
         if regime == "DEFENSIVE_RISK_OFF" and risk_on_score < 0.45:
             return pd.DataFrame()
+
+    if RISK_ADJUSTED_RANKING_ENABLED:
+        scored = score_entry_candidates_risk_adjusted(
+            day, equity=equity, high_water_mark=high_water_mark, calibration=None
+        )
+        if scored.empty:
+            return scored
+
+        blocked = set(open_symbols) | {sym for sym, remaining in cooldowns.items() if remaining > 0}
+        if blocked:
+            scored = scored[~scored["symbol"].isin(blocked)].copy()
+        if scored.empty:
+            return scored
+
+        scored = scored.sort_values("risk_adjusted_score", ascending=False).head(available_slots).copy()
+        return build_weight_plan_risk_adjusted(scored, equity=equity, high_water_mark=high_water_mark)
 
     candidates = score_entry_candidates(day, equity=equity, high_water_mark=high_water_mark)
     if candidates.empty:
@@ -1671,8 +2012,27 @@ def meta_controller_decision(pos: Position, row: pd.Series, close_price: float) 
     return "HOLD"
 
 
-def model_exit_decision(pos: Position, row: pd.Series, close_price: float) -> tuple[str | None, float | None, str]:
+def meta_controller_decision_turnover_aware(pos: Position, row: pd.Series, close_price: float) -> str:
+    """Turnover-aware wrapper around meta_controller_decision (Objective 2).
+
+    Suppresses SOFT, model-opinion-based exits (model failure, edge decay,
+    momentum failure, time decay) while a position is still inside its minimum
+    hold window (``bars_held < MIN_HOLD_BARS_SOFT_EXIT``), converting them to a
+    HOLD to avoid churn on transient probability dips. HARD, structural exits
+    (target hit, time stop, profit lock, early failure) are never gated and fire
+    immediately, even at bars_held=0.
+    """
     decision = meta_controller_decision(pos, row, close_price)
+    if decision in SOFT_EXIT_REASONS and pos.bars_held < MIN_HOLD_BARS_SOFT_EXIT:
+        return "HOLD"
+    return decision
+
+
+def model_exit_decision(pos: Position, row: pd.Series, close_price: float) -> tuple[str | None, float | None, str]:
+    if TURNOVER_CONTROLS_ENABLED:
+        decision = meta_controller_decision_turnover_aware(pos, row, close_price)
+    else:
+        decision = meta_controller_decision(pos, row, close_price)
 
     if decision.startswith("EXIT_"):
         exit_price = close_price * (1 - EXIT_SLIPPAGE_BPS / 10_000)
@@ -2057,6 +2417,9 @@ def calculate_window_metrics(daily: pd.DataFrame, events: pd.DataFrame) -> dict[
             "annual_return": 0.0,
             "annual_vol": 0.0,
             "sharpe": 0.0,
+            "sharpe_se": float("nan"),
+            "sortino": 0.0,
+            "calmar": 0.0,
             "max_drawdown": 0.0,
             "closed_trades": 0,
             "win_rate": 0.0,
@@ -2076,7 +2439,16 @@ def calculate_window_metrics(daily: pd.DataFrame, events: pd.DataFrame) -> dict[
     total_return = eq.iloc[-1] / max(eq.iloc[0], 1e-9) - 1
     annual_return = (1 + total_return) ** (252 / max(len(d), 1)) - 1
     annual_vol = d["daily_return"].std() * np.sqrt(252)
-    sharpe = annual_return / annual_vol if annual_vol > 0 else 0.0
+
+    # Sharpe comes from the mean/std of daily EXCESS returns (annualized), NOT
+    # from CAGR / vol -- see metrics.py. Sortino, Calmar and the Sharpe standard
+    # error are reported alongside so each window carries an uncertainty estimate.
+    sharpe = metrics.sharpe_ratio(d["daily_return"], RISK_FREE_RATE_ANNUAL)
+    sortino = metrics.sortino_ratio(d["daily_return"], RISK_FREE_RATE_ANNUAL)
+    max_dd = float(dd.min())
+    cagr_value = metrics.cagr(total_return, len(d))
+    calmar = metrics.calmar_ratio(cagr_value, max_dd)
+    sharpe_se = metrics.sharpe_standard_error(sharpe, len(d))
 
     exits = events[events["event"] == "EXIT"].copy() if not events.empty else pd.DataFrame()
     closed_trades = len(exits)
@@ -2099,7 +2471,10 @@ def calculate_window_metrics(daily: pd.DataFrame, events: pd.DataFrame) -> dict[
         "annual_return": float(annual_return),
         "annual_vol": float(annual_vol),
         "sharpe": float(sharpe),
-        "max_drawdown": float(dd.min()),
+        "sharpe_se": float(sharpe_se),
+        "sortino": float(sortino),
+        "calmar": float(calmar),
+        "max_drawdown": float(max_dd),
         "closed_trades": int(closed_trades),
         "win_rate": float(win_rate),
         "avg_trade_return": float(avg_trade_return),

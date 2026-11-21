@@ -37,12 +37,21 @@ def test_55_symbols_produce_20_20_15():
     assert [len(b) for b in batches] == [20, 20, 15]
 
 
-def test_real_universe_txt_is_54_and_batches_20_20_14():
-    # BNOX (Bionomics ADS) was delisted/INACTIVE on Alpaca (zero bars) and removed
-    # 2026-11-20; the canonical tradable universe is now 54 names.
+def test_real_universe_txt_matches_canonical_and_batches_cleanly():
+    # The root-level universe.txt is the single source of truth and is
+    # republished by the real-time scanner, so its exact count is NOT hardcoded
+    # here (it was 54, is currently 31, and will keep changing). Instead we
+    # validate the batching CONTRACT against whatever the real file holds:
+    # all-but-last batches are full (20) and the last is the remainder.
     syms = universe.load_canonical_universe()
-    assert len(syms) == 54
-    assert [len(b) for b in universe.iter_symbol_batches(syms, 20)] == [20, 20, 14]
+    n = len(syms)
+    assert n >= 1  # fail-closed loader guarantees non-empty
+    batches = list(universe.iter_symbol_batches(syms, 20))
+    assert all(len(b) == 20 for b in batches[:-1])
+    assert len(batches[-1]) == (n % 20 or 20)
+    # every symbol exactly once, original order preserved (no dupes)
+    flat = [s for b in batches for s in b]
+    assert flat == syms and len(flat) == len(set(flat))
 
 
 def test_every_symbol_appears_exactly_once_order_preserved():
