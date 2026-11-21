@@ -5,8 +5,8 @@ from collections import deque
 from pathlib import Path
 import pandas as pd
 import websockets
-from live_market_analyzer import Alpaca, atomic
-from market_analyzer import discover, INVERSE, BULL, SECTORS
+from market_scan.live_market_analyzer import Alpaca, atomic
+from market_scan.market_analyzer import discover, INVERSE, BULL, SECTORS
 
 REFS=list(dict.fromkeys(['SPY','QQQ','DIA','IWM']+list(INVERSE.values())+list(BULL.values())))
 
@@ -69,6 +69,52 @@ def bootstrap(api,symbols,session):
             for b in rows: states[s].event(dict(b,T='b'))
     return states
 
+def compute_subscription_delta(current, new_pool, refs, budget):
+    """Pure: given the currently-subscribed `current`, a freshly-discovered
+    `new_pool`, the reference symbols `refs`, and the hard IEX `budget`, return
+    (desired, to_add, to_remove). REFERENCES are always kept (never in
+    to_remove); the desired set is capped at `budget` and never silently exceeds
+    it; references take priority, then pool order."""
+    refs = list(dict.fromkeys(refs)); refset = set(refs)
+    pool = [s for s in dict.fromkeys(new_pool) if s not in refset]
+    desired = refs + pool
+    if len(desired) > budget:                       # never exceed the IEX cap
+        desired = (refs + pool)[:budget]
+    des = set(desired); cur = set(current)
+    to_add = [s for s in desired if s not in cur]
+    to_remove = [s for s in current if s not in des and s not in refset]
+    return desired, to_add, to_remove
+
+
+async def update_symbols(ws, api, states, session, current, new_pool, refs, budget, log=print):
+    """Mid-flight subscription delta on the LIVE websocket (no teardown).
+
+    Sends incremental Alpaca unsubscribe/subscribe frames on the same socket,
+    warms up (bootstraps 1m bars for) added symbols, and prunes removed ones.
+    References are never unsubscribed; the IEX budget is never exceeded.
+    Returns (new_subscribed, new_pool_actual). Raises on any send/protocol error
+    so the caller can fall back to a full reconnect (fail-closed).
+    """
+    desired, to_add, to_remove = compute_subscription_delta(current, new_pool, refs, budget)
+    if not to_add and not to_remove:
+        return list(current), [s for s in desired if s not in set(refs)]
+    # Unsubscribe FIRST so we stay within the IEX budget before adding.
+    if to_remove:
+        await ws.send(json.dumps(dict(action='unsubscribe', trades=to_remove,
+                                      quotes=to_remove, bars=to_remove, updatedBars=to_remove)))
+        for s in to_remove:
+            states.pop(s, None)
+    if to_add:
+        await ws.send(json.dumps(dict(action='subscribe', trades=to_add,
+                                      quotes=to_add, bars=to_add, updatedBars=to_add)))
+        # Warm up new names (fail-closed per-symbol until they have >=5 bars).
+        new_states = await asyncio.to_thread(bootstrap, api, to_add, session)
+        states.update(new_states)
+    log(f'[update_symbols] +{len(to_add)} -{len(to_remove)} subscribed={len(desired)}')
+    refset = set(refs)
+    return desired, [s for s in desired if s not in refset]
+
+
 async def run(a):
     api=Alpaca(a.feed); out=Path(a.output);out.mkdir(parents=True,exist_ok=True)
     def publish(rows,selected,regime,status):
@@ -98,7 +144,12 @@ async def run(a):
                         for e in events:
                             if e['T']=='error':raise RuntimeError(str(e))
                             if e['T']=='subscription':
-                                if not set(symbols)<=set(e.get('quotes',[])) or not set(symbols)<=set(e.get('trades',[])):raise RuntimeError('Incomplete subscription')
+                                # Delta-friendly invariant: the REFERENCES must always be
+                                # subscribed (regime depends on them). Candidate symbols are
+                                # fluid (added/removed mid-flight by update_symbols); a
+                                # candidate that fails to subscribe simply yields no data and
+                                # can never be selected (fail-closed per-symbol).
+                                if not set(REFS)<=set(e.get('quotes',[])) or not set(REFS)<=set(e.get('trades',[])):raise RuntimeError('Reference subscription incomplete')
                                 subscribed=True
                             if e.get('S') in states and e['T'] in ('q','t','b','u'):states[e['S']].event(e)
                         now=time.time()
@@ -108,7 +159,11 @@ async def run(a):
                         if now-started>=a.rediscover and refresh_task is None:refresh_task=asyncio.create_task(asyncio.to_thread(discover_pool,api,a.pool))
                         if refresh_task and refresh_task.done():
                             new=refresh_task.result(); refresh_task=None; started=now
-                            if set(new)!=set(pool):break # reconnect and backfill new candidates; fail closed during warmup
+                            if set(new)!=set(pool):
+                                try:
+                                    symbols,pool=await update_symbols(ws,api,states,session,symbols,new,REFS,a.max_symbols)
+                                except Exception as ue:
+                                    print('update_symbols failed; full reconnect',type(ue).__name__,str(ue),flush=True);break # fail-closed fallback
                         if not subscribed or now<next_rank:continue
                         next_rank=now+a.refresh; ctx={s:st.metrics(now) for s,st in states.items()}; core=[ctx[s] for s in REFS[:4]]
                         if any(x is None for x in core):publish([],[],'unknown','stale');continue
