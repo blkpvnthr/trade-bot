@@ -1,0 +1,23 @@
+Manage the existing service with:
+
+# status / health
+launchctl list com.quantumquant.trader925
+
+# restart (pick it up after any change)
+launchctl kickstart -k gui/$(id -u)/com.quantumquant.trader925
+
+# stop (unload) / start (load)
+launchctl bootout  gui/$(id -u)/com.quantumquant.trader925
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.quantumquant.trader925.plist
+
+# follow live output
+tail -f /Users/blkpvnthr/qq-trader/logs/*.log /Users/blkpvnthr/qq-trader/logs/engine.out 2>/dev/null
+
+or 
+
+echo "=== last modified ==="; stat -f "%Sm  %N" logs/launchd_trader.log
+  echo; echo "=== tail -40 ==="; tail -40 logs/launchd_trader.log
+  echo; echo "=== recent heartbeat/cycle markers ==="; grep -aE "heartbeat|cycle|run_once|market|skipped_market_closed" 
+  
+or 
+

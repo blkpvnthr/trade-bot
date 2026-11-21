@@ -11,3 +11,5 @@ Built market_scan/ package + trade.py integration (13 commits, 1.8k LoC); advers
 Created isolated worktree feat/unified-trading-engine @ 151aa3c; trade1.py baseline 7971-LoC (commit 1d99c0b); market_scan/ verified; Phase 2 arch audit WF (17-agent) for heartbeat baseline, defect register, reuse map; AMPS V6 & trade.py preserved.
 ## 10:51 | worktrees-market-scanner
 Built mkt_scan/ pkg (1,881 LoC, 10 modules, fresh); 13 commits (10 integration + 3 corrective addressing 11 verified issues); hot-reload universe.txt, −0.5% loss-removal w/ gated replacement, broker-snapshot caching, subscription-cap enforcement, candidate-freshness validation; 480 tests pass, 0 regressions; merged → 13K-development (53f285e..798fcbc ff), pushed to origin.
+## 10:58 | worktrees-market-scanner
+Confirmed -0.5% exit-replace flow (live equity, unrealized P/L trigger, strict seller-exhaustion gating on replacements); 2 caveats documented (cycle latency ~30s, tight gating → frequent cash holds); user approved planned improvements to relax gating + add dedicated fast monitor.

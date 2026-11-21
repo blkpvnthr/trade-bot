@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Continuous, supervised AMPS V6 trade.py service (fully functional).
+
+  REVIEW BEFORE INSTALLING. This is NOT loaded automatically.
+
+  What it does:
+    - runs trade.py continuously via start.sh (which execs the project venv python)
+    - restarts on unexpected exit (KeepAlive) with a 60s throttle to avoid
+      restart storms after a permanent/config failure
+    - starts at login/load (RunAtLoad)
+    - launchd sends SIGTERM for graceful shutdown on `launchctl unload`
+    - writes bounded stdout/stderr to project-local logs
+
+  Account/mode: trade.py defaults to PAPER. This service does NOT pass --live
+  and does NOT set ALLOW_LIVE_TRADING. To go live you (the operator) add --live
+  below AND export ALLOW_LIVE_TRADING=1 in the environment yourself.
+
+  KNOWN MACOS HAZARD (must address or this will silently fail):
+    Jobs launched by launchd from ~/Desktop are blocked by TCC. Grant Full Disk
+    Access to /Users/blkpvnthr/qq-trader/.venv/bin/python (and /bin/bash),
+    or relocate the project off ~/Desktop. Verify the logs below actually fill.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.quantumquant.amps-trade</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/blkpvnthr/qq-trader</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/blkpvnthr/qq-trader/start.sh</string>
+        <string>--enforce-exits</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+        <!-- Efficient long-running intervals (trade.py reads env; adjust as needed). -->
+        <key>AMPS_HEARTBEAT_SECONDS</key>
+        <string>60</string>
+    </dict>
+
+    <!-- Persistent service: start at load/login and keep alive on crash. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <!-- Minimum seconds between (re)starts: throttles restart storms. -->
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <!-- launchd sends SIGTERM on unload; give trade.py time to reconcile/flush. -->
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/blkpvnthr/qq-trader/logs/launchd_amps_trade.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/blkpvnthr/qq-trader/logs/launchd_amps_trade.err.log</string>
+</dict>
+</plist>
