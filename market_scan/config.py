@@ -52,8 +52,17 @@ class MarketScanConfig:
     data_feed: str = "iex"                    # IEX-exclusive for equities
 
     # --- cadence ---
-    rank_refresh_seconds: float = 3.0         # in-memory ranking refresh
+    rank_refresh_seconds: float = 3.0         # in-memory ranking + publish refresh
     discovery_interval_seconds: float = 300.0 # broader discovery sweep
+    rotation_interval_seconds: float = 60.0   # active-subscription rotation cadence
+                                              # (decoupled from the ~3s rank tick so
+                                              # the IEX feed is not churned every tick)
+
+    # --- active-window allocation (risk-first, then baseline/opportunity split) ---
+    baseline_active_slots: int = 20           # nominal baseline share of the window
+    opportunity_active_slots: int = 10        # nominal opportunity share
+    opportunity_exploration_fraction: float = 0.3  # of opportunity slots: explore vs
+                                                   # exploit (0.3 => 70% exploit/30% explore)
 
     # --- universe sizing / freshness ---
     target_universe_size: int = 30            # up to N published
@@ -78,6 +87,21 @@ class MarketScanConfig:
 
     # --- loss-removal / replacement ---
     loss_removal_threshold: float = -0.005    # decimal fraction (-0.5%)
+
+    # --- Stage B: dynamic volatility-adjusted protective loss monitor ---
+    # Default OFF: the existing fixed -0.5% protective behavior is preserved until
+    # historical validation supports enabling the adaptive monitor.
+    dynamic_loss_enabled: bool = False        # MARKET_SCAN_DYNAMIC_LOSS
+    loss_warning_pct: float = 0.005           # early-warning magnitude (not a liquidation)
+    adaptive_loss_min_pct: float = 0.005      # adaptive threshold floor
+    adaptive_loss_max_pct: float = 0.020      # adaptive threshold ceiling (NOT a risk increase)
+    loss_atr_period: int = 14
+    loss_atr_multiplier: float = 1.5
+    loss_atr_timeframe: str = "5Min"
+    exit_confirmation_seconds: float = 30.0   # discretionary-exit confirmation window
+    exit_confirmation_min_observations: int = 3
+    position_reentry_cooldown_seconds: float = 300.0  # same-symbol reentry cooldown
+    replacement_min_score_improvement: float = 0.15   # relative improvement to replace
     # Replacement gating: require momentum + DI+>DI- + >BB-mid + >VWAP + liquidity
     # + regime for every replacement. Seller exhaustion is OPTIONAL (default OFF)
     # so stopped-out capital is redeployed more readily into the best-ranked
@@ -94,6 +118,12 @@ class MarketScanConfig:
         self.data_feed = "iex"
         self.max_subscriptions = max(1, int(self.max_subscriptions))
         self.target_universe_size = max(1, int(self.target_universe_size))
+        self.baseline_active_slots = max(0, int(self.baseline_active_slots))
+        self.opportunity_active_slots = max(0, int(self.opportunity_active_slots))
+        self.rotation_interval_seconds = max(1.0, float(self.rotation_interval_seconds))
+        # Exploration fraction is a proportion in [0, 1].
+        self.opportunity_exploration_fraction = min(
+            1.0, max(0.0, float(self.opportunity_exploration_fraction)))
         # The loss-removal threshold must be strictly negative (a decimal
         # fraction, e.g. -0.005). A zero/positive value (operator typo like
         # "0.5") would invert the gate into a full-book liquidation, so coerce
@@ -102,6 +132,16 @@ class MarketScanConfig:
         if not (thr < 0.0):
             thr = -0.005
         self.loss_removal_threshold = max(-1.0, thr)
+        # Adaptive-loss bounds: positive magnitudes with min <= max (an operator
+        # inversion is coerced, never allowed to widen risk beyond the ceiling).
+        self.adaptive_loss_min_pct = max(0.0, float(self.adaptive_loss_min_pct))
+        self.adaptive_loss_max_pct = max(0.0, float(self.adaptive_loss_max_pct))
+        if self.adaptive_loss_min_pct > self.adaptive_loss_max_pct:
+            self.adaptive_loss_min_pct, self.adaptive_loss_max_pct = (
+                self.adaptive_loss_max_pct, self.adaptive_loss_min_pct)
+        self.loss_atr_period = max(1, int(self.loss_atr_period))
+        self.exit_confirmation_min_observations = max(
+            1, int(self.exit_confirmation_min_observations))
 
     @classmethod
     def from_env(cls) -> "MarketScanConfig":
@@ -113,6 +153,14 @@ class MarketScanConfig:
             rank_refresh_seconds=_env_float("MARKET_SCAN_RANK_SECONDS", 3.0),
             discovery_interval_seconds=_env_float(
                 "MARKET_SCAN_DISCOVERY_SECONDS", 300.0
+            ),
+            rotation_interval_seconds=_env_float(
+                "MARKET_SCAN_ROTATION_SECONDS", 60.0
+            ),
+            baseline_active_slots=_env_int("MARKET_SCAN_BASELINE_SLOTS", 20),
+            opportunity_active_slots=_env_int("MARKET_SCAN_OPPORTUNITY_SLOTS", 10),
+            opportunity_exploration_fraction=_env_float(
+                "MARKET_SCAN_EXPLORATION_FRACTION", 0.3
             ),
             target_universe_size=_env_int("MARKET_SCAN_TARGET_SIZE", 30),
             universe_max_age_seconds=_env_float(
@@ -133,4 +181,18 @@ class MarketScanConfig:
             replacement_require_seller_exhaustion=_env_flag(
                 "MARKET_SCAN_REQUIRE_SELLER_EXHAUSTION", False
             ),
+            dynamic_loss_enabled=_env_flag("MARKET_SCAN_DYNAMIC_LOSS", False),
+            loss_warning_pct=_env_float("MARKET_SCAN_LOSS_WARNING_PCT", 0.005),
+            adaptive_loss_min_pct=_env_float("MARKET_SCAN_ADAPTIVE_LOSS_MIN", 0.005),
+            adaptive_loss_max_pct=_env_float("MARKET_SCAN_ADAPTIVE_LOSS_MAX", 0.020),
+            loss_atr_period=_env_int("MARKET_SCAN_LOSS_ATR_PERIOD", 14),
+            loss_atr_multiplier=_env_float("MARKET_SCAN_LOSS_ATR_MULT", 1.5),
+            loss_atr_timeframe=os.getenv("MARKET_SCAN_LOSS_ATR_TF", "5Min"),
+            exit_confirmation_seconds=_env_float("MARKET_SCAN_EXIT_CONFIRM_SECONDS", 30.0),
+            exit_confirmation_min_observations=_env_int(
+                "MARKET_SCAN_EXIT_CONFIRM_OBS", 3),
+            position_reentry_cooldown_seconds=_env_float(
+                "MARKET_SCAN_REENTRY_COOLDOWN_SECONDS", 300.0),
+            replacement_min_score_improvement=_env_float(
+                "MARKET_SCAN_REPLACEMENT_MIN_IMPROVEMENT", 0.15),
         )

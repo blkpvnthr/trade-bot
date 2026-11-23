@@ -63,6 +63,14 @@ EXECUTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
 OPENAI_MODEL = os.getenv("OPENAI_MARKET_CONTEXT_MODEL", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"))
 OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_MARKET_CONTEXT_TIMEOUT_SECONDS", "30"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MARKET_CONTEXT_MAX_RETRIES", "1"))
+# Initial output-token budget and the number of application-level classification
+# attempts. A response truncated by the token cap (finish_reason='length') is the
+# documented root cause of the "Unterminated string" json.loads crash, so a
+# truncated or unparseable response is retried (truncation escalates the budget)
+# before falling back deterministically.
+OPENAI_MAX_OUTPUT_TOKENS = int(os.getenv("OPENAI_MARKET_CONTEXT_MAX_TOKENS", "2600"))
+OPENAI_MAX_OUTPUT_TOKENS_CEIL = int(os.getenv("OPENAI_MARKET_CONTEXT_MAX_TOKENS_CEIL", "8000"))
+OPENAI_CLASSIFY_MAX_ATTEMPTS = max(1, int(os.getenv("OPENAI_MARKET_CONTEXT_MAX_ATTEMPTS", "2")))
 MARKET_CONTEXT_DISABLE_OPENAI = os.getenv("MARKET_CONTEXT_DISABLE_OPENAI", "0").lower() in {"1", "true", "yes"}
 MARKET_CONTEXT_FAIL_OPENAI_CLOSED = os.getenv("MARKET_CONTEXT_FAIL_OPENAI_CLOSED", "0").lower() in {"1", "true", "yes"}
 from market_news import search_news
@@ -851,20 +859,33 @@ def validate_event_flags(classification: dict[str, Any]) -> dict[str, Any]:
     return classification
 
 
-def classify_with_openai(raw_context: dict[str, Any]) -> dict[str, Any]:
+def classify_with_openai(raw_context: dict[str, Any], *, client: Any = None,
+                         max_attempts: int | None = None) -> dict[str, Any]:
+    """Classify the market context via OpenAI, resilient to truncated/malformed
+    responses.
+
+    ``client`` is injectable for testing (defaults to a real OpenAI client).
+    Truncated (finish_reason='length') or unparseable responses are retried up to
+    ``max_attempts`` (truncation escalates the output-token budget); on exhaustion
+    the result is the deterministic :func:`fallback_classification` -- so core
+    trading execution never depends on the LLM. Every return is tagged with
+    ``classification_source`` ('openai' or 'fallback') for clear logging. With
+    ``MARKET_CONTEXT_FAIL_OPENAI_CLOSED`` set, persistent failure raises instead.
+    """
     api_key = os.getenv("OPENAI_API_KEY")
 
-    if not api_key:
+    if not api_key and client is None:
         return fallback_classification(raw_context, "OPENAI_API_KEY missing")
 
     if MARKET_CONTEXT_DISABLE_OPENAI:
         return fallback_classification(raw_context, "MARKET_CONTEXT_DISABLE_OPENAI enabled")
 
-    client = OpenAI(
-        api_key=api_key,
-        timeout=OPENAI_TIMEOUT_SECONDS,
-        max_retries=OPENAI_MAX_RETRIES,
-    )
+    if client is None:
+        client = OpenAI(
+            api_key=api_key,
+            timeout=OPENAI_TIMEOUT_SECONDS,
+            max_retries=OPENAI_MAX_RETRIES,
+        )
 
     prompt = f"""
 You are a strict market context classifier for an automated trading system.
@@ -941,30 +962,76 @@ Raw context:
 {json.dumps(safe_json(raw_context), separators=(",", ":"))}
 """.strip()
 
-    try:
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Return only valid JSON. No markdown. Do not infer events without evidence.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-            max_tokens=2600,
-        )
+    attempts = max_attempts if max_attempts is not None else OPENAI_CLASSIFY_MAX_ATTEMPTS
+    attempts = max(1, int(attempts))
+    token_budget = OPENAI_MAX_OUTPUT_TOKENS
+    last_err = "no attempts made"
 
-        content = response.choices[0].message.content or "{}"
-        parsed = json.loads(content)
-        return validate_event_flags(parsed)
+    for attempt in range(1, attempts + 1):
+        try:
+            response = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Return only valid JSON. No markdown. Do not infer events without evidence.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                max_tokens=token_budget,
+            )
 
-    except Exception as exc:
-        msg = f"OpenAI classification failed: {exc}"
-        print(f"[market-context] {msg}; using fallback classification")
-        if MARKET_CONTEXT_FAIL_OPENAI_CLOSED:
-            raise RuntimeError(msg) from exc
-        return fallback_classification(raw_context, msg)
+            choice = response.choices[0]
+            content = getattr(choice.message, "content", None) or "{}"
+            finish_reason = str(getattr(choice, "finish_reason", "") or "")
+
+            # Truncation detection: a response cut off at the token cap is the
+            # root cause of the "Unterminated string" json.loads crash. Escalate
+            # the budget and retry rather than parse a guaranteed-invalid body.
+            if finish_reason == "length":
+                last_err = (f"response truncated (finish_reason=length) "
+                            f"at max_tokens={token_budget}")
+                if attempt < attempts:
+                    token_budget = min(token_budget * 2, OPENAI_MAX_OUTPUT_TOKENS_CEIL)
+                    print(f"[market-context] {last_err}; retrying "
+                          f"(attempt {attempt + 1}/{attempts}, max_tokens={token_budget})")
+                    continue
+                print(f"[market-context] {last_err}; attempts exhausted")
+                break
+
+            parsed = json.loads(content)
+            result = validate_event_flags(parsed)
+            result["classification_source"] = "openai"
+            print(f"[market-context] classified via OpenAI model={OPENAI_MODEL} "
+                  f"(attempt {attempt}/{attempts})")
+            return result
+
+        except json.JSONDecodeError as exc:
+            # Malformed (but not length-truncated) JSON: retry once more, then fall back.
+            last_err = f"OpenAI returned unparseable JSON: {exc}"
+            if attempt < attempts:
+                print(f"[market-context] {last_err}; retrying "
+                      f"(attempt {attempt + 1}/{attempts})")
+                continue
+            print(f"[market-context] {last_err}; attempts exhausted")
+            break
+
+        except Exception as exc:
+            # Transport/auth/other errors: the SDK already retried transient
+            # failures (max_retries); an app-level retry would not help, so fall
+            # back immediately (or fail closed if configured).
+            msg = f"OpenAI classification failed: {exc}"
+            print(f"[market-context] {msg}; using fallback classification")
+            if MARKET_CONTEXT_FAIL_OPENAI_CLOSED:
+                raise RuntimeError(msg) from exc
+            return fallback_classification(raw_context, msg)
+
+    msg = f"OpenAI classification failed after {attempts} attempt(s): {last_err}"
+    print(f"[market-context] {msg}; using fallback classification")
+    if MARKET_CONTEXT_FAIL_OPENAI_CLOSED:
+        raise RuntimeError(msg)
+    return fallback_classification(raw_context, msg)
 
 
 def fallback_classification(raw_context: dict[str, Any], reason: str) -> dict[str, Any]:
@@ -1027,6 +1094,7 @@ def fallback_classification(raw_context: dict[str, Any], reason: str) -> dict[st
         "overall_market_bias": bias,
         "trade_permission": permission,
         "risk_level": risk,
+        "classification_source": "fallback",
         "summary": "Fallback market classification using futures, sector strength, and key ETF risk signals.",
         "decision_reasons": reasons,
         "event_evidence": empty_event_evidence(),

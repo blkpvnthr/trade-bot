@@ -129,6 +129,97 @@ def test_run_without_reconnect_raises():
         asyncio.run(go())
 
 
+class _BlockingAlpacaStream:
+    """Faithfully mimics alpaca-py: once the ws is 'running', subscribe_*/
+    unsubscribe_* block the caller on ``run_coroutine_threadsafe(send(), loop)
+    .result()`` -- a coroutine scheduled on the SAME loop. Calling these inline
+    from the loop thread self-deadlocks (the loop can't run `send` while blocked
+    in `.result()`). The StreamClient must dispatch them off the loop thread.
+    """
+
+    def __init__(self):
+        self._loop = None
+        self.running = False
+        self.subscribed_trades: set[str] = set()
+        self.subscribed_quotes: set[str] = set()
+
+    async def _send(self):
+        return True
+
+    def _blocking(self, dest, syms):
+        if self.running and self._loop is not None:
+            # Exactly alpaca's _subscribe path: schedule on the loop, block on result.
+            asyncio.run_coroutine_threadsafe(self._send(), self._loop).result(timeout=4)
+        dest.update(syms)
+
+    def subscribe_trades(self, handler, *syms):
+        self._blocking(self.subscribed_trades, syms)
+
+    def subscribe_quotes(self, handler, *syms):
+        self._blocking(self.subscribed_quotes, syms)
+
+    def unsubscribe_trades(self, *syms):
+        self._blocking(self.subscribed_trades, ())
+        self.subscribed_trades.difference_update(syms)
+
+    def unsubscribe_quotes(self, *syms):
+        self._blocking(self.subscribed_quotes, ())
+        self.subscribed_quotes.difference_update(syms)
+
+
+def test_apply_subscriptions_does_not_deadlock_when_stream_running():
+    """Regression: with the ws already running, apply_subscriptions must NOT run
+    alpaca's blocking subscribe on the event-loop thread (which deadlocks the
+    scanner's rank loop after the first publish). It must dispatch off-loop so the
+    loop stays free to service run_coroutine_threadsafe()."""
+    fake = _BlockingAlpacaStream()
+    c = StreamClient(api_key="k", secret_key="s", on_trade=lambda *a: None,
+                     on_quote=lambda *a: None, stream_factory=lambda *a, **k: fake)
+
+    async def go():
+        fake._loop = asyncio.get_running_loop()
+        fake.running = True          # ws already connected (as on tick >= 2)
+        c._stream = fake             # pretend connect() already happened
+        # Would hang/time out forever if subscribe ran on the loop thread.
+        await asyncio.wait_for(
+            c.apply_subscriptions(to_add=["NVDA", "AMD"], to_remove=[]), timeout=5)
+        await asyncio.wait_for(
+            c.apply_subscriptions(to_add=["TSLA"], to_remove=["AMD"]), timeout=5)
+
+    asyncio.run(go())
+    assert fake.subscribed_trades == {"NVDA", "TSLA"}
+    assert fake.subscribed_quotes == {"NVDA", "TSLA"}
+    assert c.subscribed == {"NVDA", "TSLA"}
+
+
+def test_apply_subscriptions_removes_before_adds():
+    """Obsolete subscriptions must be removed BEFORE replacements are added so the
+    subscribed set never transiently exceeds the IEX cap."""
+    order: list[str] = []
+
+    class _OrderedStream:
+        def subscribe_trades(self, handler, *syms):
+            order.append("sub_trades")
+
+        def subscribe_quotes(self, handler, *syms):
+            order.append("sub_quotes")
+
+        def unsubscribe_trades(self, *syms):
+            order.append("unsub_trades")
+
+        def unsubscribe_quotes(self, *syms):
+            order.append("unsub_quotes")
+
+    c = StreamClient(api_key="k", secret_key="s", on_trade=lambda *a: None,
+                     on_quote=lambda *a: None,
+                     stream_factory=lambda *a, **k: _OrderedStream())
+    c.connect()
+    c._subscribed = {"OLD1", "OLD2"}        # pretend these are currently subscribed
+    asyncio.run(c.apply_subscriptions(to_add=["NEW1"], to_remove=["OLD1"]))
+    assert order.index("unsub_trades") < order.index("sub_trades")
+    assert order.index("unsub_quotes") < order.index("sub_quotes")
+
+
 def test_only_one_stream_constructed():
     constructed = []
 

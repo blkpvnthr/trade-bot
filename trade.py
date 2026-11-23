@@ -5597,7 +5597,8 @@ class ProductionOrderExecutor:
         return enabled, threshold
 
     def _positions_below_loss_threshold(self, positions, threshold: float) -> list[str]:
-        """Symbols whose unrealized_plpc is at/below ``threshold`` (decimal)."""
+        """Symbols whose unrealized_plpc is at/below ``threshold`` (decimal) -- the
+        fixed -0.5% rule, preserved verbatim as the default protective behavior."""
         out: list[str] = []
         for pos in positions or []:
             sym = safe_symbol(getattr(pos, "symbol", None))
@@ -5606,6 +5607,91 @@ class ProductionOrderExecutor:
             plpc = to_float(getattr(pos, "unrealized_plpc", 0.0), 0.0)
             if plpc <= threshold:
                 out.append(sym)
+        return out
+
+    # --- Stage B: dynamic volatility-adjusted protective monitor (default OFF) ---
+    def _dynamic_loss_enabled(self) -> bool:
+        try:
+            from market_scan.config import MarketScanConfig
+            return bool(MarketScanConfig.from_env().dynamic_loss_enabled)
+        except Exception:  # noqa: BLE001 - absence -> fixed behavior
+            return False
+
+    def _ensure_dynamic_loss_monitor(self):
+        if getattr(self, "_dyn_loss_mon", None) is None:
+            from market_scan.config import MarketScanConfig
+            from market_scan.dynamic_loss import DynamicLossMonitor
+            cfg = MarketScanConfig.from_env()
+            try:
+                hard = abs(float(self.config.scanner.stop_loss_pct))
+            except Exception:  # noqa: BLE001
+                hard = None
+            self._dyn_loss_mon = DynamicLossMonitor(
+                warning_pct=cfg.loss_warning_pct,
+                adaptive_min_pct=cfg.adaptive_loss_min_pct,
+                adaptive_max_pct=cfg.adaptive_loss_max_pct,
+                atr_multiplier=cfg.loss_atr_multiplier,
+                confirmation_seconds=cfg.exit_confirmation_seconds,
+                min_observations=cfg.exit_confirmation_min_observations,
+                hard_stop_pct=hard,
+            )
+        return self._dyn_loss_mon
+
+    @staticmethod
+    def _position_deteriorating(feat: dict) -> bool:
+        """Heuristic deterioration proxy from the latest MTF feature row (fresh
+        bars): below fast SMA / lower lows / failed reclaim / lost VWAP / negative
+        short-horizon momentum. Absent evidence -> False (hold within budget)."""
+        if not isinstance(feat, dict):
+            return False
+        for k in ("5m_below_fast_sma", "5m_lower_lows", "5m_failed_reclaim",
+                  "15m_below_fast_sma", "15m_lower_lows"):
+            if feat.get(k):
+                return True
+        if feat.get("5m_above_vwap") is False:
+            return True
+        for k in ("5m_direction_score", "short_mom", "ret_5d"):
+            v = feat.get(k)
+            if isinstance(v, (int, float)) and v == v and v < 0:
+                return True
+        return False
+
+    def _breached_positions(self, positions, threshold: float) -> list[str]:
+        """Symbols to protectively exit.
+
+        Default (dynamic OFF): the fixed -0.5% rule, unchanged. Dynamic ON: the
+        per-symbol ATR-adjusted monitor with confirmed deterioration -- with a
+        CONSERVATIVE fallback to the fixed rule for any position lacking reliable
+        ATR data, so protection is never weakened and risk is never widened beyond
+        the authorized ceiling.
+        """
+        if not self._dynamic_loss_enabled():
+            return self._positions_below_loss_threshold(positions, threshold)
+        import time as _time
+        now = _time.time()
+        mon = self._ensure_dynamic_loss_monitor()
+        try:
+            feats = self._latest_feature_by_symbol() or {}
+        except Exception:  # noqa: BLE001
+            feats = {}
+        out: list[str] = []
+        for pos in positions or []:
+            sym = safe_symbol(getattr(pos, "symbol", None))
+            if not sym:
+                continue
+            plpc = to_float(getattr(pos, "unrealized_plpc", 0.0), 0.0)
+            feat = feats.get(sym) or {}
+            atr_pct = feat.get("atr_pct")
+            reliable = isinstance(atr_pct, (int, float)) and atr_pct == atr_pct and atr_pct > 0
+            if reliable:
+                side = str(getattr(pos, "side", "long") or "long").lower()
+                d = mon.observe(sym, plpc=plpc, atr_pct=float(atr_pct),
+                                deteriorating=self._position_deteriorating(feat),
+                                now=now, side=side)
+                if d.should_exit:
+                    out.append(sym)
+            elif plpc <= threshold:
+                out.append(sym)   # conservative fallback: fixed rule when ATR absent
         return out
 
     def _ensure_pending_replacements(self) -> "threading.RLock":
@@ -5647,7 +5733,7 @@ class ProductionOrderExecutor:
             except Exception as exc:  # noqa: BLE001
                 print(f"[loss-monitor] position read failed: {exc}")
                 return 0
-            breached = self._positions_below_loss_threshold(positions, threshold)
+            breached = self._breached_positions(positions, threshold)
             if not breached:
                 return 0
             # Emergency halt precedence (explicit, read-only -- the monitor honors
@@ -5742,13 +5828,14 @@ class ProductionOrderExecutor:
             print(f"[loss-removal] position read failed: {exc}")
             return exits
 
+        breached = set(self._breached_positions(positions, threshold))
         for pos in positions:
             symbol = safe_symbol(pos.symbol)
             if not symbol or symbol in existing:
                 continue
-            plpc = to_float(getattr(pos, "unrealized_plpc", 0.0), 0.0)
-            if plpc > threshold:
+            if symbol not in breached:
                 continue
+            plpc = to_float(getattr(pos, "unrealized_plpc", 0.0), 0.0)
             # FULL exit, fractional-aware: never truncate with int(), or a
             # sub-1-share losing position would be skipped entirely and a
             # fractional stub would be stranded (partial exit). Sell the entire

@@ -26,8 +26,10 @@ import amps_v4_regime
 import universe
 from market_scan import discovery as discovery_mod
 from market_scan import ranking as ranking_mod
+from market_scan.baseline import ACTIVE_UNIVERSE_SIZE, BASELINE_SET, BASELINE_UNIVERSE
 from market_scan.config import MarketScanConfig
 from market_scan.health import STATUS_HEALTHY, STATUS_UNHEALTHY
+from market_scan.opportunity_stats import OpportunityStats, stats_path
 from market_scan.publisher import UniversePublisher
 from market_scan.ranking import CandidateFeatures, MarketContext
 from market_scan.subscription_manager import SubscriptionManager
@@ -58,6 +60,8 @@ class MarketScanner:
         discovery_fn: Optional[Callable[..., Any]] = None,
         sleep_fn=None,
         now_fn=None,
+        mono_fn=None,
+        stats_path_override: str | Path | None = None,
         log_fn: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.executor = executor
@@ -80,12 +84,15 @@ class MarketScanner:
             config,
             mode=self.mode,
         )
+        # Clock/sleep MUST be set before _make_stream(): the default stream
+        # construction reads self._now_fn to share the scanner's clock with the
+        # StreamClient so is_live() staleness is computed on one consistent clock.
+        self._now_fn = now_fn
+        self._sleep_fn = sleep_fn
         self.stream = stream_client if stream_client is not None else self._make_stream()
         self.feature_provider = feature_provider or self._default_features
         self.discovery_fn = discovery_fn or discovery_mod.discover_us_listed
 
-        self._now_fn = now_fn
-        self._sleep_fn = sleep_fn
         self._regime_cfg = amps_v4_regime.RegimeConfig()
 
         self._discovered: list[str] = []
@@ -108,6 +115,29 @@ class MarketScanner:
         # rank tick never polls the broker directly (decoupled from the heartbeat).
         self._pos_cache: tuple = ((), (), 0.0)
         self._last_pos_refresh: float = 0.0
+
+        # --- autonomous rotating universe (Stage A) ---
+        self._mono_fn = mono_fn
+        # Currently-subscribed active window; the rank/publish tick ranks these
+        # between rotations (the subscription set only changes on the 60s cadence).
+        self._subscribed_syms: list[str] = []
+        # Monotonic schedule marks (None => due immediately on first loop pass).
+        self._last_rotation_mono: float | None = None
+        self._last_discovery_mono: float | None = None
+        self._last_pos_refresh_mono: float | None = None
+        # Signature of the mandatory set (positions/pending); a change forces an
+        # immediate subscription reconciliation regardless of the rotation timer.
+        self._mon_signature: tuple | None = None
+        self._tick_counter = 0
+        # Persisted opportunity statistics, co-located with the context file so a
+        # paper and a live scanner never share stats (mode-isolated).
+        if stats_path_override is not None:
+            _sp = Path(stats_path_override)
+        else:
+            ctx_parent = Path(context_path).parent if context_path is not None \
+                else Path(__file__).resolve().parent
+            _sp = stats_path(self.mode, directory=ctx_parent)
+        self._opp_stats = OpportunityStats(_sp, mode=self.mode)
 
     # ------------------------------------------------------------------ setup
     def _make_stream(self):
@@ -174,17 +204,53 @@ class MarketScanner:
     def _monitoring_union(self, positions, pending) -> set[str]:
         return set(positions) | set(pending) | {s.upper() for s in self.config.market_refs}
 
+    def _monotonic(self) -> float:
+        if self._mono_fn is not None:
+            return self._mono_fn()
+        import time
+        return time.monotonic()
+
+    def _proxies(self) -> set[str]:
+        return {s.upper() for s in self.config.market_refs}
+
     def _entry_candidates(self) -> list[str]:
-        proxies = {s.upper() for s in self.config.market_refs}
+        """The master rankable entry pool = (BASELINE ∪ discovered) minus the
+        context-only proxies (SPY/QQQ/DIA/IWM), deduped. Baseline is ALWAYS in the
+        pool so the Opportunity Finder can never permanently drop it."""
+        proxies = self._proxies()
         seen: set[str] = set()
         out: list[str] = []
-        for s in self._discovered:
+        for s in list(BASELINE_UNIVERSE) + list(self._discovered):
             su = str(s).upper()
             if su in proxies or su in seen:
                 continue
             seen.add(su)
             out.append(su)
         return out
+
+    def _baseline_alloc_symbols(self) -> list[str]:
+        """Baseline members eligible for the baseline slot allocation (proxies are
+        pinned separately as mandatory references, so they are excluded here)."""
+        proxies = self._proxies()
+        return [s for s in BASELINE_UNIVERSE if s.upper() not in proxies]
+
+    def _opportunity_symbols(self) -> list[str]:
+        """Discovered securities that are NOT baseline and NOT proxies -- the
+        dynamically-found opportunity pool that competes for the opportunity slots."""
+        proxies = self._proxies()
+        seen: set[str] = set()
+        out: list[str] = []
+        for s in self._discovered:
+            su = str(s).upper()
+            if su in proxies or su in BASELINE_SET or su in seen:
+                continue
+            seen.add(su)
+            out.append(su)
+        return out
+
+    def _mandatory_signature(self, positions, pending) -> tuple:
+        return (frozenset(s.upper() for s in positions),
+                frozenset(s.upper() for s in pending))
 
     # ------------------------------------------------------------------ ticks
     def _discovery_tick(self, now: float) -> None:
@@ -202,24 +268,57 @@ class MarketScanner:
         self._last_discovery = now
         self._force_publish = True  # refresh the published rank order on discovery
 
-    async def _rank_tick(self, now: float) -> None:
-        positions, pending = self._open_symbols()
-        refs = [s.upper() for s in self.config.market_refs]
-        entry_pool = self._entry_candidates()
+    def _cached_score(self, sym: str) -> float:
+        v = self._scored.get(sym)
+        return float(v[0]) if v else 0.0
 
-        priority_groups = [positions, pending, refs, entry_pool]
-        plan = self.sub_mgr.plan(priority_groups)
+    async def _maybe_rotate_subscriptions(self, now: float, *, force: bool = False) -> None:
+        """Rotate the active IEX subscription window (Stage A2/A3/A5).
+
+        Self-throttling: only reconciles subscriptions on the 60s rotation cadence
+        OR when the mandatory set (positions/pending) changed -- NOT on every ~3s
+        rank tick -- so the IEX feed is not churned and stays delivering. Uses
+        risk-first + 20/10 baseline/opportunity allocation and incremental, deduped
+        subscription changes. Rotation cursors advance only after a successful
+        reconciliation.
+        """
+        positions, pending = self._open_symbols()
+        sig = self._mandatory_signature(positions, pending)
+        mono = self._monotonic()
+        mandatory_changed = (self._mon_signature is not None and sig != self._mon_signature)
+        due = (force or self._last_rotation_mono is None or mandatory_changed
+               or (mono - self._last_rotation_mono) >= self.config.rotation_interval_seconds)
+        if not due:
+            return
+
+        refs = [s.upper() for s in self.config.market_refs]
+        baseline_alloc = self._baseline_alloc_symbols()
+        opportunities = self._opportunity_symbols()
+        # Opportunity ordering: normalized cached rank score x persisted stat weight
+        # (unseen symbols get neutral weight -> exploration surfaces them fairly).
+        opp_score = {
+            s: self._opp_stats.blended_rank(s, self._cached_score(s), now=now)
+            for s in opportunities
+        }
+        plan = self.sub_mgr.plan_allocated(
+            positions=positions, pending=pending, references=refs,
+            baseline=baseline_alloc, opportunities=opportunities,
+            baseline_slots=self.config.baseline_active_slots,
+            opportunity_slots=self.config.opportunity_active_slots,
+            exploration_fraction=self.config.opportunity_exploration_fraction,
+            opp_score=opp_score, advance=False,
+        )
         self._last_plan = plan
         try:
             await self.stream.apply_subscriptions(to_add=plan.to_add, to_remove=plan.to_remove)
             self.sub_mgr.commit(plan)
+            self.sub_mgr.commit_rotation()   # advance cursors only after success
             self._subscribe_ok = True
-        except Exception as exc:  # noqa: BLE001
+            self._subscribed_syms = list(plan.target)
+        except Exception as exc:  # noqa: BLE001 - keep prior subscriptions, do not advance
             self._errors.append(f"subscribe: {exc}")
             self._subscribe_ok = False
-        # Explicit subscription-overflow policy: a dropped MANDATORY symbol
-        # (position/pending/reference) is a loud warning + recorded error; a
-        # dropped candidate is routine rotation under the cap.
+
         if plan.mandatory_dropped:
             msg = (f"[market-scan] SUBSCRIPTION OVERFLOW: cap={self.config.max_subscriptions} "
                    f"exceeded; dropped mandatory {plan.mandatory_dropped} "
@@ -229,14 +328,34 @@ class MarketScanner:
         elif plan.dropped:
             self._log(f"[market-scan] {len(plan.dropped)} candidate(s) rotated out this cycle (cap)")
 
-        subscribed = list(plan.target)
-        # Evict order-flow accumulators for symbols that rotated out of coverage
-        # (bounds memory over a long session); always keep monitoring symbols.
         try:
-            self.ofe.prune(set(subscribed) | self._monitoring_union(positions, pending))
+            self.ofe.prune(set(self._subscribed_syms) | self._monitoring_union(positions, pending))
         except Exception:  # noqa: BLE001
             pass
 
+        self._last_rotation_mono = mono
+        self._mon_signature = sig
+        try:
+            self._opp_stats.save()           # persist on the (slow) rotation cadence
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _rank_and_publish(self, now: float) -> None:
+        """Rank the currently-subscribed window and publish context (Stage A7).
+
+        Runs every ~3s. Does NOT touch subscriptions (no churn). Ranks the master
+        entry pool from whatever features are currently available, accumulates the
+        stable top-N score cache, feeds opportunity statistics, and republishes
+        universe.txt + live_context through the single UniversePublisher.
+        """
+        if self._last_plan is None:
+            await self._maybe_rotate_subscriptions(now, force=True)
+        self._tick_counter += 1
+        obs_id = f"t{self._tick_counter}"
+        positions, pending = self._open_symbols()
+        entry_pool = self._entry_candidates()
+        subscribed = list(self._subscribed_syms) or (
+            list(self._last_plan.target) if self._last_plan else [])
         try:
             feats = self.feature_provider(subscribed, now) or {}
         except Exception as exc:  # noqa: BLE001
@@ -247,14 +366,14 @@ class MarketScanner:
         rank_inputs = [feats[s] for s in entry_pool if s in feats]
         ranked = ranking_mod.rank(rank_inputs, config=self.config, market=market_ctx)
 
-        # Accumulate scores so the published universe is the STABLE top-N across
-        # rotation (not just this 3s window). BUT only record a score when the
-        # candidate's OWN market data is fresh, and expire scores whose data has
-        # not been refreshed within candidate_score_ttl_s -- a historical score
-        # sitting in the rotation cache must never keep a stale candidate live.
+        opp_set = set(self._opportunity_symbols())
         for r in ranked:
             if self._candidate_fresh(feats.get(r.symbol), now):
                 self._scored[r.symbol] = (r.score, r.eligible, now)
+                if r.symbol in opp_set:
+                    self._opp_stats.update(
+                        r.symbol, score=float(r.score), eligible=bool(r.eligible),
+                        now=now, observation_id=obs_id)
             # stale-data candidate: leave any prior entry to expire naturally
         discovered_set = set(entry_pool)
         ttl = max(1.0, self.config.candidate_score_ttl_s)
@@ -269,11 +388,7 @@ class MarketScanner:
             )
         ][: self.config.target_universe_size]
 
-        health = self._health(now, plan, market_ctx, positions, pending, feats)
-        # Publish per-candidate REPLACEMENT eligibility (the Section-9 gates) so
-        # the live engine can emit a gated replacement BUY without recomputing or
-        # duplicating the optimizer. Rank order preserved; only all-gates-pass
-        # candidates are listed.
+        health = self._health(now, self._last_plan, market_ctx, positions, pending, feats)
         health["replacement_candidates"] = self._replacement_candidates(
             eligible, feats, market_ctx)
         try:
@@ -282,6 +397,15 @@ class MarketScanner:
         except Exception as exc:  # noqa: BLE001
             self._errors.append(f"publish: {exc}")
         self._force_publish = False
+
+    async def _rank_tick(self, now: float) -> None:
+        """Back-compat single-shot: force a subscription rotation then publish.
+
+        The production :meth:`run` loop drives the two cadences separately
+        (rotation ~60s, rank/publish ~3s); this wrapper preserves the original
+        one-call behavior used by unit tests and any external caller."""
+        await self._maybe_rotate_subscriptions(now, force=True)
+        await self._rank_and_publish(now)
 
     # ---------------------------------------------------------------- context
     def _market_context(self, feats: dict) -> MarketContext:
@@ -423,25 +547,43 @@ class MarketScanner:
 
         await _offload(self._refresh_positions_snapshot)
         self._last_pos_refresh = self._now()
+        self._last_pos_refresh_mono = self._monotonic()
         await _offload(self._discovery_tick, self._now())
         await _offload(self._refresh_daily_stats)
+        self._last_discovery_mono = self._monotonic()
+        # Seed the active subscription window once before the loop so the first
+        # publish already has a live subscription set.
+        await self._maybe_rotate_subscriptions(self._now(), force=True)
         try:
             while not self._stopped:
-                now = self._now()
-                # Refresh the shared position snapshot off-loop on its own
-                # (slower) cadence -- not on every rank tick.
-                if now - self._last_pos_refresh >= self.config.position_refresh_s:
+                now = self._now()                 # wall clock for published timestamps
+                mono = self._monotonic()          # monotonic for cadence scheduling
+                # Shared position/pending snapshot (off-loop, 5s cadence).
+                if (self._last_pos_refresh_mono is None
+                        or mono - self._last_pos_refresh_mono >= self.config.position_refresh_s):
                     await _offload(self._refresh_positions_snapshot)
                     self._last_pos_refresh = now
-                if now - self._last_discovery >= self.config.discovery_interval_seconds:
+                    self._last_pos_refresh_mono = mono
+                # Broad discovery sweep (off-loop, 300s cadence).
+                if (self._last_discovery_mono is None
+                        or mono - self._last_discovery_mono >= self.config.discovery_interval_seconds):
                     await _offload(self._discovery_tick, now)
                     await _offload(self._refresh_daily_stats)
-                await self._rank_tick(now)
+                    self._last_discovery_mono = mono
+                # Subscription rotation (self-throttled to the 60s cadence or an
+                # immediate mandatory-set change) -- the ONLY place the socket churns.
+                await self._maybe_rotate_subscriptions(now)
+                # Ranking + publication every tick (~3s); never touches the socket.
+                await self._rank_and_publish(now)
                 maybe = sleep(self.config.rank_refresh_seconds)
                 if maybe is not None and hasattr(maybe, "__await__"):
                     await maybe
         finally:
             self._stopped = True
+            try:
+                self._opp_stats.save()
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 self.stream.stop()
             except Exception:  # noqa: BLE001
