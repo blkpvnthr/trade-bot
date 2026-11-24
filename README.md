@@ -89,6 +89,24 @@ Production safeguards:
 - Spread / liquidity checks
 - Slippage tracking
 
+### 🔭 Autonomous Rotating Universe (`market_scan/`)
+A persistent 30-symbol **baseline** (`market_scan/baseline.py`) plus dynamically
+discovered opportunities form a master universe (`baseline ∪ discovered ∪
+monitoring`). The scanner subscribes an **active 30-symbol window** on a single IEX
+websocket, allocated **risk-first → 20 baseline / 10 opportunity** (70% exploit by
+rank × persisted `opportunity_stats`, 30% explore), and **rotates every 60s**
+decoupled from the ~3s rank/publish heartbeat — so the feed is never churned. The
+engine's fail-closed entry gate consumes the published `live_context_{mode}.json`.
+
+### 🛡️ Protective Loss Policy
+Default is the **fixed −0.5%** protective exit. An opt-in **dynamic
+volatility-adjusted** monitor (`market_scan/dynamic_loss.py`, ATR-clamped soft stop
+with confirmed-deterioration hysteresis) exists behind `MARKET_SCAN_DYNAMIC_LOSS`
+but is **OFF by default** — it failed full 30-symbol OOS acceptance gates
+(`backtest_dynamic_loss.py`). Anti-churn: 300s reentry cooldown +
+15%-improvement replacement gate. See
+`.claude/worktrees/market-scanner/logs/AUTONOMOUS_UNIVERSE_DYNAMIC_RISK_REPORT.md`.
+
 ---
 
 ## 📁 Outputs

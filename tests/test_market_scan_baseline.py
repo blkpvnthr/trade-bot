@@ -11,7 +11,7 @@ from market_scan import baseline
 
 
 _EXPECTED = (
-    "ANT", "GPN", "DVA", "HUM", "UNH",
+    "ELV", "GPN", "DVA", "HUM", "UNH",
     "HCA", "UHS", "GIS", "WMT", "COST",
     "NVDA", "AMD", "AVGO", "AAPL", "MU",
     "TSLA", "SPY", "QQQ", "DIA", "IWM",

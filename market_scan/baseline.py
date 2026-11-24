@@ -11,7 +11,11 @@ IEX subscription window is (``ACTIVE_UNIVERSE_SIZE``).
 from __future__ import annotations
 
 BASELINE_UNIVERSE: tuple[str, ...] = (
-    "ANT", "GPN", "DVA", "HUM", "UNH",
+    # ELV (Elevance Health, formerly Anthem/ANTM) replaces the original "ANT":
+    # ANT is tradable on Alpaca but has NO IEX market data, so it could never
+    # become eligible and would waste a baseline rotation slot. ELV is the
+    # intended healthcare-insurer exposure (with HUM/UNH), liquid, IEX-covered.
+    "ELV", "GPN", "DVA", "HUM", "UNH",
     "HCA", "UHS", "GIS", "WMT", "COST",
     "NVDA", "AMD", "AVGO", "AAPL", "MU",
     "TSLA", "SPY", "QQQ", "DIA", "IWM",
