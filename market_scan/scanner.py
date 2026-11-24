@@ -444,6 +444,7 @@ class MarketScanner:
                 out.append({
                     "symbol": sym,
                     "price": getattr(f, "price", None),
+                    "score": self._cached_score(sym),   # for the 15% replacement gate
                     "gates": {
                         "seller_exhaustion": e.seller_exhaustion,
                         "positive_momentum": e.positive_momentum,
