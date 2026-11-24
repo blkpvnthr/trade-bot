@@ -356,9 +356,15 @@ class MarketScanner:
         if live and not self._was_live:
             self._scored.clear()
         self._was_live = live
+        # Only escalate missing references to a RECONNECT once the stream has
+        # actually delivered data at least once. Otherwise an after-hours / pre-open
+        # cold start -- where references legitimately have no ticks -- would request
+        # a reconnect every few ticks (a reconnect storm). A genuine intraday drop
+        # (stream was live, refs then vanish) still reconnects.
+        ever_live = bool(getattr(self.stream, "received_any", True))
         if refs_missing:
             self._ref_miss_ticks += 1
-            if self._ref_miss_ticks >= max(1, self.config.max_ref_miss_ticks):
+            if ever_live and self._ref_miss_ticks >= max(1, self.config.max_ref_miss_ticks):
                 self._log(f"[market-scan] references missing data {refs_missing} for "
                           f"{self._ref_miss_ticks} ticks; forcing stream reconnect")
                 try:
