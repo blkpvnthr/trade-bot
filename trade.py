@@ -136,6 +136,7 @@ KILL_SWITCH_PATH = LOG_DIR / f"{DATA_TAG}_kill_switch_state.json"
 SCANNER_STATE_PATH = LOG_DIR / f"{DATA_TAG}_scanner_state.json"
 SCANNER_SCORES_PATH = OUT_DIR / f"{DATA_TAG}_latest_scanner_scores.csv"
 NO_REENTRY_STATE_PATH = LOG_DIR / f"{DATA_TAG}_no_reentry_state.json"
+REENTRY_COOLDOWN_STATE_PATH = LOG_DIR / f"{DATA_TAG}_reentry_cooldown_state.json"
 INSIDER_HOLDINGS_STATE_PATH = LOG_DIR / f"{DATA_TAG}_insider_holdings_state.json"
 PROFIT_EXIT_STATE_PATH = LOG_DIR / f"{DATA_TAG}_profit_exit_state.json"
 BUY_OPPORTUNITY_STATE_PATH = LOG_DIR / f"{DATA_TAG}_buy_opportunity_state.json"
@@ -2376,6 +2377,59 @@ def load_no_reentry_symbols() -> set[str]:
     if isinstance(symbols, list):
         return {safe_symbol(sym) for sym in symbols if safe_symbol(sym)}
     return set()
+
+
+def load_reentry_cooldowns() -> dict:
+    """Map {symbol: {ts, score}} of symbols on a timed protective-exit cooldown
+    (today only). A symbol is blocked from reentry for
+    ``position_reentry_cooldown_seconds`` after a protective liquidation unless a
+    materially-improved signal appears (see :func:`reentry_cooldown_blocks`)."""
+    today = local_trading_day()
+    state = read_json_file(REENTRY_COOLDOWN_STATE_PATH, {"date": today, "symbols": {}})
+    if state.get("date") != today:
+        return {}
+    syms = state.get("symbols", {})
+    return syms if isinstance(syms, dict) else {}
+
+
+def mark_reentry_cooldown(symbol: str, score: float, ts: float) -> None:
+    """Record a protective-exit cooldown for ``symbol`` (epoch ``ts`` + the exit
+    reference ``score``). Fail-safe; never raises into the loop."""
+    symbol = safe_symbol(symbol)
+    if not symbol:
+        return
+    today = local_trading_day()
+    state = read_json_file(REENTRY_COOLDOWN_STATE_PATH, {"date": today, "symbols": {}})
+    if state.get("date") != today:
+        state = {"date": today, "symbols": {}}
+    syms = state.get("symbols", {})
+    if not isinstance(syms, dict):
+        syms = {}
+    syms[symbol] = {"symbol": symbol, "ts": float(ts), "score": float(score or 0.0)}
+    state["symbols"] = syms
+    write_json_file(REENTRY_COOLDOWN_STATE_PATH, state)
+    write_event("reentry_cooldown_marked",
+                {"symbol": symbol, "score": float(score or 0.0), "ts": float(ts)})
+
+
+def reentry_cooldown_blocks(cooldowns: dict, symbol: str, now_ts: float,
+                            new_score: float, cooldown_s: float,
+                            min_improvement: float) -> bool:
+    """True => block this buy. Within ``cooldown_s`` of a protective exit a symbol
+    is blocked UNLESS the new signal's score is >= the exit score x
+    (1 + min_improvement). After the window elapses it never blocks. A symbol with
+    no comparable prior score (<=0) stays blocked for the whole window (base 5-min
+    cooldown). Unknown symbols never block."""
+    rec = cooldowns.get(safe_symbol(symbol)) if isinstance(cooldowns, dict) else None
+    if not isinstance(rec, dict):
+        return False
+    ts = to_float(rec.get("ts"), 0.0)
+    if (now_ts - ts) >= float(cooldown_s):
+        return False
+    prior = to_float(rec.get("score"), 0.0)
+    if prior <= 0.0:
+        return True
+    return not (to_float(new_score, 0.0) >= prior * (1.0 + float(min_improvement)))
 
 
 def mark_no_reentry_symbol(symbol: str, reason: str = "exit") -> None:
@@ -5597,7 +5651,8 @@ class ProductionOrderExecutor:
         return enabled, threshold
 
     def _positions_below_loss_threshold(self, positions, threshold: float) -> list[str]:
-        """Symbols whose unrealized_plpc is at/below ``threshold`` (decimal)."""
+        """Symbols whose unrealized_plpc is at/below ``threshold`` (decimal) -- the
+        fixed -0.5% rule, preserved verbatim as the default protective behavior."""
         out: list[str] = []
         for pos in positions or []:
             sym = safe_symbol(getattr(pos, "symbol", None))
@@ -5606,6 +5661,106 @@ class ProductionOrderExecutor:
             plpc = to_float(getattr(pos, "unrealized_plpc", 0.0), 0.0)
             if plpc <= threshold:
                 out.append(sym)
+        return out
+
+    def _exit_reference_score(self, symbol) -> float:
+        """Best-effort score for a symbol at protective-exit time, for the B4
+        15%-improvement replacement gate. 0.0 when unavailable (-> the gate uses
+        its documented incomparable-score fallback)."""
+        try:
+            feats = self._latest_feature_by_symbol() or {}
+            f = feats.get(safe_symbol(symbol)) or {}
+            for k in ("score", "rank_score", "model_probability", "setup_score"):
+                v = f.get(k)
+                if isinstance(v, (int, float)) and v == v:
+                    return float(v)
+        except Exception:  # noqa: BLE001
+            pass
+        return 0.0
+
+    # --- Stage B: dynamic volatility-adjusted protective monitor (default OFF) ---
+    def _dynamic_loss_enabled(self) -> bool:
+        try:
+            from market_scan.config import MarketScanConfig
+            return bool(MarketScanConfig.from_env().dynamic_loss_enabled)
+        except Exception:  # noqa: BLE001 - absence -> fixed behavior
+            return False
+
+    def _ensure_dynamic_loss_monitor(self):
+        if getattr(self, "_dyn_loss_mon", None) is None:
+            from market_scan.config import MarketScanConfig
+            from market_scan.dynamic_loss import DynamicLossMonitor
+            cfg = MarketScanConfig.from_env()
+            try:
+                hard = abs(float(self.config.scanner.stop_loss_pct))
+            except Exception:  # noqa: BLE001
+                hard = None
+            self._dyn_loss_mon = DynamicLossMonitor(
+                warning_pct=cfg.loss_warning_pct,
+                adaptive_min_pct=cfg.adaptive_loss_min_pct,
+                adaptive_max_pct=cfg.adaptive_loss_max_pct,
+                atr_multiplier=cfg.loss_atr_multiplier,
+                confirmation_seconds=cfg.exit_confirmation_seconds,
+                min_observations=cfg.exit_confirmation_min_observations,
+                hard_stop_pct=hard,
+            )
+        return self._dyn_loss_mon
+
+    @staticmethod
+    def _position_deteriorating(feat: dict) -> bool:
+        """Heuristic deterioration proxy from the latest MTF feature row (fresh
+        bars): below fast SMA / lower lows / failed reclaim / lost VWAP / negative
+        short-horizon momentum. Absent evidence -> False (hold within budget)."""
+        if not isinstance(feat, dict):
+            return False
+        for k in ("5m_below_fast_sma", "5m_lower_lows", "5m_failed_reclaim",
+                  "15m_below_fast_sma", "15m_lower_lows"):
+            if feat.get(k):
+                return True
+        if feat.get("5m_above_vwap") is False:
+            return True
+        for k in ("5m_direction_score", "short_mom", "ret_5d"):
+            v = feat.get(k)
+            if isinstance(v, (int, float)) and v == v and v < 0:
+                return True
+        return False
+
+    def _breached_positions(self, positions, threshold: float) -> list[str]:
+        """Symbols to protectively exit.
+
+        Default (dynamic OFF): the fixed -0.5% rule, unchanged. Dynamic ON: the
+        per-symbol ATR-adjusted monitor with confirmed deterioration -- with a
+        CONSERVATIVE fallback to the fixed rule for any position lacking reliable
+        ATR data, so protection is never weakened and risk is never widened beyond
+        the authorized ceiling.
+        """
+        if not self._dynamic_loss_enabled():
+            return self._positions_below_loss_threshold(positions, threshold)
+        import time as _time
+        now = _time.time()
+        mon = self._ensure_dynamic_loss_monitor()
+        try:
+            feats = self._latest_feature_by_symbol() or {}
+        except Exception:  # noqa: BLE001
+            feats = {}
+        out: list[str] = []
+        for pos in positions or []:
+            sym = safe_symbol(getattr(pos, "symbol", None))
+            if not sym:
+                continue
+            plpc = to_float(getattr(pos, "unrealized_plpc", 0.0), 0.0)
+            feat = feats.get(sym) or {}
+            atr_pct = feat.get("atr_pct")
+            reliable = isinstance(atr_pct, (int, float)) and atr_pct == atr_pct and atr_pct > 0
+            if reliable:
+                side = str(getattr(pos, "side", "long") or "long").lower()
+                d = mon.observe(sym, plpc=plpc, atr_pct=float(atr_pct),
+                                deteriorating=self._position_deteriorating(feat),
+                                now=now, side=side)
+                if d.should_exit:
+                    out.append(sym)
+            elif plpc <= threshold:
+                out.append(sym)   # conservative fallback: fixed rule when ATR absent
         return out
 
     def _ensure_pending_replacements(self) -> "threading.RLock":
@@ -5647,7 +5802,7 @@ class ProductionOrderExecutor:
             except Exception as exc:  # noqa: BLE001
                 print(f"[loss-monitor] position read failed: {exc}")
                 return 0
-            breached = self._positions_below_loss_threshold(positions, threshold)
+            breached = self._breached_positions(positions, threshold)
             if not breached:
                 return 0
             # Emergency halt precedence (explicit, read-only -- the monitor honors
@@ -5685,6 +5840,13 @@ class ProductionOrderExecutor:
                     continue
                 try:
                     mark_no_reentry_symbol(symbol, reason="loss_removal_monitor")
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    # Record a protective-exit reentry cooldown (feeds the Section-B4
+                    # 15%-improvement replacement gate + the same-symbol cooldown).
+                    import time as _t
+                    mark_reentry_cooldown(symbol, self._exit_reference_score(symbol), _t.time())
                 except Exception:  # noqa: BLE001
                     pass
                 with self._ensure_pending_replacements():
@@ -5742,13 +5904,14 @@ class ProductionOrderExecutor:
             print(f"[loss-removal] position read failed: {exc}")
             return exits
 
+        breached = set(self._breached_positions(positions, threshold))
         for pos in positions:
             symbol = safe_symbol(pos.symbol)
             if not symbol or symbol in existing:
                 continue
-            plpc = to_float(getattr(pos, "unrealized_plpc", 0.0), 0.0)
-            if plpc > threshold:
+            if symbol not in breached:
                 continue
+            plpc = to_float(getattr(pos, "unrealized_plpc", 0.0), 0.0)
             # FULL exit, fractional-aware: never truncate with int(), or a
             # sub-1-share losing position would be skipped entirely and a
             # fractional stub would be stranded (partial exit). Sell the entire
@@ -5779,6 +5942,11 @@ class ProductionOrderExecutor:
             # redeployed through the normal entry pipeline.
             try:
                 mark_no_reentry_symbol(symbol, reason="loss_removal_-0.5pct")
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                import time as _t
+                mark_reentry_cooldown(symbol, self._exit_reference_score(symbol), _t.time())
             except Exception:  # noqa: BLE001
                 pass
             # Register a freed slot awaiting a gated replacement (filled on a
@@ -5894,6 +6062,20 @@ class ProductionOrderExecutor:
         confirmed = self._confirm_replacement_directions(
             [s for s in pool_syms if s and s not in exclude])
         target_weight = float(getattr(self.config.scanner, "base_target_weight", 0.03) or 0.03)
+        # Stage B4 anti-churn: a replacement must be a MATERIALLY better opportunity
+        # than the exited loser (comparable positive scores), and a just-exited name
+        # cannot be re-bought within the reentry cooldown unless its new signal is
+        # materially improved. Cash is always an acceptable outcome (never forced).
+        import time as _time
+        try:
+            import market_scan as _ms
+            _mscfg = _ms.MarketScanConfig.from_env()
+            min_improve = float(_mscfg.replacement_min_score_improvement)
+            cooldown_s = float(_mscfg.position_reentry_cooldown_seconds)
+        except Exception:  # noqa: BLE001
+            min_improve, cooldown_s = 0.15, 300.0
+        now_ts = _time.time()
+        cooldowns = load_reentry_cooldowns()
         chosen: set[str] = set()
         rows: list[dict[str, Any]] = []
 
@@ -5902,6 +6084,7 @@ class ProductionOrderExecutor:
             # (never retry forever; cash is a valid outcome).
             with self._ensure_pending_replacements():
                 self._pending_replacements.discard(loser)
+            loser_score = to_float((cooldowns.get(loser) or {}).get("score"), 0.0)
             pick = None
             for c in candidates:
                 sym = safe_symbol(c.get("symbol"))
@@ -5909,6 +6092,21 @@ class ProductionOrderExecutor:
                 if not sym or sym in exclude or sym in chosen or price <= 0:
                     continue
                 if sym not in confirmed:   # DI/BB/VWAP/structure not confirmed by the engine
+                    continue
+                raw_score = c.get("score")
+                has_score = isinstance(raw_score, (int, float))
+                cand_score = to_float(raw_score, 0.0)
+                if has_score and cand_score <= 0.0:   # explicit non-positive -> no expectancy
+                    continue
+                # 15% improvement over the exited loser ONLY when both scores are
+                # comparable (both positive); documented fallback (top confirmed) when
+                # either score is unknown/absent.
+                if loser_score > 0.0 and has_score and cand_score < loser_score * (1.0 + min_improve):
+                    continue
+                # Honor the per-symbol reentry cooldown (blocks a just-exited name
+                # within the window unless the new signal is materially improved).
+                if reentry_cooldown_blocks(cooldowns, sym, now_ts, cand_score,
+                                           cooldown_s, min_improve):
                     continue
                 pick = (sym, price)
                 break

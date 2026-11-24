@@ -13,6 +13,8 @@ class) so tests inject a fake and never open a socket.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 from typing import Any, Callable, Optional
 
@@ -119,19 +121,39 @@ class StreamClient:
             self._stream.subscribe_quotes(self._handle_quote, *syms)
 
     async def apply_subscriptions(self, *, to_add, to_remove) -> None:
-        """Add/remove symbol subscriptions on the live stream."""
+        """Add/remove symbol subscriptions on the live stream.
+
+        alpaca-py's ``subscribe_*``/``unsubscribe_*`` are SYNCHRONOUS and, once
+        the websocket is running, block the caller on
+        ``run_coroutine_threadsafe(send(), self._loop).result()`` -- a coroutine
+        scheduled on the stream's own event loop (which, for the scanner, IS this
+        loop). Calling them inline from this coroutine would block the loop thread
+        on ``.result()`` while the coroutine it awaits can only run on that same
+        (now-blocked) loop -> permanent self-deadlock. The scanner's rank loop
+        froze here after its first publish. alpaca intends these to be called from
+        a DIFFERENT thread, so we dispatch them to the default executor: the loop
+        stays free to service the scheduled send, and ``.result()`` returns on the
+        executor thread.
+        """
         if self._stream is None:
             self.connect()
         add = [s.upper() for s in to_add if s.upper() not in self._subscribed]
         remove = [s.upper() for s in to_remove if s.upper() in self._subscribed]
-        if add:
-            self._stream.subscribe_trades(self._handle_trade, *add)
-            self._stream.subscribe_quotes(self._handle_quote, *add)
-            self._subscribed.update(add)
+        loop = asyncio.get_running_loop()
+        # Remove obsolete subscriptions BEFORE adding replacements so the live
+        # subscribed set never transiently exceeds the IEX cap during a rotation.
         if remove:
-            self._stream.unsubscribe_trades(*remove)
-            self._stream.unsubscribe_quotes(*remove)
+            await loop.run_in_executor(None, functools.partial(
+                self._stream.unsubscribe_trades, *remove))
+            await loop.run_in_executor(None, functools.partial(
+                self._stream.unsubscribe_quotes, *remove))
             self._subscribed.difference_update(remove)
+        if add:
+            await loop.run_in_executor(None, functools.partial(
+                self._stream.subscribe_trades, self._handle_trade, *add))
+            await loop.run_in_executor(None, functools.partial(
+                self._stream.subscribe_quotes, self._handle_quote, *add))
+            self._subscribed.update(add)
 
     async def _handle_trade(self, data: Any) -> None:
         try:

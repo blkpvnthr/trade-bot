@@ -119,8 +119,14 @@ def test_only_candidates_with_fresh_own_data_published(tmp_path):
     disc = ["FRESH", "STALE", "SPY", "QQQ"]
 
     def prov(syms, now):
-        return {s: _feat(s, _snap(qage=999, tage=999) if s == "STALE" else _snap())
-                for s in syms}
+        # Scope features to the symbols under test so the (now always-present)
+        # baseline does not crowd the top-N -- this pins the freshness invariant
+        # (only a candidate with fresh OWN data is published), not the top-N cutoff.
+        out = {}
+        for s in syms:
+            if s in ("FRESH", "STALE"):
+                out[s] = _feat(s, _snap(qage=999, tage=999) if s == "STALE" else _snap())
+        return out
     ms = _scanner(tmp_path, prov, disc)
     asyncio.run(ms._rank_tick(1000.0))
     pub = universe.load_canonical_universe(tmp_path / "universe.txt")

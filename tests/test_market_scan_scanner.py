@@ -74,8 +74,8 @@ def _ok_snap(buy=0.6):
 
 
 def _scanner(tmp_path, *, positions=(), pending=(), discovered=None, provider=None,
-             max_subs=30):
-    cfg = MarketScanConfig(max_subscriptions=max_subs, target_universe_size=5)
+             max_subs=30, target_size=5):
+    cfg = MarketScanConfig(max_subscriptions=max_subs, target_universe_size=target_size)
     exec_stub = SimpleNamespace(broker=_FakeBroker(positions, pending),
                                config=SimpleNamespace(paper=True))
     s = MarketScanner(
@@ -115,11 +115,13 @@ def test_monitoring_union_includes_positions_pending_refs(tmp_path):
 
 def test_rank_tick_excludes_proxies_from_entry_universe(tmp_path):
     disc = ["NVDA", "AMD", "SPY", "QQQ", "GPN"]  # SPY/QQQ are proxies
-    s = _scanner(tmp_path, discovered=disc, provider=_strong_feats(disc))
+    # target_size large enough that all eligible (incl. baseline) are published,
+    # so the proxy-exclusion invariant is tested independently of the top-N cutoff.
+    s = _scanner(tmp_path, discovered=disc, provider=_strong_feats(disc), target_size=40)
     s._discovered = disc
     asyncio.run(s._rank_tick(1000.0))
     published = universe.load_canonical_universe(tmp_path / "universe.txt")
-    assert "SPY" not in published and "QQQ" not in published
+    assert "SPY" not in published and "QQQ" not in published   # proxies NEVER published
     assert "NVDA" in published and "AMD" in published and "GPN" in published
 
 
@@ -164,3 +166,49 @@ def test_stop_sets_flag(tmp_path):
     s = _scanner(tmp_path)
     s.stop()
     assert s._stopped is True
+
+
+# --------------------------------------------------------------- constructor
+# Regression for the production constructor path. Every test above injects a
+# stream_client, so none exercised _make_stream() -- which is where the engine
+# actually crashed at startup:
+#   AttributeError: 'MarketScanner' object has no attribute '_now_fn'
+# _make_stream() reads self._now_fn to share the clock with the StreamClient, so
+# _now_fn MUST be initialized before the stream is built.
+
+
+def test_default_construction_builds_stream_and_shares_clock():
+    """Default prod construction (NO injected stream) must not raise and must
+    share the scanner's injected clock with the StreamClient so is_live() is
+    consistent across both."""
+    now_fn = lambda: 123.0
+    exec_stub = SimpleNamespace(broker=_FakeBroker(),
+                                config=SimpleNamespace(paper=True))
+    cfg = MarketScanConfig(max_subscriptions=30, target_universe_size=5)
+    s = MarketScanner(exec_stub, cfg, now_fn=now_fn)
+    assert s.stream is not None                 # built via the default factory
+    assert s.stream._now_fn is now_fn           # clock shared with the stream
+    assert s._now() == 123.0
+
+
+def test_default_construction_without_clock_uses_wallclock():
+    """Default prod construction with no injected clock still builds (falls back
+    to wall-clock time.time())."""
+    exec_stub = SimpleNamespace(broker=_FakeBroker(),
+                                config=SimpleNamespace(paper=True))
+    s = MarketScanner(exec_stub,
+                      MarketScanConfig(max_subscriptions=30, target_universe_size=5))
+    assert s.stream is not None
+    assert s._now_fn is None
+    assert isinstance(s._now(), float)
+
+
+def test_injected_stream_bypasses_make_stream():
+    """An injected stream is used verbatim (default factory never invoked)."""
+    fake = _FakeStream()
+    exec_stub = SimpleNamespace(broker=_FakeBroker(),
+                                config=SimpleNamespace(paper=True))
+    s = MarketScanner(exec_stub,
+                      MarketScanConfig(max_subscriptions=30, target_universe_size=5),
+                      stream_client=fake, now_fn=lambda: 5.0)
+    assert s.stream is fake

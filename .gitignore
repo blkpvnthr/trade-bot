@@ -65,3 +65,4 @@ rl_strategy_meta_agent/external_research/oqts/
 market_scan/live_context*.json
 market_scan/scanner.lock
 market_scan/research/
+opportunity_stats_paper.json
